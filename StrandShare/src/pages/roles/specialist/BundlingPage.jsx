@@ -1,42 +1,54 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
+  AlertCircle,
+  Camera,
+  CameraOff,
   CheckCircle2,
   Download,
   FileText,
+  HelpCircle,
   Image as ImageIcon,
   Loader2,
   Package,
-  PenSquare,
   Printer,
   RefreshCw,
-  Save,
-  Search,
+  ScanLine,
   Trash2,
   X,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import jsPDF from 'jspdf';
+import jsQR from 'jsqr';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
-import { logAuditAction } from '../../../lib/auditLogger';
 import {
   BUNDLE_HAIR_COUNT_TARGET_MAX,
   BUNDLE_HAIR_COUNT_TARGET_MIN,
   HAIR_BUNDLE_STATUS,
-  HAIR_SUBMISSION_STATUS,
   buildBundleSubmissionCode,
   buildBundleWaybillQrPayload,
-  createWigBundle,
   deleteBundleDraft,
-  finalizeBundleDraft,
-  saveBundleDraft,
-  updateBundleDraft,
 } from '../../../lib/hairSubmissionWorkflow';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
-const DONATION_DRIVE_REQUESTS_TABLE = 'Donation_Drive_Requests';
+const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
+const EVENT_REQUESTS_TABLE = 'Event_Requests';
+const WIG_SPECIFICATIONS_TABLE = 'Wig_Specifications';
+const WIGS_TABLE = 'Wigs';
 const USER_DETAILS_TABLE = 'user_details';
+const SCAN_DEBOUNCE_MS = 2000;
+const INITIAL_CONFIRM_MODAL = {
+  isOpen: false,
+  title: '',
+  message: '',
+  action: '',
+  bundleId: null,
+  submissionId: null,
+  submissionCode: '',
+  tone: 'primary',
+};
 
 function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
   const safeAlpha = Math.max(0, Math.min(1, Number.isFinite(alpha) ? alpha : 1));
@@ -79,7 +91,38 @@ function bundleStatusStyle(statusKey, primaryColor, tertiaryColor, secondaryText
   }
 }
 
-export default function BundlingPage({ userProfile }) {
+function normalizeErrorMessage(error, fallback) {
+  const message = String(error?.message || '').trim();
+  if (!message) return fallback;
+  const key = message.toLowerCase();
+
+  if (key.includes('already scanned in this bundle')) return 'This waybill is already scanned in the active draft.';
+  if (key.includes('already assigned to bundle')) return 'This waybill is already reserved in another bundle.';
+  if (key.includes('cannot be bundled while status is')) return 'This waybill cannot be bundled because its status is not eligible.';
+  if (key.includes('must be in cut status')) return 'This waybill must be in Cut status before bundling.';
+  if (key.includes('bundle already has 10 hairs')) return 'This bundle already has 10 hairs. Close it and open a new draft.';
+  if (key.includes('bundle must contain 8-10 hairs')) return 'Bundle must contain 8 to 10 hairs before closing.';
+  if (key.includes('no hair submission matched')) return 'No hair submission matched this waybill QR.';
+  if (key.includes('maximum of 3 open drafts')) return 'You already have 3 open drafts. Close or delete one before opening another.';
+  if (key.includes('is not assigned to any bundle')) return 'This waybill is not currently assigned to a draft bundle.';
+  if (key.includes('belongs to bundle')) return 'This waybill belongs to a different bundle.';
+  if (key.includes('only cut submissions can be removed')) return 'Only Cut-status hairs can be removed from a draft.';
+  if (key.includes('no waybill code detected')) return 'No waybill code detected from this QR payload.';
+  if (key.includes('waybill payload is required')) return 'Waybill payload is required. Scan again or enter the code manually.';
+  if (key.includes('is not draft')) return 'This bundle is already closed or in production.';
+  if (key.includes('already in wig in production')) return 'This waybill is already in production and cannot be scanned again.';
+  if (key.includes('already in wig created')) return 'This waybill is already completed as Wig Created.';
+  if (key.includes('already scanned')) return 'This QR was already scanned.';
+  if (key.includes('row-level security')) return 'You do not have permission for this operation. Please contact admin.';
+  if (key.includes('not found')) return 'Record not found. Refresh and try again.';
+  if (key.includes('permission') || key.includes('not assigned') || key.includes('only specialist/admin')) {
+    return 'You do not have permission for this operation.';
+  }
+
+  return message || fallback;
+}
+
+export default function BundlingPage() {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0275d8';
   const tertiaryColor = theme?.tertiaryColor || '#10b981';
@@ -92,21 +135,35 @@ export default function BundlingPage({ userProfile }) {
   const rootStyle = { color: primaryTextColor, fontFamily: `${bodyFont}, sans-serif` };
   const headingStyle = { color: primaryTextColor, fontFamily: `${headingFont}, sans-serif` };
 
-  const [approvedHairs, setApprovedHairs] = useState([]);
   const [bundles, setBundles] = useState([]);
   const [bundleMembersByBundleId, setBundleMembersByBundleId] = useState({});
-  const [selectedSubmissionIds, setSelectedSubmissionIds] = useState([]);
-  const [bundleNotes, setBundleNotes] = useState('');
-  const [editingDraftId, setEditingDraftId] = useState(null);
-  const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [isFinalizingDraftId, setIsFinalizingDraftId] = useState(null);
   const [isDeletingDraftId, setIsDeletingDraftId] = useState(null);
-  const [isCreatingBundle, setIsCreatingBundle] = useState(false);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [activePrintBundle, setActivePrintBundle] = useState(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [wigSpecOptions, setWigSpecOptions] = useState([]);
+  const [scannerDraftBundleId, setScannerDraftBundleId] = useState(null);
+  const [scannerWaybillCode, setScannerWaybillCode] = useState('');
+  const [scannerSpecId, setScannerSpecId] = useState('');
+  const [scannerNotes, setScannerNotes] = useState('');
+  const [isOpeningScannerBundle, setIsOpeningScannerBundle] = useState(false);
+  const [isScanningWaybill, setIsScanningWaybill] = useState(false);
+  const [isClosingScannerBundle, setIsClosingScannerBundle] = useState(false);
+  const [isCameraOn, setIsCameraOn] = useState(false);
+  const [isStartingCamera, setIsStartingCamera] = useState(false);
+  const [cameraStatus, setCameraStatus] = useState({ kind: 'info', message: 'Camera is off. Start scanner to read waybill QR.' });
+  const [confirmModal, setConfirmModal] = useState(INITIAL_CONFIRM_MODAL);
+  // Master-detail selection: 'create' | `draft-<id>` | `bundle-<id>`.
+  const [selectedKey, setSelectedKey] = useState('create');
+  const [showHelp, setShowHelp] = useState(false);
+
+  const videoRef = useRef(null);
+  const scannerCanvasRef = useRef(null);
+  const cameraStreamRef = useRef(null);
+  const isScanProcessingRef = useRef(false);
+  const lastScanRef = useRef({ raw: '', at: 0 });
 
   const loadData = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -118,58 +175,47 @@ export default function BundlingPage({ userProfile }) {
     setNotice({ kind: '', text: '' });
 
     try {
-      const approvedResult = await supabase
-        .from(HAIR_SUBMISSIONS_TABLE)
-        .select('Submission_ID, User_ID, Donation_Drive_ID, Status, Submission_Code, Updated_At')
-        .eq('Status', HAIR_SUBMISSION_STATUS.APPROVED)
-        .is('Bundle_ID', null)
-        .order('Updated_At', { ascending: true });
+      let specRows = await supabase
+        .from(WIG_SPECIFICATIONS_TABLE)
+        .select('Wig_Specification_ID, Wig_ID, Hair_Length, Hair_Color, Hair_Texture, Hair_Density, Cap_Size, Style')
+        .order('Wig_Specification_ID', { ascending: false })
+        .limit(500);
 
-      if (approvedResult.error) throw approvedResult.error;
-      const approvedRows = approvedResult.data || [];
+      if (specRows.error) throw specRows.error;
+      const specs = specRows.data || [];
 
-      const userIds = Array.from(new Set(approvedRows.map((r) => Number(r.User_ID || 0)).filter(Boolean)));
-      const driveIds = Array.from(new Set(approvedRows.map((r) => Number(r.Donation_Drive_ID || 0)).filter(Boolean)));
-
-      let usersByUserId = {};
-      if (userIds.length) {
-        const { data, error } = await supabase
-          .from(USER_DETAILS_TABLE)
-          .select('user_id, first_name, middle_name, last_name, suffix')
-          .in('user_id', userIds);
-        if (error) throw error;
-        usersByUserId = (data || []).reduce((acc, r) => { acc[Number(r.user_id)] = r; return acc; }, {});
+      const specWigIds = Array.from(new Set(specs.map((row) => Number(row.Wig_ID || 0)).filter(Boolean)));
+      let wigNamesById = {};
+      if (specWigIds.length) {
+        const wigResult = await supabase
+          .from(WIGS_TABLE)
+          .select('Wig_ID, Wig_Name, Wig_Code')
+          .in('Wig_ID', specWigIds);
+        if (wigResult.error) throw wigResult.error;
+        wigNamesById = (wigResult.data || []).reduce((acc, row) => {
+          acc[Number(row.Wig_ID)] = row;
+          return acc;
+        }, {});
       }
 
-      let drivesByDriveId = {};
-      if (driveIds.length) {
-        const { data, error } = await supabase
-          .from(DONATION_DRIVE_REQUESTS_TABLE)
-          .select('Donation_Drive_ID, Event_Title')
-          .in('Donation_Drive_ID', driveIds);
-        if (error) throw error;
-        drivesByDriveId = (data || []).reduce((acc, r) => { acc[Number(r.Donation_Drive_ID)] = r; return acc; }, {});
-      }
-
-      const enrichedApproved = approvedRows.map((row) => {
-        const userId = Number(row.User_ID || 0);
-        const userDetails = usersByUserId[userId] || {};
-        const drive = drivesByDriveId[Number(row.Donation_Drive_ID || 0)] || {};
+      setWigSpecOptions(specs.map((row) => {
+        const wig = wigNamesById[Number(row.Wig_ID || 0)] || {};
+        const labelParts = [
+          wig.Wig_Name || wig.Wig_Code || `Wig #${row.Wig_ID}`,
+          row.Style || row.Hair_Texture || '',
+          row.Hair_Color || '',
+          row.Hair_Length ? `${row.Hair_Length}in` : '',
+          row.Cap_Size ? `Cap ${row.Cap_Size}` : '',
+        ].map((value) => String(value || '').trim()).filter(Boolean);
         return {
-          submissionId: row.Submission_ID,
-          submissionCode: row.Submission_Code || `HS-${row.Submission_ID}`,
-          userId,
-          donorName: buildFullName(userDetails.first_name, userDetails.middle_name, userDetails.last_name, userDetails.suffix) || `User #${userId}`,
-          eventTitle: drive.Event_Title || `Drive #${row.Donation_Drive_ID}`,
-          updatedAt: row.Updated_At,
+          ...row,
+          label: labelParts.join(' | '),
         };
-      });
-
-      setApprovedHairs(enrichedApproved);
+      }));
 
       const bundlesResult = await supabase
         .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-        .select('Bundle_ID, Status, Submission_Code, Notes, Created_At, Wig_Completed_At, Created_By, Draft_Submission_IDs')
+        .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At, Created_By, Wig_Specification_ID')
         .order('Created_At', { ascending: false })
         .limit(100);
 
@@ -177,22 +223,94 @@ export default function BundlingPage({ userProfile }) {
       const bundleRows = bundlesResult.data || [];
       setBundles(bundleRows);
 
-      const nonDraftBundleIds = bundleRows
-        .filter((r) => String(r.Status || '').toLowerCase() !== HAIR_BUNDLE_STATUS.DRAFT.toLowerCase())
-        .map((r) => r.Bundle_ID);
-      if (nonDraftBundleIds.length) {
+      const bundleIds = bundleRows
+        .map((r) => Number(r.Bundle_ID || 0))
+        .filter(Boolean);
+      if (bundleIds.length) {
         const membersResult = await supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Submission_Code, Status, Bundle_ID')
-          .in('Bundle_ID', nonDraftBundleIds);
+          .select('Submission_ID, User_ID, Submission_Code, Status, Bundle_ID, Event_Request_ID, Updated_At')
+          .in('Bundle_ID', bundleIds);
         if (membersResult.error) throw membersResult.error;
 
-        const grouped = (membersResult.data || []).reduce((acc, row) => {
-          const key = Number(row.Bundle_ID);
+        const memberRows = membersResult.data || [];
+        const userIds = Array.from(new Set(memberRows.map((r) => Number(r.User_ID || 0)).filter(Boolean)));
+        const requestIds = Array.from(new Set(memberRows.map((r) => Number(r.Event_Request_ID || 0)).filter(Boolean)));
+        const submissionIds = Array.from(new Set(memberRows.map((r) => Number(r.Submission_ID || 0)).filter(Boolean)));
+
+        let usersByUserId = {};
+        if (userIds.length) {
+          const { data, error } = await supabase
+            .from(USER_DETAILS_TABLE)
+            .select('user_id, first_name, middle_name, last_name, suffix')
+            .in('user_id', userIds);
+          if (error) throw error;
+          usersByUserId = (data || []).reduce((acc, r) => {
+            acc[Number(r.user_id)] = r;
+            return acc;
+          }, {});
+        }
+
+        let eventsByRequestId = {};
+        if (requestIds.length) {
+          const { data, error } = await supabase
+            .from(EVENT_REQUESTS_TABLE)
+            .select('Event_Request_ID, Event_Name')
+            .in('Event_Request_ID', requestIds);
+          if (error) throw error;
+          eventsByRequestId = (data || []).reduce((acc, r) => {
+            acc[Number(r.Event_Request_ID)] = r;
+            return acc;
+          }, {});
+        }
+
+        let detailsBySubmissionId = {};
+        if (submissionIds.length) {
+          const detailResult = await supabase
+            .from(HAIR_SUBMISSION_DETAILS_TABLE)
+            .select('Submission_Detail_ID, Submission_ID, Declared_Length, Declared_Color, Declared_Texture, Declared_Density, Declared_Condition, Is_Chemically_Treated, Is_Colored, Is_Bleached, Is_Rebonded, Detail_Notes, Status, Updated_At')
+            .in('Submission_ID', submissionIds)
+            .order('Submission_Detail_ID', { ascending: false });
+          if (detailResult.error) throw detailResult.error;
+          detailsBySubmissionId = (detailResult.data || []).reduce((acc, row) => {
+            const key = Number(row.Submission_ID || 0);
+            if (!key || acc[key]) return acc;
+            acc[key] = row;
+            return acc;
+          }, {});
+        }
+
+        const grouped = memberRows.reduce((acc, row) => {
+          const key = Number(row.Bundle_ID || 0);
+          if (!key) return acc;
           if (!acc[key]) acc[key] = [];
-          acc[key].push(row);
+
+          const userId = Number(row.User_ID || 0);
+          const requestId = Number(row.Event_Request_ID || 0);
+          const userDetails = usersByUserId[userId] || {};
+          const eventRequest = eventsByRequestId[requestId] || {};
+          const detail = detailsBySubmissionId[Number(row.Submission_ID || 0)] || null;
+
+          acc[key].push({
+            submissionId: Number(row.Submission_ID || 0),
+            userId,
+            submissionCode: row.Submission_Code || `HS-${row.Submission_ID}`,
+            status: row.Status || '',
+            eventRequestId: requestId || null,
+            donorName: buildFullName(
+              userDetails.first_name,
+              userDetails.middle_name,
+              userDetails.last_name,
+              userDetails.suffix,
+            ) || `User #${userId}`,
+            eventTitle: eventRequest.Event_Name || (requestId ? `Event #${requestId}` : 'Event not linked'),
+            updatedAt: row.Updated_At || null,
+            detail,
+          });
+
           return acc;
         }, {});
+
         setBundleMembersByBundleId(grouped);
       } else {
         setBundleMembersByBundleId({});
@@ -208,230 +326,501 @@ export default function BundlingPage({ userProfile }) {
     void loadData();
   }, [loadData]);
 
-  const filteredApproved = useMemo(() => {
-    const q = String(searchQuery || '').trim().toLowerCase();
-    if (!q) return approvedHairs;
-    return approvedHairs.filter((row) =>
-      [row.submissionCode, row.donorName, row.eventTitle]
-        .map((v) => String(v || '').toLowerCase())
-        .some((v) => v.includes(q)),
-    );
-  }, [approvedHairs, searchQuery]);
-
   const drafts = useMemo(() => bundles.filter((b) => String(b.Status || '').toLowerCase() === HAIR_BUNDLE_STATUS.DRAFT.toLowerCase()), [bundles]);
   const activeBundles = useMemo(() => bundles.filter((b) => String(b.Status || '').toLowerCase() !== HAIR_BUNDLE_STATUS.DRAFT.toLowerCase()), [bundles]);
+  const scannerBundleRow = useMemo(
+    () => bundles.find((bundle) => Number(bundle.Bundle_ID || 0) === Number(scannerDraftBundleId || 0)) || null,
+    [bundles, scannerDraftBundleId],
+  );
+  const scannerBundleMemberCount = useMemo(
+    () => {
+      if (!scannerBundleRow) return 0;
+      const memberRows = bundleMembersByBundleId[scannerBundleRow.Bundle_ID] || [];
+      return memberRows.length;
+    },
+    [bundleMembersByBundleId, scannerBundleRow],
+  );
+  const draftCount = drafts.length;
+  const activeDraftCounterLabel = `${scannerBundleMemberCount}/${BUNDLE_HAIR_COUNT_TARGET_MAX}`;
+  const canCloseActiveDraft = scannerBundleMemberCount >= BUNDLE_HAIR_COUNT_TARGET_MIN
+    && scannerBundleMemberCount <= BUNDLE_HAIR_COUNT_TARGET_MAX;
 
-  const toggleSelect = (submissionId) => {
-    setSelectedSubmissionIds((prev) =>
-      prev.includes(submissionId) ? prev.filter((x) => x !== submissionId) : [...prev, submissionId],
-    );
-  };
+  const openConfirmModal = useCallback((payload) => {
+    setConfirmModal({
+      ...INITIAL_CONFIRM_MODAL,
+      ...payload,
+      isOpen: true,
+    });
+  }, []);
 
-  const selectedCount = selectedSubmissionIds.length;
-  const inTargetRange = selectedCount >= BUNDLE_HAIR_COUNT_TARGET_MIN && selectedCount <= BUNDLE_HAIR_COUNT_TARGET_MAX;
+  const closeConfirmModal = useCallback(() => {
+    setConfirmModal(INITIAL_CONFIRM_MODAL);
+  }, []);
 
-  const clearWorkspace = () => {
-    setSelectedSubmissionIds([]);
-    setBundleNotes('');
-    setEditingDraftId(null);
-  };
+  const stopCamera = useCallback(() => {
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((track) => track.stop());
+      cameraStreamRef.current = null;
+    }
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }, []);
 
-  const handleResumeDraft = (draft) => {
-    const ids = Array.isArray(draft.Draft_Submission_IDs) ? draft.Draft_Submission_IDs.map((x) => Number(x) || 0).filter(Boolean) : [];
-    setEditingDraftId(draft.Bundle_ID);
-    setSelectedSubmissionIds(ids);
-    setBundleNotes(String(draft.Notes || ''));
-    setNotice({ kind: 'info', text: `Editing draft #${draft.Bundle_ID}. Save Draft to update, or Finalize Bundle when ready.` });
-  };
-
-  const handleSaveDraft = async () => {
-    if (!selectedCount) {
-      setNotice({ kind: 'warning', text: 'Pick at least one approved hair to save a draft.' });
+  const handleToggleCamera = useCallback(async () => {
+    if (isCameraOn) {
+      stopCamera();
+      setIsCameraOn(false);
+      setCameraStatus({ kind: 'info', message: 'Camera is off. Start scanner to read waybill QR.' });
       return;
     }
-    setIsSavingDraft(true);
-    setNotice({ kind: '', text: '' });
+
+    if (!scannerBundleRow) {
+      setNotice({ kind: 'warning', text: 'Open or continue a draft bundle before starting the camera scanner.' });
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraStatus({ kind: 'error', message: 'Camera API is unavailable on this browser/device.' });
+      return;
+    }
+
+    setIsStartingCamera(true);
+    setCameraStatus({ kind: 'info', message: 'Initializing camera scanner...' });
     try {
-      if (editingDraftId) {
-        const { error } = await updateBundleDraft({
-          bundleId: editingDraftId,
-          submissionIds: selectedSubmissionIds,
-          notes: bundleNotes,
-        });
-        if (error) throw error;
-        setNotice({ kind: 'success', text: `Draft #${editingDraftId} updated with ${selectedCount} hair${selectedCount === 1 ? '' : 's'}.` });
-      } else {
-        const { data, error } = await saveBundleDraft({
-          submissionIds: selectedSubmissionIds,
-          createdBy: Number(userProfile?.user_id || 0) || null,
-          notes: bundleNotes,
-        });
-        if (error) throw error;
-        setNotice({ kind: 'success', text: `Draft #${data.Bundle_ID} saved with ${selectedCount} hair${selectedCount === 1 ? '' : 's'}.` });
-      }
-      clearWorkspace();
-      await loadData();
-    } catch (error) {
-      setNotice({ kind: 'error', text: error?.message || 'Unable to save draft.' });
-    } finally {
-      setIsSavingDraft(false);
-    }
-  };
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+      });
 
-  const handleFinalizeDraft = async (draft) => {
-    const draftIds = Array.isArray(draft.Draft_Submission_IDs) ? draft.Draft_Submission_IDs : [];
-    if (!draftIds.length) {
-      setNotice({ kind: 'warning', text: 'This draft has no selected hairs.' });
+      cameraStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.muted = true;
+        videoRef.current.playsInline = true;
+        await videoRef.current.play();
+      }
+
+      setIsCameraOn(true);
+      setCameraStatus({ kind: 'success', message: 'Scanner is running. Point camera at a donor waybill QR.' });
+    } catch (error) {
+      setCameraStatus({ kind: 'error', message: normalizeErrorMessage(error, 'Could not access the camera.') });
+    } finally {
+      setIsStartingCamera(false);
+    }
+  }, [isCameraOn, scannerBundleRow, stopCamera]);
+
+  const handleContinueDraft = useCallback((draft, { silent = false } = {}) => {
+    const bundleId = Number(draft?.Bundle_ID || 0);
+    if (!bundleId) return;
+    setScannerDraftBundleId(bundleId);
+    setScannerWaybillCode('');
+    setScannerSpecId(String(draft?.Wig_Specification_ID || ''));
+    setScannerNotes(String(draft?.Notes || ''));
+    if (!silent) {
+      setNotice({ kind: 'info', text: `Draft #${bundleId} is open. Scan waybills to reach ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX} and close it.` });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!drafts.length) {
+      if (scannerDraftBundleId) setScannerDraftBundleId(null);
       return;
     }
-    if (draftIds.length < BUNDLE_HAIR_COUNT_TARGET_MIN || draftIds.length > BUNDLE_HAIR_COUNT_TARGET_MAX) {
-      const proceed = window.confirm(
-        `Draft has ${draftIds.length} hair${draftIds.length === 1 ? '' : 's'}. Target is ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX}. Finalize anyway?`,
-      );
-      if (!proceed) return;
-    }
 
+    const currentExists = drafts.some((row) => Number(row.Bundle_ID || 0) === Number(scannerDraftBundleId || 0));
+    if (!currentExists) {
+      handleContinueDraft(drafts[0], { silent: true });
+    }
+  }, [drafts, handleContinueDraft, scannerDraftBundleId]);
+
+  // When a draft becomes the active scanner draft (opened/continued), focus
+  // the detail panel on it.
+  useEffect(() => {
+    if (scannerDraftBundleId) setSelectedKey(`draft-${scannerDraftBundleId}`);
+  }, [scannerDraftBundleId]);
+
+  const handleFinalizeDraftNow = useCallback(async (draft) => {
+    if (!draft?.Bundle_ID) return;
     setIsFinalizingDraftId(draft.Bundle_ID);
     setNotice({ kind: '', text: '' });
     try {
-      const { data, error } = await finalizeBundleDraft({
-        bundleId: draft.Bundle_ID,
-        finalizedBy: Number(userProfile?.user_id || 0) || null,
+      const result = await supabase.rpc('bundle_close_draft', {
+        p_bundle_id: Number(draft.Bundle_ID),
       });
-      if (error) throw error;
+      if (result.error) throw result.error;
 
-      setNotice({ kind: 'success', text: `Bundle ${data.Submission_Code} is now In Production. ${data.members.length} donor${data.members.length === 1 ? '' : 's'} notified.` });
-      await logAuditAction({
-        action: 'hair_submission_bundles.finalize_draft',
-        description: `Finalized draft into bundle ${data.Submission_Code}.`,
-        resource: HAIR_SUBMISSION_BUNDLES_TABLE,
-        status: 'success',
-        userProfile,
-      });
+      const payload = result.data || {};
+      const closedBundle = payload.bundle || {};
+      const bundleCode = closedBundle.Bundle_Waybill_Code || `WB-${draft.Bundle_ID}`;
+      const memberCount = Number(payload.member_count || (bundleMembersByBundleId[draft.Bundle_ID] || []).length || 0);
 
-      if (editingDraftId === draft.Bundle_ID) clearWorkspace();
+      if (Number(scannerDraftBundleId || 0) === Number(draft.Bundle_ID)) {
+        setScannerDraftBundleId(null);
+        setScannerWaybillCode('');
+        if (isCameraOn) {
+          stopCamera();
+          setIsCameraOn(false);
+          setCameraStatus({ kind: 'info', message: 'Camera is off. Start scanner to read waybill QR.' });
+        }
+      }
+
       await loadData();
+      setNotice({ kind: 'success', text: `Bundle ${bundleCode} closed with ${memberCount} hairs. Waybill is ready to print.` });
       setActivePrintBundle({
-        bundleId: data.Bundle_ID,
-        submissionCode: data.Submission_Code,
-        notes: data.Notes || '',
-        memberCount: data.members.length,
-        createdAt: data.Created_At,
+        bundleId: Number(closedBundle.Bundle_ID || draft.Bundle_ID),
+        submissionCode: bundleCode,
+        notes: closedBundle.Notes || '',
+        memberCount,
+        createdAt: closedBundle.Created_At || new Date().toISOString(),
         qrDataUrl: '',
       });
     } catch (error) {
-      setNotice({ kind: 'error', text: error?.message || 'Unable to finalize draft.' });
+      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to finalize draft.') });
     } finally {
       setIsFinalizingDraftId(null);
     }
-  };
+  }, [bundleMembersByBundleId, isCameraOn, loadData, scannerDraftBundleId, stopCamera]);
 
-  const handleDeleteDraft = async (draft) => {
-    const proceed = window.confirm(`Delete draft #${draft.Bundle_ID}? This cannot be undone.`);
-    if (!proceed) return;
+  const handleDeleteDraftNow = useCallback(async (draft) => {
+    if (!draft?.Bundle_ID) return;
     setIsDeletingDraftId(draft.Bundle_ID);
     setNotice({ kind: '', text: '' });
     try {
       const { error } = await deleteBundleDraft({ bundleId: draft.Bundle_ID });
       if (error) throw error;
       setNotice({ kind: 'success', text: `Draft #${draft.Bundle_ID} deleted.` });
-      if (editingDraftId === draft.Bundle_ID) clearWorkspace();
+      if (Number(scannerDraftBundleId || 0) === Number(draft.Bundle_ID)) {
+        setScannerDraftBundleId(null);
+        setScannerWaybillCode('');
+      }
       await loadData();
     } catch (error) {
-      setNotice({ kind: 'error', text: error?.message || 'Unable to delete draft.' });
+      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to delete draft.') });
     } finally {
       setIsDeletingDraftId(null);
     }
-  };
+  }, [loadData, scannerDraftBundleId]);
 
-  const handleCreateBundle = async () => {
-    if (!selectedCount) {
-      setNotice({ kind: 'warning', text: 'Pick at least one approved hair to bundle.' });
+  const handleOpenDraftBundle = async () => {
+    if (draftCount >= 3) {
+      setNotice({ kind: 'warning', text: 'You already have 3 open drafts. Close or delete one before opening a new draft.' });
       return;
     }
 
-    if (!inTargetRange) {
-      const proceed = window.confirm(
-        `You picked ${selectedCount} hair${selectedCount === 1 ? '' : 's'}. Target is ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX}. Create bundle anyway?`,
-      );
-      if (!proceed) return;
+    const numericSpecId = Number(scannerSpecId || 0);
+    if (!numericSpecId) {
+      setNotice({ kind: 'warning', text: 'Select a wig specification before opening a draft.' });
+      return;
     }
 
-    setIsCreatingBundle(true);
+    setIsOpeningScannerBundle(true);
     setNotice({ kind: '', text: '' });
 
     try {
-      // If user is editing a draft, finalize that path instead.
-      if (editingDraftId) {
-        const draft = bundles.find((b) => b.Bundle_ID === editingDraftId);
-        if (draft) {
-          // Save current selection into the draft first, then finalize.
-          await updateBundleDraft({
-            bundleId: editingDraftId,
-            submissionIds: selectedSubmissionIds,
-            notes: bundleNotes,
-          });
-          const { data, error } = await finalizeBundleDraft({
-            bundleId: editingDraftId,
-            finalizedBy: Number(userProfile?.user_id || 0) || null,
-          });
-          if (error) throw error;
+      const result = await supabase.rpc('create_hair_bundle_draft', {
+        p_wig_specification_id: numericSpecId,
+        p_notes: String(scannerNotes || '').trim() || null,
+      });
+      if (result.error) throw result.error;
 
-          setNotice({ kind: 'success', text: `Bundle ${data.Submission_Code} created from draft. ${data.members.length} donor${data.members.length === 1 ? '' : 's'} notified.` });
-          clearWorkspace();
-          await loadData();
-          setActivePrintBundle({
-            bundleId: data.Bundle_ID,
-            submissionCode: data.Submission_Code,
-            notes: data.Notes || '',
-            memberCount: data.members.length,
-            createdAt: data.Created_At,
-            qrDataUrl: '',
-          });
-          return;
-        }
+      const bundle = result.data || {};
+      const nextBundleId = Number(bundle.Bundle_ID || 0);
+      if (!nextBundleId) {
+        throw new Error('Bundle draft was created but no Bundle_ID was returned.');
       }
 
-      const { data: bundle, error } = await createWigBundle({
-        submissionIds: selectedSubmissionIds,
-        createdBy: Number(userProfile?.user_id || 0) || null,
-        notes: bundleNotes,
-      });
-
-      if (error) throw error;
-
-      setNotice({ kind: 'success', text: `Bundle ${bundle.Submission_Code} created with ${bundle.members.length} hair${bundle.members.length === 1 ? '' : 's'}. All donors notified.` });
-      await logAuditAction({
-        action: 'hair_submission_bundles.create',
-        description: `Created bundle ${bundle.Submission_Code} with ${bundle.members.length} hairs.`,
-        resource: HAIR_SUBMISSION_BUNDLES_TABLE,
-        status: 'success',
-        userProfile,
-      });
-
-      clearWorkspace();
+      setScannerDraftBundleId(nextBundleId);
       await loadData();
-      setActivePrintBundle({
-        bundleId: bundle.Bundle_ID,
-        submissionCode: bundle.Submission_Code,
-        notes: bundle.Notes || '',
-        memberCount: bundle.members.length,
-        createdAt: bundle.Created_At,
-        qrDataUrl: '',
-      });
+      setNotice({ kind: 'success', text: `Draft #${nextBundleId} is open. Scan 8-10 waybills to close it.` });
     } catch (error) {
-      setNotice({ kind: 'error', text: error?.message || 'Unable to create bundle.' });
+      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to open draft bundle.') });
     } finally {
-      setIsCreatingBundle(false);
+      setIsOpeningScannerBundle(false);
     }
   };
 
+  const handleScanWaybillIntoBundle = useCallback(async (rawValue, { fromCamera = false } = {}) => {
+    if (isScanProcessingRef.current) return;
+    const bundleId = Number(scannerDraftBundleId || 0);
+    const waybill = String(rawValue || '').trim();
+    if (!bundleId) {
+      setNotice({ kind: 'warning', text: 'Open a draft first.' });
+      if (fromCamera) setCameraStatus({ kind: 'warning', message: 'Open a draft before scanning.' });
+      return;
+    }
+    if (!waybill) {
+      setNotice({ kind: 'warning', text: 'Enter or scan a waybill code.' });
+      if (fromCamera) setCameraStatus({ kind: 'warning', message: 'No QR code was detected from camera frame.' });
+      return;
+    }
+
+    isScanProcessingRef.current = true;
+    setIsScanningWaybill(true);
+    setNotice({ kind: '', text: '' });
+
+    try {
+      const result = await supabase.rpc('bundle_scan_add_waybill', {
+        p_bundle_id: bundleId,
+        p_waybill_payload: waybill,
+      });
+      if (result.error) throw result.error;
+
+      const payload = result.data || {};
+      const memberCount = Number(payload?.member_count || 0);
+      const submissionCode = payload?.submission?.Submission_Code || waybill;
+
+      setScannerWaybillCode('');
+      await loadData();
+      if (fromCamera) {
+        setCameraStatus({
+          kind: 'success',
+          message: `Scanned ${submissionCode}. Bundle count is now ${memberCount}.`,
+        });
+      }
+      setNotice({
+        kind: 'success',
+        text: `Waybill ${submissionCode} added to bundle #${bundleId}. Current count: ${memberCount}.`,
+      });
+    } catch (error) {
+      const normalized = normalizeErrorMessage(error, 'Unable to scan waybill into bundle.');
+      setNotice({ kind: 'error', text: normalized });
+      if (fromCamera) setCameraStatus({ kind: 'error', message: normalized });
+    } finally {
+      setIsScanningWaybill(false);
+      isScanProcessingRef.current = false;
+    }
+  }, [loadData, scannerDraftBundleId]);
+
+  const handleCloseScannerBundleNow = useCallback(async (bundleIdInput) => {
+    const bundleId = Number(bundleIdInput || scannerDraftBundleId || 0);
+    if (!bundleId) {
+      setNotice({ kind: 'warning', text: 'Open a draft first.' });
+      return;
+    }
+
+    setIsClosingScannerBundle(true);
+    setNotice({ kind: '', text: '' });
+    try {
+      const result = await supabase.rpc('bundle_close_draft', {
+        p_bundle_id: bundleId,
+      });
+      if (result.error) throw result.error;
+
+      const payload = result.data || {};
+      const closedBundle = payload.bundle || {};
+      const code = closedBundle.Bundle_Waybill_Code || `WB-${bundleId}`;
+      const memberCount = Number(payload.member_count || scannerBundleMemberCount || 0);
+
+      await loadData();
+      setScannerDraftBundleId(null);
+      setScannerWaybillCode('');
+      if (isCameraOn) {
+        stopCamera();
+        setIsCameraOn(false);
+        setCameraStatus({ kind: 'info', message: 'Camera is off. Start scanner to read waybill QR.' });
+      }
+      setNotice({ kind: 'success', text: `Bundle ${code} closed with ${memberCount} hairs. Waybill is ready to print.` });
+      setActivePrintBundle({
+        bundleId: Number(closedBundle.Bundle_ID || bundleId),
+        submissionCode: code,
+        notes: closedBundle.Notes || '',
+        memberCount,
+        createdAt: closedBundle.Created_At || new Date().toISOString(),
+        qrDataUrl: '',
+      });
+    } catch (error) {
+      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to close draft bundle.') });
+    } finally {
+      setIsClosingScannerBundle(false);
+    }
+  }, [isCameraOn, loadData, scannerBundleMemberCount, scannerDraftBundleId, stopCamera]);
+
+  const handleFinalizeDraft = (draft) => {
+    const draftIds = (bundleMembersByBundleId[draft.Bundle_ID] || [])
+      .map((row) => Number(row.submissionId || 0))
+      .filter(Boolean);
+    if (!draftIds.length) {
+      setNotice({ kind: 'warning', text: 'This draft has no scanned hairs yet.' });
+      return;
+    }
+
+    const outsideTarget = draftIds.length < BUNDLE_HAIR_COUNT_TARGET_MIN || draftIds.length > BUNDLE_HAIR_COUNT_TARGET_MAX;
+    openConfirmModal({
+      action: 'finalize-draft',
+      bundleId: draft.Bundle_ID,
+      tone: outsideTarget ? 'warning' : 'primary',
+      title: `Finalize draft #${draft.Bundle_ID}?`,
+      message: outsideTarget
+        ? `This draft has ${draftIds.length} hairs. Recommended target is ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX}. Finalize anyway?`
+        : `This draft has ${draftIds.length} hairs and will move to Wig In Production.`,
+    });
+  };
+
+  const handleDeleteDraft = (draft) => {
+    openConfirmModal({
+      action: 'delete-draft',
+      bundleId: draft.Bundle_ID,
+      tone: 'danger',
+      title: `Delete draft #${draft.Bundle_ID}?`,
+      message: 'This action cannot be undone.',
+    });
+  };
+
+  const handleRemoveDraftMember = useCallback((bundleId, member) => {
+    const submissionId = Number(member?.submissionId || 0);
+    if (!bundleId || !submissionId) return;
+    openConfirmModal({
+      action: 'remove-draft-member',
+      bundleId: Number(bundleId),
+      submissionId,
+      submissionCode: member?.submissionCode || '',
+      tone: 'warning',
+      title: `Remove ${member?.submissionCode || 'waybill'} from draft?`,
+      message: 'This will remove the hair from this draft and clear its Bundle_ID.',
+    });
+  }, [openConfirmModal]);
+
+  const handleRemoveDraftMemberNow = useCallback(async ({ bundleId, submissionId, submissionCode }) => {
+    if (!bundleId || !submissionId) return;
+    setNotice({ kind: '', text: '' });
+    try {
+      const result = await supabase.rpc('bundle_remove_waybill_from_draft', {
+        p_bundle_id: Number(bundleId),
+        p_submission_id: Number(submissionId),
+      });
+      if (result.error) throw result.error;
+      const payload = result.data || {};
+      const memberCount = Number(payload?.member_count || 0);
+      await loadData();
+      setNotice({
+        kind: 'success',
+        text: `${submissionCode || `Submission #${submissionId}`} removed from draft #${bundleId}. Current count: ${memberCount}.`,
+      });
+    } catch (error) {
+      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to remove this hair from draft.') });
+    }
+  }, [loadData]);
+
+  const handleCloseScannerBundle = () => {
+    const bundleId = Number(scannerDraftBundleId || 0);
+    if (!bundleId) {
+      setNotice({ kind: 'warning', text: 'Open a draft first.' });
+      return;
+    }
+    openConfirmModal({
+      action: 'close-scanner-bundle',
+      bundleId,
+      tone: 'primary',
+      title: `Close draft #${bundleId}?`,
+      message: `This will finalize the draft and print-ready waybill if it has ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX} hairs.`,
+    });
+  };
+
+  const handleConfirmModalSubmit = async () => {
+    const {
+      action,
+      bundleId,
+      submissionId,
+      submissionCode,
+    } = confirmModal;
+    closeConfirmModal();
+    if (!action || !bundleId) return;
+
+    if (action === 'finalize-draft') {
+      const draft = drafts.find((row) => Number(row.Bundle_ID || 0) === Number(bundleId));
+      if (!draft) {
+        setNotice({ kind: 'error', text: 'Draft not found. Refresh and try again.' });
+        return;
+      }
+      await handleFinalizeDraftNow(draft);
+      return;
+    }
+
+    if (action === 'delete-draft') {
+      const draft = drafts.find((row) => Number(row.Bundle_ID || 0) === Number(bundleId));
+      if (!draft) {
+        setNotice({ kind: 'error', text: 'Draft not found. Refresh and try again.' });
+        return;
+      }
+      await handleDeleteDraftNow(draft);
+      return;
+    }
+
+    if (action === 'close-scanner-bundle') {
+      await handleCloseScannerBundleNow(bundleId);
+      return;
+    }
+
+    if (action === 'remove-draft-member') {
+      await handleRemoveDraftMemberNow({
+        bundleId,
+        submissionId,
+        submissionCode,
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!isCameraOn) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video || video.readyState < 2 || isScanProcessingRef.current) return;
+
+      const frameWidth = video.videoWidth;
+      const frameHeight = video.videoHeight;
+      if (!frameWidth || !frameHeight) return;
+
+      try {
+        if (!scannerCanvasRef.current) scannerCanvasRef.current = document.createElement('canvas');
+        const canvas = scannerCanvasRef.current;
+        canvas.width = frameWidth;
+        canvas.height = frameHeight;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
+
+        ctx.drawImage(video, 0, 0, frameWidth, frameHeight);
+        const imageData = ctx.getImageData(0, 0, frameWidth, frameHeight);
+        const code = jsQR(imageData.data, frameWidth, frameHeight, { inversionAttempts: 'attemptBoth' });
+        const decoded = String(code?.data || '').trim();
+        if (!decoded) return;
+
+        const now = Date.now();
+        if (lastScanRef.current.raw === decoded && now - lastScanRef.current.at < SCAN_DEBOUNCE_MS) return;
+        lastScanRef.current = { raw: decoded, at: now };
+        void handleScanWaybillIntoBundle(decoded, { fromCamera: true });
+      } catch {
+        // ignore frame-level scanner errors
+      }
+    }, 280);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isCameraOn, handleScanWaybillIntoBundle]);
+
+  useEffect(() => {
+    if (!scannerBundleRow && isCameraOn) {
+      stopCamera();
+      setIsCameraOn(false);
+      setCameraStatus({ kind: 'info', message: 'Camera stopped because there is no active draft bundle.' });
+    }
+  }, [isCameraOn, scannerBundleRow, stopCamera]);
+
+  useEffect(() => () => {
+    stopCamera();
+  }, [stopCamera]);
+
   const handleOpenPrint = async (bundleRow) => {
-    const code = bundleRow.Submission_Code || buildBundleSubmissionCode({ bundleId: bundleRow.Bundle_ID, createdAt: bundleRow.Created_At });
+    const code = bundleRow.Bundle_Waybill_Code
+      || buildBundleSubmissionCode({ bundleId: bundleRow.Bundle_ID, createdAt: bundleRow.Created_At });
     let qrDataUrl = '';
     try {
       qrDataUrl = await QRCode.toDataURL(
-        buildBundleWaybillQrPayload({ bundleId: bundleRow.Bundle_ID, submissionCode: code }),
+        buildBundleWaybillQrPayload({ bundleId: bundleRow.Bundle_ID, bundleWaybillCode: code }),
         { errorCorrectionLevel: 'M', margin: 1, scale: 8 },
       );
     } catch {
@@ -451,7 +840,7 @@ export default function BundlingPage({ userProfile }) {
     if (activePrintBundle && !activePrintBundle.qrDataUrl && activePrintBundle.bundleId) {
       let cancelled = false;
       QRCode.toDataURL(
-        buildBundleWaybillQrPayload({ bundleId: activePrintBundle.bundleId, submissionCode: activePrintBundle.submissionCode }),
+        buildBundleWaybillQrPayload({ bundleId: activePrintBundle.bundleId, bundleWaybillCode: activePrintBundle.submissionCode }),
         { errorCorrectionLevel: 'M', margin: 1, scale: 8 },
       ).then((url) => {
         if (!cancelled) {
@@ -516,40 +905,152 @@ export default function BundlingPage({ userProfile }) {
 
   const stats = useMemo(() => {
     const inProduction = activeBundles.filter((b) => String(b.Status || '').toLowerCase() === HAIR_BUNDLE_STATUS.IN_PRODUCTION.toLowerCase()).length;
-    const wigCompleted = activeBundles.filter((b) => String(b.Status || '').toLowerCase() === HAIR_BUNDLE_STATUS.WIG_COMPLETED.toLowerCase()).length;
+    const wigCreated = activeBundles.filter((b) => String(b.Status || '').toLowerCase() === HAIR_BUNDLE_STATUS.WIG_COMPLETED.toLowerCase()).length;
     return [
-      { id: 'approved', label: 'Approved hairs awaiting bundle', value: approvedHairs.length },
-      { id: 'drafts', label: 'Drafts', value: drafts.length },
-      { id: 'inProduction', label: 'In Production', value: inProduction },
-      { id: 'wigCompleted', label: 'Wig Completed', value: wigCompleted },
+      { id: 'drafts', label: 'Open Drafts', value: drafts.length, Icon: Package, accent: '#b45309', tint: '#fffbeb' },
+      { id: 'inProduction', label: 'In Production', value: inProduction, Icon: ScanLine, accent: primaryColor, tint: withColorAlpha(primaryColor, 0.08) },
+      { id: 'wigCompleted', label: 'Wig Created', value: wigCreated, Icon: CheckCircle2, accent: tertiaryColor, tint: withColorAlpha(tertiaryColor, 0.1) },
+      { id: 'activeDraft', label: 'Hairs in Active Draft', value: scannerBundleMemberCount, Icon: FileText, accent: primaryColor, tint: withColorAlpha(primaryColor, 0.08) },
     ];
-  }, [approvedHairs, drafts, activeBundles]);
+  }, [drafts, activeBundles, scannerBundleMemberCount, primaryColor, tertiaryColor]);
 
-  const countBadgeStyle = inTargetRange
-    ? { backgroundColor: withColorAlpha(tertiaryColor, 0.16), color: tertiaryColor, borderColor: withColorAlpha(tertiaryColor, 0.4) }
-    : selectedCount === 0
-      ? { backgroundColor: '#f1f5f9', color: secondaryTextColor, borderColor: '#e2e8f0' }
-      : { backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' };
+  // Highlight where the specialist currently is in the bundling process.
+  const currentFlowStep = scannerBundleRow ? (canCloseActiveDraft ? 3 : 2) : 1;
+
+  // Master-detail selection resolution.
+  const selectedDraftRow = String(selectedKey).startsWith('draft-')
+    ? drafts.find((d) => `draft-${d.Bundle_ID}` === selectedKey) || null
+    : null;
+  const selectedBundleRow = String(selectedKey).startsWith('bundle-')
+    ? activeBundles.find((b) => `bundle-${b.Bundle_ID}` === selectedKey) || null
+    : null;
+  const showCreatePanel = selectedKey === 'create' || (!selectedDraftRow && !selectedBundleRow);
+  const flowSteps = [
+    { id: 1, title: 'Open Draft', detail: 'Pick a wig specification and open a draft bundle.' },
+    { id: 2, title: 'Scan Waybills', detail: 'Scan each donor waybill once with the camera or by typing it.' },
+    { id: 3, title: 'Close at 8-10', detail: `Finalize once the bundle has ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX} hairs.` },
+    { id: 4, title: 'Print Waybill', detail: 'Print and attach the bundle waybill for production.' },
+  ];
+
+  const cameraNoticeStyle = (() => {
+    if (cameraStatus.kind === 'error') return { borderColor: '#fecaca', backgroundColor: '#fef2f2', color: '#b91c1c' };
+    if (cameraStatus.kind === 'warning') return { borderColor: '#fde68a', backgroundColor: '#fffbeb', color: '#b45309' };
+    if (cameraStatus.kind === 'success') return { borderColor: '#a7f3d0', backgroundColor: '#ecfdf5', color: '#047857' };
+    return { borderColor: withColorAlpha(primaryColor, 0.3), backgroundColor: withColorAlpha(primaryColor, 0.08), color: primaryColor };
+  })();
+
+  const renderPortal = useCallback((node) => {
+    if (typeof document === 'undefined') return node;
+    return createPortal(node, document.body);
+  }, []);
+
+  const renderBundleHairDetails = useCallback((bundle, { allowRemove = false } = {}) => {
+    const members = bundleMembersByBundleId[Number(bundle.Bundle_ID || 0)] || [];
+    if (!members.length) {
+      return (
+        <div className="rounded-lg border px-3 py-2 text-xs" style={{ borderColor: '#e2e8f0', color: tertiaryTextColor }}>
+          No hairs scanned in this bundle yet.
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-2">
+        {members.map((member) => {
+          const detail = member.detail || {};
+          return (
+            <div key={`${bundle.Bundle_ID}-${member.submissionId}`} className="rounded-lg border bg-white p-3" style={{ borderColor: '#e2e8f0' }}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="font-mono text-xs font-semibold" style={{ color: primaryTextColor }}>{member.submissionCode}</p>
+                  <p className="text-sm font-semibold" style={{ color: primaryTextColor }}>{member.donorName}</p>
+                  <p className="text-xs" style={{ color: tertiaryTextColor }}>{member.eventTitle}</p>
+                </div>
+                {allowRemove ? (
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveDraftMember(bundle.Bundle_ID, member)}
+                    className="inline-flex items-center gap-1 rounded-lg border bg-white px-2 py-1 text-xs font-semibold"
+                    style={{ borderColor: '#fecaca', color: '#b91c1c' }}
+                  >
+                    <Trash2 size={12} />
+                    Remove
+                  </button>
+                ) : (
+                  <span
+                    className="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                    style={{ borderColor: '#cbd5e1', color: secondaryTextColor, backgroundColor: '#f8fafc' }}
+                  >
+                    {member.status || '-'}
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] md:grid-cols-3">
+                <p style={{ color: secondaryTextColor }}>Length: <span style={{ color: primaryTextColor }}>{detail.Declared_Length ? `${detail.Declared_Length} in` : '-'}</span></p>
+                <p style={{ color: secondaryTextColor }}>Color: <span style={{ color: primaryTextColor }}>{detail.Declared_Color || '-'}</span></p>
+                <p style={{ color: secondaryTextColor }}>Texture: <span style={{ color: primaryTextColor }}>{detail.Declared_Texture || '-'}</span></p>
+                <p style={{ color: secondaryTextColor }}>Density: <span style={{ color: primaryTextColor }}>{detail.Declared_Density || '-'}</span></p>
+                <p style={{ color: secondaryTextColor }}>Condition: <span style={{ color: primaryTextColor }}>{detail.Declared_Condition || '-'}</span></p>
+                <p style={{ color: secondaryTextColor }}>Chemically treated: <span style={{ color: primaryTextColor }}>{detail.Is_Chemically_Treated ? 'Yes' : 'No'}</span></p>
+                <p style={{ color: secondaryTextColor }}>Colored: <span style={{ color: primaryTextColor }}>{detail.Is_Colored ? 'Yes' : 'No'}</span></p>
+                <p style={{ color: secondaryTextColor }}>Bleached: <span style={{ color: primaryTextColor }}>{detail.Is_Bleached ? 'Yes' : 'No'}</span></p>
+                <p style={{ color: secondaryTextColor }}>Rebonded: <span style={{ color: primaryTextColor }}>{detail.Is_Rebonded ? 'Yes' : 'No'}</span></p>
+              </div>
+              {detail.Detail_Notes ? (
+                <p className="mt-2 text-[11px]" style={{ color: secondaryTextColor }}>
+                  Notes: <span style={{ color: primaryTextColor }}>{detail.Detail_Notes}</span>
+                </p>
+              ) : null}
+              <p className="mt-1 text-[10px]" style={{ color: tertiaryTextColor }}>
+                Updated: {formatDateTime(member.updatedAt || detail.Updated_At)}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }, [bundleMembersByBundleId, handleRemoveDraftMember, primaryTextColor, secondaryTextColor, tertiaryTextColor]);
 
   return (
     <div className="space-y-6" style={rootStyle}>
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-3xl font-bold mb-2" style={headingStyle}>Bundling</h1>
-          <p style={{ color: secondaryTextColor }}>
-            Group {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX} approved hairs into a wig bundle. Save as draft if you are not ready, or finalize to print the bundle waybill. The post-wig scan now lives on Upload Wig Stocks.
-          </p>
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span
+            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl"
+            style={{ backgroundColor: withColorAlpha(primaryColor, 0.12), color: primaryColor }}
+          >
+            <Package size={22} />
+          </span>
+          <div>
+            <h1 className="text-2xl font-bold md:text-3xl" style={headingStyle}>Bundling</h1>
+            <p className="text-sm" style={{ color: secondaryTextColor }}>
+              Open a draft, scan {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX} donor waybills, then close it to print the bundle waybill.
+            </p>
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={() => loadData()}
-          disabled={isLoading}
-          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3.5 py-2 text-sm font-semibold disabled:opacity-60"
-          style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-        >
-          {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowHelp(true)}
+            title="How bundling works"
+            aria-label="How bundling works"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border bg-white disabled:opacity-60"
+            style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
+          >
+            <HelpCircle size={16} />
+          </button>
+          <button
+            type="button"
+            onClick={() => loadData()}
+            disabled={isLoading}
+            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3.5 py-2 text-sm font-semibold disabled:opacity-60"
+            style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
+          >
+            {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            Refresh
+          </button>
+        </div>
       </header>
 
       {notice.text && (
@@ -567,275 +1068,465 @@ export default function BundlingPage({ userProfile }) {
       )}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        {stats.map((s) => (
-          <div key={s.id} className="rounded-xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
-            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{s.label}</p>
-            <p className="mt-1 text-2xl font-bold" style={{ color: primaryTextColor }}>{s.value}</p>
-          </div>
-        ))}
+        {stats.map((s) => {
+          const StatIcon = s.Icon;
+          return (
+            <div key={s.id} className="flex items-center gap-3 rounded-xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
+              <span
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
+                style={{ backgroundColor: s.tint, color: s.accent }}
+              >
+                <StatIcon size={18} />
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-[11px] font-semibold uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{s.label}</p>
+                <p className="text-2xl font-bold leading-tight" style={{ color: primaryTextColor }}>{s.value}</p>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      <section className="overflow-hidden rounded-2xl border bg-white" style={{ borderColor: '#e2e8f0' }}>
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3" style={{ borderColor: '#e2e8f0' }}>
-          <div className="flex items-center gap-2">
-            <Package size={18} style={{ color: primaryColor }} />
-            <h2 className="text-lg font-semibold" style={headingStyle}>Approved Hairs Awaiting Bundle</h2>
-            <span className="rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: withColorAlpha(primaryColor, 0.12), color: primaryColor }}>
-              {approvedHairs.length}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 rounded-lg border bg-slate-50 px-2.5 py-1.5" style={{ borderColor: '#e2e8f0' }}>
-            <Search size={14} style={{ color: tertiaryTextColor }} />
-            <input
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search code, donor, event"
-              className="bg-transparent text-sm placeholder:text-slate-400 focus:outline-none"
-              style={{ color: primaryTextColor }}
-            />
-          </div>
-        </div>
-
-        {!approvedHairs.length ? (
-          <div className="px-4 py-8 text-center text-sm" style={{ color: secondaryTextColor }}>
-            No approved hairs are awaiting bundling.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-2 p-4 md:grid-cols-2">
-            {filteredApproved.map((row) => {
-              const isSelected = selectedSubmissionIds.includes(row.submissionId);
-              return (
-                <label
-                  key={row.submissionId}
-                  className="flex cursor-pointer items-start gap-3 rounded-lg border bg-white px-3 py-2.5 text-sm"
-                  style={
-                    isSelected
-                      ? { borderColor: primaryColor, backgroundColor: withColorAlpha(primaryColor, 0.06) }
-                      : { borderColor: '#e2e8f0' }
-                  }
-                >
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => toggleSelect(row.submissionId)}
-                    style={{ accentColor: primaryColor, marginTop: 2 }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="font-mono text-xs font-semibold" style={{ color: primaryTextColor }}>{row.submissionCode}</p>
-                    <p className="truncate text-sm" style={{ color: primaryTextColor }}>{row.donorName}</p>
-                    <p className="truncate text-xs" style={{ color: tertiaryTextColor }}>{row.eventTitle}</p>
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-        )}
-
-        <div className="border-t px-4 py-3 space-y-3" style={{ borderColor: '#e2e8f0' }}>
-          {editingDraftId ? (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-xs" style={{ borderColor: withColorAlpha(primaryColor, 0.35), backgroundColor: withColorAlpha(primaryColor, 0.06), color: primaryColor }}>
-              <PenSquare size={14} />
-              <span className="font-semibold">Editing draft #{editingDraftId}</span>
-              <button
-                type="button"
-                onClick={clearWorkspace}
-                className="ml-auto text-xs font-semibold underline"
-                style={{ color: secondaryTextColor }}
-              >
-                Cancel edit
-              </button>
-            </div>
-          ) : null}
-
-          <div className="flex flex-wrap items-center gap-3">
-            <span
-              className="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold"
-              style={countBadgeStyle}
-            >
-              {selectedCount} selected
-              {!inTargetRange && selectedCount > 0 ? ` (target ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX})` : ''}
-            </span>
-            {selectedCount > 0 ? (
-              <button
-                type="button"
-                onClick={() => setSelectedSubmissionIds([])}
-                className="text-xs font-semibold underline"
-                style={{ color: secondaryTextColor }}
-              >
-                Clear selection
-              </button>
-            ) : null}
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold mb-1" style={{ color: secondaryTextColor }}>Bundle notes (optional)</label>
-            <textarea
-              value={bundleNotes}
-              onChange={(event) => setBundleNotes(event.target.value)}
-              rows={2}
-              placeholder="e.g. Long black bundle for upcoming hospital request"
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none"
-              style={{ color: primaryTextColor }}
-            />
-          </div>
-
-          <div className="flex flex-wrap gap-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[340px,1fr]">
+        {/* LEFT: drafts + bundles list */}
+        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+            <h2 className="flex items-center gap-2 text-sm font-bold text-slate-800">
+              <Package size={14} /> Drafts &amp; Bundles
+            </h2>
             <button
               type="button"
-              onClick={handleSaveDraft}
-              disabled={isSavingDraft || !selectedCount}
-              className="inline-flex items-center gap-2 rounded-lg border bg-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
-              style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-            >
-              {isSavingDraft ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-              {editingDraftId ? 'Update Draft' : 'Save as Draft'}
-            </button>
-
-            <button
-              type="button"
-              onClick={handleCreateBundle}
-              disabled={isCreatingBundle || !selectedCount}
-              className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              onClick={() => setSelectedKey('create')}
+              className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white"
               style={{ backgroundColor: primaryColor }}
             >
-              {isCreatingBundle ? <Loader2 size={14} className="animate-spin" /> : <Package size={14} />}
-              {editingDraftId ? 'Finalize Bundle' : 'Create Bundle'}
+              + New
             </button>
           </div>
-        </div>
-      </section>
-
-      {drafts.length ? (
-        <section className="overflow-hidden rounded-2xl border bg-white" style={{ borderColor: '#e2e8f0' }}>
-          <div className="border-b px-4 py-3 flex items-center justify-between" style={{ borderColor: '#e2e8f0' }}>
-            <div className="flex items-center gap-2">
-              <PenSquare size={18} style={{ color: primaryColor }} />
-              <h2 className="text-lg font-semibold" style={headingStyle}>Drafts</h2>
-              <span className="rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: '#fffbeb', color: '#b45309' }}>
-                {drafts.length}
-              </span>
-            </div>
+          <div className="max-h-[640px] overflow-auto">
+            {!drafts.length && !activeBundles.length ? (
+              <div className="px-4 py-10 text-center text-xs" style={{ color: secondaryTextColor }}>
+                No drafts or bundles yet. Click <strong>+ New</strong> to start one.
+              </div>
+            ) : (
+              <ul className="divide-y divide-slate-100">
+                {drafts.map((draft) => {
+                  const count = (bundleMembersByBundleId[draft.Bundle_ID] || []).length;
+                  const active = selectedKey === `draft-${draft.Bundle_ID}`;
+                  return (
+                    <li key={`d-${draft.Bundle_ID}`}>
+                      <button
+                        type="button"
+                        onClick={() => { handleContinueDraft(draft, { silent: true }); setSelectedKey(`draft-${draft.Bundle_ID}`); }}
+                        className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition ${active ? '' : 'hover:bg-slate-50'}`}
+                        style={active ? { backgroundColor: withColorAlpha(primaryColor, 0.06), boxShadow: `inset 3px 0 0 ${primaryColor}` } : undefined}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-sm font-semibold" style={{ color: primaryTextColor }}>Draft #{draft.Bundle_ID}</span>
+                          <span className="rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase" style={{ backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>Draft</span>
+                        </div>
+                        <span className="text-xs" style={{ color: tertiaryTextColor }}>{count} hair{count === 1 ? '' : 's'} - {formatDateTime(draft.Created_At)}</span>
+                      </button>
+                    </li>
+                  );
+                })}
+                {activeBundles.map((bundle) => {
+                  const count = (bundleMembersByBundleId[bundle.Bundle_ID] || []).length;
+                  const active = selectedKey === `bundle-${bundle.Bundle_ID}`;
+                  const statusKey = String(bundle.Status || '').toLowerCase();
+                  return (
+                    <li key={`b-${bundle.Bundle_ID}`}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedKey(`bundle-${bundle.Bundle_ID}`)}
+                        className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition ${active ? '' : 'hover:bg-slate-50'}`}
+                        style={active ? { backgroundColor: withColorAlpha(primaryColor, 0.06), boxShadow: `inset 3px 0 0 ${primaryColor}` } : undefined}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-sm font-semibold" style={{ color: primaryTextColor }}>{bundle.Bundle_Waybill_Code || `WB-${bundle.Bundle_ID}`}</span>
+                          <span className="inline-flex rounded-full border px-1.5 py-0.5 text-[10px] font-semibold" style={bundleStatusStyle(statusKey, primaryColor, tertiaryColor, secondaryTextColor)}>{bundle.Status}</span>
+                        </div>
+                        <span className="text-xs" style={{ color: tertiaryTextColor }}>{count} hair{count === 1 ? '' : 's'} - {formatDateTime(bundle.Created_At)}</span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
-          <div className="divide-y" style={{ borderColor: '#e2e8f0' }}>
-            {drafts.map((draft) => {
-              const draftIds = Array.isArray(draft.Draft_Submission_IDs) ? draft.Draft_Submission_IDs : [];
-              const isFinalizing = isFinalizingDraftId === draft.Bundle_ID;
-              const isDeleting = isDeletingDraftId === draft.Bundle_ID;
-              return (
-                <div key={draft.Bundle_ID} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3" style={{ borderColor: '#e2e8f0' }}>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono font-semibold" style={{ color: primaryTextColor }}>Draft #{draft.Bundle_ID}</span>
-                      <span className="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>
-                        Draft
-                      </span>
-                      <span className="text-xs" style={{ color: tertiaryTextColor }}>
-                        {draftIds.length} hair{draftIds.length === 1 ? '' : 's'} - saved {formatDateTime(draft.Created_At)}
-                      </span>
-                    </div>
-                    {draft.Notes ? (
-                      <p className="mt-1 text-sm" style={{ color: secondaryTextColor }}>{draft.Notes}</p>
+        </section>
+
+        {/* RIGHT: detail panel */}
+        <section className="space-y-4">
+          {showCreatePanel ? (
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <div className="border-b border-slate-200 px-5 py-3.5" style={{ backgroundColor: withColorAlpha(primaryColor, 0.04) }}>
+                <div className="flex items-center gap-2">
+                  <ScanLine size={16} style={{ color: primaryColor }} />
+                  <h3 className="text-sm font-bold text-slate-800">Create a Bundle</h3>
+                </div>
+                <p className="mt-1 text-xs" style={{ color: tertiaryTextColor }}>
+                  Pick the target wig specification, then open a draft to start scanning.
+                </p>
+              </div>
+              <div className="space-y-4 px-5 py-4">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>Target Wig Specification</label>
+                  <select
+                    value={scannerSpecId}
+                    onChange={(event) => setScannerSpecId(event.target.value)}
+                    className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                    style={{ color: primaryTextColor }}
+                  >
+                    <option value="">Select specification</option>
+                    {wigSpecOptions.map((spec) => (
+                      <option key={spec.Wig_Specification_ID} value={spec.Wig_Specification_ID}>
+                        {spec.label || `Spec #${spec.Wig_Specification_ID}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>Bundle Notes (optional)</label>
+                  <textarea
+                    value={scannerNotes}
+                    onChange={(event) => setScannerNotes(event.target.value)}
+                    rows={2}
+                    placeholder="e.g. Event hair batch for medium cap style"
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                    style={{ color: primaryTextColor }}
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleOpenDraftBundle}
+                    disabled={isOpeningScannerBundle || draftCount >= 3}
+                    className="inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    style={{ backgroundColor: primaryColor }}
+                  >
+                    {isOpeningScannerBundle ? <Loader2 size={14} className="animate-spin" /> : <Package size={14} />}
+                    Open Draft Bundle
+                  </button>
+                  <span className="text-xs" style={{ color: tertiaryTextColor }}>Open drafts: {draftCount}/3</span>
+                </div>
+              </div>
+            </div>
+          ) : selectedDraftRow ? (
+            <>
+
+          {scannerBundleRow ? (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <ScanLine size={16} className="text-slate-500" />
+                  <h3 className="text-sm font-bold text-slate-800">Active Draft #{scannerBundleRow.Bundle_ID}</h3>
+                  <span
+                    className="rounded-full border px-2 py-0.5 text-[11px] font-semibold"
+                    style={canCloseActiveDraft
+                      ? { borderColor: withColorAlpha(tertiaryColor, 0.45), backgroundColor: withColorAlpha(tertiaryColor, 0.12), color: tertiaryColor }
+                      : { borderColor: '#fde68a', backgroundColor: '#fffbeb', color: '#b45309' }}
+                  >
+                    {activeDraftCounterLabel} / target {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleCamera}
+                  disabled={isStartingCamera}
+                  className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition disabled:opacity-60"
+                  style={{ backgroundColor: isCameraOn ? '#dc2626' : tertiaryColor }}
+                >
+                  {isStartingCamera ? <Loader2 size={12} className="animate-spin" /> : isCameraOn ? <CameraOff size={12} /> : <Camera size={12} />}
+                  {isCameraOn ? 'Stop Camera' : 'Start Camera'}
+                </button>
+              </div>
+
+              {/* Progress toward the closeable range. Green once 8-10 hairs. */}
+              <div className="mt-3">
+                <div className="h-2 w-full overflow-hidden rounded-full" style={{ backgroundColor: '#e2e8f0' }}>
+                  <div
+                    className="h-full rounded-full transition-all"
+                    style={{
+                      width: `${Math.min(100, Math.round((scannerBundleMemberCount / BUNDLE_HAIR_COUNT_TARGET_MAX) * 100))}%`,
+                      backgroundColor: canCloseActiveDraft ? tertiaryColor : primaryColor,
+                    }}
+                  />
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {scannerBundleMemberCount} of {BUNDLE_HAIR_COUNT_TARGET_MAX} hairs
+                  {canCloseActiveDraft
+                    ? ' - ready to close'
+                    : scannerBundleMemberCount < BUNDLE_HAIR_COUNT_TARGET_MIN
+                      ? ` - need ${BUNDLE_HAIR_COUNT_TARGET_MIN - scannerBundleMemberCount} more to close`
+                      : ''}
+                </p>
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[220px,1fr]">
+                {/* Compact square camera preview */}
+                <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
+                  <div className="relative aspect-square w-full">
+                    <video
+                      ref={videoRef}
+                      className={`h-full w-full object-cover ${isCameraOn ? '' : 'hidden'}`}
+                      autoPlay
+                      playsInline
+                      muted
+                    />
+                    {!isCameraOn ? (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 px-4 text-center text-xs text-slate-300">
+                        <Camera size={20} />
+                        <span>Camera preview</span>
+                      </div>
                     ) : null}
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
+                </div>
+
+                {/* Controls */}
+                <div className="space-y-2">
+                  <div className="flex items-start gap-1.5 rounded-md border px-3 py-2 text-xs" style={cameraNoticeStyle}>
+                    <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                    <span>{cameraStatus.message}</span>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input
+                      value={scannerWaybillCode}
+                      onChange={(event) => setScannerWaybillCode(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          void handleScanWaybillIntoBundle(scannerWaybillCode, { fromCamera: false });
+                        }
+                      }}
+                      placeholder="Scan or type waybill (HS-YYYY-XXXXXX)"
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                      style={{ color: primaryTextColor }}
+                    />
                     <button
                       type="button"
-                      onClick={() => handleResumeDraft(draft)}
-                      className="inline-flex items-center gap-1 rounded-lg border bg-white px-2.5 py-1.5 text-xs font-semibold"
-                      style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
+                      onClick={() => void handleScanWaybillIntoBundle(scannerWaybillCode, { fromCamera: false })}
+                      disabled={isScanningWaybill || !String(scannerWaybillCode || '').trim()}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
                     >
-                      <PenSquare size={12} />
-                      Resume
+                      {isScanningWaybill ? <Loader2 size={14} className="animate-spin" /> : <ScanLine size={14} />}
+                      Scan
                     </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleCloseScannerBundle}
+                    disabled={isClosingScannerBundle || !canCloseActiveDraft}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-60"
+                    style={{ backgroundColor: tertiaryColor }}
+                  >
+                    {isClosingScannerBundle ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                    Close Draft &amp; Print Waybill
+                  </button>
+
+                  <p className="text-[11px] text-slate-500">
+                    Each scan adds a hair and updates the event&apos;s collected count. The close button unlocks at {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX} hairs.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-bold text-slate-800">Hairs in Draft #{selectedDraftRow.Bundle_ID}</h3>
+                  <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      onClick={() => handleFinalizeDraft(draft)}
-                      disabled={isFinalizing}
-                      className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+                      onClick={() => handleFinalizeDraft(selectedDraftRow)}
+                      disabled={isFinalizingDraftId === selectedDraftRow.Bundle_ID}
+                      className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
                       style={{ backgroundColor: tertiaryColor }}
                     >
-                      {isFinalizing ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+                      {isFinalizingDraftId === selectedDraftRow.Bundle_ID ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
                       Finalize
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleDeleteDraft(draft)}
-                      disabled={isDeleting}
-                      className="inline-flex items-center gap-1 rounded-lg border bg-white px-2.5 py-1.5 text-xs font-semibold disabled:opacity-60"
+                      onClick={() => handleDeleteDraft(selectedDraftRow)}
+                      disabled={isDeletingDraftId === selectedDraftRow.Bundle_ID}
+                      className="inline-flex items-center gap-1 rounded-md border bg-white px-2.5 py-1.5 text-xs font-semibold disabled:opacity-60"
                       style={{ borderColor: '#fecaca', color: '#b91c1c' }}
                     >
-                      {isDeleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      {isDeletingDraftId === selectedDraftRow.Bundle_ID ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
                       Delete
                     </button>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+                {renderBundleHairDetails(selectedDraftRow, { allowRemove: true })}
+              </div>
+            </>
+          ) : selectedBundleRow ? (
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <div className="h-1.5 w-full" style={{ background: `linear-gradient(90deg, ${primaryColor}, ${primaryColor}99)` }} />
+              <div className="px-5 py-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-mono text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                      {selectedBundleRow.Bundle_Waybill_Code || `WB-${selectedBundleRow.Bundle_ID}`}
+                    </p>
+                    <span
+                      className="mt-1 inline-flex rounded-full border px-2.5 py-0.5 text-xs font-semibold"
+                      style={bundleStatusStyle(String(selectedBundleRow.Status || '').toLowerCase(), primaryColor, tertiaryColor, secondaryTextColor)}
+                    >
+                      {selectedBundleRow.Status}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenPrint(selectedBundleRow)}
+                    className="inline-flex items-center gap-1.5 rounded-md border bg-white px-3 py-1.5 text-sm font-semibold"
+                    style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
+                  >
+                    <FileText size={14} />
+                    Print Waybill
+                  </button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Hairs</p>
+                    <p className="text-slate-800">{(bundleMembersByBundleId[selectedBundleRow.Bundle_ID] || []).length}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Created</p>
+                    <p className="text-slate-800">{formatDateTime(selectedBundleRow.Created_At)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Wig Created</p>
+                    <p className="text-slate-800">{selectedBundleRow.Wig_Completed_At ? formatDateTime(selectedBundleRow.Wig_Completed_At) : '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Notes</p>
+                    <p className="text-slate-800">{selectedBundleRow.Notes || '-'}</p>
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Hairs in this bundle</h4>
+                  {renderBundleHairDetails(selectedBundleRow, { allowRemove: false })}
+                </div>
+              </div>
+            </div>
+          ) : null}
         </section>
+      </div>
+
+      {showHelp ? renderPortal(
+        <div
+          className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-900/60 p-4"
+          onClick={() => setShowHelp(false)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl shadow-2xl"
+            style={{ backgroundColor: '#ffffff' }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-3.5">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800">
+                <HelpCircle size={16} style={{ color: primaryColor }} />
+                How bundling works
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowHelp(false)}
+                className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"
+                aria-label="Close help"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <ol className="space-y-2 overflow-y-auto px-5 py-4">
+              {flowSteps.map((step) => {
+                const isDone = step.id < currentFlowStep;
+                const isActive = step.id === currentFlowStep;
+                const accent = isDone ? tertiaryColor : isActive ? primaryColor : '#94a3b8';
+                return (
+                  <li
+                    key={step.id}
+                    className="flex items-start gap-3 rounded-xl border p-3"
+                    style={{
+                      borderColor: isActive ? withColorAlpha(primaryColor, 0.55) : '#e2e8f0',
+                      backgroundColor: isActive ? withColorAlpha(primaryColor, 0.1) : isDone ? withColorAlpha(tertiaryColor, 0.1) : '#f8fafc',
+                    }}
+                  >
+                    <span
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+                      style={{ backgroundColor: accent }}
+                    >
+                      {isDone ? <CheckCircle2 size={15} /> : step.id}
+                    </span>
+                    <div>
+                      <p className="text-sm font-semibold" style={{ color: isActive ? primaryColor : primaryTextColor }}>
+                        {step.title}
+                        {isActive ? <span className="ml-2 text-[10px] font-bold uppercase tracking-wide" style={{ color: primaryColor }}>You are here</span> : null}
+                      </p>
+                      <p className="mt-0.5 text-xs leading-snug" style={{ color: secondaryTextColor }}>{step.detail}</p>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        </div>,
       ) : null}
 
-      <section className="overflow-hidden rounded-2xl border bg-white" style={{ borderColor: '#e2e8f0' }}>
-        <div className="border-b px-4 py-3 flex items-center justify-between" style={{ borderColor: '#e2e8f0' }}>
-          <h2 className="text-lg font-semibold" style={headingStyle}>Bundles</h2>
-          <span className="text-xs" style={{ color: tertiaryTextColor }}>{activeBundles.length} total</span>
-        </div>
-
-        {!activeBundles.length && !isLoading ? (
-          <div className="px-4 py-8 text-center text-sm" style={{ color: secondaryTextColor }}>No bundles created yet.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead style={{ backgroundColor: withColorAlpha(primaryColor, 0.08) }}>
-                <tr>
-                  <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Code</th>
-                  <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Status</th>
-                  <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Hairs</th>
-                  <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Notes</th>
-                  <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Created</th>
-                  <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Wig Completed</th>
-                  <th className="px-4 py-3 text-right font-semibold" style={{ color: primaryTextColor }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activeBundles.map((bundle) => {
-                  const memberCount = (bundleMembersByBundleId[bundle.Bundle_ID] || []).length;
-                  const statusKey = String(bundle.Status || '').toLowerCase();
-                  return (
-                    <tr key={bundle.Bundle_ID} className="border-t" style={{ borderColor: '#e2e8f0' }}>
-                      <td className="px-4 py-3 font-mono" style={{ color: primaryTextColor }}>{bundle.Submission_Code || `WB-${bundle.Bundle_ID}`}</td>
-                      <td className="px-4 py-3">
-                        <span className="inline-flex rounded-full border px-2.5 py-0.5 text-xs font-semibold" style={bundleStatusStyle(statusKey, primaryColor, tertiaryColor, secondaryTextColor)}>
-                          {bundle.Status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3" style={{ color: secondaryTextColor }}>{memberCount}</td>
-                      <td className="px-4 py-3" style={{ color: secondaryTextColor }}>{bundle.Notes || '-'}</td>
-                      <td className="px-4 py-3" style={{ color: tertiaryTextColor }}>{formatDateTime(bundle.Created_At)}</td>
-                      <td className="px-4 py-3" style={{ color: tertiaryTextColor }}>{bundle.Wig_Completed_At ? formatDateTime(bundle.Wig_Completed_At) : '-'}</td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleOpenPrint(bundle)}
-                          className="inline-flex items-center gap-1 rounded-lg border bg-white px-2.5 py-1.5 text-xs font-semibold"
-                          style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-                        >
-                          <FileText size={12} />
-                          Print Waybill
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+      {confirmModal.isOpen ? renderPortal(
+        <div className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="w-full max-w-md rounded-2xl border p-0 shadow-2xl" style={{ borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}>
+            <div className="px-5 pb-2 pt-5">
+              <p
+                className="text-[11px] font-bold uppercase tracking-[0.2em]"
+                style={
+                  confirmModal.tone === 'danger'
+                    ? { color: '#b91c1c' }
+                    : confirmModal.tone === 'warning'
+                      ? { color: '#b45309' }
+                      : { color: primaryColor }
+                }
+              >
+                Confirm Action
+              </p>
+              <h3 className="mt-1 text-base font-semibold" style={{ color: primaryTextColor }}>
+                {confirmModal.title}
+              </h3>
+              <p className="mt-2 text-sm" style={{ color: secondaryTextColor }}>
+                {confirmModal.message}
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-5 pt-3">
+              <button
+                type="button"
+                onClick={closeConfirmModal}
+                className="rounded-lg border px-3 py-1.5 text-sm font-semibold"
+                style={{ borderColor: '#d1d5db', color: secondaryTextColor, backgroundColor: '#fff' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmModalSubmit()}
+                className="rounded-lg px-3 py-1.5 text-sm font-semibold text-white"
+                style={confirmModal.tone === 'danger' ? { backgroundColor: '#b91c1c' } : { backgroundColor: primaryColor }}
+              >
+                Continue
+              </button>
+            </div>
           </div>
-        )}
-      </section>
+        </div>,
+      ) : null}
 
-      {activePrintBundle ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 print:static print:bg-white print:p-0">
-          <div className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl print:max-h-none print:max-w-none print:rounded-none print:shadow-none">
+      {activePrintBundle ? renderPortal(
+        <div className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-900/70 p-4 print:static print:bg-white print:p-0">
+          <div className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl shadow-2xl print:max-h-none print:max-w-none print:rounded-none print:shadow-none" style={{ backgroundColor: '#ffffff' }}>
             <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 print:hidden" style={{ borderColor: '#e2e8f0' }}>
               <div>
                 <h3 className="text-base font-semibold" style={headingStyle}>Bundle Waybill</h3>
@@ -913,7 +1604,7 @@ export default function BundlingPage({ userProfile }) {
               .strandshare-bundle-print-area { position: absolute !important; inset: 0 !important; padding: 12mm !important; background: #fff !important; }
             }
           `}</style>
-        </div>
+        </div>,
       ) : null}
     </div>
   );

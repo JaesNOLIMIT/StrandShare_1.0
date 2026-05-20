@@ -10,7 +10,9 @@ const WIG_SPECIFICATIONS_TABLE = 'Wig_Specifications';
 export const HAIR_BUNDLE_STATUS = {
   DRAFT: 'Draft',
   IN_PRODUCTION: 'In Production',
-  WIG_COMPLETED: 'Wig Completed',
+  WIG_CREATED: 'Wig Created',
+  // Backward-compatible alias used by older pages/components.
+  WIG_COMPLETED: 'Wig Created',
   CANCELLED: 'Cancelled',
 };
 
@@ -19,26 +21,41 @@ export const BUNDLE_HAIR_COUNT_TARGET_MAX = 10;
 
 export const HAIR_SUBMISSION_STATUS = {
   PENDING: 'Pending',
-  CUT_SHIPPED: 'Cut & Shipped',
-  RECEIVED: 'Received',
-  APPROVED: 'Approved',
-  REJECTED: 'Rejected',
-  BUNDLED: 'Bundled',
+  CUT: 'Cut',
+  WIG_IN_PRODUCTION: 'Wig In Production',
   WIG_CREATED: 'Wig Created',
+  CANCELLED: 'Cancelled',
+  // Legacy aliases kept so older UI paths do not crash while we migrate pages.
+  CUT_SHIPPED: 'Cut',
+  RECEIVED: 'Cut',
+  APPROVED: 'Cut',
+  REJECTED: 'Cancelled',
+  BUNDLED: 'Wig In Production',
 };
 
 export const HAIR_SUBMISSION_STATUS_ORDER = [
   HAIR_SUBMISSION_STATUS.PENDING,
-  HAIR_SUBMISSION_STATUS.CUT_SHIPPED,
-  HAIR_SUBMISSION_STATUS.RECEIVED,
-  HAIR_SUBMISSION_STATUS.APPROVED,
-  HAIR_SUBMISSION_STATUS.BUNDLED,
+  HAIR_SUBMISSION_STATUS.CUT,
+  HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
   HAIR_SUBMISSION_STATUS.WIG_CREATED,
+  HAIR_SUBMISSION_STATUS.CANCELLED,
 ];
+
+const UTC8_OFFSET_MINUTES = 8 * 60;
+
+export function getManilaSqlTimestamp(dateValue = new Date()) {
+  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return getManilaSqlTimestamp(new Date());
+  }
+  const utcMs = date.getTime() + (date.getTimezoneOffset() * 60 * 1000);
+  const manilaShiftedDate = new Date(utcMs + (UTC8_OFFSET_MINUTES * 60 * 1000));
+  return manilaShiftedDate.toISOString().slice(0, 19).replace('T', ' ');
+}
 
 function isBundleCompletedStatus(value) {
   const normalized = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, ' ');
-  return normalized === 'wig completed';
+  return normalized === 'wig completed' || normalized === 'wig created';
 }
 
 export function buildSubmissionCode({ submissionId, createdAt = new Date() }) {
@@ -48,12 +65,21 @@ export function buildSubmissionCode({ submissionId, createdAt = new Date() }) {
   return `HS-${year}-${String(id).padStart(6, '0')}`;
 }
 
-export function buildWaybillQrPayload({ submissionId, submissionCode, donationDriveId }) {
+export function buildWaybillQrPayload({ submissionId, submissionCode, donationDriveId, eventRequestId }) {
   return JSON.stringify({
     type: 'hair_submission',
     submission_id: Number(submissionId) || null,
     submission_code: String(submissionCode || ''),
     donation_drive_id: Number(donationDriveId) || null,
+    event_request_id: Number(eventRequestId) || null,
+  });
+}
+
+export function buildNonEventDonationQrPayload({ userId, submissionCode = '' }) {
+  return JSON.stringify({
+    type: 'hair_submission_non_event',
+    user_id: Number(userId) || null,
+    submission_code: String(submissionCode || ''),
   });
 }
 
@@ -63,12 +89,25 @@ export function parseWaybillQrPayload(rawText) {
 
   try {
     const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === 'object' && parsed.type === 'hair_submission') {
-      return {
-        submissionId: Number(parsed.submission_id) || null,
-        submissionCode: String(parsed.submission_code || ''),
-        donationDriveId: Number(parsed.donation_drive_id) || null,
-      };
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.type === 'hair_submission') {
+        return {
+          submissionId: Number(parsed.submission_id) || null,
+          submissionCode: String(parsed.submission_code || ''),
+          donationDriveId: Number(parsed.donation_drive_id) || null,
+          eventRequestId: Number(parsed.event_request_id) || null,
+          userId: Number(parsed.user_id) || null,
+        };
+      }
+      if (parsed.type === 'hair_submission_non_event') {
+        return {
+          submissionId: Number(parsed.submission_id) || null,
+          submissionCode: String(parsed.submission_code || ''),
+          donationDriveId: null,
+          eventRequestId: null,
+          userId: Number(parsed.user_id) || null,
+        };
+      }
     }
   } catch {
     // Fall through to plain-text matching.
@@ -76,15 +115,43 @@ export function parseWaybillQrPayload(rawText) {
 
   const codeMatch = text.match(/^HS-\d{4}-\d{4,8}$/i);
   if (codeMatch) {
-    return { submissionId: null, submissionCode: text.toUpperCase(), donationDriveId: null };
+    return {
+      submissionId: null,
+      submissionCode: text.toUpperCase(),
+      donationDriveId: null,
+      eventRequestId: null,
+    };
   }
 
   const numericId = Number(text);
   if (Number.isInteger(numericId) && numericId > 0) {
-    return { submissionId: numericId, submissionCode: '', donationDriveId: null };
+    return {
+      submissionId: numericId,
+      submissionCode: '',
+      donationDriveId: null,
+      eventRequestId: null,
+    };
   }
 
   return null;
+}
+
+export async function scanNonEventHairSubmission({ qrPayload, notes = '' }) {
+  if (!isSupabaseConfigured || !supabase) {
+    return { data: null, error: new Error('Supabase is not configured.') };
+  }
+
+  const payload = String(qrPayload || '').trim();
+  if (!payload) {
+    return { data: null, error: new Error('qrPayload is required.') };
+  }
+
+  const { data, error } = await supabase.rpc('scan_non_event_hair_submission', {
+    p_qr_payload: payload,
+    p_notes: String(notes || '').trim() || null,
+  });
+
+  return { data, error };
 }
 
 export function buildBundleSubmissionCode({ bundleId, createdAt = new Date() }) {
@@ -101,11 +168,14 @@ export function buildWigCode({ wigId, createdAt = new Date() }) {
   return `WIG-${year}-${String(id).padStart(6, '0')}`;
 }
 
-export function buildBundleWaybillQrPayload({ bundleId, submissionCode }) {
+export function buildBundleWaybillQrPayload({ bundleId, bundleWaybillCode }) {
+  const code = String(bundleWaybillCode || '');
   return JSON.stringify({
     type: 'hair_submission_bundle',
     bundle_id: Number(bundleId) || null,
-    submission_code: String(submissionCode || ''),
+    bundle_waybill_code: code,
+    // Backward-compatible key for older scanners.
+    submission_code: code,
   });
 }
 
@@ -116,9 +186,12 @@ export function parseBundleWaybillQrPayload(rawText) {
   try {
     const parsed = JSON.parse(text);
     if (parsed && typeof parsed === 'object' && parsed.type === 'hair_submission_bundle') {
+      const code = String(parsed.bundle_waybill_code || parsed.submission_code || '').trim();
       return {
         bundleId: Number(parsed.bundle_id) || null,
-        submissionCode: String(parsed.submission_code || ''),
+        bundleWaybillCode: code,
+        // Backward-compatible property for older callers.
+        submissionCode: code,
       };
     }
   } catch {
@@ -127,7 +200,8 @@ export function parseBundleWaybillQrPayload(rawText) {
 
   const codeMatch = text.match(/^WB-\d{4}-\d{4,8}$/i);
   if (codeMatch) {
-    return { bundleId: null, submissionCode: text.toUpperCase() };
+    const code = text.toUpperCase();
+    return { bundleId: null, bundleWaybillCode: code, submissionCode: code };
   }
 
   return null;
@@ -139,30 +213,20 @@ const STATUS_NOTIFICATION_TEMPLATES = {
     message: ({ submissionCode, eventTitle }) =>
       `Your waybill ${submissionCode} has been issued${eventTitle ? ` for ${eventTitle}` : ''}. Please bring it to the event for hair collection.`,
   },
-  [HAIR_SUBMISSION_STATUS.CUT_SHIPPED]: {
+  [HAIR_SUBMISSION_STATUS.CUT]: {
     title: 'Hair collected',
     message: ({ submissionCode }) =>
-      `Your donated hair (waybill ${submissionCode}) has been collected and is on its way to StrandShare.`,
+      `Your donated hair (waybill ${submissionCode}) has been cut and tagged for wig production.`,
   },
-  [HAIR_SUBMISSION_STATUS.RECEIVED]: {
-    title: 'Hair received at StrandShare',
-    message: ({ submissionCode }) =>
-      `We have received your donated hair (waybill ${submissionCode}). It will undergo quality assurance soon.`,
-  },
-  [HAIR_SUBMISSION_STATUS.APPROVED]: {
-    title: 'Hair approved',
-    message: ({ submissionCode }) =>
-      `Great news - your donated hair (waybill ${submissionCode}) passed QA and is queued to be bundled into a wig.`,
-  },
-  [HAIR_SUBMISSION_STATUS.REJECTED]: {
-    title: 'Hair did not meet QA criteria',
-    message: ({ submissionCode, reason }) =>
-      `Your donation (waybill ${submissionCode}) did not pass QA${reason ? `: ${reason}` : '.'} Thank you for your contribution.`,
-  },
-  [HAIR_SUBMISSION_STATUS.BUNDLED]: {
-    title: 'Hair bundled',
+  [HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION]: {
+    title: 'Hair assigned to wig production',
     message: ({ submissionCode, bundleId }) =>
-      `Your donated hair (waybill ${submissionCode}) was added to wig bundle #${bundleId}. Stay tuned for the wig completion update.`,
+      `Your donated hair (waybill ${submissionCode}) is now in wig production under bundle #${bundleId}.`,
+  },
+  [HAIR_SUBMISSION_STATUS.CANCELLED]: {
+    title: 'Hair donation cancelled',
+    message: ({ submissionCode, reason }) =>
+      `Your donation (waybill ${submissionCode}) was marked cancelled${reason ? `: ${reason}` : '.'}.`,
   },
   [HAIR_SUBMISSION_STATUS.WIG_CREATED]: {
     title: 'A wig was made from your donation',
@@ -243,7 +307,7 @@ export async function updateSubmissionStatus({
 
   const { error: updateError } = await supabase
     .from(HAIR_SUBMISSIONS_TABLE)
-    .update({ Status: nextStatus, Updated_At: new Date().toISOString() })
+    .update({ Status: nextStatus, Updated_At: getManilaSqlTimestamp() })
     .eq('Submission_ID', submissionId);
 
   if (updateError) {
@@ -278,6 +342,7 @@ export async function updateSubmissionStatus({
 }
 
 export async function ensureSubmissionForRegistration({
+  eventRequestId = null,
   donationDriveId,
   organizationId = null,
   userId,
@@ -286,14 +351,15 @@ export async function ensureSubmissionForRegistration({
   if (!isSupabaseConfigured || !supabase) {
     return { data: null, error: new Error('Supabase is not configured.') };
   }
-  if (!donationDriveId || !userId) {
-    return { data: null, error: new Error('donationDriveId and userId are required.') };
+  const resolvedEventRequestId = Number(eventRequestId || donationDriveId || 0);
+  if (!resolvedEventRequestId || !userId) {
+    return { data: null, error: new Error('eventRequestId and userId are required.') };
   }
 
   const existing = await supabase
     .from(HAIR_SUBMISSIONS_TABLE)
-    .select('Submission_ID, User_ID, Donation_Drive_ID, Status, Submission_Code, Created_At')
-    .eq('Donation_Drive_ID', donationDriveId)
+    .select('Submission_ID, User_ID, Event_Request_ID, Status, Submission_Code, Created_At')
+    .eq('Event_Request_ID', resolvedEventRequestId)
     .eq('User_ID', userId)
     .maybeSingle();
 
@@ -309,10 +375,10 @@ export async function ensureSubmissionForRegistration({
     .from(HAIR_SUBMISSIONS_TABLE)
     .insert({
       User_ID: Number(userId),
-      Donation_Drive_ID: Number(donationDriveId),
+      Event_Request_ID: resolvedEventRequestId,
       Status: HAIR_SUBMISSION_STATUS.PENDING,
     })
-    .select('Submission_ID, User_ID, Donation_Drive_ID, Status, Submission_Code, Created_At')
+    .select('Submission_ID, User_ID, Event_Request_ID, Status, Submission_Code, Created_At')
     .single();
 
   if (insertResult.error) {
@@ -343,7 +409,7 @@ export async function createWigBundle({ submissionIds, createdBy, notes = '' }) 
   }
   const ids = Array.from(new Set((Array.isArray(submissionIds) ? submissionIds : []).map((id) => Number(id) || 0).filter(Boolean)));
   if (!ids.length) {
-    return { data: null, error: new Error('Pick at least one approved hair submission.') };
+    return { data: null, error: new Error('Pick at least one Cut hair submission.') };
   }
 
   const submissionsResult = await supabase
@@ -356,14 +422,14 @@ export async function createWigBundle({ submissionIds, createdBy, notes = '' }) 
   }
 
   const eligible = (submissionsResult.data || []).filter((row) =>
-    String(row.Status || '').toLowerCase() === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()
+    String(row.Status || '').toLowerCase() === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()
     && !row.Bundle_ID,
   );
 
   if (eligible.length !== ids.length) {
     return {
       data: null,
-      error: new Error('Some selected submissions are not Approved or already belong to a bundle. Refresh and retry.'),
+      error: new Error('Some selected submissions are not in Cut status or already belong to a bundle. Refresh and retry.'),
     };
   }
 
@@ -374,7 +440,7 @@ export async function createWigBundle({ submissionIds, createdBy, notes = '' }) 
       Created_By: createdBy ? Number(createdBy) : null,
       Notes: String(notes || '').trim() || null,
     })
-    .select('Bundle_ID, Status, Created_At, Submission_Code')
+    .select('Bundle_ID, Status, Created_At, Bundle_Waybill_Code')
     .single();
 
   if (bundleInsertResult.error) {
@@ -383,14 +449,14 @@ export async function createWigBundle({ submissionIds, createdBy, notes = '' }) 
 
   const bundle = bundleInsertResult.data;
 
-  if (!bundle?.Submission_Code) {
+  if (!bundle?.Bundle_Waybill_Code) {
     const code = buildBundleSubmissionCode({ bundleId: bundle.Bundle_ID, createdAt: bundle.Created_At });
     const { error: codeError } = await supabase
       .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-      .update({ Submission_Code: code })
+      .update({ Bundle_Waybill_Code: code })
       .eq('Bundle_ID', bundle.Bundle_ID);
     if (!codeError) {
-      bundle.Submission_Code = code;
+      bundle.Bundle_Waybill_Code = code;
     }
   }
 
@@ -398,8 +464,8 @@ export async function createWigBundle({ submissionIds, createdBy, notes = '' }) 
     .from(HAIR_SUBMISSIONS_TABLE)
     .update({
       Bundle_ID: bundle.Bundle_ID,
-      Status: HAIR_SUBMISSION_STATUS.BUNDLED,
-      Updated_At: new Date().toISOString(),
+      Status: HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
+      Updated_At: getManilaSqlTimestamp(),
     })
     .in('Submission_ID', ids);
 
@@ -409,7 +475,7 @@ export async function createWigBundle({ submissionIds, createdBy, notes = '' }) 
 
   await Promise.all(eligible.map(async (row) => {
     const notification = buildStatusNotification({
-      status: HAIR_SUBMISSION_STATUS.BUNDLED,
+      status: HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
       submissionCode: row.Submission_Code,
       bundleId: bundle.Bundle_ID,
     });
@@ -422,7 +488,7 @@ export async function createWigBundle({ submissionIds, createdBy, notes = '' }) 
     });
     await logBundleTracking({
       submissionId: row.Submission_ID,
-      status: HAIR_SUBMISSION_STATUS.BUNDLED,
+      status: HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
       title: notification.title,
       description: notification.message,
       changedBy: createdBy ? Number(createdBy) : null,
@@ -463,7 +529,7 @@ export async function completeWigBundle({
 
   const bundleResult = await supabase
     .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-    .select('Bundle_ID, Status, Submission_Code, Wig_Completed_At')
+    .select('Bundle_ID, Status, Bundle_Waybill_Code, Wig_Completed_At')
     .eq('Bundle_ID', bundleId)
     .maybeSingle();
 
@@ -519,7 +585,7 @@ export async function completeWigBundle({
   }
   const members = membersResult.data || [];
 
-  const nowIso = new Date().toISOString();
+  const nowIso = getManilaSqlTimestamp();
 
   const completedByNumeric = completedBy ? Number(completedBy) : null;
 
@@ -527,15 +593,16 @@ export async function completeWigBundle({
     .from(WIGS_TABLE)
     .upsert({
       Bundle_ID: bundleId,
-      Wig_Code: String(bundle.Submission_Code || '').trim() || null,
+      Wig_Code: String(bundle.Bundle_Waybill_Code || '').trim() || null,
       Wig_Name: trimmedWigName,
       Total_Donated_Hairs: members.length,
       Total_Bundles_Used: 1,
+      Stock_Count: 1,
       Added_By: completedByNumeric,
       Created_By: completedByNumeric,
       Completed_At: nowIso,
       Production_Notes: String(notes || '').trim() || null,
-      Wig_Status: 'Ready for Release',
+      Wig_Status: 'available',
       Wig_Front_Image_Path: frontImagePath,
       Wig_Side_Image_Path: sideImagePath,
       Wig_Top_Image_Path: topImagePath,
@@ -632,19 +699,58 @@ export async function saveBundleDraft({ submissionIds, createdBy, notes = '' }) 
     return { data: null, error: new Error('Supabase is not configured.') };
   }
   const ids = Array.from(new Set((Array.isArray(submissionIds) ? submissionIds : []).map((id) => Number(id) || 0).filter(Boolean)));
+  if (!ids.length) {
+    return { data: null, error: new Error('Pick at least one Cut hair submission.') };
+  }
 
-  const { data, error } = await supabase
+  const submissionsResult = await supabase
+    .from(HAIR_SUBMISSIONS_TABLE)
+    .select('Submission_ID, Status, Bundle_ID')
+    .in('Submission_ID', ids);
+
+  if (submissionsResult.error) {
+    return { data: null, error: submissionsResult.error };
+  }
+
+  const eligible = (submissionsResult.data || []).filter((row) =>
+    String(row.Status || '').toLowerCase() === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()
+    && !row.Bundle_ID,
+  );
+  if (eligible.length !== ids.length) {
+    return {
+      data: null,
+      error: new Error('Some selected submissions are not in Cut status or already belong to another bundle. Refresh and retry.'),
+    };
+  }
+
+  const insertResult = await supabase
     .from(HAIR_SUBMISSION_BUNDLES_TABLE)
     .insert({
       Status: HAIR_BUNDLE_STATUS.DRAFT,
       Created_By: createdBy ? Number(createdBy) : null,
       Notes: String(notes || '').trim() || null,
-      Draft_Submission_IDs: ids,
     })
-    .select('Bundle_ID, Status, Notes, Draft_Submission_IDs, Created_At, Updated_At')
+    .select('Bundle_ID, Status, Notes, Created_At, Updated_At')
     .single();
 
-  return { data, error };
+  if (insertResult.error) {
+    return { data: null, error: insertResult.error };
+  }
+
+  const bundle = insertResult.data;
+  const { error: linkError } = await supabase
+    .from(HAIR_SUBMISSIONS_TABLE)
+    .update({
+      Bundle_ID: bundle.Bundle_ID,
+      Updated_At: getManilaSqlTimestamp(),
+    })
+    .in('Submission_ID', ids);
+
+  if (linkError) {
+    return { data: null, error: linkError };
+  }
+
+  return { data: bundle, error: null };
 }
 
 export async function updateBundleDraft({ bundleId, submissionIds, notes = '' }) {
@@ -655,16 +761,96 @@ export async function updateBundleDraft({ bundleId, submissionIds, notes = '' })
     return { data: null, error: new Error('bundleId is required.') };
   }
   const ids = Array.from(new Set((Array.isArray(submissionIds) ? submissionIds : []).map((id) => Number(id) || 0).filter(Boolean)));
+  if (!ids.length) {
+    return { data: null, error: new Error('Pick at least one Cut hair submission.') };
+  }
+
+  const draftResult = await supabase
+    .from(HAIR_SUBMISSION_BUNDLES_TABLE)
+    .select('Bundle_ID, Status, Notes, Created_At, Updated_At')
+    .eq('Bundle_ID', bundleId)
+    .eq('Status', HAIR_BUNDLE_STATUS.DRAFT)
+    .maybeSingle();
+
+  if (draftResult.error) {
+    return { data: null, error: draftResult.error };
+  }
+  if (!draftResult.data?.Bundle_ID) {
+    return { data: null, error: new Error('Draft bundle not found.') };
+  }
+
+  const existingResult = await supabase
+    .from(HAIR_SUBMISSIONS_TABLE)
+    .select('Submission_ID')
+    .eq('Bundle_ID', bundleId);
+
+  if (existingResult.error) {
+    return { data: null, error: existingResult.error };
+  }
+
+  const existingIds = new Set((existingResult.data || []).map((row) => Number(row.Submission_ID || 0)).filter(Boolean));
+  const requestedIds = new Set(ids);
+  const idsToUnlink = Array.from(existingIds).filter((id) => !requestedIds.has(id));
+  const idsToLink = ids.filter((id) => !existingIds.has(id));
+
+  if (idsToUnlink.length) {
+    const { error: unlinkError } = await supabase
+      .from(HAIR_SUBMISSIONS_TABLE)
+      .update({
+        Bundle_ID: null,
+        Updated_At: getManilaSqlTimestamp(),
+      })
+      .in('Submission_ID', idsToUnlink)
+      .eq('Bundle_ID', bundleId);
+    if (unlinkError) {
+      return { data: null, error: unlinkError };
+    }
+  }
+
+  if (idsToLink.length) {
+    const candidatesResult = await supabase
+      .from(HAIR_SUBMISSIONS_TABLE)
+      .select('Submission_ID, Status, Bundle_ID')
+      .in('Submission_ID', idsToLink);
+    if (candidatesResult.error) {
+      return { data: null, error: candidatesResult.error };
+    }
+
+    const candidateMap = new Map((candidatesResult.data || []).map((row) => [Number(row.Submission_ID), row]));
+    const invalid = idsToLink.filter((id) => {
+      const row = candidateMap.get(id);
+      if (!row) return true;
+      const isCut = String(row.Status || '').toLowerCase() === HAIR_SUBMISSION_STATUS.CUT.toLowerCase();
+      const hasOtherBundle = row.Bundle_ID && Number(row.Bundle_ID) !== Number(bundleId);
+      return !isCut || hasOtherBundle;
+    });
+    if (invalid.length) {
+      return {
+        data: null,
+        error: new Error('Some selected submissions are no longer eligible for this draft. Refresh and retry.'),
+      };
+    }
+
+    const { error: linkError } = await supabase
+      .from(HAIR_SUBMISSIONS_TABLE)
+      .update({
+        Bundle_ID: bundleId,
+        Updated_At: getManilaSqlTimestamp(),
+      })
+      .in('Submission_ID', idsToLink);
+    if (linkError) {
+      return { data: null, error: linkError };
+    }
+  }
 
   const { data, error } = await supabase
     .from(HAIR_SUBMISSION_BUNDLES_TABLE)
     .update({
       Notes: String(notes || '').trim() || null,
-      Draft_Submission_IDs: ids,
     })
     .eq('Bundle_ID', bundleId)
     .eq('Status', HAIR_BUNDLE_STATUS.DRAFT)
-    .select('Bundle_ID, Status, Notes, Draft_Submission_IDs, Created_At, Updated_At')
+    .select('Bundle_ID, Status, Notes, Created_At, Updated_At')
     .single();
 
   return { data, error };
@@ -676,6 +862,18 @@ export async function deleteBundleDraft({ bundleId }) {
   }
   if (!bundleId) {
     return { error: new Error('bundleId is required.') };
+  }
+
+  const { error: unlinkError } = await supabase
+    .from(HAIR_SUBMISSIONS_TABLE)
+    .update({
+      Bundle_ID: null,
+      Updated_At: getManilaSqlTimestamp(),
+    })
+    .eq('Bundle_ID', bundleId);
+
+  if (unlinkError) {
+    return { error: unlinkError };
   }
 
   const { error } = await supabase
@@ -697,7 +895,7 @@ export async function finalizeBundleDraft({ bundleId, finalizedBy }) {
 
   const draftResult = await supabase
     .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-    .select('Bundle_ID, Status, Notes, Draft_Submission_IDs, Created_At')
+    .select('Bundle_ID, Status, Notes, Created_At')
     .eq('Bundle_ID', bundleId)
     .maybeSingle();
 
@@ -713,44 +911,41 @@ export async function finalizeBundleDraft({ bundleId, finalizedBy }) {
     return { data: null, error: new Error('Bundle is no longer a Draft.') };
   }
 
-  const draftIds = Array.isArray(draft.Draft_Submission_IDs)
-    ? draft.Draft_Submission_IDs.map((id) => Number(id) || 0).filter(Boolean)
-    : [];
-
-  if (!draftIds.length) {
-    return { data: null, error: new Error('Draft has no selected hair submissions.') };
-  }
-
   const submissionsResult = await supabase
     .from(HAIR_SUBMISSIONS_TABLE)
     .select('Submission_ID, User_ID, Status, Submission_Code, Bundle_ID')
-    .in('Submission_ID', draftIds);
+    .eq('Bundle_ID', draft.Bundle_ID);
 
   if (submissionsResult.error) {
     return { data: null, error: submissionsResult.error };
   }
 
-  const eligible = (submissionsResult.data || []).filter((row) =>
-    String(row.Status || '').toLowerCase() === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()
-    && !row.Bundle_ID,
+  const draftRows = submissionsResult.data || [];
+  const draftIds = draftRows.map((row) => Number(row.Submission_ID || 0)).filter(Boolean);
+  if (!draftIds.length) {
+    return { data: null, error: new Error('Draft has no selected hair submissions.') };
+  }
+
+  const eligible = draftRows.filter((row) =>
+    String(row.Status || '').toLowerCase() === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()
+    && Number(row.Bundle_ID || 0) === Number(bundleId),
   );
 
-  if (eligible.length !== draftIds.length) {
+  if (eligible.length !== draftRows.length) {
     return {
       data: null,
-      error: new Error('Some hairs in this draft are no longer Approved or were bundled elsewhere. Edit the draft and remove them.'),
+      error: new Error('Some hairs in this draft are no longer in Cut status or were bundled elsewhere. Edit the draft and remove them.'),
     };
   }
 
   const code = buildBundleSubmissionCode({ bundleId: draft.Bundle_ID, createdAt: draft.Created_At });
-  const nowIso = new Date().toISOString();
+  const nowIso = getManilaSqlTimestamp();
 
   const { error: bundleUpdateError } = await supabase
     .from(HAIR_SUBMISSION_BUNDLES_TABLE)
     .update({
       Status: HAIR_BUNDLE_STATUS.IN_PRODUCTION,
-      Submission_Code: code,
-      Draft_Submission_IDs: [],
+      Bundle_Waybill_Code: code,
     })
     .eq('Bundle_ID', draft.Bundle_ID);
 
@@ -762,7 +957,7 @@ export async function finalizeBundleDraft({ bundleId, finalizedBy }) {
     .from(HAIR_SUBMISSIONS_TABLE)
     .update({
       Bundle_ID: draft.Bundle_ID,
-      Status: HAIR_SUBMISSION_STATUS.BUNDLED,
+      Status: HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
       Updated_At: nowIso,
     })
     .in('Submission_ID', draftIds);
@@ -773,7 +968,7 @@ export async function finalizeBundleDraft({ bundleId, finalizedBy }) {
 
   await Promise.all(eligible.map(async (row) => {
     const notification = buildStatusNotification({
-      status: HAIR_SUBMISSION_STATUS.BUNDLED,
+      status: HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
       submissionCode: row.Submission_Code,
       bundleId: draft.Bundle_ID,
     });
@@ -786,7 +981,7 @@ export async function finalizeBundleDraft({ bundleId, finalizedBy }) {
     });
     await logBundleTracking({
       submissionId: row.Submission_ID,
-      status: HAIR_SUBMISSION_STATUS.BUNDLED,
+      status: HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
       title: notification.title,
       description: notification.message,
       changedBy: finalizedBy ? Number(finalizedBy) : null,
@@ -797,7 +992,7 @@ export async function finalizeBundleDraft({ bundleId, finalizedBy }) {
     data: {
       Bundle_ID: draft.Bundle_ID,
       Status: HAIR_BUNDLE_STATUS.IN_PRODUCTION,
-      Submission_Code: code,
+      Bundle_Waybill_Code: code,
       Notes: draft.Notes,
       Created_At: draft.Created_At,
       members: eligible,
@@ -805,3 +1000,4 @@ export async function finalizeBundleDraft({ bundleId, finalizedBy }) {
     error: null,
   };
 }
+

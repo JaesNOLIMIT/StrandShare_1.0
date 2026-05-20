@@ -275,9 +275,11 @@ export default function App() {
   };
 
   const activeRole = userProfile?.role || null;
+  const canonicalActiveRole = toCanonicalRole(activeRole);
   const ActiveDashboard = resolveDashboardByRole(activeRole);
   const currentPath = window.location.pathname;
   const isLandingRoute = currentPath === '/';
+  const isWigAiStudioRoute = currentPath === '/wig-ai-studio';
   const isPartnershipApplicationRoute = currentPath === '/apply-partnership';
   const isEventApplicationRoute = currentPath === '/apply-event';
   const isEventApplicationSuccessRoute = currentPath === '/apply-event/success';
@@ -337,6 +339,7 @@ export default function App() {
                 role: activeRole || 'staff',
               }
             }
+            initialPage={canonicalActiveRole === 'specialist' && isWigAiStudioRoute ? 'wig-ai-studio' : undefined}
           />
         )}
 

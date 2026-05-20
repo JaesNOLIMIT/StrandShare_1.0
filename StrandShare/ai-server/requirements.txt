@@ -1,0 +1,34 @@
+# FastAPI server
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+python-multipart==0.0.12
+python-dotenv==1.0.1
+
+# Supabase / storage
+supabase==2.9.1
+httpx==0.27.2
+
+# Image preprocessing
+Pillow==10.4.0
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+rembg==2.0.59
+onnxruntime-gpu==1.19.2 ; sys_platform != "darwin"
+onnxruntime==1.19.2     ; sys_platform == "darwin"
+
+# Torch (CUDA 11.8). On Hostinger GPU VPS the wheel will resolve to a matching CUDA build.
+# If running CPU-only, swap the index-url for the CPU build in the Dockerfile.
+torch==2.4.1
+torchvision==0.19.1
+
+# TripoSR (image -> 3D mesh)
+# Installed from GitHub at build time because there is no PyPI release.
+# See Dockerfile.
+trimesh==4.4.9
+einops==0.8.0
+omegaconf==2.3.0
+transformers==4.45.2
+
+# Background-task logging
+python-json-logger==2.0.7

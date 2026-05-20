@@ -18,23 +18,20 @@ import { logAuditAction } from '../../../lib/auditLogger';
 import {
   HAIR_SUBMISSION_STATUS,
   parseWaybillQrPayload,
-  updateSubmissionStatus,
 } from '../../../lib/hairSubmissionWorkflow';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
 const HAIR_SUBMISSION_IMAGES_TABLE = 'Hair_Submission_Images';
-const DONATION_DRIVE_REQUESTS_TABLE = 'Donation_Drive_Requests';
 const USER_DETAILS_TABLE = 'user_details';
 const PROFILE_PICTURES_BUCKET = 'profile_pictures';
 const HAIR_SUBMISSIONS_BUCKET = 'hair_submissions';
 const SCAN_DEBOUNCE_MS = 2500;
 
 const ACTIVE_STATUSES = [
-  HAIR_SUBMISSION_STATUS.CUT_SHIPPED,
-  HAIR_SUBMISSION_STATUS.RECEIVED,
-  HAIR_SUBMISSION_STATUS.APPROVED,
-  HAIR_SUBMISSION_STATUS.REJECTED,
+  HAIR_SUBMISSION_STATUS.PENDING,
+  HAIR_SUBMISSION_STATUS.CUT,
+  HAIR_SUBMISSION_STATUS.CANCELLED,
 ];
 
 function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
@@ -59,17 +56,14 @@ function buildFullName(first, middle, last, suffix) {
 }
 
 function statusBadgeStyle(status, primaryColor, tertiaryColor) {
-  const key = String(status || '').toLowerCase();
-  if (key === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase() || key.includes('approved')) {
+  const key = String(status || '').toLowerCase().replace(/[_\s-]+/g, '');
+  if (key === 'cut') {
     return { backgroundColor: withColorAlpha(tertiaryColor, 0.16), color: tertiaryColor, borderColor: withColorAlpha(tertiaryColor, 0.4) };
   }
-  if (key === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase() || key.includes('rejected')) {
+  if (key === 'cancelled') {
     return { backgroundColor: '#fef2f2', color: '#b91c1c', borderColor: '#fecaca' };
   }
-  if (key === HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase()) {
-    return { backgroundColor: withColorAlpha(primaryColor, 0.14), color: primaryColor, borderColor: withColorAlpha(primaryColor, 0.4) };
-  }
-  if (key === HAIR_SUBMISSION_STATUS.CUT_SHIPPED.toLowerCase()) {
+  if (key === 'pending') {
     return { backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' };
   }
   return { backgroundColor: '#f1f5f9', color: '#475569', borderColor: '#cbd5e1' };
@@ -132,7 +126,8 @@ export default function QualityCheckPage({ userProfile }) {
     try {
       const submissionsResult = await supabase
         .from(HAIR_SUBMISSIONS_TABLE)
-        .select('Submission_ID, User_ID, Donation_Drive_ID, Status, Submission_Code, Created_At, Updated_At, Bundle_ID')
+        .select('Submission_ID, User_ID, Status, Submission_Code, Created_At, Updated_At, Bundle_ID, From_Event, Donor_Notes')
+        .eq('From_Event', false)
         .in('Status', ACTIVE_STATUSES)
         .is('Bundle_ID', null)
         .order('Updated_At', { ascending: false })
@@ -142,7 +137,6 @@ export default function QualityCheckPage({ userProfile }) {
 
       const rows = submissionsResult.data || [];
       const userIds = Array.from(new Set(rows.map((row) => Number(row.User_ID || 0)).filter(Boolean)));
-      const driveIds = Array.from(new Set(rows.map((row) => Number(row.Donation_Drive_ID || 0)).filter(Boolean)));
 
       let usersByUserId = {};
       if (userIds.length) {
@@ -157,34 +151,20 @@ export default function QualityCheckPage({ userProfile }) {
         }, {});
       }
 
-      let drivesByDriveId = {};
-      if (driveIds.length) {
-        const { data, error } = await supabase
-          .from(DONATION_DRIVE_REQUESTS_TABLE)
-          .select('Donation_Drive_ID, Event_Title')
-          .in('Donation_Drive_ID', driveIds);
-        if (error) throw error;
-        drivesByDriveId = (data || []).reduce((acc, row) => {
-          acc[Number(row.Donation_Drive_ID)] = row;
-          return acc;
-        }, {});
-      }
-
       const enriched = rows.map((row) => {
         const userId = Number(row.User_ID || 0);
         const userDetails = usersByUserId[userId] || {};
-        const drive = drivesByDriveId[Number(row.Donation_Drive_ID || 0)] || {};
         return {
           submissionId: row.Submission_ID,
           userId,
-          donationDriveId: row.Donation_Drive_ID,
           status: row.Status,
           submissionCode: row.Submission_Code || `HS-${row.Submission_ID}`,
           createdAt: row.Created_At,
           updatedAt: row.Updated_At,
+          donorNotes: row.Donor_Notes || '',
           donorName: buildFullName(userDetails.first_name, userDetails.middle_name, userDetails.last_name, userDetails.suffix) || `User #${userId}`,
           donorPhotoPath: userDetails.photo_path || '',
-          eventTitle: drive.Event_Title || `Drive #${row.Donation_Drive_ID}`,
+          sourceLabel: 'Non-event donation',
         };
       });
 
@@ -322,7 +302,7 @@ export default function QualityCheckPage({ userProfile }) {
 
     try {
       const waybill = parseWaybillQrPayload(decodedText);
-      if (!waybill || (!waybill.submissionId && !waybill.submissionCode)) {
+      if (!waybill || (!waybill.submissionId && !waybill.submissionCode && !waybill.userId)) {
         setCameraStatus({ tone: 'error', message: 'Scan did not match a hair submission waybill.' });
         return;
       }
@@ -331,58 +311,78 @@ export default function QualityCheckPage({ userProfile }) {
       if (waybill.submissionId) {
         lookup = await supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Donation_Drive_ID, Status, Submission_Code')
+          .select('Submission_ID, User_ID, Status, Submission_Code, From_Event, Bundle_ID')
           .eq('Submission_ID', waybill.submissionId)
+          .maybeSingle();
+      } else if (waybill.submissionCode) {
+        lookup = await supabase
+          .from(HAIR_SUBMISSIONS_TABLE)
+          .select('Submission_ID, User_ID, Status, Submission_Code, From_Event, Bundle_ID')
+          .eq('Submission_Code', waybill.submissionCode)
           .maybeSingle();
       } else {
         lookup = await supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Donation_Drive_ID, Status, Submission_Code')
-          .eq('Submission_Code', waybill.submissionCode)
-          .maybeSingle();
+          .select('Submission_ID, User_ID, Status, Submission_Code, From_Event, Bundle_ID, Updated_At')
+          .eq('User_ID', waybill.userId)
+          .eq('From_Event', false)
+          .is('Bundle_ID', null)
+          .eq('Status', HAIR_SUBMISSION_STATUS.PENDING)
+          .order('Updated_At', { ascending: false })
+          .limit(2);
       }
 
       if (lookup?.error) throw lookup.error;
-      const submission = lookup?.data;
-      if (!submission?.Submission_ID) {
-        setCameraStatus({ tone: 'error', message: `No submission found for ${waybill.submissionCode || waybill.submissionId}.` });
+      const submission = Array.isArray(lookup?.data)
+        ? (lookup.data.length === 1 ? lookup.data[0] : null)
+        : lookup?.data;
+
+      if (Array.isArray(lookup?.data) && lookup.data.length > 1) {
+        setCameraStatus({
+          tone: 'error',
+          message: `Multiple pending non-event submissions found for user #${waybill.userId}. Scan the exact waybill code.`,
+        });
         return;
       }
 
-      const statusKey = String(submission.Status || '').toLowerCase();
-      const submissionLabel = submission.Submission_Code || `#${submission.Submission_ID}`;
+      if (!submission?.Submission_ID) {
+        setCameraStatus({ tone: 'error', message: `No non-event submission found for ${waybill.submissionCode || waybill.submissionId || `user #${waybill.userId}`}.` });
+        return;
+      }
 
-      if (statusKey === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) {
+      if (submission.From_Event !== false) {
         setCameraStatus({
           tone: 'warning',
-          message: `Waybill ${submissionLabel} has not been marked Cut & Shipped by the event staff yet. Cannot intake.`,
+          message: `Waybill ${submission.Submission_Code || `#${submission.Submission_ID}`} belongs to an event donation. Use Assigned Event Operations.`,
         });
-      } else if (statusKey === HAIR_SUBMISSION_STATUS.CUT_SHIPPED.toLowerCase()) {
-        const { error: receiveError } = await updateSubmissionStatus({
-          submissionId: submission.Submission_ID,
-          nextStatus: HAIR_SUBMISSION_STATUS.RECEIVED,
-          donorUserId: submission.User_ID,
-          submissionCode: submission.Submission_Code,
-          changedBy: Number(userProfile?.user_id || 0) || null,
-        });
-        if (receiveError) throw receiveError;
+        return;
+      }
 
-        await logAuditAction({
-          action: 'hair_submissions.received',
-          description: `Auto-marked waybill ${submissionLabel} as Received via scan.`,
-          resource: HAIR_SUBMISSIONS_TABLE,
-          status: 'success',
-          userProfile,
-        });
-
+      if (submission.Bundle_ID) {
         setCameraStatus({
-          tone: 'success',
-          message: `Waybill ${submissionLabel} marked Received. Donor notified. Scan again to approve or reject.`,
+          tone: 'info',
+          message: `Waybill ${submission.Submission_Code || `#${submission.Submission_ID}`} is already assigned to a bundle.`,
         });
-      } else if (statusKey === HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase()) {
+        return;
+      }
+
+      const statusKey = String(submission.Status || '').toLowerCase().replace(/[_\s-]+/g, '');
+      const submissionLabel = submission.Submission_Code || `#${submission.Submission_ID}`;
+
+      if (statusKey === 'pending') {
         setCameraStatus({
           tone: 'info',
           message: `Waybill ${submissionLabel} loaded. Inspect the hair and choose Approve or Reject below.`,
+        });
+      } else if (statusKey === 'cut') {
+        setCameraStatus({
+          tone: 'info',
+          message: `Waybill ${submissionLabel} is already approved (Cut).`,
+        });
+      } else if (statusKey === 'cancelled') {
+        setCameraStatus({
+          tone: 'info',
+          message: `Waybill ${submissionLabel} is already rejected (Cancelled).`,
         });
       } else {
         setCameraStatus({
@@ -398,8 +398,7 @@ export default function QualityCheckPage({ userProfile }) {
     } finally {
       isScanProcessingRef.current = false;
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userProfile]);
+  }, [loadQueue]);
 
   const handleToggleCamera = async () => {
     if (isCameraOn) {
@@ -494,16 +493,27 @@ export default function QualityCheckPage({ userProfile }) {
     setIsProcessingAction(true);
     setNotice({ kind: '', text: '' });
     try {
-      const { error } = await updateSubmissionStatus({
-        submissionId: activeQueueRow.submissionId,
-        nextStatus: HAIR_SUBMISSION_STATUS.APPROVED,
-        donorUserId: activeQueueRow.userId,
-        submissionCode: activeQueueRow.submissionCode,
-        eventTitle: activeQueueRow.eventTitle,
-        changedBy: Number(userProfile?.user_id || 0) || null,
+      const result = await supabase.rpc('specialist_review_non_event_hair_quality', {
+        p_submission_id: activeQueueRow.submissionId,
+        p_decision: 'Approved',
+        p_rejection_reason: null,
       });
-      if (error) throw error;
-      setNotice({ kind: 'success', text: 'Approved. Donor notified.' });
+      if (result.error) throw result.error;
+
+      const payload = result.data || {};
+      const updatedDetails = Array.isArray(payload?.details) ? payload.details : [];
+      if (updatedDetails.length) {
+        setActiveDetail((prev) => ({
+          details: updatedDetails,
+          imagesByDetailId: prev?.imagesByDetailId || {},
+        }));
+      }
+
+      setCameraStatus({
+        tone: 'success',
+        message: `Waybill ${activeQueueRow.submissionCode} approved. Submission status is now Cut.`,
+      });
+      setNotice({ kind: 'success', text: 'Approved. Submission moved to Cut.' });
       await logAuditAction({
         action: 'hair_submissions.approved',
         description: `Approved ${activeQueueRow.submissionCode}.`,
@@ -512,6 +522,7 @@ export default function QualityCheckPage({ userProfile }) {
         userProfile,
       });
       await loadQueue();
+      await loadDetail(activeQueueRow.submissionId);
     } catch (error) {
       setNotice({ kind: 'error', text: error?.message || 'Unable to approve.' });
     } finally {
@@ -530,28 +541,27 @@ export default function QualityCheckPage({ userProfile }) {
     setIsProcessingAction(true);
     setNotice({ kind: '', text: '' });
     try {
-      const { error } = await updateSubmissionStatus({
-        submissionId: activeQueueRow.submissionId,
-        nextStatus: HAIR_SUBMISSION_STATUS.REJECTED,
-        donorUserId: activeQueueRow.userId,
-        submissionCode: activeQueueRow.submissionCode,
-        eventTitle: activeQueueRow.eventTitle,
-        reason,
-        changedBy: Number(userProfile?.user_id || 0) || null,
+      const result = await supabase.rpc('specialist_review_non_event_hair_quality', {
+        p_submission_id: activeQueueRow.submissionId,
+        p_decision: 'Rejected',
+        p_rejection_reason: reason,
       });
-      if (error) throw error;
+      if (result.error) throw result.error;
 
-      if (activeDetail?.details?.length) {
-        const firstDetailId = activeDetail.details[0].Submission_Detail_ID;
-        if (firstDetailId) {
-          await supabase
-            .from(HAIR_SUBMISSION_DETAILS_TABLE)
-            .update({ Detail_Notes: reason, Status: HAIR_SUBMISSION_STATUS.REJECTED })
-            .eq('Submission_Detail_ID', firstDetailId);
-        }
+      const payload = result.data || {};
+      const updatedDetails = Array.isArray(payload?.details) ? payload.details : [];
+      if (updatedDetails.length) {
+        setActiveDetail((prev) => ({
+          details: updatedDetails,
+          imagesByDetailId: prev?.imagesByDetailId || {},
+        }));
       }
 
-      setNotice({ kind: 'success', text: 'Rejected. Donor notified.' });
+      setCameraStatus({
+        tone: 'warning',
+        message: `Waybill ${activeQueueRow.submissionCode} rejected. Submission status is now Cancelled.`,
+      });
+      setNotice({ kind: 'success', text: 'Rejected. Submission moved to Cancelled.' });
       setShowRejectionInput(false);
       setRejectionReason('');
       await logAuditAction({
@@ -562,6 +572,7 @@ export default function QualityCheckPage({ userProfile }) {
         userProfile,
       });
       await loadQueue();
+      await loadDetail(activeQueueRow.submissionId);
     } catch (error) {
       setNotice({ kind: 'error', text: error?.message || 'Unable to reject.' });
     } finally {
@@ -570,9 +581,12 @@ export default function QualityCheckPage({ userProfile }) {
   };
 
   const queueByStatus = useMemo(() => {
-    const groups = { 'Cut & Shipped': [], Received: [], Approved: [], Rejected: [] };
+    const groups = { Pending: [], Cut: [], Cancelled: [] };
     queue.forEach((row) => {
-      if (groups[row.status]) groups[row.status].push(row);
+      const key = String(row.status || '').toLowerCase().replace(/[_\s-]+/g, '');
+      if (key === 'pending') groups.Pending.push(row);
+      else if (key === 'cut') groups.Cut.push(row);
+      else if (key === 'cancelled') groups.Cancelled.push(row);
     });
     return groups;
   }, [queue]);
@@ -590,9 +604,8 @@ export default function QualityCheckPage({ userProfile }) {
     }
   })();
 
-  const activeStatusKey = String(activeQueueRow?.status || '').toLowerCase();
-  const isAwaitingScan = activeStatusKey === HAIR_SUBMISSION_STATUS.CUT_SHIPPED.toLowerCase();
-  const canDecide = activeStatusKey === HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase();
+  const activeStatusKey = String(activeQueueRow?.status || '').toLowerCase().replace(/[_\s-]+/g, '');
+  const canDecide = activeStatusKey === 'pending';
 
   return (
     <div className="space-y-6" style={rootStyle}>
@@ -600,7 +613,7 @@ export default function QualityCheckPage({ userProfile }) {
         <div>
           <h1 className="text-3xl font-bold mb-2" style={headingStyle}>Quality Check</h1>
           <p style={{ color: secondaryTextColor }}>
-            Scan an incoming waybill, mark it received, then approve or reject after inspection.
+            Non-event donations only: scan waybill, inspect the hair, then approve or reject.
           </p>
         </div>
         <button
@@ -726,7 +739,7 @@ export default function QualityCheckPage({ userProfile }) {
                 <div className="min-w-0">
                   <p className="text-sm font-semibold truncate" style={{ color: primaryTextColor }}>{activeQueueRow.donorName}</p>
                   <p className="text-xs" style={{ color: secondaryTextColor }}>
-                    {activeQueueRow.submissionCode} - {activeQueueRow.eventTitle}
+                    {activeQueueRow.submissionCode} - {activeQueueRow.sourceLabel}
                   </p>
                 </div>
               </div>
@@ -830,12 +843,6 @@ export default function QualityCheckPage({ userProfile }) {
               ) : null}
 
               <div className="flex flex-wrap gap-2">
-                {isAwaitingScan ? (
-                  <p className="text-xs" style={{ color: tertiaryTextColor }}>
-                    Scan this waybill with the camera scanner above to mark it as Received.
-                  </p>
-                ) : null}
-
                 {canDecide ? (
                   <>
                     <button
@@ -874,7 +881,7 @@ export default function QualityCheckPage({ userProfile }) {
                   </>
                 ) : null}
 
-                {!isAwaitingScan && !canDecide ? (
+                {!canDecide ? (
                   <p className="text-xs" style={{ color: tertiaryTextColor }}>
                     No further QA action available for this status.
                   </p>
@@ -888,7 +895,7 @@ export default function QualityCheckPage({ userProfile }) {
       <div className="rounded-xl border bg-white overflow-hidden" style={{ borderColor: '#e2e8f0' }}>
         <div className="flex items-center justify-between gap-2 px-4 py-3 border-b" style={{ borderColor: '#e2e8f0' }}>
           <h2 className="text-lg font-semibold" style={headingStyle}>Active Queue</h2>
-          <span className="text-xs" style={{ color: tertiaryTextColor }}>{queue.length} in flight</span>
+          <span className="text-xs" style={{ color: tertiaryTextColor }}>{queue.length} non-event submissions</span>
         </div>
 
         {!queue.length && !isLoadingQueue ? (
@@ -928,7 +935,7 @@ export default function QualityCheckPage({ userProfile }) {
                         >
                           <p className="font-mono text-xs font-semibold" style={{ color: primaryTextColor }}>{row.submissionCode}</p>
                           <p className="mt-0.5 truncate text-xs" style={{ color: secondaryTextColor }}>{row.donorName}</p>
-                          <p className="truncate text-[11px]" style={{ color: tertiaryTextColor }}>{row.eventTitle}</p>
+                          <p className="truncate text-[11px]" style={{ color: tertiaryTextColor }}>{row.sourceLabel}</p>
                         </button>
                       );
                     })

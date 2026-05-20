@@ -27,6 +27,10 @@ export default function RoleDashboardShell({
   const [currentPage, setCurrentPage] = useState(defaultPage);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(getInitialSidebarCollapsed);
 
+  useEffect(() => {
+    setCurrentPage(defaultPage || 'dashboard');
+  }, [defaultPage]);
+
   const pageTitle = useMemo(() => {
     const activeNavItem = navItems.find((item) => item.id === currentPage);
     return activeNavItem?.label || 'Overview';

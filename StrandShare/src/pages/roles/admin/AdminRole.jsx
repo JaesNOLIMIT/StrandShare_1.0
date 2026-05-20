@@ -24,7 +24,7 @@ import RoleReportsPage from '../../shared/features/RoleReportsPage';
 const adminNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'manage-user-accounts', label: 'Manage User Accounts', icon: Users },
-  { id: 'manage-hospital-accounts', label: 'Manage H-Representative Accounts', icon: Building2 },
+  { id: 'manage-hospital-accounts', label: 'Manage H-Representative', icon: Building2 },
   { id: 'manage-event-applications', label: 'Manage Event Requests', icon: ShieldCheck },
   { id: 'manage-requirements', label: 'Manage Requirements', icon: SlidersHorizontal },
   { id: 'reports', label: 'Reports', icon: BarChart3 },

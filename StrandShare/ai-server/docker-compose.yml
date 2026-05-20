@@ -1,0 +1,35 @@
+# Local-dev compose file. The same file works on a Hostinger GPU VPS:
+#   - install the NVIDIA Container Toolkit on the host
+#   - `docker compose up -d`
+# The `models` named volume keeps the ~5 GB of model weights between runs so
+# you do not redownload them on every container restart.
+
+services:
+  ai-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: strandshare/wig-ai-server:latest
+    container_name: wig_ai_server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - models:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/health'); sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  models:

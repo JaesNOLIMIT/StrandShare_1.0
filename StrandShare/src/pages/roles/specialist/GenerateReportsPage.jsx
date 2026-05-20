@@ -39,7 +39,7 @@ const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
 const WIGS_TABLE = 'Wigs';
 const USER_DETAILS_TABLE = 'user_details';
-const DONATION_DRIVE_REQUESTS_TABLE = 'Donation_Drive_Requests';
+const EVENT_REQUESTS_TABLE = 'Event_Requests';
 
 const REPORT_TEMPLATES = [
   {
@@ -67,7 +67,7 @@ const REPORT_TEMPLATES = [
       { key: 'members', label: 'Hairs in Bundle' },
       { key: 'notes', label: 'Notes' },
       { key: 'created', label: 'Created' },
-      { key: 'completed', label: 'Wig Completed' },
+      { key: 'completed', label: 'Wig Created' },
     ],
   },
   {
@@ -252,12 +252,12 @@ export default function GenerateReportsPage({ userProfile }) {
       const [submissionsRes, bundlesRes, wigsRes] = await Promise.all([
         supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Donation_Drive_ID, Status, Submission_Code, Created_At, Updated_At, Bundle_ID')
+          .select('Submission_ID, User_ID, Event_Request_ID, Status, Submission_Code, Created_At, Updated_At, Bundle_ID')
           .order('Updated_At', { ascending: false })
           .limit(2000),
         supabase
           .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-          .select('Bundle_ID, Status, Submission_Code, Notes, Created_At, Wig_Completed_At, Draft_Submission_IDs')
+          .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At')
           .order('Created_At', { ascending: false })
           .limit(500),
         supabase
@@ -288,7 +288,7 @@ export default function GenerateReportsPage({ userProfile }) {
       setBundleMembers(bundlesByMembers);
 
       const userIds = Array.from(new Set(submissionRows.map((r) => Number(r.User_ID || 0)).filter(Boolean)));
-      const driveIds = Array.from(new Set(submissionRows.map((r) => Number(r.Donation_Drive_ID || 0)).filter(Boolean)));
+      const driveIds = Array.from(new Set(submissionRows.map((r) => Number(r.Event_Request_ID || 0)).filter(Boolean)));
 
       if (userIds.length) {
         const { data, error } = await supabase
@@ -307,12 +307,12 @@ export default function GenerateReportsPage({ userProfile }) {
 
       if (driveIds.length) {
         const { data, error } = await supabase
-          .from(DONATION_DRIVE_REQUESTS_TABLE)
-          .select('Donation_Drive_ID, Event_Title, Start_Date, End_Date')
-          .in('Donation_Drive_ID', driveIds);
+          .from(EVENT_REQUESTS_TABLE)
+          .select('Event_Request_ID, Event_Name, Start_Date, End_Date')
+          .in('Event_Request_ID', driveIds);
         if (!error) {
           setDrivesById((data || []).reduce((acc, row) => {
-            acc[Number(row.Donation_Drive_ID)] = row;
+            acc[Number(row.Event_Request_ID)] = row;
             return acc;
           }, {}));
         }
@@ -360,9 +360,9 @@ export default function GenerateReportsPage({ userProfile }) {
 
   const driveOptions = useMemo(() => {
     const options = Object.values(drivesById)
-      .map((row) => ({ id: Number(row.Donation_Drive_ID), title: row.Event_Title || `Drive #${row.Donation_Drive_ID}` }))
+      .map((row) => ({ id: Number(row.Event_Request_ID), title: row.Event_Name || `Event #${row.Event_Request_ID}` }))
       .sort((a, b) => a.title.localeCompare(b.title));
-    return [{ id: 'all', title: 'All Donation Drives' }, ...options];
+    return [{ id: 'all', title: 'All Events' }, ...options];
   }, [drivesById]);
 
   const filteredRows = useMemo(() => {
@@ -370,17 +370,17 @@ export default function GenerateReportsPage({ userProfile }) {
       return submissions
         .filter((row) => {
           if (statusFilter !== 'all' && statusKey(row.Status) !== statusFilter) return false;
-          if (driveFilter !== 'all' && Number(row.Donation_Drive_ID) !== Number(driveFilter)) return false;
+          if (driveFilter !== 'all' && Number(row.Event_Request_ID) !== Number(driveFilter)) return false;
           if ((dateFrom || dateTo) && !isWithinRange(row.Updated_At || row.Created_At, dateFrom, dateTo)) return false;
           return true;
         })
         .map((row) => {
           const donor = donorsById[Number(row.User_ID || 0)];
-          const drive = drivesById[Number(row.Donation_Drive_ID || 0)];
+          const drive = drivesById[Number(row.Event_Request_ID || 0)];
           return {
             code: row.Submission_Code || `HS-${row.Submission_ID}`,
             donor: donor ? buildFullName(donor.first_name, donor.middle_name, donor.last_name, donor.suffix) : `User #${row.User_ID || 0}`,
-            drive: drive?.Event_Title || (row.Donation_Drive_ID ? `Drive #${row.Donation_Drive_ID}` : '-'),
+            drive: drive?.Event_Name || (row.Event_Request_ID ? `Event #${row.Event_Request_ID}` : '-'),
             status: row.Status || '-',
             created: formatDateTime(row.Created_At),
             updated: formatDateTime(row.Updated_At),
@@ -396,10 +396,9 @@ export default function GenerateReportsPage({ userProfile }) {
           return true;
         })
         .map((row) => {
-          const draftIds = Array.isArray(row.Draft_Submission_IDs) ? row.Draft_Submission_IDs : [];
-          const memberCount = bundleMembers[Number(row.Bundle_ID)] || draftIds.length || 0;
+          const memberCount = bundleMembers[Number(row.Bundle_ID)] || 0;
           return {
-            code: row.Submission_Code || `WB-${row.Bundle_ID}`,
+            code: row.Bundle_Waybill_Code || `WB-${row.Bundle_ID}`,
             status: row.Status || '-',
             members: memberCount,
             notes: row.Notes || '-',
@@ -411,7 +410,7 @@ export default function GenerateReportsPage({ userProfile }) {
 
     if (selectedTemplateId === 'wig_inventory') {
       const bundleCodeById = bundles.reduce((acc, b) => {
-        acc[Number(b.Bundle_ID)] = b.Submission_Code || `WB-${b.Bundle_ID}`;
+        acc[Number(b.Bundle_ID)] = b.Bundle_Waybill_Code || `WB-${b.Bundle_ID}`;
         return acc;
       }, {});
       return wigs
@@ -433,13 +432,13 @@ export default function GenerateReportsPage({ userProfile }) {
     if (selectedTemplateId === 'donor_throughput') {
       const grouped = new Map();
       submissions.forEach((row) => {
-        const driveId = Number(row.Donation_Drive_ID || 0);
+        const driveId = Number(row.Event_Request_ID || 0);
         if (driveFilter !== 'all' && driveId !== Number(driveFilter)) return;
         if ((dateFrom || dateTo) && !isWithinRange(row.Created_At, dateFrom, dateTo)) return;
         if (!grouped.has(driveId)) {
           grouped.set(driveId, {
             driveId,
-            title: drivesById[driveId]?.Event_Title || (driveId ? `Drive #${driveId}` : 'Unassigned'),
+            title: drivesById[driveId]?.Event_Name || (driveId ? `Event #${driveId}` : 'Unassigned'),
             donors: new Set(),
             submitted: 0,
             approved: 0,
@@ -774,7 +773,7 @@ export default function GenerateReportsPage({ userProfile }) {
         { id: 'all', label: 'All statuses' },
         { id: HAIR_BUNDLE_STATUS.DRAFT.toLowerCase(), label: 'Draft' },
         { id: HAIR_BUNDLE_STATUS.IN_PRODUCTION.toLowerCase(), label: 'In Production' },
-        { id: HAIR_BUNDLE_STATUS.WIG_COMPLETED.toLowerCase(), label: 'Wig Completed' },
+        { id: HAIR_BUNDLE_STATUS.WIG_COMPLETED.toLowerCase(), label: 'Wig Created' },
       ];
     }
     return [
@@ -793,7 +792,7 @@ export default function GenerateReportsPage({ userProfile }) {
         <div>
           <h1 className="text-3xl font-bold mb-2" style={headingStyle}>Reports</h1>
           <p style={{ color: secondaryTextColor }}>
-            Generate QA, bundling, and wig inventory reports. Filter by date, status, or donation drive, then export to CSV or PDF.
+            Generate QA, bundling, and wig inventory reports. Filter by date, status, or event, then export to CSV or PDF.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -915,7 +914,7 @@ export default function GenerateReportsPage({ userProfile }) {
           </div>
           {(selectedTemplateId === 'qa_decisions' || selectedTemplateId === 'donor_throughput') ? (
             <div>
-              <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>Donation drive</label>
+              <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>Event</label>
               <select
                 value={driveFilter}
                 onChange={(event) => setDriveFilter(event.target.value)}

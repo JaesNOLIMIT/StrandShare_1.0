@@ -14,6 +14,7 @@ module.exports = {
           rule.exclude = [
             ...existingExcludes,
             /[\\/]node_modules[\\/]dompurify[\\/]/,
+            /[\\/]node_modules[\\/]@mediapipe[\\/]tasks-vision[\\/]/,
           ];
         }
       });

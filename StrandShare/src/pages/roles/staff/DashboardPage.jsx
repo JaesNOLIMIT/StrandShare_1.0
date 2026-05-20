@@ -337,16 +337,16 @@ export default function DashboardPage({ onNavigate, userProfile }) {
         }
       });
 
-      const assignedApplicationIds = [...new Set(
-        myAssignedRows.map((row) => safeNumber(row.Event_Application_ID)).filter((value) => value > 0),
+      const assignedRequestIds = [...new Set(
+        myAssignedRows.map((row) => safeNumber(row.Event_Request_ID)).filter((value) => value > 0),
       )];
 
       let attendeeRows = [];
-      if (assignedApplicationIds.length > 0) {
+      if (assignedRequestIds.length > 0) {
         const attendeeResult = await supabase
           .from(EVENT_ATTENDEES_TABLE)
-          .select('Event_Attendee_ID,Event_Application_ID,Waybill_Printed_At,Attendance_Status')
-          .in('Event_Application_ID', assignedApplicationIds)
+          .select('Event_Attendee_ID,Event_Request_ID,Waybill_Printed_At,Attendance_Status')
+          .in('Event_Request_ID', assignedRequestIds)
           .limit(2000);
         if (attendeeResult.error) {
           nextWarnings.push(`Assigned attendees: ${attendeeResult.error.message}`);
@@ -356,8 +356,8 @@ export default function DashboardPage({ onNavigate, userProfile }) {
         }
       }
 
-      const attendeeCountByApplicationId = attendeeRows.reduce((acc, row) => {
-        const key = safeNumber(row.Event_Application_ID);
+      const attendeeCountByRequestId = attendeeRows.reduce((acc, row) => {
+        const key = safeNumber(row.Event_Request_ID);
         acc[key] = (acc[key] || 0) + 1;
         return acc;
       }, {});
@@ -480,7 +480,7 @@ export default function DashboardPage({ onNavigate, userProfile }) {
         appealedRows: appealedRows.slice(0, 5),
         assignedRows: myAssignedRows.slice(0, 5).map((row) => ({
           ...row,
-          attendeeCount: attendeeCountByApplicationId[safeNumber(row.Event_Application_ID)] || 0,
+          attendeeCount: attendeeCountByRequestId[safeNumber(row.Event_Request_ID)] || 0,
         })),
         systemChecks,
       });

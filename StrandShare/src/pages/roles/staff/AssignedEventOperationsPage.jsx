@@ -1,21 +1,28 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertCircle,
+  Camera,
+  CameraOff,
   Calendar,
   CheckCircle2,
   Inbox,
   Loader2,
   MapPin,
   Printer,
+  ScanLine,
   Search,
   Users,
   X,
 } from 'lucide-react';
+import jsQR from 'jsqr';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabaseClient';
 import { useTheme } from '../../../context/ThemeContext';
 
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
+const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
 const USERS_TABLE = 'users';
+const SCAN_DEBOUNCE_MS = 2500;
 
 function formatDateTime(value) {
   if (!value) return 'N/A';
@@ -57,9 +64,82 @@ function buildAddress(event) {
     .join(', ');
 }
 
+function parseRsvpScanPayload(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) return {
+    raw: '',
+    payloadType: '',
+    waybillCode: '',
+    userId: null,
+  };
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      const payloadType = String(parsed.Payload_Type || parsed.payload_type || '').trim();
+      const candidates = [
+        parsed.waybill_code,
+        parsed.waybillCode,
+        parsed.Waybill_Code,
+        parsed.code,
+        parsed.value,
+        parsed.data?.waybill_code,
+        parsed.data?.waybillCode,
+        parsed.data?.Waybill_Code,
+      ];
+      const match = candidates.find((value) => String(value || '').trim());
+      const userIdRaw = parsed.User_ID ?? parsed.user_id ?? parsed.userId ?? parsed.data?.User_ID ?? parsed.data?.user_id;
+      const userId = Number(userIdRaw);
+      return {
+        raw,
+        payloadType,
+        waybillCode: match ? String(match).trim() : '',
+        userId: Number.isFinite(userId) && userId > 0 ? userId : null,
+      };
+    }
+  } catch {
+    // not a JSON payload; continue
+  }
+
+  return {
+    raw,
+    payloadType: '',
+    waybillCode: raw,
+    userId: null,
+  };
+}
+
+function normalizeFlowStatusKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[_\s-]+/g, '');
+}
+
+function isFinalHairDetailStatus(status) {
+  const key = normalizeFlowStatusKey(status);
+  return key === 'approved' || key === 'rejected' || key === 'rejectedcut';
+}
+
+function createDetailDraft(detail) {
+  return {
+    submissionDetailId: Number(detail?.Submission_Detail_ID || 0) || null,
+    declaredLength: detail?.Declared_Length == null ? '' : String(detail.Declared_Length),
+    declaredColor: String(detail?.Declared_Color || ''),
+    declaredTexture: String(detail?.Declared_Texture || ''),
+    declaredDensity: String(detail?.Declared_Density || ''),
+    declaredCondition: String(detail?.Declared_Condition || ''),
+    isChemicallyTreated: Boolean(detail?.Is_Chemically_Treated),
+    isColored: Boolean(detail?.Is_Colored),
+    isBleached: Boolean(detail?.Is_Bleached),
+    isRebonded: Boolean(detail?.Is_Rebonded),
+    detailNotes: String(detail?.Detail_Notes || ''),
+  };
+}
+
 export default function AssignedEventOperationsPage({ userProfile }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0f766e';
+  const tertiaryColor = theme?.tertiaryColor || '#10b981';
 
   const [staffUserId, setStaffUserId] = useState(userProfile?.user_id || null);
   const [isLoadingEvents, setIsLoadingEvents] = useState(false);
@@ -71,6 +151,24 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   const [selectedRequestId, setSelectedRequestId] = useState(null);
   const [attendees, setAttendees] = useState([]);
   const [attendeeSearch, setAttendeeSearch] = useState('');
+  const [isStartingCamera, setIsStartingCamera] = useState(false);
+  const [isCameraOn, setIsCameraOn] = useState(false);
+  const [cameraStatus, setCameraStatus] = useState({
+    kind: 'info',
+    message: 'Camera is off. Start scanner to mark RSVP attendance.',
+  });
+  const [manualWaybillCode, setManualWaybillCode] = useState('');
+  const [activeReview, setActiveReview] = useState(null);
+  const [qualityReason, setQualityReason] = useState('');
+  const [detailDraft, setDetailDraft] = useState(() => createDetailDraft(null));
+  const [isSubmittingQuality, setIsSubmittingQuality] = useState(false);
+  const [isSavingDetail, setIsSavingDetail] = useState(false);
+
+  const videoRef = useRef(null);
+  const cameraStreamRef = useRef(null);
+  const scannerCanvasRef = useRef(null);
+  const isScanProcessingRef = useRef(false);
+  const lastScanRef = useRef({ raw: '', at: 0 });
 
   const resolveStaffUserId = useCallback(async () => {
     if (staffUserId) return staffUserId;
@@ -126,18 +224,18 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     }
   }, [resolveStaffUserId]);
 
-  const loadAttendees = useCallback(async (eventApplicationId) => {
-    if (!eventApplicationId || !supabase) {
+  const loadAttendees = useCallback(async (eventRequestId) => {
+    if (!supabase || !eventRequestId) {
       setAttendees([]);
       return;
     }
 
     setIsLoadingAttendees(true);
     try {
-      const result = await supabase
+      let result = await supabase
         .from(EVENT_ATTENDEES_TABLE)
         .select('*')
-        .eq('Event_Application_ID', eventApplicationId)
+        .eq('Event_Request_ID', eventRequestId)
         .order('Created_At', { ascending: true });
 
       if (result.error) throw result.error;
@@ -167,12 +265,15 @@ export default function AssignedEventOperationsPage({ userProfile }) {
 
   // Load attendees whenever the selected event changes
   useEffect(() => {
-    if (selectedEvent?.Event_Application_ID) {
-      loadAttendees(selectedEvent.Event_Application_ID);
+    if (selectedEvent?.Event_Request_ID) {
+      loadAttendees(selectedEvent?.Event_Request_ID);
     } else {
       setAttendees([]);
     }
     setAttendeeSearch('');
+    setActiveReview(null);
+    setQualityReason('');
+    setDetailDraft(createDetailDraft(null));
   }, [selectedEvent, loadAttendees]);
 
   // Realtime: keep assigned events + attendees in sync
@@ -226,9 +327,11 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         'postgres_changes',
         { event: '*', schema: 'public', table: EVENT_ATTENDEES_TABLE },
         (payload) => {
-          const targetEventAppId = selectedEvent?.Event_Application_ID;
-          if (!targetEventAppId) return;
-          const isForSelected = Number(payload.new?.Event_Application_ID ?? payload.old?.Event_Application_ID) === Number(targetEventAppId);
+          const targetEventRequestId = Number(selectedEvent?.Event_Request_ID || 0);
+          if (!targetEventRequestId) return;
+
+          const payloadEventRequestId = Number(payload.new?.Event_Request_ID ?? payload.old?.Event_Request_ID ?? 0);
+          const isForSelected = targetEventRequestId > 0 && payloadEventRequestId === targetEventRequestId;
           if (!isForSelected) return;
 
           if (payload.eventType === 'INSERT') {
@@ -255,7 +358,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       supabase.removeChannel(requestsChannel);
       supabase.removeChannel(attendeesChannel);
     };
-  }, [staffUserId, selectedEvent?.Event_Application_ID]);
+  }, [staffUserId, selectedEvent?.Event_Request_ID]);
 
   const handleAttendanceStatusChange = async (attendee, nextStatus) => {
     setIsSaving(true);
@@ -282,6 +385,418 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       setIsSaving(false);
     }
   };
+
+  const stopCamera = useCallback(() => {
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((track) => track.stop());
+      cameraStreamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  }, []);
+
+  const loadSubmissionDetailsById = useCallback(async (submissionId) => {
+    const targetId = Number(submissionId || 0);
+    if (!targetId || !supabase) return [];
+
+    const detailsResult = await supabase
+      .from(HAIR_SUBMISSION_DETAILS_TABLE)
+      .select('*')
+      .eq('Submission_ID', targetId)
+      .order('Submission_Detail_ID', { ascending: true });
+
+    if (detailsResult.error) throw detailsResult.error;
+    return detailsResult.data || [];
+  }, []);
+
+  const reviewStatusMeta = useMemo(() => {
+    const submission = activeReview?.submission || null;
+    const details = Array.isArray(activeReview?.details) ? activeReview.details : [];
+
+    const detailStatus = details.find((row) => isFinalHairDetailStatus(row?.Status))?.Status || '';
+    const submissionStatusKey = normalizeFlowStatusKey(submission?.Status);
+
+    const submissionFinal = ['cut', 'cancelled', 'wiginproduction', 'wigcreated'].includes(submissionStatusKey);
+    const detailFinal = Boolean(detailStatus);
+    const isFinal = submissionFinal || detailFinal;
+    const needsDecision = Boolean(submission?.Submission_ID) && !isFinal;
+
+    return {
+      isFinal,
+      needsDecision,
+      finalStatusLabel: detailFinal ? String(detailStatus) : (submission?.Status ? String(submission.Status) : ''),
+    };
+  }, [activeReview]);
+
+  const markAttendeePresentByWaybill = useCallback(async (rawValue) => {
+    if (isScanProcessingRef.current || !selectedEvent || !supabase) return;
+
+    if (reviewStatusMeta.needsDecision) {
+      const message = 'Complete the current hair quality decision first before scanning another RSVP.';
+      setNotice({ kind: 'warning', text: message });
+      setCameraStatus({ kind: 'warning', message });
+      return;
+    }
+
+    isScanProcessingRef.current = true;
+    setIsSaving(true);
+
+    try {
+      const scan = parseRsvpScanPayload(rawValue);
+      if (!scan.waybillCode && !scan.userId && !scan.raw) {
+        throw new Error('No waybill code or user id detected from scan.');
+      }
+
+      const eventRequestId = Number(selectedEvent?.Event_Request_ID || 0);
+      if (!eventRequestId) {
+        throw new Error('Selected event has no Event_Request_ID.');
+      }
+
+      const scanResult = await supabase.rpc('scan_event_attendee_rsvp', {
+        p_event_request_id: eventRequestId,
+        p_qr_payload: String(rawValue || ''),
+      });
+      if (scanResult.error) throw scanResult.error;
+
+      const payload = scanResult.data || {};
+      const updated = payload?.attendee || null;
+      const submission = payload?.submission || null;
+      const submissionStatus = String(
+        payload?.submission_status
+        || payload?.submission?.Status
+        || '',
+      ).trim();
+      const resolvedWaybillCode = String(
+        payload?.waybill_code
+        || updated?.Waybill_Code
+        || scan.waybillCode
+        || '',
+      ).trim();
+
+      if (updated?.Event_Attendee_ID) {
+        setAttendees((current) => {
+          const exists = current.some((row) => Number(row.Event_Attendee_ID) === Number(updated.Event_Attendee_ID));
+          if (!exists) return [updated, ...current];
+          return current.map((row) => (
+            Number(row.Event_Attendee_ID) === Number(updated.Event_Attendee_ID) ? updated : row
+          ));
+        });
+      } else {
+        await loadAttendees(selectedEvent.Event_Request_ID);
+      }
+
+      let details = Array.isArray(payload?.details) ? payload.details : [];
+      const submissionId = Number(submission?.Submission_ID || 0);
+      if (!details.length && submissionId > 0) {
+        details = await loadSubmissionDetailsById(submissionId);
+      }
+
+      setActiveReview({
+        attendee: updated || null,
+        submission: submission || null,
+        details,
+        waybillCode: resolvedWaybillCode,
+      });
+      setQualityReason('');
+      setDetailDraft(createDetailDraft(details?.[0] || null));
+
+      setNotice({ kind: 'success', text: `RSVP marked present for ${updated?.Full_Name || resolvedWaybillCode || 'attendee'}.` });
+      setCameraStatus({
+        kind: 'success',
+        message: `RSVP success: ${updated?.Full_Name || 'Attendee'} marked Present.${submissionStatus ? ` Hair submission: ${submissionStatus}.` : ''} Review hair quality below.`,
+      });
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to process RSVP scan.' });
+      setCameraStatus({ kind: 'error', message: error.message || 'RSVP scan failed.' });
+    } finally {
+      setIsSaving(false);
+      isScanProcessingRef.current = false;
+    }
+  }, [loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, selectedEvent]);
+
+  const handleSaveDetailEdits = useCallback(async () => {
+    if (!supabase || !selectedEvent) return;
+
+    const submissionId = Number(activeReview?.submission?.Submission_ID || 0);
+    const eventRequestId = Number(selectedEvent?.Event_Request_ID || 0);
+    if (!submissionId || !eventRequestId) {
+      setNotice({ kind: 'error', text: 'Scan an RSVP first to load hair details.' });
+      return;
+    }
+
+    if (reviewStatusMeta.isFinal) {
+      setNotice({ kind: 'warning', text: 'Hair details are locked after final decision.' });
+      return;
+    }
+
+    const lengthRaw = String(detailDraft?.declaredLength || '').trim();
+    const parsedLength = lengthRaw === '' ? null : Number(lengthRaw);
+    if (parsedLength != null && (!Number.isFinite(parsedLength) || parsedLength < 0)) {
+      setNotice({ kind: 'error', text: 'Declared length must be a non-negative number.' });
+      return;
+    }
+
+    setIsSavingDetail(true);
+    setIsSaving(true);
+    setNotice({ kind: '', text: '' });
+    try {
+      const result = await supabase.rpc('staff_update_hair_submission_details', {
+        p_event_request_id: eventRequestId,
+        p_submission_id: submissionId,
+        p_declared_length: parsedLength,
+        p_declared_color: String(detailDraft?.declaredColor || '').trim() || null,
+        p_declared_texture: String(detailDraft?.declaredTexture || '').trim() || null,
+        p_declared_density: String(detailDraft?.declaredDensity || '').trim() || null,
+        p_declared_condition: String(detailDraft?.declaredCondition || '').trim() || null,
+        p_is_chemically_treated: Boolean(detailDraft?.isChemicallyTreated),
+        p_is_colored: Boolean(detailDraft?.isColored),
+        p_is_bleached: Boolean(detailDraft?.isBleached),
+        p_is_rebonded: Boolean(detailDraft?.isRebonded),
+        p_detail_notes: String(detailDraft?.detailNotes || '').trim() || null,
+      });
+      if (result.error) throw result.error;
+
+      const payload = result.data || {};
+      const updatedDetails = Array.isArray(payload?.details) ? payload.details : [];
+      const updatedSubmission = payload?.submission || null;
+
+      setActiveReview((prev) => ({
+        attendee: prev?.attendee || null,
+        submission: updatedSubmission || prev?.submission || null,
+        details: updatedDetails.length ? updatedDetails : (prev?.details || []),
+        waybillCode: prev?.waybillCode || '',
+      }));
+      setDetailDraft(createDetailDraft(updatedDetails?.[0] || null));
+      setNotice({ kind: 'success', text: 'Hair details updated.' });
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to update hair details.' });
+    } finally {
+      setIsSavingDetail(false);
+      setIsSaving(false);
+    }
+  }, [activeReview, detailDraft, reviewStatusMeta.isFinal, selectedEvent]);
+
+  const handleQualityDecision = useCallback(async (decision) => {
+    if (!supabase || !selectedEvent) return;
+
+    const submissionId = Number(activeReview?.submission?.Submission_ID || 0);
+    const eventRequestId = Number(selectedEvent?.Event_Request_ID || 0);
+    if (!submissionId || !eventRequestId) {
+      setNotice({ kind: 'error', text: 'Scan an RSVP first to load hair details for review.' });
+      return;
+    }
+
+    if (reviewStatusMeta.isFinal) {
+      setNotice({ kind: 'warning', text: 'Hair quality decision is already final and locked.' });
+      return;
+    }
+
+    const normalizedDecision = normalizeFlowStatusKey(decision);
+    if (!['approved', 'rejected', 'rejectedcut'].includes(normalizedDecision)) {
+      setNotice({ kind: 'error', text: 'Invalid quality decision.' });
+      return;
+    }
+
+    const rejectionReason = String(qualityReason || '').trim();
+    if ((normalizedDecision === 'rejected' || normalizedDecision === 'rejectedcut') && !rejectionReason) {
+      setNotice({ kind: 'error', text: 'Rejection reason is required for Rejected or Rejected Cut.' });
+      return;
+    }
+
+    setIsSubmittingQuality(true);
+    setIsSaving(true);
+    setNotice({ kind: '', text: '' });
+
+    try {
+      const result = await supabase.rpc('staff_review_hair_submission_quality', {
+        p_event_request_id: eventRequestId,
+        p_submission_id: submissionId,
+        p_decision: normalizedDecision === 'approved'
+          ? 'Approved'
+          : normalizedDecision === 'rejectedcut'
+            ? 'Rejected Cut'
+            : 'Rejected',
+        p_rejection_reason: (normalizedDecision === 'rejected' || normalizedDecision === 'rejectedcut')
+          ? rejectionReason
+          : null,
+      });
+
+      if (result.error) throw result.error;
+
+      const payload = result.data || {};
+      const updatedAttendee = payload?.attendee || null;
+      const updatedSubmission = payload?.submission || null;
+      const updatedDetails = Array.isArray(payload?.details) ? payload.details : [];
+      const resolvedDecision = String(
+        payload?.decision
+        || (normalizedDecision === 'approved'
+          ? 'Approved'
+          : normalizedDecision === 'rejectedcut'
+            ? 'Rejected Cut'
+            : 'Rejected'),
+      ).trim();
+
+      if (updatedAttendee?.Event_Attendee_ID) {
+        setAttendees((current) => {
+          const exists = current.some((row) => Number(row.Event_Attendee_ID) === Number(updatedAttendee.Event_Attendee_ID));
+          if (!exists) return [updatedAttendee, ...current];
+          return current.map((row) => (
+            Number(row.Event_Attendee_ID) === Number(updatedAttendee.Event_Attendee_ID) ? updatedAttendee : row
+          ));
+        });
+      }
+
+      setActiveReview((prev) => ({
+        attendee: updatedAttendee || prev?.attendee || null,
+        submission: updatedSubmission || prev?.submission || null,
+        details: updatedDetails.length ? updatedDetails : (prev?.details || []),
+        waybillCode: prev?.waybillCode || '',
+      }));
+      setDetailDraft(createDetailDraft(updatedDetails?.[0] || null));
+
+      setNotice({
+        kind: 'success',
+        text: resolvedDecision === 'Approved'
+          ? 'Hair quality approved. Submission moved to Cut.'
+          : resolvedDecision === 'Rejected Cut'
+            ? 'Hair quality marked Rejected Cut. Submission moved to Cancelled.'
+            : 'Hair quality rejected. Submission moved to Cancelled.',
+      });
+      setCameraStatus({
+        kind: resolvedDecision === 'Approved' ? 'success' : 'warning',
+        message: resolvedDecision === 'Approved'
+          ? 'Hair quality approved and tagged as Cut. Ready for specialist bundling.'
+          : resolvedDecision === 'Rejected Cut'
+            ? 'Hair quality marked Rejected Cut and submission marked Cancelled.'
+            : 'Hair quality rejected and marked Cancelled.',
+      });
+
+      if (resolvedDecision === 'Approved') {
+        setQualityReason('');
+      }
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to submit hair quality decision.' });
+      setCameraStatus({ kind: 'error', message: error.message || 'Hair quality review failed.' });
+    } finally {
+      setIsSubmittingQuality(false);
+      setIsSaving(false);
+    }
+  }, [activeReview, qualityReason, reviewStatusMeta.isFinal, selectedEvent]);
+
+  const handleToggleCamera = async () => {
+    if (reviewStatusMeta.needsDecision) {
+      const message = 'Complete the current hair quality decision first before scanning another RSVP.';
+      setNotice({ kind: 'warning', text: message });
+      setCameraStatus({ kind: 'warning', message });
+      return;
+    }
+
+    if (isCameraOn) {
+      stopCamera();
+      setIsCameraOn(false);
+      setCameraStatus({ kind: 'info', message: 'Camera is off. Start scanner to mark RSVP attendance.' });
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraStatus({ kind: 'error', message: 'Camera API is unavailable on this browser/device.' });
+      return;
+    }
+
+    setIsStartingCamera(true);
+    setCameraStatus({ kind: 'info', message: 'Initializing camera scanner...' });
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      });
+
+      cameraStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.muted = true;
+        videoRef.current.playsInline = true;
+        await videoRef.current.play();
+      }
+
+      setIsCameraOn(true);
+      setCameraStatus({ kind: 'success', message: 'Scanner is running. Point camera at attendee RSVP QR/waybill.' });
+    } catch (error) {
+      setCameraStatus({ kind: 'error', message: error?.message || 'Could not access the camera.' });
+    } finally {
+      setIsStartingCamera(false);
+    }
+  };
+
+  const handleManualScanLookup = () => {
+    const value = String(manualWaybillCode || '').trim();
+    if (!value) return;
+    if (reviewStatusMeta.needsDecision) {
+      const message = 'Complete the current hair quality decision first before scanning another RSVP.';
+      setNotice({ kind: 'warning', text: message });
+      setCameraStatus({ kind: 'warning', message });
+      return;
+    }
+    setManualWaybillCode('');
+    void markAttendeePresentByWaybill(value);
+  };
+
+  useEffect(() => {
+    if (!reviewStatusMeta.needsDecision || !isCameraOn) return;
+    stopCamera();
+    setIsCameraOn(false);
+    setCameraStatus({
+      kind: 'warning',
+      message: 'Scanner paused. Complete the current hair quality decision before scanning the next RSVP.',
+    });
+  }, [isCameraOn, reviewStatusMeta.needsDecision, stopCamera]);
+
+  useEffect(() => {
+    if (!isCameraOn) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video || video.readyState < 2 || isScanProcessingRef.current) return;
+
+      const frameWidth = video.videoWidth;
+      const frameHeight = video.videoHeight;
+      if (!frameWidth || !frameHeight) return;
+
+      try {
+        if (!scannerCanvasRef.current) scannerCanvasRef.current = document.createElement('canvas');
+        const canvas = scannerCanvasRef.current;
+        canvas.width = frameWidth;
+        canvas.height = frameHeight;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
+
+        ctx.drawImage(video, 0, 0, frameWidth, frameHeight);
+        const imageData = ctx.getImageData(0, 0, frameWidth, frameHeight);
+        const code = jsQR(imageData.data, frameWidth, frameHeight, { inversionAttempts: 'attemptBoth' });
+        const decoded = String(code?.data || '').trim();
+        if (!decoded) return;
+
+        const now = Date.now();
+        if (lastScanRef.current.raw === decoded && now - lastScanRef.current.at < SCAN_DEBOUNCE_MS) return;
+        lastScanRef.current = { raw: decoded, at: now };
+        void markAttendeePresentByWaybill(decoded);
+      } catch {
+        // ignore frame-level scan errors
+      }
+    }, 280);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isCameraOn, markAttendeePresentByWaybill]);
+
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+  }, [stopCamera]);
 
   const printWaybill = async (attendee) => {
     if (!selectedEvent) return;
@@ -522,6 +1037,296 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 </div>
               </div>
 
+              {/* RSVP Scanner */}
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <ScanLine size={16} className="text-slate-500" />
+                    <h3 className="text-sm font-bold text-slate-800">RSVP Scanner</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { void handleToggleCamera(); }}
+                    disabled={isStartingCamera || reviewStatusMeta.needsDecision}
+                    className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition disabled:opacity-60"
+                    style={{ backgroundColor: isCameraOn ? '#dc2626' : tertiaryColor }}
+                  >
+                    {isStartingCamera ? <Loader2 size={12} className="animate-spin" /> : isCameraOn ? <CameraOff size={12} /> : <Camera size={12} />}
+                    {isCameraOn ? 'Stop Camera' : 'Start Camera'}
+                  </button>
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[200px,1fr]">
+                  <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
+                    <div className="relative aspect-square w-full">
+                      <video ref={videoRef} className={`h-full w-full object-cover ${isCameraOn ? '' : 'hidden'}`} autoPlay playsInline muted />
+                      {!isCameraOn ? (
+                        <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-slate-300">
+                          Camera preview
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div
+                      className={`rounded-md border px-3 py-2 text-xs ${
+                        cameraStatus.kind === 'error'
+                          ? 'border-rose-200 bg-rose-50 text-rose-700'
+                          : cameraStatus.kind === 'warning'
+                            ? 'border-amber-200 bg-amber-50 text-amber-700'
+                            : cameraStatus.kind === 'success'
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              : 'border-sky-200 bg-sky-50 text-sky-700'
+                      }`}
+                    >
+                      <span className="inline-flex items-start gap-1.5">
+                        <AlertCircle size={12} className="mt-0.5" />
+                        {cameraStatus.message}
+                      </span>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={manualWaybillCode}
+                        onChange={(event) => setManualWaybillCode(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            handleManualScanLookup();
+                          }
+                        }}
+                        placeholder="Enter waybill code"
+                        className="w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                        disabled={reviewStatusMeta.needsDecision}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleManualScanLookup}
+                        disabled={!String(manualWaybillCode || '').trim() || isSaving || reviewStatusMeta.needsDecision}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+                      >
+                        {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
+                        Lookup
+                      </button>
+                    </div>
+
+                    <p className="text-[11px] text-slate-500">
+                      Scanning marks attendee as <strong>Present</strong> and loads hair details below. Final decision options are <strong>Approved</strong>, <strong>Rejected</strong>, or <strong>Rejected Cut</strong>. You cannot scan the next RSVP until a final decision is submitted.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Hair Quality Review */}
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-bold text-slate-800">Hair Quality Review</h3>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                    {activeReview?.submission?.Submission_ID ? `Submission #${activeReview.submission.Submission_ID}` : 'Waiting for scan'}
+                  </span>
+                </div>
+
+                {!activeReview?.submission?.Submission_ID ? (
+                  <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-xs text-slate-600">
+                    Scan an RSVP QR first to load donor hair details for approval or rejection.
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    <div className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs md:grid-cols-2">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Donor</p>
+                        <p className="text-sm font-semibold text-slate-900">{activeReview?.attendee?.Full_Name || 'N/A'}</p>
+                        <p className="text-slate-600">{activeReview?.attendee?.Email || 'No email'}</p>
+                      </div>
+                      <div className="md:text-right">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Codes</p>
+                        <p className="font-mono text-slate-800">{activeReview?.waybillCode || activeReview?.attendee?.Waybill_Code || 'N/A'}</p>
+                        <p className="font-mono text-slate-700">{activeReview?.submission?.Submission_Code || 'No submission code'}</p>
+                        <p className="text-slate-600">Submission status: <strong>{activeReview?.submission?.Status || 'Pending'}</strong></p>
+                        <p className="text-slate-600">
+                          Decision:
+                          {' '}
+                          <strong>{reviewStatusMeta.finalStatusLabel || 'Pending'}</strong>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-slate-800">Editable Hair Details</p>
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                          reviewStatusMeta.isFinal ? 'bg-slate-200 text-slate-700' : 'bg-amber-100 text-amber-700'
+                        }`}>
+                          {reviewStatusMeta.isFinal ? 'Locked' : 'Editable'}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                        <label className="text-xs text-slate-700">
+                          Length (inches)
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={detailDraft.declaredLength}
+                            onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredLength: event.target.value }))}
+                            disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
+                          />
+                        </label>
+                        <label className="text-xs text-slate-700">
+                          Color
+                          <input
+                            type="text"
+                            value={detailDraft.declaredColor}
+                            onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredColor: event.target.value }))}
+                            disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
+                          />
+                        </label>
+                        <label className="text-xs text-slate-700">
+                          Texture
+                          <input
+                            type="text"
+                            value={detailDraft.declaredTexture}
+                            onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredTexture: event.target.value }))}
+                            disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
+                          />
+                        </label>
+                        <label className="text-xs text-slate-700">
+                          Density
+                          <input
+                            type="text"
+                            value={detailDraft.declaredDensity}
+                            onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredDensity: event.target.value }))}
+                            disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
+                          />
+                        </label>
+                        <label className="text-xs text-slate-700 md:col-span-2">
+                          Condition
+                          <input
+                            type="text"
+                            value={detailDraft.declaredCondition}
+                            onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredCondition: event.target.value }))}
+                            disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
+                          />
+                        </label>
+                        <label className="text-xs text-slate-700 md:col-span-2">
+                          Notes
+                          <textarea
+                            value={detailDraft.detailNotes}
+                            onChange={(event) => setDetailDraft((prev) => ({ ...prev, detailNotes: event.target.value }))}
+                            disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                            rows={2}
+                            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
+                        <label className="inline-flex items-center gap-1 text-xs text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={detailDraft.isChemicallyTreated}
+                            onChange={(event) => setDetailDraft((prev) => ({ ...prev, isChemicallyTreated: event.target.checked }))}
+                            disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                          />
+                          Chemically treated
+                        </label>
+                        <label className="inline-flex items-center gap-1 text-xs text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={detailDraft.isColored}
+                            onChange={(event) => setDetailDraft((prev) => ({ ...prev, isColored: event.target.checked }))}
+                            disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                          />
+                          Colored
+                        </label>
+                        <label className="inline-flex items-center gap-1 text-xs text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={detailDraft.isBleached}
+                            onChange={(event) => setDetailDraft((prev) => ({ ...prev, isBleached: event.target.checked }))}
+                            disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                          />
+                          Bleached
+                        </label>
+                        <label className="inline-flex items-center gap-1 text-xs text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={detailDraft.isRebonded}
+                            onChange={(event) => setDetailDraft((prev) => ({ ...prev, isRebonded: event.target.checked }))}
+                            disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                          />
+                          Rebonded
+                        </label>
+                      </div>
+
+                      <div className="mt-3">
+                        <button
+                          type="button"
+                          onClick={() => { void handleSaveDetailEdits(); }}
+                          disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                        >
+                          {(isSaving || isSavingDetail) ? <Loader2 size={12} className="animate-spin" /> : null}
+                          Save Hair Details
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold text-slate-700" htmlFor="hair-quality-reason">
+                        Rejection reason (required for Rejected and Rejected Cut)
+                      </label>
+                      <textarea
+                        id="hair-quality-reason"
+                        value={qualityReason}
+                        onChange={(event) => setQualityReason(event.target.value)}
+                        rows={2}
+                        disabled={reviewStatusMeta.isFinal || isSaving || isSubmittingQuality || isSavingDetail}
+                        className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                        placeholder="Enter reason if hair quality is rejected..."
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { void handleQualityDecision('Approved'); }}
+                        disabled={reviewStatusMeta.isFinal || isSaving || isSubmittingQuality || isSavingDetail}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+                      >
+                        {(isSaving || isSubmittingQuality) ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+                        Approve Hair (Set Cut)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { void handleQualityDecision('Rejected'); }}
+                        disabled={reviewStatusMeta.isFinal || isSaving || isSubmittingQuality || isSavingDetail}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:opacity-60"
+                      >
+                        {(isSaving || isSubmittingQuality) ? <Loader2 size={12} className="animate-spin" /> : <AlertCircle size={12} />}
+                        Reject Hair (Cancel)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { void handleQualityDecision('Rejected Cut'); }}
+                        disabled={reviewStatusMeta.isFinal || isSaving || isSubmittingQuality || isSavingDetail}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-700 disabled:opacity-60"
+                      >
+                        {(isSaving || isSubmittingQuality) ? <Loader2 size={12} className="animate-spin" /> : <AlertCircle size={12} />}
+                        Rejected Cut (Cancel)
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Attendees */}
               <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3.5">
@@ -589,6 +1394,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                           <th className="px-5 py-3 font-semibold text-slate-700">Attendee</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Waybill</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Attendance</th>
+                          <th className="px-5 py-3 font-semibold text-slate-700">RSVP Scanned</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Printed At</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Actions</th>
                         </tr>
@@ -613,6 +1419,16 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                                 <option value="Present">Present</option>
                                 <option value="No Show">No Show</option>
                               </select>
+                            </td>
+                            <td className="px-5 py-3 align-top text-xs text-slate-600">
+                              {attendee.RSVP_Scanned_At ? (
+                                <span className="inline-flex items-center gap-1 text-emerald-700">
+                                  <CheckCircle2 size={11} />
+                                  {formatDateTime(attendee.RSVP_Scanned_At)}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">Not scanned</span>
+                              )}
                             </td>
                             <td className="px-5 py-3 align-top text-xs text-slate-600">
                               {attendee.Waybill_Printed_At ? (

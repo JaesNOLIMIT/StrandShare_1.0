@@ -88,7 +88,7 @@ function normalizeWigStatus(value) {
 
 function isBundleCompletedStatus(value) {
   const normalized = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, ' ');
-  return normalized === 'wig completed';
+  return normalized === 'wig completed' || normalized === 'wig created';
 }
 
 function buildSpecSignature(row) {
@@ -179,7 +179,7 @@ export default function UploadWigStocksPage({ userProfile }) {
     try {
       const result = await supabase
         .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-        .select('Bundle_ID, Status, Submission_Code, Notes, Created_At')
+        .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At')
         .eq('Status', HAIR_BUNDLE_STATUS.IN_PRODUCTION)
         .order('Created_At', { ascending: true });
       if (result.error) throw result.error;
@@ -292,11 +292,12 @@ export default function UploadWigStocksPage({ userProfile }) {
   }, []);
 
   const handleSelectBundle = useCallback(async (bundle) => {
+    const code = bundle.Bundle_Waybill_Code || `WB-${bundle.Bundle_ID}`;
     setScannedBundle(bundle);
     await loadBundleMembers(bundle.Bundle_ID);
     setCameraStatus({
       tone: 'success',
-      message: `Bundle ${bundle.Submission_Code} loaded. Upload front/side/top photos and fill the wig details below.`,
+      message: `Bundle ${code} loaded. Upload front/side/top photos and fill the wig details below.`,
     });
   }, [loadBundleMembers]);
 
@@ -305,7 +306,7 @@ export default function UploadWigStocksPage({ userProfile }) {
     isScanProcessingRef.current = true;
     try {
       const parsed = parseBundleWaybillQrPayload(decodedText);
-      if (!parsed || (!parsed.bundleId && !parsed.submissionCode)) {
+      if (!parsed || (!parsed.bundleId && !parsed.bundleWaybillCode && !parsed.submissionCode)) {
         setCameraStatus({ tone: 'error', message: 'Scan did not match a wig bundle waybill.' });
         return;
       }
@@ -314,31 +315,32 @@ export default function UploadWigStocksPage({ userProfile }) {
       if (parsed.bundleId) {
         lookup = await supabase
           .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-          .select('Bundle_ID, Status, Submission_Code, Notes, Created_At')
+          .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At')
           .eq('Bundle_ID', parsed.bundleId)
           .maybeSingle();
       } else {
         lookup = await supabase
           .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-          .select('Bundle_ID, Status, Submission_Code, Notes, Created_At')
-          .eq('Submission_Code', parsed.submissionCode)
+          .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At')
+          .eq('Bundle_Waybill_Code', parsed.bundleWaybillCode || parsed.submissionCode)
           .maybeSingle();
       }
 
       if (lookup?.error) throw lookup.error;
       const bundle = lookup?.data;
       if (!bundle?.Bundle_ID) {
-        setCameraStatus({ tone: 'error', message: `No bundle found for ${parsed.submissionCode || parsed.bundleId}.` });
+        setCameraStatus({ tone: 'error', message: `No bundle found for ${parsed.bundleWaybillCode || parsed.submissionCode || parsed.bundleId}.` });
         return;
       }
+      const bundleCode = bundle.Bundle_Waybill_Code || `WB-${bundle.Bundle_ID}`;
 
       const statusKey = String(bundle.Status || '').toLowerCase();
       if (isBundleCompletedStatus(statusKey)) {
-        setCameraStatus({ tone: 'info', message: `Bundle ${bundle.Submission_Code} is already Wig Completed. No action available.` });
+        setCameraStatus({ tone: 'info', message: `Bundle ${bundleCode} is already Wig Created. No action available.` });
         return;
       }
       if (statusKey === HAIR_BUNDLE_STATUS.DRAFT.toLowerCase()) {
-        setCameraStatus({ tone: 'warning', message: `Bundle ${bundle.Submission_Code} is still a Draft. Finalize it on Bundling first.` });
+        setCameraStatus({ tone: 'warning', message: `Bundle ${bundleCode} is still a Draft. Finalize it on Bundling first.` });
         return;
       }
 
@@ -466,7 +468,8 @@ export default function UploadWigStocksPage({ userProfile }) {
     const authFolder = sessionResult.data?.session?.user?.id;
     if (!authFolder) throw new Error('Could not resolve session for photo upload.');
     const ext = fileExtension(file);
-    const fileName = `${scannedBundle.Submission_Code}-${slotName}-${Date.now()}-${safeFileName(file.name)}`.replace(/[^a-zA-Z0-9._-]/g, '-');
+    const bundleCode = scannedBundle.Bundle_Waybill_Code || `WB-${scannedBundle.Bundle_ID}`;
+    const fileName = `${bundleCode}-${slotName}-${Date.now()}-${safeFileName(file.name)}`.replace(/[^a-zA-Z0-9._-]/g, '-');
     const finalName = fileName.endsWith(`.${ext}`) ? fileName : `${fileName}.${ext}`;
     const path = `${authFolder}/completed-wigs/${finalName}`;
     const { error } = await supabase.storage.from(COMPLETED_WIGS_BUCKET).upload(path, file, { upsert: false });
@@ -514,16 +517,17 @@ export default function UploadWigStocksPage({ userProfile }) {
       if (error) throw error;
 
       const memberCount = data?.members?.length || 0;
+      const bundleCode = scannedBundle.Bundle_Waybill_Code || `WB-${scannedBundle.Bundle_ID}`;
       setNotice({
         kind: 'success',
         text: data?.alreadyComplete
-          ? `Bundle ${scannedBundle.Submission_Code} was already completed.`
-          : `Wig "${wigForm.wigName.trim()}" registered from bundle ${scannedBundle.Submission_Code}. ${memberCount} donor${memberCount === 1 ? '' : 's'} notified.`,
+          ? `Bundle ${bundleCode} was already completed.`
+          : `Wig "${wigForm.wigName.trim()}" registered from bundle ${bundleCode}. ${memberCount} donor${memberCount === 1 ? '' : 's'} notified.`,
       });
 
       await logAuditAction({
         action: 'wigs.completed_from_bundle',
-        description: `Completed wig "${wigForm.wigName.trim()}" from bundle ${scannedBundle.Submission_Code}.`,
+        description: `Completed wig "${wigForm.wigName.trim()}" from bundle ${bundleCode}.`,
         resource: WIGS_TABLE,
         status: 'success',
         userProfile,
@@ -767,7 +771,7 @@ export default function UploadWigStocksPage({ userProfile }) {
                               : { borderColor: '#e2e8f0' }
                           }
                         >
-                          <p className="font-mono text-xs font-semibold" style={{ color: primaryTextColor }}>{b.Submission_Code}</p>
+                          <p className="font-mono text-xs font-semibold" style={{ color: primaryTextColor }}>{b.Bundle_Waybill_Code || `WB-${b.Bundle_ID}`}</p>
                           <p className="text-xs" style={{ color: tertiaryTextColor }}>Created {formatDateTime(b.Created_At)}</p>
                           {b.Notes ? <p className="mt-0.5 truncate text-xs" style={{ color: secondaryTextColor }}>{b.Notes}</p> : null}
                         </button>
@@ -783,7 +787,7 @@ export default function UploadWigStocksPage({ userProfile }) {
             <section className="rounded-2xl border bg-white p-5 space-y-5" style={{ borderColor: '#e2e8f0' }}>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h2 className="text-lg font-semibold" style={headingStyle}>Complete Wig - {scannedBundle.Submission_Code}</h2>
+                  <h2 className="text-lg font-semibold" style={headingStyle}>Complete Wig - {scannedBundle.Bundle_Waybill_Code || `WB-${scannedBundle.Bundle_ID}`}</h2>
                   <p className="text-xs" style={{ color: tertiaryTextColor }}>Hairs in bundle: {bundleMemberCount}</p>
                 </div>
                 <button

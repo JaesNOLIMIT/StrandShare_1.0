@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   ArrowRight,
-  Boxes,
   CheckCircle2,
   Clock3,
   Loader2,
@@ -11,7 +10,6 @@ import {
   RefreshCw,
   ScanLine,
   ShieldCheck,
-  Sparkles,
   XCircle,
 } from 'lucide-react';
 import {
@@ -38,7 +36,7 @@ const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
 const WIGS_TABLE = 'Wigs';
 const USER_DETAILS_TABLE = 'user_details';
-const DONATION_DRIVE_REQUESTS_TABLE = 'Donation_Drive_Requests';
+const EVENT_REQUESTS_TABLE = 'Event_Requests';
 
 const REALTIME_DEBOUNCE_MS = 250;
 const RECENT_LIMIT = 8;
@@ -171,12 +169,12 @@ export default function DashboardPage({ onNavigate }) {
       const [submissionsRes, bundlesRes, wigsRes] = await Promise.all([
         supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Donation_Drive_ID, Status, Submission_Code, Created_At, Updated_At, Bundle_ID')
+          .select('Submission_ID, User_ID, Event_Request_ID, Status, Submission_Code, Created_At, Updated_At, Bundle_ID')
           .order('Updated_At', { ascending: false })
           .limit(400),
         supabase
           .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-          .select('Bundle_ID, Status, Submission_Code, Notes, Created_At, Wig_Completed_At')
+          .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At')
           .order('Created_At', { ascending: false })
           .limit(200),
         supabase
@@ -199,7 +197,7 @@ export default function DashboardPage({ onNavigate }) {
       setWigs(wigRows);
 
       const userIds = Array.from(new Set(submissionRows.map((r) => Number(r.User_ID || 0)).filter(Boolean)));
-      const driveIds = Array.from(new Set(submissionRows.map((r) => Number(r.Donation_Drive_ID || 0)).filter(Boolean)));
+      const driveIds = Array.from(new Set(submissionRows.map((r) => Number(r.Event_Request_ID || 0)).filter(Boolean)));
 
       if (userIds.length) {
         const { data, error } = await supabase
@@ -218,12 +216,12 @@ export default function DashboardPage({ onNavigate }) {
 
       if (driveIds.length) {
         const { data, error } = await supabase
-          .from(DONATION_DRIVE_REQUESTS_TABLE)
-          .select('Donation_Drive_ID, Event_Title')
-          .in('Donation_Drive_ID', driveIds);
+          .from(EVENT_REQUESTS_TABLE)
+          .select('Event_Request_ID, Event_Name')
+          .in('Event_Request_ID', driveIds);
         if (!error) {
           setDrivesById((data || []).reduce((acc, row) => {
-            acc[Number(row.Donation_Drive_ID)] = row;
+            acc[Number(row.Event_Request_ID)] = row;
             return acc;
           }, {}));
         }
@@ -374,7 +372,7 @@ export default function DashboardPage({ onNavigate }) {
       value: stats.availableWigs,
       sub: `${stats.wigsCompletedToday} completed today`,
       icon: PackagePlus,
-      pageId: 'upload-wig-stocks',
+      pageId: 'wig-ai-studio',
       accent: tertiaryColor,
     },
   ]), [stats, primaryColor, tertiaryColor]);
@@ -389,7 +387,7 @@ export default function DashboardPage({ onNavigate }) {
       ].includes(statusKey(row.Status)))
       .map((row) => {
         const donor = donorsById[Number(row.User_ID || 0)];
-        const drive = drivesById[Number(row.Donation_Drive_ID || 0)];
+        const drive = drivesById[Number(row.Event_Request_ID || 0)];
         return {
           id: `submission-${row.Submission_ID}`,
           ts: new Date(row.Updated_At || row.Created_At || 0).getTime(),
@@ -398,7 +396,7 @@ export default function DashboardPage({ onNavigate }) {
           status: row.Status,
           detail: [
             donor ? buildFullName(donor.first_name, donor.middle_name, donor.last_name, donor.suffix) : `User #${row.User_ID || 0}`,
-            drive?.Event_Title || (row.Donation_Drive_ID ? `Drive #${row.Donation_Drive_ID}` : ''),
+            drive?.Event_Name || (row.Event_Request_ID ? `Event #${row.Event_Request_ID}` : ''),
           ].filter(Boolean).join(' - '),
           updated: row.Updated_At || row.Created_At,
         };
@@ -407,7 +405,7 @@ export default function DashboardPage({ onNavigate }) {
     const bundleEvents = bundles.map((row) => ({
       id: `bundle-${row.Bundle_ID}`,
       ts: new Date(row.Wig_Completed_At || row.Created_At || 0).getTime(),
-      code: row.Submission_Code || `WB-${row.Bundle_ID}`,
+      code: row.Bundle_Waybill_Code || `WB-${row.Bundle_ID}`,
       action: row.Status,
       status: row.Status,
       detail: row.Notes || `Bundle workflow`,
@@ -420,7 +418,7 @@ export default function DashboardPage({ onNavigate }) {
         id: `wig-${row.Wig_ID}`,
         ts: new Date(row.Completed_At).getTime(),
         code: row.Wig_Code || `WIG-${row.Wig_ID}`,
-        action: 'Wig Completed',
+        action: 'Wig Created',
         status: HAIR_BUNDLE_STATUS.WIG_COMPLETED,
         detail: row.Wig_Name || 'Wig produced from bundle',
         updated: row.Completed_At,
@@ -690,8 +688,7 @@ export default function DashboardPage({ onNavigate }) {
           {[
             { id: 'quality-check', label: 'Quality Check', icon: ScanLine, accent: primaryColor, hint: `${stats.pendingQa + stats.awaitingIntake} in queue` },
             { id: 'bundling', label: 'Bundling', icon: Package, accent: primaryColor, hint: `${stats.draftBundles} drafts, ${stats.inProductionBundles} in production` },
-            { id: 'hairstyle-making', label: 'Hairstyle Making', icon: Sparkles, accent: tertiaryColor, hint: 'AI catalog' },
-            { id: 'upload-wig-stocks', label: 'Upload Wig Stocks', icon: Boxes, accent: tertiaryColor, hint: `${stats.availableWigs} ready` },
+            { id: 'wig-ai-studio', label: 'Wig AI Studio', icon: PackagePlus, accent: tertiaryColor, hint: `${stats.availableWigs} ready` },
             { id: 'reports', label: 'Reports', icon: CheckCircle2, accent: primaryColor, hint: 'Generate QA reports' },
           ].map(({ id, label, icon: Icon, accent, hint }) => (
             <button
