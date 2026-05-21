@@ -58,28 +58,56 @@ function isBundleCompletedStatus(value) {
   return normalized === 'wig completed' || normalized === 'wig created';
 }
 
-export function buildSubmissionCode({ submissionId, createdAt = new Date() }) {
-  const id = Number(submissionId || 0);
-  if (!id) return '';
-  const year = new Date(createdAt || Date.now()).getFullYear();
-  return `HS-${year}-${String(id).padStart(6, '0')}`;
+function normalizeCapSizeKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
 }
 
-export function buildWaybillQrPayload({ submissionId, submissionCode, donationDriveId, eventRequestId }) {
+function toCanonicalCapSize(value) {
+  const key = normalizeCapSizeKey(value);
+  if (!key) return '';
+  if (['small', 's', 'xs'].includes(key) || key.startsWith('small')) return 'Small';
+  if (['medium', 'm'].includes(key) || key.startsWith('medium')) return 'Medium';
+  if (['large', 'l', 'xl'].includes(key) || key.startsWith('large')) return 'Large';
+  return '';
+}
+
+function encodeWaybillSuffixFromId(idValue) {
+  const numericId = Number(idValue || 0);
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    return '';
+  }
+  return Math.trunc(numericId)
+    .toString(36)
+    .toUpperCase()
+    .padStart(6, '0')
+    .slice(-6);
+}
+
+export function buildWaybillCode({ submissionId, createdAt = new Date() }) {
+  void createdAt;
+  const suffix = encodeWaybillSuffixFromId(submissionId);
+  if (!suffix) return '';
+  return `WB${suffix}`;
+}
+
+export function buildWaybillQrPayload({ submissionId, waybillCode, donationDriveId, eventRequestId }) {
   return JSON.stringify({
     type: 'hair_submission',
     submission_id: Number(submissionId) || null,
-    submission_code: String(submissionCode || ''),
+    waybill_code: String(waybillCode || ''),
     donation_drive_id: Number(donationDriveId) || null,
     event_request_id: Number(eventRequestId) || null,
   });
 }
 
-export function buildNonEventDonationQrPayload({ userId, submissionCode = '' }) {
+export function buildNonEventDonationQrPayload({ userId, waybillCode = '' }) {
   return JSON.stringify({
     type: 'hair_submission_non_event',
     user_id: Number(userId) || null,
-    submission_code: String(submissionCode || ''),
+    waybill_code: String(waybillCode || ''),
   });
 }
 
@@ -93,7 +121,7 @@ export function parseWaybillQrPayload(rawText) {
       if (parsed.type === 'hair_submission') {
         return {
           submissionId: Number(parsed.submission_id) || null,
-          submissionCode: String(parsed.submission_code || ''),
+          waybillCode: String(parsed.waybill_code || ''),
           donationDriveId: Number(parsed.donation_drive_id) || null,
           eventRequestId: Number(parsed.event_request_id) || null,
           userId: Number(parsed.user_id) || null,
@@ -102,7 +130,7 @@ export function parseWaybillQrPayload(rawText) {
       if (parsed.type === 'hair_submission_non_event') {
         return {
           submissionId: Number(parsed.submission_id) || null,
-          submissionCode: String(parsed.submission_code || ''),
+          waybillCode: String(parsed.waybill_code || ''),
           donationDriveId: null,
           eventRequestId: null,
           userId: Number(parsed.user_id) || null,
@@ -113,11 +141,21 @@ export function parseWaybillQrPayload(rawText) {
     // Fall through to plain-text matching.
   }
 
-  const codeMatch = text.match(/^HS-\d{4}-\d{4,8}$/i);
+  const codeMatch = text.match(/^WB[A-Z0-9]{6}$/i);
   if (codeMatch) {
     return {
       submissionId: null,
-      submissionCode: text.toUpperCase(),
+      waybillCode: text.toUpperCase(),
+      donationDriveId: null,
+      eventRequestId: null,
+    };
+  }
+
+  const legacyCodeMatch = text.match(/^(HS|WB)-\d{4}-\d{4,8}$/i);
+  if (legacyCodeMatch) {
+    return {
+      submissionId: null,
+      waybillCode: text.toUpperCase(),
       donationDriveId: null,
       eventRequestId: null,
     };
@@ -127,7 +165,7 @@ export function parseWaybillQrPayload(rawText) {
   if (Number.isInteger(numericId) && numericId > 0) {
     return {
       submissionId: numericId,
-      submissionCode: '',
+      waybillCode: '',
       donationDriveId: null,
       eventRequestId: null,
     };
@@ -155,10 +193,10 @@ export async function scanNonEventHairSubmission({ qrPayload, notes = '' }) {
 }
 
 export function buildBundleSubmissionCode({ bundleId, createdAt = new Date() }) {
-  const id = Number(bundleId || 0);
-  if (!id) return '';
-  const year = new Date(createdAt || Date.now()).getFullYear();
-  return `WB-${year}-${String(id).padStart(6, '0')}`;
+  void createdAt;
+  const suffix = encodeWaybillSuffixFromId(bundleId);
+  if (!suffix) return '';
+  return `WB${suffix}`;
 }
 
 export function buildWigCode({ wigId, createdAt = new Date() }) {
@@ -174,8 +212,6 @@ export function buildBundleWaybillQrPayload({ bundleId, bundleWaybillCode }) {
     type: 'hair_submission_bundle',
     bundle_id: Number(bundleId) || null,
     bundle_waybill_code: code,
-    // Backward-compatible key for older scanners.
-    submission_code: code,
   });
 }
 
@@ -186,22 +222,26 @@ export function parseBundleWaybillQrPayload(rawText) {
   try {
     const parsed = JSON.parse(text);
     if (parsed && typeof parsed === 'object' && parsed.type === 'hair_submission_bundle') {
-      const code = String(parsed.bundle_waybill_code || parsed.submission_code || '').trim();
+      const code = String(parsed.bundle_waybill_code || '').trim();
       return {
         bundleId: Number(parsed.bundle_id) || null,
         bundleWaybillCode: code,
-        // Backward-compatible property for older callers.
-        submissionCode: code,
       };
     }
   } catch {
     // Fall through.
   }
 
-  const codeMatch = text.match(/^WB-\d{4}-\d{4,8}$/i);
+  const codeMatch = text.match(/^WB[A-Z0-9]{6}$/i);
   if (codeMatch) {
     const code = text.toUpperCase();
-    return { bundleId: null, bundleWaybillCode: code, submissionCode: code };
+    return { bundleId: null, bundleWaybillCode: code };
+  }
+
+  const legacyCodeMatch = text.match(/^WB-\d{4}-\d{4,8}$/i);
+  if (legacyCodeMatch) {
+    const code = text.toUpperCase();
+    return { bundleId: null, bundleWaybillCode: code };
   }
 
   return null;
@@ -210,42 +250,42 @@ export function parseBundleWaybillQrPayload(rawText) {
 const STATUS_NOTIFICATION_TEMPLATES = {
   [HAIR_SUBMISSION_STATUS.PENDING]: {
     title: 'Waybill issued',
-    message: ({ submissionCode, eventTitle }) =>
-      `Your waybill ${submissionCode} has been issued${eventTitle ? ` for ${eventTitle}` : ''}. Please bring it to the event for hair collection.`,
+    message: ({ waybillCode, eventTitle }) =>
+      `Your waybill ${waybillCode} has been issued${eventTitle ? ` for ${eventTitle}` : ''}. Please bring it to the event for hair collection.`,
   },
   [HAIR_SUBMISSION_STATUS.CUT]: {
     title: 'Hair collected',
-    message: ({ submissionCode }) =>
-      `Your donated hair (waybill ${submissionCode}) has been cut and tagged for wig production.`,
+    message: ({ waybillCode }) =>
+      `Your donated hair (waybill ${waybillCode}) has been cut and tagged for wig production.`,
   },
   [HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION]: {
     title: 'Hair assigned to wig production',
-    message: ({ submissionCode, bundleId }) =>
-      `Your donated hair (waybill ${submissionCode}) is now in wig production under bundle #${bundleId}.`,
+    message: ({ waybillCode, bundleId }) =>
+      `Your donated hair (waybill ${waybillCode}) is now in wig production under bundle #${bundleId}.`,
   },
   [HAIR_SUBMISSION_STATUS.CANCELLED]: {
     title: 'Hair donation cancelled',
-    message: ({ submissionCode, reason }) =>
-      `Your donation (waybill ${submissionCode}) was marked cancelled${reason ? `: ${reason}` : '.'}.`,
+    message: ({ waybillCode, reason }) =>
+      `Your donation (waybill ${waybillCode}) was marked cancelled${reason ? `: ${reason}` : '.'}.`,
   },
   [HAIR_SUBMISSION_STATUS.WIG_CREATED]: {
     title: 'A wig was made from your donation',
-    message: ({ submissionCode, bundleId }) =>
-      `A wig has been completed using donated hair from bundle #${bundleId}, including yours (waybill ${submissionCode}). Thank you for changing a life.`,
+    message: ({ waybillCode, bundleId }) =>
+      `A wig has been completed using donated hair from bundle #${bundleId}, including yours (waybill ${waybillCode}). Thank you for changing a life.`,
   },
 };
 
-function buildStatusNotification({ status, submissionCode, eventTitle, reason, bundleId }) {
+function buildStatusNotification({ status, waybillCode, eventTitle, reason, bundleId }) {
   const template = STATUS_NOTIFICATION_TEMPLATES[status];
   if (!template) {
     return {
-      title: `Waybill ${submissionCode || ''}`.trim(),
+      title: `Waybill ${waybillCode || ''}`.trim(),
       message: `Status updated to ${status}.`,
     };
   }
   return {
     title: template.title,
-    message: template.message({ submissionCode, eventTitle, reason, bundleId }),
+    message: template.message({ waybillCode, eventTitle, reason, bundleId }),
   };
 }
 
@@ -292,7 +332,7 @@ export async function updateSubmissionStatus({
   submissionId,
   nextStatus,
   donorUserId,
-  submissionCode,
+  waybillCode,
   eventTitle = '',
   reason = '',
   bundleId = null,
@@ -316,7 +356,7 @@ export async function updateSubmissionStatus({
 
   const notification = buildStatusNotification({
     status: nextStatus,
-    submissionCode,
+    waybillCode,
     eventTitle,
     reason,
     bundleId,
@@ -358,7 +398,7 @@ export async function ensureSubmissionForRegistration({
 
   const existing = await supabase
     .from(HAIR_SUBMISSIONS_TABLE)
-    .select('Submission_ID, User_ID, Event_Request_ID, Status, Submission_Code, Created_At')
+    .select('Submission_ID, User_ID, Event_Request_ID, Status, Created_At')
     .eq('Event_Request_ID', resolvedEventRequestId)
     .eq('User_ID', userId)
     .maybeSingle();
@@ -378,29 +418,14 @@ export async function ensureSubmissionForRegistration({
       Event_Request_ID: resolvedEventRequestId,
       Status: HAIR_SUBMISSION_STATUS.PENDING,
     })
-    .select('Submission_ID, User_ID, Event_Request_ID, Status, Submission_Code, Created_At')
+    .select('Submission_ID, User_ID, Event_Request_ID, Status, Created_At')
     .single();
 
   if (insertResult.error) {
     return { data: null, error: insertResult.error };
   }
 
-  const created = insertResult.data;
-  if (!created?.Submission_Code) {
-    const code = buildSubmissionCode({
-      submissionId: created.Submission_ID,
-      createdAt: created.Created_At,
-    });
-    const { error: codeError } = await supabase
-      .from(HAIR_SUBMISSIONS_TABLE)
-      .update({ Submission_Code: code })
-      .eq('Submission_ID', created.Submission_ID);
-    if (!codeError) {
-      created.Submission_Code = code;
-    }
-  }
-
-  return { data: created, error: null };
+  return { data: insertResult.data, error: null };
 }
 
 export async function createWigBundle({ submissionIds, createdBy, notes = '' }) {
@@ -414,7 +439,7 @@ export async function createWigBundle({ submissionIds, createdBy, notes = '' }) 
 
   const submissionsResult = await supabase
     .from(HAIR_SUBMISSIONS_TABLE)
-    .select('Submission_ID, User_ID, Status, Submission_Code, Bundle_ID')
+    .select('Submission_ID, User_ID, Status, Bundle_ID')
     .in('Submission_ID', ids);
 
   if (submissionsResult.error) {
@@ -476,7 +501,7 @@ export async function createWigBundle({ submissionIds, createdBy, notes = '' }) 
   await Promise.all(eligible.map(async (row) => {
     const notification = buildStatusNotification({
       status: HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
-      submissionCode: row.Submission_Code,
+      waybillCode: buildWaybillCode({ submissionId: row.Submission_ID }),
       bundleId: bundle.Bundle_ID,
     });
     await insertNotification({
@@ -561,7 +586,7 @@ export async function completeWigBundle({
   if ((isBundleCompletedStatus(statusKey) || bundle.Wig_Completed_At) && existingWig?.Wig_ID) {
     const membersSnapshot = await supabase
       .from(HAIR_SUBMISSIONS_TABLE)
-      .select('Submission_ID, User_ID, Submission_Code')
+      .select('Submission_ID, User_ID')
       .eq('Bundle_ID', bundleId);
 
     return {
@@ -577,7 +602,7 @@ export async function completeWigBundle({
 
   const membersResult = await supabase
     .from(HAIR_SUBMISSIONS_TABLE)
-    .select('Submission_ID, User_ID, Submission_Code, Status')
+    .select('Submission_ID, User_ID, Status')
     .eq('Bundle_ID', bundleId);
 
   if (membersResult.error) {
@@ -617,6 +642,7 @@ export async function completeWigBundle({
   }
 
   const wig = wigUpsertResult.data;
+  const canonicalCapSize = toCanonicalCapSize(capSize);
 
   if (wig?.Wig_ID) {
     const specUpsertResult = await supabase
@@ -628,7 +654,7 @@ export async function completeWigBundle({
         Hair_Texture: String(hairTexture || '').trim() || null,
         Hair_Density: String(hairDensity || '').trim() || null,
         Style: String(hairStyle || '').trim() || null,
-        Cap_Size: String(capSize || '').trim() || null,
+        Cap_Size: canonicalCapSize || null,
       }, {
         onConflict: 'Wig_ID',
       });
@@ -663,7 +689,7 @@ export async function completeWigBundle({
     await Promise.all(membersToNotify.map(async (row) => {
       const notification = buildStatusNotification({
         status: HAIR_SUBMISSION_STATUS.WIG_CREATED,
-        submissionCode: row.Submission_Code,
+        waybillCode: buildWaybillCode({ submissionId: row.Submission_ID }),
         bundleId,
       });
       await insertNotification({
@@ -913,7 +939,7 @@ export async function finalizeBundleDraft({ bundleId, finalizedBy }) {
 
   const submissionsResult = await supabase
     .from(HAIR_SUBMISSIONS_TABLE)
-    .select('Submission_ID, User_ID, Status, Submission_Code, Bundle_ID')
+    .select('Submission_ID, User_ID, Status, Bundle_ID')
     .eq('Bundle_ID', draft.Bundle_ID);
 
   if (submissionsResult.error) {
@@ -969,7 +995,7 @@ export async function finalizeBundleDraft({ bundleId, finalizedBy }) {
   await Promise.all(eligible.map(async (row) => {
     const notification = buildStatusNotification({
       status: HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
-      submissionCode: row.Submission_Code,
+      waybillCode: buildWaybillCode({ submissionId: row.Submission_ID }),
       bundleId: draft.Bundle_ID,
     });
     await insertNotification({

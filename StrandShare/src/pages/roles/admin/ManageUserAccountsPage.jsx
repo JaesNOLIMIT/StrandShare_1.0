@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { createClient } from '@supabase/supabase-js';
 import {
   Plus,
   Search,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react';
 import Select from 'react-select';
 import { useTheme } from '../../../context/ThemeContext';
+import philippineAddressOptions from '../../../data/philippineAddressOptions.json';
 import {
   supabase,
   isSupabaseConfigured,
@@ -23,9 +25,17 @@ import {
 import { toCanonicalRole, toRoleLabel } from '../../../lib/roleUtils';
 
 const DEFAULT_ROLES = ['admin', 'staff', 'specialist', 'h_representative'];
+const ADMIN_CREATABLE_ROLES = ['staff', 'specialist'];
+const PHILIPPINE_TIME_ZONE = 'Asia/Manila';
+let manageUsersInviteAdminClient = null;
 
 function mapInviteErrorMessage(rawMessage) {
   const message = String(rawMessage || 'Unexpected error while sending invitation email.');
+  const lower = message.toLowerCase();
+
+  if (!message || lower.includes('missing-service-role')) {
+    return 'Invite email service is not configured. Add REACT_APP_SUPABASE_SERVICE_ROLE_KEY in .env.local and restart the app.';
+  }
 
   if (
     message.includes('after 25 seconds') ||
@@ -36,7 +46,7 @@ function mapInviteErrorMessage(rawMessage) {
   }
 
   if (message.includes('User already registered')) {
-    return 'This email is already registered. Use Upgrade Existing instead.';
+    return 'This email already exists in Auth. Use a different email address.';
   }
 
   if (message.includes('Invalid email')) {
@@ -63,6 +73,156 @@ function formatDateTime(value) {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
 }
 
+function normalizeRoleSlug(roleValue) {
+  return String(roleValue || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function buildTemporaryPassword() {
+  const numeric = Math.floor(100000 + (Math.random() * 900000));
+  return `Strand-${numeric}!Aa`;
+}
+
+function formatPhilippineContactNumber(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (!digits) return '';
+
+  let local = digits;
+
+  if (local.startsWith('63')) local = local.slice(2);
+  if (local.startsWith('0')) local = local.slice(1);
+  local = local.slice(0, 10);
+
+  const part1 = local.slice(0, 3);
+  const part2 = local.slice(3, 6);
+  const part3 = local.slice(6, 10);
+
+  let formatted = '+63';
+  if (part1) formatted += ` ${part1}`;
+  if (part2) formatted += ` ${part2}`;
+  if (part3) formatted += ` ${part3}`;
+  return formatted.trim();
+}
+
+function isValidPhilippineContactNumber(value) {
+  return /^\+63 9\d{2} \d{3} \d{4}$/.test(String(value || '').trim());
+}
+
+function getPhilippineSqlTimestamp(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: PHILIPPINE_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  });
+
+  const parts = formatter.formatToParts(date).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  const hour = parts.hour === '24' ? '00' : parts.hour;
+  return `${parts.year}-${parts.month}-${parts.day} ${hour}:${parts.minute}:${parts.second}`;
+}
+
+function getPhilippineDateString(date = new Date()) {
+  return getPhilippineSqlTimestamp(date).slice(0, 10);
+}
+
+function toPhilippineSqlTimestampOrNull(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  const dateTimeMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(:(\d{2}))?$/);
+  if (dateTimeMatch) {
+    const seconds = dateTimeMatch[7] || '00';
+    return `${dateTimeMatch[1]}-${dateTimeMatch[2]}-${dateTimeMatch[3]} ${dateTimeMatch[4]}:${dateTimeMatch[5]}:${seconds}`;
+  }
+
+  const dateMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateMatch) {
+    return `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]} 00:00:00`;
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return getPhilippineSqlTimestamp(parsed);
+}
+
+function toPhilippineDateOrNull(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  const dateMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateMatch) {
+    return `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return getPhilippineDateString(parsed);
+}
+
+function buildDisplayName({ firstName, middleName, lastName, suffix }) {
+  return [firstName, middleName, lastName, suffix]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function createManageUsersInviteAdminClient() {
+  if (manageUsersInviteAdminClient) {
+    return manageUsersInviteAdminClient;
+  }
+
+  const url = process.env.REACT_APP_SUPABASE_URL;
+  const serviceRoleKey = process.env.REACT_APP_SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceRoleKey) {
+    return null;
+  }
+
+  manageUsersInviteAdminClient = createClient(url, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      storageKey: 'strandshare-manage-users-invite-admin-client',
+    },
+  });
+
+  return manageUsersInviteAdminClient;
+}
+
+function getInitialFormData() {
+  return {
+    firstName: '',
+    middleName: '',
+    lastName: '',
+    suffix: '',
+    birthdate: '',
+    gender: '',
+    contactNumber: '',
+    street: '',
+    region: '',
+    barangay: '',
+    city: '',
+    province: '',
+    country: 'Philippines',
+    email: '',
+    role: 'staff',
+    accessStart: '',
+    accessEnd: '',
+  };
+}
+
 export default function ManageUserAccountsPage() {
   const { theme } = useTheme();
   const tableHeaderTextColor = theme?.primaryTextColor || '#000000';
@@ -77,35 +237,18 @@ export default function ManageUserAccountsPage() {
   const [statusFilter, setStatusFilter] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const [activeTab, setActiveTab] = useState('invite');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
-  const [successKind, setSuccessKind] = useState('invite');
   const [showErrorModal, setShowErrorModal] = useState(false);
   const [invitedEmail, setInvitedEmail] = useState('');
-  const [resendingEmail, setResendingEmail] = useState(false);
+  const [invitedRoleLabel, setInvitedRoleLabel] = useState('');
+  const [invitedDisplayName, setInvitedDisplayName] = useState('');
+  const [temporaryPasswordIssued, setTemporaryPasswordIssued] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [saving, setSaving] = useState(false);
-  const [inviteNoAccessTime, setInviteNoAccessTime] = useState(false);
   const [detailsUserId, setDetailsUserId] = useState(null);
 
-  const [formData, setFormData] = useState({
-    firstName: '',
-    lastName: '',
-    email: '',
-    role: 'staff',
-    accessStart: '',
-    accessEnd: '',
-  });
-
-  const [upgradeSearch, setUpgradeSearch] = useState('');
-  const [upgradeResults, setUpgradeResults] = useState([]);
-  const [upgradeSelected, setUpgradeSelected] = useState(null);
-  const [upgradeRole, setUpgradeRole] = useState('staff');
-  const [upgradeForm, setUpgradeForm] = useState({ accessStart: '', accessEnd: '' });
-  const [upgradeSaving, setUpgradeSaving] = useState(false);
-  const [upgradeSearching, setUpgradeSearching] = useState(false);
-  const [upgradeHasSearched, setUpgradeHasSearched] = useState(false);
+  const [formData, setFormData] = useState(getInitialFormData());
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
@@ -137,7 +280,10 @@ export default function ManageUserAccountsPage() {
         .from('users')
         .select(`
           user_id, email, role, access_start, access_end, is_active,
-          user_details:user_details ( first_name, last_name, joined_date )
+          user_details:user_details (
+            photo_path, first_name, middle_name, last_name, suffix, birthdate, gender,
+            street, region, barangay, city, province, country, contact_number, joined_date
+          )
         `)
         .order('created_at', { ascending: false });
 
@@ -156,6 +302,7 @@ export default function ManageUserAccountsPage() {
           firstName: details?.first_name || 'N/A',
           lastName: details?.last_name || '',
           joinedDate: details?.joined_date || '',
+          details: details || {},
         };
       });
 
@@ -189,18 +336,98 @@ export default function ManageUserAccountsPage() {
     e.preventDefault();
     setSaving(true);
 
+    let createdPublicUserId = null;
+    let createdAuthUserId = null;
+
     try {
       const normalizedEmail = formData.email.toLowerCase().trim();
-      const accessStart = inviteNoAccessTime ? null : formData.accessStart || null;
-      const accessEnd = inviteNoAccessTime ? null : formData.accessEnd || null;
+      const requestedRole = toCanonicalRole(formData.role) || '';
+      const requestedRoleSlug = normalizeRoleSlug(requestedRole);
+      const normalizedRole = requestedRoleSlug === 'specialist' ? 'specialist' : 'staff';
+      const accessStart = toPhilippineSqlTimestampOrNull(formData.accessStart);
+      const accessEnd = toPhilippineSqlTimestampOrNull(formData.accessEnd);
+      const birthdate = toPhilippineDateOrNull(formData.birthdate);
+      const joinedDate = getPhilippineDateString();
+      const nowSql = getPhilippineSqlTimestamp();
+      const displayName = buildDisplayName({
+        firstName: formData.firstName,
+        middleName: formData.middleName,
+        lastName: formData.lastName,
+        suffix: formData.suffix,
+      });
 
-      if (!inviteNoAccessTime && (!accessStart || !accessEnd)) {
-        throw new Error('Please set access start and access end, or enable No Access Time for a permanent account.');
+      if (!normalizedEmail) {
+        throw new Error('Email is required.');
+      }
+
+      if (!ADMIN_CREATABLE_ROLES.includes(normalizedRole)) {
+        throw new Error('Only Staff and Specialist roles are allowed for Add User.');
+      }
+
+      if (!String(formData.firstName || '').trim() || !String(formData.lastName || '').trim()) {
+        throw new Error('First Name and Last Name are required.');
+      }
+
+      if (!birthdate) {
+        throw new Error('Birthdate is required.');
+      }
+
+      if (!String(formData.gender || '').trim()) {
+        throw new Error('Gender is required.');
+      }
+
+      if (!isValidPhilippineContactNumber(formData.contactNumber)) {
+        throw new Error('Contact Number is required and must follow +63 912 345 6789.');
+      }
+
+      if (!String(formData.street || '').trim()) {
+        throw new Error('Street is required.');
+      }
+
+      if (!String(formData.region || '').trim()) {
+        throw new Error('Region is required.');
+      }
+
+      if (!String(formData.province || '').trim()) {
+        throw new Error('Province is required.');
+      }
+
+      if (!String(formData.city || '').trim()) {
+        throw new Error('City is required.');
+      }
+
+      if (!String(formData.barangay || '').trim()) {
+        throw new Error('Barangay is required.');
+      }
+
+      if (!String(formData.country || '').trim()) {
+        throw new Error('Country is required.');
+      }
+
+      if ((formData.accessStart && !accessStart) || (formData.accessEnd && !accessEnd)) {
+        throw new Error('Invalid access date/time value.');
+      }
+
+      if ((accessStart && !accessEnd) || (!accessStart && accessEnd)) {
+        throw new Error('Access Start and Access End must both be provided when setting an access window.');
+      }
+
+      if (accessStart && accessEnd) {
+        const startDate = new Date(`${accessStart.replace(' ', 'T')}+08:00`);
+        const endDate = new Date(`${accessEnd.replace(' ', 'T')}+08:00`);
+        if (endDate <= startDate) {
+          throw new Error('Access End must be later than Access Start.');
+        }
+      }
+
+      const adminInviteClient = createManageUsersInviteAdminClient();
+      if (!adminInviteClient) {
+        throw new Error('missing-service-role');
       }
 
       const { data: existingUser, error: checkError } = await supabase
         .from('users')
-        .select('email')
+        .select('user_id')
         .eq('email', normalizedEmail)
         .maybeSingle();
 
@@ -212,53 +439,145 @@ export default function ManageUserAccountsPage() {
         throw new Error(`Email ${formData.email} is already registered in the system.`);
       }
 
-      const {
-        data: { session: adminSession },
-      } = await supabase.auth.getSession();
+      const createResult = await supabase.rpc('admin_create_internal_user_account', {
+        p_email: normalizedEmail,
+        p_role: normalizedRole,
+        p_access_start: accessStart,
+        p_access_end: accessEnd,
+        p_is_active: true,
+        p_photo_path: null,
+        p_first_name: String(formData.firstName || '').trim() || null,
+        p_middle_name: String(formData.middleName || '').trim() || null,
+        p_last_name: String(formData.lastName || '').trim() || null,
+        p_suffix: String(formData.suffix || '').trim() || null,
+        p_birthdate: birthdate,
+        p_gender: String(formData.gender || '').trim() || null,
+        p_street: String(formData.street || '').trim() || null,
+        p_region: String(formData.region || '').trim() || null,
+        p_barangay: String(formData.barangay || '').trim() || null,
+        p_city: String(formData.city || '').trim() || null,
+        p_province: String(formData.province || '').trim() || null,
+        p_country: String(formData.country || '').trim() || 'Philippines',
+        p_contact_number: formatPhilippineContactNumber(formData.contactNumber),
+      });
 
-      const tempPassword = `Strand-${Math.floor(100000 + Math.random() * 900000)}!Aa`;
+      if (createResult.error) {
+        throw createResult.error;
+      }
 
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email: normalizedEmail,
+      const createdRow = Array.isArray(createResult.data) ? createResult.data[0] : createResult.data;
+      createdPublicUserId = Number(createdRow?.user_id || 0);
+      if (!createdPublicUserId) {
+        throw new Error('Unable to create users/user_details records.');
+      }
+
+      const tempPassword = buildTemporaryPassword();
+      const roleLabel = toRoleLabel(normalizedRole);
+      const metadata = {
+        account_type: 'internal_web_user',
+        decision: 'approved',
+        role_label: roleLabel,
+        account_label: 'Role',
+        account_value: roleLabel,
+        recipient_email: normalizedEmail,
+        recipient_name: displayName || '',
+        review_notes: '',
+        has_access_window: Boolean(accessStart && accessEnd),
+        access_window: accessStart && accessEnd ? `${formatDateTime(accessStart)} to ${formatDateTime(accessEnd)}` : '',
+        temporary_password: tempPassword,
+        display_name: displayName || '',
+        full_name: displayName || '',
+        name: displayName || '',
+        staff_or_specialist_role: normalizedRole,
+      };
+
+      const inviteResult = await adminInviteClient.auth.admin.inviteUserByEmail(normalizedEmail, {
+        redirectTo: `${window.location.origin}/login`,
+        data: metadata,
+      });
+
+      if (inviteResult.error) {
+        throw new Error(mapInviteErrorMessage(inviteResult.error.message));
+      }
+
+      createdAuthUserId = String(inviteResult.data?.user?.id || '').trim() || null;
+      if (!createdAuthUserId) {
+        throw new Error('Invite email was sent but auth user id could not be resolved.');
+      }
+
+      const updateAuthResult = await adminInviteClient.auth.admin.updateUserById(createdAuthUserId, {
+        email_confirm: true,
         password: tempPassword,
-        options: {
-          emailRedirectTo: `${window.location.origin}/complete-account`,
-          data: {
-            firstName: formData.firstName,
-            lastName: formData.lastName,
-            role: toCanonicalRole(formData.role) || 'staff',
-            accessStart,
-            accessEnd,
-          },
+        user_metadata: {
+          account_type: 'internal_web_user',
+          role: normalizedRole,
+          full_name: displayName || null,
+          updated_at: nowSql,
         },
       });
 
-      if (signUpError) throw signUpError;
+      if (updateAuthResult.error) {
+        throw new Error(mapInviteErrorMessage(updateAuthResult.error.message));
+      }
 
-      // If signUp swapped the current session, restore the original session.
-      if (adminSession && signUpData?.session?.user?.id !== adminSession.user.id) {
-        await supabase.auth.setSession({
-          access_token: adminSession.access_token,
-          refresh_token: adminSession.refresh_token,
-        });
+      const linkResult = await supabase
+        .from('users')
+        .update({
+          auth_user_id: createdAuthUserId,
+          role: normalizedRole,
+          is_active: true,
+          updated_at: nowSql,
+          access_start: accessStart,
+          access_end: accessEnd,
+        })
+        .eq('user_id', createdPublicUserId);
+
+      if (linkResult.error) {
+        throw linkResult.error;
+      }
+
+      const detailsResult = await supabase
+        .from('user_details')
+        .update({
+          joined_date: joinedDate,
+          updated_at: nowSql,
+        })
+        .eq('user_id', createdPublicUserId);
+
+      if (detailsResult.error) {
+        throw detailsResult.error;
       }
 
       setIsModalOpen(false);
-      setInvitedEmail(formData.email);
-      setSuccessKind('invite');
+      setInvitedEmail(normalizedEmail);
+      setInvitedRoleLabel(roleLabel);
+      setInvitedDisplayName(displayName);
+      setTemporaryPasswordIssued(tempPassword);
       setShowSuccessModal(true);
-      setFormData({
-        firstName: '',
-        lastName: '',
-        email: '',
-        role: 'staff',
-        accessStart: '',
-        accessEnd: '',
-      });
-      setInviteNoAccessTime(false);
+      setFormData(getInitialFormData());
 
       fetchUsers();
     } catch (error) {
+      if (createdAuthUserId) {
+        try {
+          const adminInviteClient = createManageUsersInviteAdminClient();
+          if (adminInviteClient) {
+            await adminInviteClient.auth.admin.deleteUser(createdAuthUserId);
+          }
+        } catch {
+          // Keep original error.
+        }
+      }
+
+      if (createdPublicUserId) {
+        try {
+          await supabase.from('user_details').delete().eq('user_id', createdPublicUserId);
+          await supabase.from('users').delete().eq('user_id', createdPublicUserId);
+        } catch {
+          // Keep original error.
+        }
+      }
+
       const msg = mapInviteErrorMessage(error?.message);
       setErrorMessage(msg);
       setShowErrorModal(true);
@@ -269,111 +588,40 @@ export default function ManageUserAccountsPage() {
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    setFormData({ ...formData, [name]: value });
-  };
-
-  useEffect(() => {
-    const term = upgradeSearch.trim();
-    if (!term) {
-      setUpgradeResults([]);
-      setUpgradeHasSearched(false);
-      setUpgradeSelected(null);
-      return undefined;
-    }
-
-    setUpgradeSearching(true);
-    const handle = setTimeout(async () => {
-      try {
-        const emailQuery = supabase
-          .from('users')
-          .select(`
-            user_id, email, role, is_active, access_start, access_end,
-            user_details ( first_name, last_name )
-          `)
-          .ilike('email', `%${term}%`);
-
-        const nameQuery = supabase
-          .from('user_details')
-          .select(`
-            user_id, first_name, last_name,
-            users!inner ( user_id, email, role, is_active, access_start, access_end )
-          `)
-          .or(`first_name.ilike.%${term}%,last_name.ilike.%${term}%`);
-
-        const [emailRes, nameRes] = await Promise.all([emailQuery, nameQuery]);
-        if (emailRes.error) throw emailRes.error;
-        if (nameRes.error) throw nameRes.error;
-
-        const mergedMap = new Map();
-
-        (emailRes.data || []).forEach((u) => {
-          mergedMap.set(u.user_id, {
-            user_id: u.user_id,
-            email: u.email,
-            role: u.role,
-            first_name: u.user_details?.[0]?.first_name || u.user_details?.first_name || '',
-            last_name: u.user_details?.[0]?.last_name || u.user_details?.last_name || '',
-          });
-        });
-
-        (nameRes.data || []).forEach((d) => {
-          const u = d.users;
-          if (!u) return;
-          mergedMap.set(u.user_id, {
-            user_id: u.user_id,
-            email: u.email,
-            role: u.role,
-            first_name: d.first_name || '',
-            last_name: d.last_name || '',
-          });
-        });
-
-        setUpgradeResults(Array.from(mergedMap.values()));
-        setUpgradeHasSearched(true);
-      } catch (err) {
-        setUpgradeResults([]);
-        setUpgradeHasSearched(true);
-      } finally {
-        setUpgradeSearching(false);
+    setFormData((prev) => {
+      if (name === 'contactNumber') {
+        return { ...prev, contactNumber: formatPhilippineContactNumber(value) };
       }
-    }, 300);
 
-    return () => clearTimeout(handle);
-  }, [upgradeSearch]);
+      if (name === 'region') {
+        return {
+          ...prev,
+          region: value,
+          province: '',
+          city: '',
+          barangay: '',
+        };
+      }
 
-  const handleUpgradeSubmit = async (e) => {
-    e.preventDefault();
-    if (!upgradeSelected || !upgradeForm.accessStart || !upgradeForm.accessEnd) return;
+      if (name === 'province') {
+        return {
+          ...prev,
+          province: value,
+          city: '',
+          barangay: '',
+        };
+      }
 
-    setUpgradeSaving(true);
-    try {
-      const { error } = await supabase
-        .from('users')
-        .update({
-          role: toCanonicalRole(upgradeRole) || 'staff',
-          access_start: upgradeForm.accessStart,
-          access_end: upgradeForm.accessEnd,
-          is_active: true,
-        })
-        .eq('user_id', upgradeSelected);
+      if (name === 'city') {
+        return {
+          ...prev,
+          city: value,
+          barangay: '',
+        };
+      }
 
-      if (error) throw error;
-
-      setSuccessKind('upgrade');
-      setShowSuccessModal(true);
-      setIsModalOpen(false);
-      setUpgradeSelected(null);
-      setUpgradeSearch('');
-      setUpgradeResults([]);
-      setUpgradeHasSearched(false);
-      setUpgradeForm({ accessStart: '', accessEnd: '' });
-      fetchUsers();
-    } catch (err) {
-      setErrorMessage(err.message);
-      setShowErrorModal(true);
-    } finally {
-      setUpgradeSaving(false);
-    }
+      return { ...prev, [name]: value };
+    });
   };
 
   const filteredUsers = useMemo(
@@ -402,6 +650,36 @@ export default function ManageUserAccountsPage() {
 
   const roleOptions = allRoles.map((role) => ({ value: role, label: toRoleLabel(role) }));
   const statusOptions = ['Active', 'Inactive'].map((status) => ({ value: status, label: status }));
+  const regionList = useMemo(
+    () =>
+      Object.values(philippineAddressOptions)
+        .map((region) => region.region_name)
+        .sort((a, b) => a.localeCompare(b)),
+    [],
+  );
+  const selectedRegion = useMemo(
+    () =>
+      Object.values(philippineAddressOptions).find(
+        (region) => region.region_name === formData.region,
+      ) || null,
+    [formData.region],
+  );
+  const provinceList = useMemo(
+    () => Object.keys(selectedRegion?.province_list || {}).sort((a, b) => a.localeCompare(b)),
+    [selectedRegion],
+  );
+  const selectedProvince = useMemo(
+    () => selectedRegion?.province_list?.[formData.province] || null,
+    [selectedRegion, formData.province],
+  );
+  const cityList = useMemo(
+    () => Object.keys(selectedProvince?.municipality_list || {}).sort((a, b) => a.localeCompare(b)),
+    [selectedProvince],
+  );
+  const barangayList = useMemo(
+    () => selectedProvince?.municipality_list?.[formData.city]?.barangay_list || [],
+    [selectedProvince, formData.city],
+  );
 
   const selectStyles = {
     control: (base, state) => ({
@@ -427,18 +705,15 @@ export default function ManageUserAccountsPage() {
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Manage User Accounts</h1>
-          <p className="mt-1 text-sm text-gray-600">Invite users, upgrade roles, and monitor account access windows.</p>
+          <p className="mt-1 text-sm text-gray-600">Add and manage staff/specialist web accounts and monitor account access windows.</p>
         </div>
         <button
-          onClick={() => {
-            setActiveTab('invite');
-            setIsModalOpen(true);
-          }}
+          onClick={() => setIsModalOpen(true)}
           className="text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm"
           style={{ backgroundColor: theme.primaryColor }}
         >
           <Plus size={18} />
-          <span>Invite / Upgrade</span>
+          <span>Add User</span>
         </button>
       </div>
 
@@ -724,76 +999,39 @@ export default function ManageUserAccountsPage() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-sm w-full text-center">
             <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4 text-green-600">
-              {successKind === 'invite' ? <Mail size={40} /> : <CheckCircle size={40} />}
+              <CheckCircle size={40} />
             </div>
             <h3 className="text-2xl font-bold text-gray-800 mb-2">
-              {successKind === 'invite' ? 'Invitation Email Sent' : 'Account Upgraded'}
+              User Account Created
             </h3>
-            {successKind === 'invite' ? (
-              <div>
-                <p className="text-gray-600 text-sm mb-4">An invitation email has been sent to:</p>
-                <p className="font-bold text-lg mb-6" style={{ color: theme.primaryColor }}>{invitedEmail}</p>
-                <p className="text-gray-500 text-xs mb-6">
-                  The user will receive an email with a confirmation link to complete account setup.
-                </p>
-              </div>
-            ) : (
-              <p className="text-gray-500 text-sm mb-6">
-                The selected account has been upgraded to the specified role and activated.
+            <div>
+              <p className="text-gray-600 text-sm mb-4">Credentials email was sent to:</p>
+              <p className="font-bold text-lg mb-1" style={{ color: theme.primaryColor }}>{invitedEmail}</p>
+              {invitedDisplayName ? (
+                <p className="text-xs text-gray-500 mb-1">{invitedDisplayName}</p>
+              ) : null}
+              {invitedRoleLabel ? (
+                <p className="text-xs text-gray-500 mb-4">Role: {invitedRoleLabel}</p>
+              ) : null}
+              {temporaryPasswordIssued ? (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 mb-4 text-left">
+                  <p className="text-[11px] uppercase tracking-wide text-blue-700 font-semibold mb-1">Temporary Login Credentials</p>
+                  <p className="text-xs text-blue-900"><strong>Email:</strong> {invitedEmail}</p>
+                  <p className="text-xs text-blue-900"><strong>Password:</strong> {temporaryPasswordIssued}</p>
+                </div>
+              ) : null}
+              <p className="text-gray-500 text-xs mb-6">
+                This account can login immediately using the temporary credentials.
               </p>
-            )}
+            </div>
 
-            {successKind === 'invite' ? (
-              <div className="flex gap-3">
-                <button
-                  onClick={async () => {
-                    setResendingEmail(true);
-                    try {
-                      const { error } = await supabase.auth.resend({
-                        type: 'signup',
-                        email: invitedEmail,
-                        options: {
-                          emailRedirectTo: `${window.location.origin}/complete-account`,
-                        },
-                      });
-                      if (error) throw error;
-                      alert('Invitation email resent successfully.');
-                    } catch (error) {
-                      alert(mapInviteErrorMessage(error?.message));
-                    } finally {
-                      setResendingEmail(false);
-                    }
-                  }}
-                  disabled={resendingEmail}
-                  className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 disabled:bg-gray-400 flex items-center justify-center gap-2"
-                >
-                  {resendingEmail ? (
-                    <>
-                      <Loader2 className="animate-spin" size={18} /> Sending...
-                    </>
-                  ) : (
-                    <>
-                      <Mail size={18} /> Resend Email
-                    </>
-                  )}
-                </button>
-                <button
-                  onClick={() => setShowSuccessModal(false)}
-                  className="flex-1 py-3 text-white rounded-xl font-bold"
-                  style={{ backgroundColor: theme.primaryColor }}
-                >
-                  Close
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setShowSuccessModal(false)}
-                className="w-full py-3 text-white rounded-xl font-bold"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                Close
-              </button>
-            )}
+            <button
+              onClick={() => setShowSuccessModal(false)}
+              className="w-full py-3 text-white rounded-xl font-bold"
+              style={{ backgroundColor: theme.primaryColor }}
+            >
+              Close
+            </button>
           </div>
         </div>
       )}
@@ -816,210 +1054,179 @@ export default function ManageUserAccountsPage() {
         </div>
       )}
 
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
-            <div className="flex justify-between items-center mb-6 border-b border-gray-200 pb-4">
-              <h3 className="text-xl font-bold text-gray-800">Add New User</h3>
-              <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-red-500"><X size={24} /></button>
-            </div>
-
-            <div className="flex gap-2 mb-4">
-              <button
-                type="button"
-                className={`flex-1 py-2 rounded-lg text-sm font-semibold border ${activeTab === 'invite' ? '' : 'bg-gray-50 text-gray-600 border-gray-200'}`}
-                style={
-                  activeTab === 'invite'
-                    ? { backgroundColor: `${theme.primaryColor}20`, color: theme.primaryColor, borderColor: `${theme.primaryColor}33` }
-                    : {}
-                }
-                onClick={() => setActiveTab('invite')}
-              >
-                Invite New User
-              </button>
-              <button
-                type="button"
-                className={`flex-1 py-2 rounded-lg text-sm font-semibold border ${activeTab === 'upgrade' ? '' : 'bg-gray-50 text-gray-600 border-gray-200'}`}
-                style={
-                  activeTab === 'upgrade'
-                    ? { backgroundColor: `${theme.secondaryColor}20`, color: theme.secondaryColorDark, borderColor: `${theme.secondaryColor}33` }
-                    : {}
-                }
-                onClick={() => setActiveTab('upgrade')}
-              >
-                Upgrade Existing
-              </button>
-            </div>
-
-            {activeTab === 'invite' && (
-              <form onSubmit={handleInviteUser} className="space-y-4">
-                <div className="p-3 rounded-lg text-xs border" style={{ backgroundColor: `${theme.primaryColor}12`, color: theme.primaryColor, borderColor: `${theme.primaryColor}33` }}>
-                  System will send a confirmation email. User must click the link to complete registration.
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">First Name</label>
-                    <input required name="firstName" value={formData.firstName} onChange={handleInputChange} type="text" className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 outline-none bg-white text-gray-900" style={{ '--tw-ring-color': theme.primaryColor }} />
+      {isModalOpen && typeof document !== 'undefined'
+        ? createPortal(
+            <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
+              <div className="w-full max-w-3xl overflow-hidden rounded-xl bg-white shadow-2xl">
+                <div className="max-h-[90vh] overflow-y-auto p-6">
+                  <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
+                    <h3 className="text-xl font-bold text-gray-800">Add New User</h3>
+                    <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-red-500">
+                      <X size={24} />
+                    </button>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Last Name</label>
-                    <input required name="lastName" value={formData.lastName} onChange={handleInputChange} type="text" className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 outline-none bg-white text-gray-900" style={{ '--tw-ring-color': theme.primaryColor }} />
-                  </div>
-                </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
-                  <input required name="email" value={formData.email} onChange={handleInputChange} type="email" className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 outline-none bg-white text-gray-900" style={{ '--tw-ring-color': theme.primaryColor }} />
-                </div>
+                  <form onSubmit={handleInviteUser} className="space-y-4">
+                    <div className="rounded-lg border p-3 text-xs" style={{ backgroundColor: `${theme.primaryColor}12`, color: theme.primaryColor, borderColor: `${theme.primaryColor}33` }}>
+                      Creates auth account + users + user_details in one submit. Optional fields: Access Start, Access End, Middle Name, Suffix.
+                    </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-                  <select required name="role" value={formData.role} onChange={handleInputChange} className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 outline-none bg-white text-gray-900" style={{ '--tw-ring-color': theme.primaryColor }}>
-                    <option value="admin">Admin</option>
-                    <option value="staff">Staff</option>
-                    <option value="specialist">Specialist</option>
-                    <option value="h_representative">H-Representative</option>
-                  </select>
-                </div>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Email Address *</label>
+                        <input required name="email" value={formData.email} onChange={handleInputChange} type="email" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Role *</label>
+                        <select required name="role" value={formData.role} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }}>
+                          <option value="staff">Staff</option>
+                          <option value="specialist">Specialist</option>
+                        </select>
+                      </div>
+                    </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Access Start</label>
-                    <input required={!inviteNoAccessTime} disabled={inviteNoAccessTime} name="accessStart" value={formData.accessStart} onChange={handleInputChange} type="date" className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 outline-none bg-white text-gray-900 disabled:opacity-50 disabled:cursor-not-allowed" style={{ '--tw-ring-color': theme.primaryColor }} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Access End</label>
-                    <input required={!inviteNoAccessTime} disabled={inviteNoAccessTime} name="accessEnd" value={formData.accessEnd} onChange={handleInputChange} type="date" className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 outline-none bg-white text-gray-900 disabled:opacity-50 disabled:cursor-not-allowed" style={{ '--tw-ring-color': theme.primaryColor }} />
-                  </div>
-                </div>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Access Start (UTC+8, optional)</label>
+                        <input name="accessStart" value={formData.accessStart} onChange={handleInputChange} type="datetime-local" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Access End (UTC+8, optional)</label>
+                        <input name="accessEnd" value={formData.accessEnd} onChange={handleInputChange} type="datetime-local" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                      </div>
+                    </div>
 
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setInviteNoAccessTime((prev) => {
-                        const next = !prev;
-                        if (next) {
-                          setFormData((curr) => ({ ...curr, accessStart: '', accessEnd: '' }));
-                        }
-                        return next;
-                      });
-                    }}
-                    className="w-full py-2 rounded-lg border text-sm font-semibold transition-colors"
-                    style={
-                      inviteNoAccessTime
-                        ? { backgroundColor: `${theme.primaryColor}20`, color: theme.primaryColor, borderColor: `${theme.primaryColor}33` }
-                        : {}
-                    }
-                  >
-                    {inviteNoAccessTime ? 'No Access Time Enabled (Permanent Account)' : 'Set As Permanent Account (No Access Time)'}
-                  </button>
-                </div>
+                    <div className="border-t border-gray-200 pt-2">
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">User Details</p>
+                    </div>
 
-                <div className="flex gap-3 mt-8 pt-2">
-                  <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">Cancel</button>
-                  <button type="submit" disabled={saving} className="flex-1 py-2 text-white rounded-lg flex justify-center items-center gap-2" style={{ backgroundColor: theme.primaryColor }}>
-                    {saving ? <Loader2 className="animate-spin" size={18} /> : <Mail size={18} />}
-                    {saving ? 'Sending...' : 'Send Invite'}
-                  </button>
-                </div>
-              </form>
-            )}
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">First Name *</label>
+                        <input required name="firstName" value={formData.firstName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Middle Name (optional)</label>
+                        <input name="middleName" value={formData.middleName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                      </div>
+                    </div>
 
-            {activeTab === 'upgrade' && (
-              <form onSubmit={handleUpgradeSubmit} className="space-y-4">
-                <div className="p-3 rounded-lg text-xs border" style={{ backgroundColor: `${theme.secondaryColor}12`, color: theme.secondaryColorDark, borderColor: `${theme.secondaryColor}33` }}>
-                  Upgrade an existing account to a higher access level.
-                </div>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Last Name *</label>
+                        <input required name="lastName" value={formData.lastName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Suffix (optional)</label>
+                        <input name="suffix" value={formData.suffix} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                      </div>
+                    </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Search User (name or email)</label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={upgradeSearch}
-                      onChange={(e) => setUpgradeSearch(e.target.value)}
-                      placeholder="Start typing to search..."
-                      className="w-full p-2 pl-9 border border-gray-300 rounded-lg focus:ring-2 outline-none bg-white text-gray-900"
-                      style={{ '--tw-ring-color': theme.secondaryColor }}
-                    />
-                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  </div>
-                  <div className="mt-2 max-h-40 overflow-auto border border-gray-100 rounded-lg divide-y divide-gray-100 bg-gray-50">
-                    {upgradeSearching && (
-                      <div className="p-3 text-sm text-gray-500 flex items-center gap-2"><Loader2 className="animate-spin" size={16} /> Searching...</div>
-                    )}
-                    {!upgradeSearching && upgradeResults.length === 0 && upgradeHasSearched && (
-                      <div className="p-3 text-sm text-gray-500">No matching users found.</div>
-                    )}
-                    {!upgradeSearching && upgradeResults.map((u) => (
-                      <label key={u.user_id} className="flex items-center gap-3 p-3 hover:bg-white cursor-pointer">
-                        <input
-                          type="radio"
-                          name="upgradeUser"
-                          value={u.user_id}
-                          checked={upgradeSelected === u.user_id}
-                          onChange={() => setUpgradeSelected(u.user_id)}
-                          className="text-blue-600"
-                        />
-                        <div className="flex-1">
-                          <div className="font-semibold text-gray-800">{u.first_name || '—'} {u.last_name || ''}</div>
-                          <div className="text-xs text-gray-500">{u.email}</div>
-                          <div className="text-[11px] text-gray-400">Current role: {toRoleLabel(u.role)}</div>
-                        </div>
-                      </label>
-                    ))}
-                    {!upgradeHasSearched && !upgradeSearching && upgradeResults.length === 0 && (
-                      <div className="p-3 text-sm text-gray-400">Start typing to search existing users.</div>
-                    )}
-                  </div>
-                </div>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Birthdate *</label>
+                        <input required name="birthdate" value={formData.birthdate} onChange={handleInputChange} type="date" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Gender *</label>
+                        <select required name="gender" value={formData.gender} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }}>
+                          <option value="">Select gender</option>
+                          <option value="Male">Male</option>
+                          <option value="Female">Female</option>
+                          <option value="Other">Other</option>
+                          <option value="Prefer not to say">Prefer not to say</option>
+                        </select>
+                      </div>
+                    </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-                  <select
-                    required
-                    value={upgradeRole}
-                    onChange={(e) => setUpgradeRole(e.target.value)}
-                    className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 outline-none bg-white text-gray-900"
-                    style={{ '--tw-ring-color': theme.secondaryColor }}
-                  >
-                    <option value="admin">Admin</option>
-                    <option value="staff">Staff</option>
-                    <option value="specialist">Specialist</option>
-                    <option value="h_representative">H-Representative</option>
-                  </select>
-                </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Contact Number *</label>
+                      <input
+                        required
+                        name="contactNumber"
+                        value={formData.contactNumber}
+                        onChange={handleInputChange}
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="+63 912 345 6789"
+                        maxLength={16}
+                        title="Use +63 912 345 6789 format."
+                        className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2"
+                        style={{ '--tw-ring-color': theme.primaryColor }}
+                      />
+                    </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Access Start</label>
-                    <input required name="upgradeAccessStart" value={upgradeForm.accessStart} onChange={(e) => setUpgradeForm((prev) => ({ ...prev, accessStart: e.target.value }))} type="date" className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 outline-none bg-white text-gray-900" style={{ '--tw-ring-color': theme.secondaryColor }} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Access End</label>
-                    <input required name="upgradeAccessEnd" value={upgradeForm.accessEnd} onChange={(e) => setUpgradeForm((prev) => ({ ...prev, accessEnd: e.target.value }))} type="date" className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 outline-none bg-white text-gray-900" style={{ '--tw-ring-color': theme.secondaryColor }} />
-                  </div>
-                </div>
+                    <div className="border-t border-gray-200 pt-2">
+                      <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">Address</p>
+                    </div>
 
-                <div className="flex gap-3 mt-8 pt-2">
-                  <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">Cancel</button>
-                  <button
-                    type="submit"
-                    disabled={upgradeSaving || !upgradeSelected || !upgradeForm.accessStart || !upgradeForm.accessEnd}
-                    className="flex-1 py-2 text-white rounded-lg flex justify-center items-center gap-2 disabled:opacity-60"
-                    style={{ backgroundColor: theme.secondaryColor }}
-                  >
-                    {upgradeSaving ? <Loader2 className="animate-spin" size={18} /> : <Shield size={18} />}
-                    {upgradeSaving ? 'Upgrading...' : `Upgrade to ${toRoleLabel(upgradeRole)}`}
-                  </button>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Street *</label>
+                        <input required name="street" value={formData.street} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Region *</label>
+                        <select required name="region" value={formData.region} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }}>
+                          <option value="">Select region</option>
+                          {regionList.map((regionName) => (
+                            <option key={regionName} value={regionName}>{regionName}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Province *</label>
+                        <select required name="province" value={formData.province} onChange={handleInputChange} disabled={!formData.region} className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2 disabled:cursor-not-allowed disabled:bg-gray-100" style={{ '--tw-ring-color': theme.primaryColor }}>
+                          <option value="">Select province</option>
+                          {provinceList.map((provinceName) => (
+                            <option key={provinceName} value={provinceName}>{provinceName}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">City / Municipality *</label>
+                        <select required name="city" value={formData.city} onChange={handleInputChange} disabled={!formData.province} className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2 disabled:cursor-not-allowed disabled:bg-gray-100" style={{ '--tw-ring-color': theme.primaryColor }}>
+                          <option value="">Select city/municipality</option>
+                          {cityList.map((cityName) => (
+                            <option key={cityName} value={cityName}>{cityName}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Barangay *</label>
+                        <select required name="barangay" value={formData.barangay} onChange={handleInputChange} disabled={!formData.city} className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2 disabled:cursor-not-allowed disabled:bg-gray-100" style={{ '--tw-ring-color': theme.primaryColor }}>
+                          <option value="">Select barangay</option>
+                          {barangayList.map((barangayName) => (
+                            <option key={barangayName} value={barangayName}>{barangayName}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-gray-700">Country *</label>
+                        <input required readOnly name="country" value={formData.country} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-gray-100 p-2 text-gray-700 outline-none" />
+                      </div>
+                    </div>
+
+                    <div className="mt-8 flex gap-3 pt-2">
+                      <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 rounded-lg border border-gray-300 py-2 text-gray-700 hover:bg-gray-50">Cancel</button>
+                      <button type="submit" disabled={saving} className="flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-white" style={{ backgroundColor: theme.primaryColor }}>
+                        {saving ? <Loader2 className="animate-spin" size={18} /> : <Mail size={18} />}
+                        {saving ? 'Creating...' : 'Add User'}
+                      </button>
+                    </div>
+                  </form>
                 </div>
-              </form>
-            )}
-          </div>
-        </div>
-      )}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

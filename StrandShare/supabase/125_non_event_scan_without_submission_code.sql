@@ -1,9 +1,11 @@
--- 111_non_event_specialist_quality_review.sql
--- Quality Check is for non-event donations only (Hair_Submissions.From_Event=false).
+-- 125_non_event_scan_without_submission_code.sql
+-- Remove any remaining Submission_Code dependency from non-event scan flow.
 
 begin;
 
-create or replace function public.scan_non_event_hair_submission(
+drop function if exists public.scan_non_event_hair_submission(text, text);
+
+create function public.scan_non_event_hair_submission(
   p_qr_payload text,
   p_notes text default null
 )
@@ -209,161 +211,6 @@ end;
 $fn$;
 
 grant execute on function public.scan_non_event_hair_submission(text, text) to authenticated;
-
-create or replace function public.specialist_review_non_event_hair_quality(
-  p_submission_id integer,
-  p_decision text,
-  p_rejection_reason text default null
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = public
-as $fn$
-declare
-  v_user public.users%rowtype;
-  v_role_key text;
-  v_submission public."Hair_Submissions"%rowtype;
-  v_now timestamp without time zone := timezone('Asia/Manila', now());
-  v_decision_key text := public.normalize_flow_key(p_decision);
-  v_reason text := nullif(trim(coalesce(p_rejection_reason, '')), '');
-  v_details jsonb := '[]'::jsonb;
-begin
-  if p_submission_id is null then
-    raise exception 'Submission_ID is required.';
-  end if;
-
-  if v_decision_key not in ('approved', 'rejected') then
-    raise exception 'Decision must be Approved or Rejected.';
-  end if;
-
-  if v_decision_key = 'rejected' and v_reason is null then
-    raise exception 'Rejection reason is required when decision is Rejected.';
-  end if;
-
-  select *
-  into v_user
-  from public.users u
-  where u.auth_user_id = auth.uid()
-  limit 1;
-
-  if v_user.user_id is null then
-    raise exception 'Unable to resolve authenticated user.';
-  end if;
-
-  v_role_key := public.normalize_app_role(v_user.role);
-  if v_role_key not in ('specialist', 'admin') then
-    raise exception 'Only specialist/admin can review non-event hair quality.';
-  end if;
-
-  select *
-  into v_submission
-  from public."Hair_Submissions" hs
-  where hs."Submission_ID" = p_submission_id
-  for update;
-
-  if v_submission."Submission_ID" is null then
-    raise exception 'Submission % was not found.', p_submission_id;
-  end if;
-
-  if coalesce(v_submission."From_Event", true) then
-    raise exception 'Submission % is event-based and cannot be reviewed on this page.', p_submission_id;
-  end if;
-
-  if v_submission."Bundle_ID" is not null then
-    raise exception 'Submission % is already assigned to a bundle and can no longer be reviewed.', p_submission_id;
-  end if;
-
-  if public.normalize_flow_key(v_submission."Status") <> 'pending' then
-    raise exception 'Only Pending non-event submissions can be reviewed here. Current status: %.', coalesce(v_submission."Status", 'N/A');
-  end if;
-
-  if not exists (
-    select 1
-    from public."Hair_Submission_Details" hsd
-    where hsd."Submission_ID" = v_submission."Submission_ID"
-  ) then
-    insert into public."Hair_Submission_Details" (
-      "Submission_ID",
-      "Created_At",
-      "Status",
-      "Updated_By",
-      "Updated_At"
-    )
-    values (
-      v_submission."Submission_ID",
-      v_now,
-      'Pending',
-      v_user.user_id,
-      v_now
-    );
-  end if;
-
-  if v_decision_key = 'approved' then
-    update public."Hair_Submissions"
-    set
-      "Status" = 'Cut',
-      "Cut_At" = coalesce("Cut_At", v_now),
-      "Cut_By_User_ID" = coalesce("Cut_By_User_ID", v_user.user_id),
-      "Updated_At" = v_now
-    where "Submission_ID" = v_submission."Submission_ID"
-    returning * into v_submission;
-
-    update public."Hair_Submission_Details"
-    set
-      "Status" = 'Approved',
-      "Rejection_Reason" = null,
-      "Updated_By" = v_user.user_id,
-      "Updated_At" = v_now
-    where "Submission_ID" = v_submission."Submission_ID";
-  else
-    update public."Hair_Submissions"
-    set
-      "Status" = 'Cancelled',
-      "Updated_At" = v_now
-    where "Submission_ID" = v_submission."Submission_ID"
-    returning * into v_submission;
-
-    update public."Hair_Submission_Details"
-    set
-      "Status" = 'Rejected',
-      "Rejection_Reason" = v_reason,
-      "Updated_By" = v_user.user_id,
-      "Updated_At" = v_now
-    where "Submission_ID" = v_submission."Submission_ID";
-  end if;
-
-  select coalesce(jsonb_agg(to_jsonb(hsd) order by hsd."Submission_Detail_ID"), '[]'::jsonb)
-  into v_details
-  from public."Hair_Submission_Details" hsd
-  where hsd."Submission_ID" = v_submission."Submission_ID";
-
-  insert into public.audit_logs (user_id, action, description, user_email, resource, status, "time")
-  values (
-    v_user.user_id,
-    'hair_submissions.specialist_non_event_quality_review',
-    format(
-      'submission_id=%s decision=%s resulting_status=%s reason=%s',
-      v_submission."Submission_ID",
-      case when v_decision_key = 'approved' then 'Approved' else 'Rejected' end,
-      coalesce(v_submission."Status", 'N/A'),
-      coalesce(v_reason, 'N/A')
-    ),
-    v_user.email,
-    'Hair_Submissions',
-    'success',
-    v_now
-  );
-
-  return jsonb_build_object(
-    'decision', case when v_decision_key = 'approved' then 'Approved' else 'Rejected' end,
-    'submission', to_jsonb(v_submission),
-    'details', v_details
-  );
-end;
-$fn$;
-
-grant execute on function public.specialist_review_non_event_hair_quality(integer, text, text) to authenticated;
 
 commit;
 

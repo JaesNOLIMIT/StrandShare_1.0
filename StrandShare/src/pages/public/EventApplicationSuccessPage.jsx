@@ -33,7 +33,7 @@ export default function EventApplicationSuccessPage() {
             <span className="font-semibold text-slate-800">{submittedEmail || 'your submitted email address'}</span>.
           </p>
           <p className="text-xs text-slate-500">
-            If it does not arrive in a few minutes, check Spam/Junk and confirm the SMTP worker is running.
+            If it does not arrive in a few minutes, check Spam/Junk.
           </p>
         </div>
 

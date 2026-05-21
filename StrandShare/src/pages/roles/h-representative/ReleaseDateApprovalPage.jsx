@@ -9,11 +9,13 @@ const HOSPITALS_TABLE = 'Hospitals';
 const WIG_REQUESTS_TABLE = 'Wig_Requests';
 const WIGS_TABLE = 'Wigs';
 const WIG_SPECIFICATIONS_TABLE = 'Wig_Specifications';
+const WIG_FILTERS_TABLE = 'Wig_AI_Filters';
 const PATIENTS_TABLE = 'Patients';
 const USERS_TABLE = 'users';
 const RELEASE_SCHEDULES_TABLE = 'Release_Schedules';
 const WIG_REQUEST_PREVIEWS_BUCKET = 'wig_request_previews';
-const COMPLETED_WIGS_BUCKET = 'completed_wigs';
+const WIG_AI_FILTERS_BUCKET = 'wig_ai_filters';
+const WIG_AI_SOURCES_BUCKET = 'wig_ai_sources';
 const PST_TIMEZONE = 'Asia/Manila';
 const PST_OFFSET = '+08:00';
 
@@ -21,7 +23,6 @@ const REQUEST_STATUS = {
   pending: 'Pending',
   acceptedAllocated: 'Accepted - Wig Allocated',
   acceptedNoWig: 'Accepted - No Wig Available',
-  inProduction: 'In Production',
   toBeRelease: 'To Be Release',
   releasing: 'Releasing',
   released: 'Released',
@@ -93,7 +94,7 @@ function getCanonicalStatusKey(statusValue) {
   }
 
   if (['inproduction', 'production', 'inprocess'].includes(key)) {
-    return 'in_production';
+    return 'accepted_no_wig';
   }
 
   if (['readyforevent', 'readyforrelease', 'readyforfitting', 'readyforhandingover', 'toberelease'].includes(key)) {
@@ -116,7 +117,6 @@ function getStatusLabel(statusValue) {
 
   if (key === 'accepted_allocated') return REQUEST_STATUS.acceptedAllocated;
   if (key === 'accepted_no_wig') return REQUEST_STATUS.acceptedNoWig;
-  if (key === 'in_production') return REQUEST_STATUS.inProduction;
   if (key === 'to_be_release') return REQUEST_STATUS.toBeRelease;
   if (key === 'releasing') return REQUEST_STATUS.releasing;
   if (key === 'released') return REQUEST_STATUS.released;
@@ -128,19 +128,23 @@ function statusClass(statusValue) {
 
   if (key === 'accepted_allocated') return 'bg-emerald-100 text-emerald-700';
   if (key === 'accepted_no_wig') return 'bg-lime-100 text-lime-700';
-  if (key === 'in_production') return 'bg-sky-100 text-sky-700';
   if (key === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (key === 'releasing') return 'bg-teal-100 text-teal-700';
   if (key === 'released') return 'bg-green-100 text-green-700';
   return 'bg-amber-100 text-amber-700';
 }
 
-function formatRequestCode(reqIdValue) {
+function formatRequestCode(requestCodeValue, reqIdValue) {
+  const rawCode = String(requestCodeValue || '').trim();
+  if (rawCode) {
+    const cleanedCode = rawCode.toUpperCase();
+    return cleanedCode.startsWith('WR') ? cleanedCode : `WR${cleanedCode}`;
+  }
   const reqId = Number(reqIdValue || 0);
   if (!reqId) {
-    return 'WR-0000';
+    return 'WR------';
   }
-  return `WR-${String(reqId).padStart(4, '0')}`;
+  return `WR${String(reqId).padStart(6, '0')}`;
 }
 
 function formatDateTime(value) {
@@ -225,6 +229,10 @@ function mapLoadError(rawMessage) {
   const message = String(rawMessage || 'Unable to load release approval records.');
   const lowerMessage = message.toLowerCase();
 
+  if (lowerMessage.includes('allocated_wig_id') && lowerMessage.includes('column')) {
+    return 'Database migration is missing. Run supabase/119_add_allocated_wig_id_for_actual_allocation.sql, then refresh.';
+  }
+
   if (lowerMessage.includes('row-level security')) {
     return 'Data access is blocked by database policy. Verify your hospital role permissions.';
   }
@@ -239,6 +247,10 @@ function mapLoadError(rawMessage) {
 function mapActionError(rawMessage) {
   const message = String(rawMessage || 'Unable to apply decision.');
   const lowerMessage = message.toLowerCase();
+
+  if (lowerMessage.includes('allocated_wig_id') && lowerMessage.includes('column')) {
+    return 'Database migration is missing. Run supabase/119_add_allocated_wig_id_for_actual_allocation.sql, then retry.';
+  }
 
   if (lowerMessage.includes('release_schedules') && (lowerMessage.includes('relation') || lowerMessage.includes('does not exist'))) {
     return 'Release scheduling data is unavailable. Ensure Release_Schedules exists and refresh Supabase schema cache.';
@@ -278,11 +290,10 @@ function matchesSearch(row, query) {
     row.medicalCondition,
     row.statusLabel,
     row.releaseWorkflowLabel,
-    row.specStyle,
+    row.specWigName,
     row.specColor,
     row.specLength,
-    row.specTexture,
-    row.specCapSize,
+    row.specDensity,
     row.specSpecialNote,
     row.allocatedWigCode,
     row.allocatedWigName,
@@ -447,8 +458,9 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
       let currentSchedules = [];
       let allSchedules = [];
       let releaseWorkflowAvailable = true;
-      let wigsByReqId = new Map();
+      let wigsById = new Map();
       let wigSpecsByWigId = new Map();
+      let wigFiltersByWigId = new Map();
 
       if (requestIds.length > 0) {
         const currentScheduleRes = await supabase
@@ -482,78 +494,85 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
         allSchedules = historyRes.data || [];
       }
 
-      if (requestIds.length > 0) {
-        const wigsRes = await supabase
-          .from(WIGS_TABLE)
-          .select(`
-            wig_id:Wig_ID,
-            req_id:Req_ID,
-            wig_code:Wig_Code,
-            wig_name:Wig_Name,
-            wig_status:Wig_Status,
-            total_donated_hairs:Total_Donated_Hairs,
-            total_bundles_used:Total_Bundles_Used,
-            wig_front_image_path:Wig_Front_Image_Path,
-            wig_side_image_path:Wig_Side_Image_Path,
-            wig_top_image_path:Wig_Top_Image_Path,
-            created_at:Created_At,
-            updated_at:Updated_At
-          `)
-          .in('Req_ID', requestIds)
-          .order('Updated_At', { ascending: false });
+      const wigIdsForLookup = Array.from(
+        new Set(
+          (requestsRes.data || [])
+            .flatMap((row) => [
+              Number(row.Requested_Wig_ID || 0),
+              Number(row.Allocated_Wig_ID || 0),
+            ])
+            .filter((id) => Number.isFinite(id) && id > 0),
+        ),
+      );
 
-        if (wigsRes.error) {
-          const lowerWigError = String(wigsRes.error.message || '').toLowerCase();
-          const canIgnoreMissingReqId = lowerWigError.includes('req_id') && lowerWigError.includes('column');
-          if (!canIgnoreMissingReqId) {
-            throw wigsRes.error;
+      if (wigIdsForLookup.length > 0) {
+        const [wigsRes, wigSpecsRes, wigFiltersRes] = await Promise.all([
+          supabase
+            .from(WIGS_TABLE)
+            .select(`
+              wig_id:Wig_ID,
+              wig_code:Wig_Code,
+              wig_name:Wig_Name,
+              wig_status:Wig_Status,
+              total_donated_hairs:Total_Donated_Hairs,
+              total_bundles_used:Total_Bundles_Used,
+              created_at:Created_At,
+              updated_at:Updated_At
+            `)
+            .in('Wig_ID', wigIdsForLookup),
+          supabase
+            .from(WIG_SPECIFICATIONS_TABLE)
+            .select(`
+              wig_id:Wig_ID,
+              hair_length:Hair_Length,
+              hair_color:Hair_Color,
+              hair_texture:Hair_Texture,
+              hair_density:Hair_Density,
+              style:Style,
+              cap_size:Cap_Size
+            `)
+            .in('Wig_ID', wigIdsForLookup),
+          supabase
+            .from(WIG_FILTERS_TABLE)
+            .select('Wig_ID, Is_Active, Status, Source_Front_Path, Source_Side_Path, Source_Top_Path, Source_Back_Path, Layer_Back_Hair_Path, Updated_At')
+            .in('Wig_ID', wigIdsForLookup)
+            .order('Updated_At', { ascending: false }),
+        ]);
+
+        if (wigsRes.error) throw wigsRes.error;
+
+        const wigRows = wigsRes.data || [];
+        wigsById = new Map(
+          wigRows
+            .map((row) => [Number(row.wig_id ?? row.Wig_ID ?? 0), row])
+            .filter(([wigId]) => wigId > 0),
+        );
+
+        if (wigSpecsRes.error) {
+          const lowerSpecError = String(wigSpecsRes.error.message || '').toLowerCase();
+          const canIgnoreMissingSpecTable = lowerSpecError.includes('relation') && lowerSpecError.includes('does not exist');
+          if (!canIgnoreMissingSpecTable) {
+            throw wigSpecsRes.error;
           }
         } else {
-          const wigRows = wigsRes.data || [];
-
-          wigRows.forEach((row) => {
-            const reqId = Number(row.req_id ?? row.Req_ID ?? 0);
-            const wigId = Number(row.wig_id ?? row.Wig_ID ?? 0);
-            if (!reqId || !wigId || wigsByReqId.has(reqId)) {
-              return;
-            }
-
-            wigsByReqId.set(reqId, row);
-          });
-
-          const wigIds = Array.from(new Set(
-            wigRows
-              .map((row) => Number(row.wig_id ?? row.Wig_ID ?? 0))
-              .filter((id) => Number.isFinite(id) && id > 0),
-          ));
-
-          if (wigIds.length > 0) {
-            const wigSpecsRes = await supabase
-              .from(WIG_SPECIFICATIONS_TABLE)
-              .select(`
-                wig_id:Wig_ID,
-                hair_length:Hair_Length,
-                hair_color:Hair_Color,
-                hair_texture:Hair_Texture,
-                hair_density:Hair_Density,
-                style:Style,
-                cap_size:Cap_Size
-              `)
-              .in('Wig_ID', wigIds);
-
-            if (wigSpecsRes.error) {
-              const lowerSpecError = String(wigSpecsRes.error.message || '').toLowerCase();
-              const canIgnoreMissingSpecTable = lowerSpecError.includes('relation') && lowerSpecError.includes('does not exist');
-              if (!canIgnoreMissingSpecTable) {
-                throw wigSpecsRes.error;
-              }
-            } else {
-              wigSpecsByWigId = new Map(
-                (wigSpecsRes.data || []).map((row) => [Number(row.wig_id ?? row.Wig_ID ?? 0), row]),
-              );
-            }
-          }
+          wigSpecsByWigId = new Map(
+            (wigSpecsRes.data || []).map((row) => [Number(row.wig_id ?? row.Wig_ID ?? 0), row]),
+          );
         }
+
+        if (wigFiltersRes.error) {
+          throw wigFiltersRes.error;
+        }
+        (wigFiltersRes.data || []).forEach((row) => {
+          const wigId = Number(row.Wig_ID || 0);
+          if (!wigId || wigFiltersByWigId.has(wigId)) {
+            return;
+          }
+          const statusKey = normalizeStatusKey(row.Status);
+          if (row.Is_Active || statusKey === 'approved' || statusKey === 'pendingreview') {
+            wigFiltersByWigId.set(wigId, row);
+          }
+        });
       }
 
       setIsReleaseWorkflowAvailable(releaseWorkflowAvailable);
@@ -570,10 +589,16 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
         const patient = patientById.get(Number(requestRow.Patient_ID || 0)) || null;
         const linkedPatientUser = patient ? nextPatientUsersById[Number(patient.User_ID || 0)] : null;
         const currentSchedule = currentScheduleByReqId.get(reqId) || null;
-        const allocatedWig = wigsByReqId.get(reqId) || null;
+        const requestedWigId = Number(requestRow.Requested_Wig_ID || 0) || null;
+        const allocatedWigId = Number(requestRow.Allocated_Wig_ID || 0) || null;
+        const requestedWigSpec = requestedWigId
+          ? (wigSpecsByWigId.get(Number(requestedWigId || 0)) || {})
+          : {};
+        const allocatedWig = allocatedWigId ? (wigsById.get(allocatedWigId) || null) : null;
         const allocatedWigSpec = allocatedWig
           ? (wigSpecsByWigId.get(Number(allocatedWig.wig_id ?? allocatedWig.Wig_ID ?? 0)) || {})
           : {};
+        const allocatedWigFilter = allocatedWigId ? (wigFiltersByWigId.get(allocatedWigId) || null) : null;
 
         const statusRaw = requestRow.Status || REQUEST_STATUS.pending;
         const releaseWorkflowRaw = currentSchedule?.Hospital_Decision
@@ -582,7 +607,7 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
 
         return {
           reqId,
-          requestId: formatRequestCode(reqId),
+          requestId: formatRequestCode(requestRow.Request_Code, reqId),
           patientId: Number(requestRow.Patient_ID || 0),
           patientName: getPatientFullName(patient, linkedPatientUser),
           patientCode: String(patient?.Patient_Code || '').trim(),
@@ -600,16 +625,22 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
           releaseScheduleId: Number(currentSchedule?.Release_Schedule_ID || 0) || null,
           releaseDecisionReason: String(currentSchedule?.Hospital_Decision_Reason || '').trim(),
           releaseProposalNote: String(currentSchedule?.Proposal_Note || '').trim(),
-          specStyle: String(allocatedWigSpec?.style ?? allocatedWigSpec?.Style ?? '').trim() || 'N/A',
-          specColor: String(allocatedWigSpec?.hair_color ?? allocatedWigSpec?.Hair_Color ?? '').trim() || 'N/A',
-          specLength: (allocatedWigSpec?.hair_length ?? allocatedWigSpec?.Hair_Length) === null
-            || (allocatedWigSpec?.hair_length ?? allocatedWigSpec?.Hair_Length) === undefined
+          specWigName: String(
+            wigsById.get(Number(requestedWigId || 0))?.wig_name
+            ?? wigsById.get(Number(requestedWigId || 0))?.Wig_Name
+            ?? '',
+          ).trim() || 'N/A',
+          specStyle: String(requestedWigSpec?.style ?? requestedWigSpec?.Style ?? '').trim() || 'N/A',
+          specColor: String(requestedWigSpec?.hair_color ?? requestedWigSpec?.Hair_Color ?? '').trim() || 'N/A',
+          specLength: (requestedWigSpec?.hair_length ?? requestedWigSpec?.Hair_Length) === null
+            || (requestedWigSpec?.hair_length ?? requestedWigSpec?.Hair_Length) === undefined
             ? 'N/A'
-            : String(allocatedWigSpec?.hair_length ?? allocatedWigSpec?.Hair_Length).trim() || 'N/A',
-          specTexture: String(allocatedWigSpec?.hair_texture ?? allocatedWigSpec?.Hair_Texture ?? '').trim() || 'N/A',
-          specCapSize: String(allocatedWigSpec?.cap_size ?? allocatedWigSpec?.Cap_Size ?? '').trim() || 'N/A',
+            : String(requestedWigSpec?.hair_length ?? requestedWigSpec?.Hair_Length).trim() || 'N/A',
+          specTexture: String(requestedWigSpec?.hair_texture ?? requestedWigSpec?.Hair_Texture ?? '').trim() || 'N/A',
+          specDensity: String(requestedWigSpec?.hair_density ?? requestedWigSpec?.Hair_Density ?? '').trim() || 'N/A',
+          specCapSize: String(requestedWigSpec?.cap_size ?? requestedWigSpec?.Cap_Size ?? '').trim() || 'N/A',
           specSpecialNote: 'N/A',
-          allocatedWigId: Number(allocatedWig?.wig_id ?? allocatedWig?.Wig_ID ?? 0) || null,
+          allocatedWigId,
           allocatedWigCode: String(allocatedWig?.wig_code ?? allocatedWig?.Wig_Code ?? '').trim() || 'N/A',
           allocatedWigName: String(allocatedWig?.wig_name ?? allocatedWig?.Wig_Name ?? '').trim() || 'N/A',
           allocatedWigStatus: String(allocatedWig?.wig_status ?? allocatedWig?.Wig_Status ?? '').trim() || 'N/A',
@@ -624,9 +655,37 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
           allocatedWigDensity: String(allocatedWigSpec?.hair_density ?? allocatedWigSpec?.Hair_Density ?? '').trim() || 'N/A',
           allocatedWigStyle: String(allocatedWigSpec?.style ?? allocatedWigSpec?.Style ?? '').trim() || 'N/A',
           allocatedWigCapSize: String(allocatedWigSpec?.cap_size ?? allocatedWigSpec?.Cap_Size ?? '').trim() || 'N/A',
-          allocatedWigFrontImageUrl: resolveStoragePublicUrl(COMPLETED_WIGS_BUCKET, allocatedWig?.wig_front_image_path ?? allocatedWig?.Wig_Front_Image_Path),
-          allocatedWigSideImageUrl: resolveStoragePublicUrl(COMPLETED_WIGS_BUCKET, allocatedWig?.wig_side_image_path ?? allocatedWig?.Wig_Side_Image_Path),
-          allocatedWigTopImageUrl: resolveStoragePublicUrl(COMPLETED_WIGS_BUCKET, allocatedWig?.wig_top_image_path ?? allocatedWig?.Wig_Top_Image_Path),
+          allocatedWigFrontImageUrl: resolveStoragePublicUrl(
+            WIG_AI_SOURCES_BUCKET,
+            String(allocatedWigFilter?.Source_Front_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_FILTERS_BUCKET,
+            String(allocatedWigFilter?.Source_Front_Path || '').trim(),
+          ),
+          allocatedWigSideImageUrl: resolveStoragePublicUrl(
+            WIG_AI_SOURCES_BUCKET,
+            String(allocatedWigFilter?.Source_Side_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_FILTERS_BUCKET,
+            String(allocatedWigFilter?.Source_Side_Path || '').trim(),
+          ),
+          allocatedWigTopImageUrl: resolveStoragePublicUrl(
+            WIG_AI_SOURCES_BUCKET,
+            String(allocatedWigFilter?.Source_Top_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_FILTERS_BUCKET,
+            String(allocatedWigFilter?.Source_Top_Path || '').trim(),
+          ),
+          allocatedWigBackImageUrl: resolveStoragePublicUrl(
+            WIG_AI_SOURCES_BUCKET,
+            String(allocatedWigFilter?.Source_Back_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_FILTERS_BUCKET,
+            String(allocatedWigFilter?.Source_Back_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_FILTERS_BUCKET,
+            String(allocatedWigFilter?.Source_Back_Path || allocatedWigFilter?.Layer_Back_Hair_Path || '').trim(),
+          ),
           previewPdfUrl: String(requestRow.Pdf_Url || requestRow.Preview_Pdf_Url || '').trim(),
         };
       });
@@ -638,7 +697,7 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
         return {
           scheduleId: Number(row.Release_Schedule_ID || 0),
           reqId,
-          requestId: requestRow?.requestId || formatRequestCode(reqId),
+          requestId: requestRow?.requestId || formatRequestCode('', reqId),
           patientName: requestRow?.patientName || 'Unknown Patient',
           proposedReleaseDate: row.Proposed_Release_Date,
           hospitalDecision: row.Hospital_Decision,
@@ -822,6 +881,20 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
     }
 
     const nowIso = getPstTimestamp();
+    const { data: requestRow, error: requestReadError } = await supabase
+      .from(WIG_REQUESTS_TABLE)
+      .select('Allocated_Wig_ID')
+      .eq('Req_ID', reqId)
+      .maybeSingle();
+
+    if (requestReadError) {
+      throw requestReadError;
+    }
+
+    const targetWigId = Number(requestRow?.Allocated_Wig_ID || 0);
+    if (!targetWigId) {
+      return;
+    }
 
     const { error } = await supabase
       .from(WIGS_TABLE)
@@ -829,7 +902,7 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
         Wig_Status: nextWigStatus,
         Updated_At: nowIso,
       })
-      .eq('Req_ID', reqId);
+      .eq('Wig_ID', targetWigId);
 
     if (error) {
       throw error;
@@ -1376,12 +1449,12 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
-                <p className="text-sm font-semibold text-slate-900">Allocated Wig Specifications</p>
+                <p className="text-sm font-semibold text-slate-900">Requested Wig Preference</p>
                 <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-700 sm:grid-cols-2">
-                  <p><span className="font-semibold text-slate-900">Style:</span> {selectedRow.specStyle}</p>
+                  <p><span className="font-semibold text-slate-900">Wig Name:</span> {selectedRow.specWigName}</p>
                   <p><span className="font-semibold text-slate-900">Color:</span> {selectedRow.specColor}</p>
                   <p><span className="font-semibold text-slate-900">Length:</span> {selectedRow.specLength}</p>
-                  <p><span className="font-semibold text-slate-900">Texture:</span> {selectedRow.specTexture}</p>
+                  <p><span className="font-semibold text-slate-900">Density:</span> {selectedRow.specDensity}</p>
                   <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedRow.specCapSize}</p>
                 </div>
               </div>
@@ -1404,11 +1477,12 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
                       <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedRow.allocatedWigCapSize}</p>
                     </div>
 
-                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
                       {[
                         { key: 'front', label: 'Front View', url: selectedRow.allocatedWigFrontImageUrl },
                         { key: 'side', label: 'Side View', url: selectedRow.allocatedWigSideImageUrl },
                         { key: 'top', label: 'Top View', url: selectedRow.allocatedWigTopImageUrl },
+                        { key: 'back', label: 'Back View', url: selectedRow.allocatedWigBackImageUrl },
                       ].map((image) => (
                         <div key={image.key} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                           <p className="mb-2 text-xs font-semibold text-slate-600">{image.label}</p>

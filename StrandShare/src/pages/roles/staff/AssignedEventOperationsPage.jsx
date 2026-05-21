@@ -5,16 +5,19 @@ import {
   CameraOff,
   Calendar,
   CheckCircle2,
+  HelpCircle,
   Inbox,
   Loader2,
   MapPin,
   Printer,
+  RefreshCw,
   ScanLine,
   Search,
   Users,
   X,
 } from 'lucide-react';
 import jsQR from 'jsqr';
+import QRCode from 'qrcode';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabaseClient';
 import { useTheme } from '../../../context/ThemeContext';
 
@@ -22,7 +25,25 @@ const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
 const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
 const USERS_TABLE = 'users';
+const USER_DETAILS_TABLE = 'user_details';
 const SCAN_DEBOUNCE_MS = 2500;
+const EVENT_FILTERS = [
+  { id: 'today', label: 'Today' },
+  { id: 'this_week', label: 'This Week' },
+  { id: 'upcoming', label: 'Upcoming' },
+];
+const MANILA_OFFSET_MINUTES = 8 * 60;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+
+function getManilaSqlTimestamp(dateValue = new Date()) {
+  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return getManilaSqlTimestamp(new Date());
+  }
+  const utcMs = date.getTime() + (date.getTimezoneOffset() * 60 * 1000);
+  const manilaShiftedDate = new Date(utcMs + (8 * 60 * 60 * 1000));
+  return manilaShiftedDate.toISOString().slice(0, 19).replace('T', ' ');
+}
 
 function formatDateTime(value) {
   if (!value) return 'N/A';
@@ -50,6 +71,21 @@ function formatDateShort(value) {
   });
 }
 
+function toManilaShiftedDate(dateValue = new Date()) {
+  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return toManilaShiftedDate(new Date());
+  }
+  const utcMs = date.getTime() + (date.getTimezoneOffset() * 60 * 1000);
+  return new Date(utcMs + (MANILA_OFFSET_MINUTES * 60 * 1000));
+}
+
+function toManilaDayStartMs(dateValue = new Date()) {
+  const shifted = toManilaShiftedDate(dateValue);
+  shifted.setUTCHours(0, 0, 0, 0);
+  return shifted.getTime();
+}
+
 function buildAddress(event) {
   if (!event) return '';
   return [
@@ -62,6 +98,15 @@ function buildAddress(event) {
   ]
     .filter(Boolean)
     .join(', ');
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function parseRsvpScanPayload(rawValue) {
@@ -136,6 +181,36 @@ function createDetailDraft(detail) {
   };
 }
 
+function buildUserFullName(detailRow) {
+  if (!detailRow) return '';
+  return [
+    detailRow.first_name,
+    detailRow.middle_name,
+    detailRow.last_name,
+    detailRow.suffix,
+  ]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+function enrichAttendeeRowWithUserData(attendeeRow, userRow, detailRow, fallbackRow = null) {
+  const fullName = buildUserFullName(detailRow)
+    || String(attendeeRow?.Full_Name || '').trim()
+    || String(fallbackRow?.Full_Name || '').trim()
+    || 'N/A';
+  const email = String(userRow?.email || attendeeRow?.Email || fallbackRow?.Email || '').trim();
+  const contactNumber = String(detailRow?.contact_number || attendeeRow?.Contact_Number || fallbackRow?.Contact_Number || '').trim();
+
+  return {
+    ...fallbackRow,
+    ...attendeeRow,
+    Full_Name: fullName,
+    Email: email || null,
+    Contact_Number: contactNumber || null,
+  };
+}
+
 export default function AssignedEventOperationsPage({ userProfile }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0f766e';
@@ -148,9 +223,11 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   const [notice, setNotice] = useState({ kind: '', text: '' });
 
   const [events, setEvents] = useState([]);
+  const [eventTimeFilter, setEventTimeFilter] = useState('this_week');
   const [selectedRequestId, setSelectedRequestId] = useState(null);
   const [attendees, setAttendees] = useState([]);
   const [attendeeSearch, setAttendeeSearch] = useState('');
+  const [showHowToModal, setShowHowToModal] = useState(false);
   const [isStartingCamera, setIsStartingCamera] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [cameraStatus, setCameraStatus] = useState({
@@ -169,6 +246,8 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   const scannerCanvasRef = useRef(null);
   const isScanProcessingRef = useRef(false);
   const lastScanRef = useRef({ raw: '', at: 0 });
+  const attendeesCacheRef = useRef(new Map());
+  const attendeeLoadSeqRef = useRef(0);
 
   const resolveStaffUserId = useCallback(async () => {
     if (staffUserId) return staffUserId;
@@ -224,27 +303,88 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     }
   }, [resolveStaffUserId]);
 
-  const loadAttendees = useCallback(async (eventRequestId) => {
-    if (!supabase || !eventRequestId) {
+  const loadAttendees = useCallback(async (eventRequestId, { silent = false, force = false } = {}) => {
+    const targetEventRequestId = Number(eventRequestId || 0);
+    if (!supabase || !targetEventRequestId) {
       setAttendees([]);
       return;
     }
 
-    setIsLoadingAttendees(true);
+    const cachedRows = attendeesCacheRef.current.get(targetEventRequestId);
+    if (cachedRows && !force) {
+      setAttendees(cachedRows);
+    }
+
+    const shouldShowLoading = !silent && (!cachedRows || force);
+    if (shouldShowLoading) {
+      setIsLoadingAttendees(true);
+    }
+    const loadSeq = attendeeLoadSeqRef.current + 1;
+    attendeeLoadSeqRef.current = loadSeq;
+
     try {
-      let result = await supabase
+      const result = await supabase
         .from(EVENT_ATTENDEES_TABLE)
-        .select('*')
-        .eq('Event_Request_ID', eventRequestId)
-        .order('Created_At', { ascending: true });
+        .select('Event_Attendee_ID, User_ID, Registration_Status, Attendance_Status, Waybill_Code, Waybill_Printed_At, Waybill_Printed_By, Notes, Created_At, Updated_At, Event_Request_ID, RSVP_Scanned_At, RSVP_Scanned_By')
+        .eq('Event_Request_ID', targetEventRequestId)
+        .order('Event_Attendee_ID', { ascending: true });
 
       if (result.error) throw result.error;
-      setAttendees(result.data || []);
+      if (attendeeLoadSeqRef.current !== loadSeq) {
+        return;
+      }
+
+      const baseRows = result.data || [];
+      const userIds = [...new Set(
+        baseRows
+          .map((row) => Number(row?.User_ID || 0))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      )];
+
+      const usersById = new Map();
+      const detailsById = new Map();
+      if (userIds.length) {
+        const [usersResult, detailsResult] = await Promise.all([
+          supabase
+            .from(USERS_TABLE)
+            .select('user_id, email')
+            .in('user_id', userIds),
+          supabase
+            .from(USER_DETAILS_TABLE)
+            .select('user_id, first_name, middle_name, last_name, suffix, contact_number')
+            .in('user_id', userIds),
+        ]);
+
+        if (usersResult.error) throw usersResult.error;
+        if (detailsResult.error) throw detailsResult.error;
+
+        for (const userRow of usersResult.data || []) {
+          usersById.set(Number(userRow.user_id || 0), userRow);
+        }
+        for (const detailRow of detailsResult.data || []) {
+          detailsById.set(Number(detailRow.user_id || 0), detailRow);
+        }
+      }
+
+      const rows = baseRows.map((row) => {
+        const userId = Number(row?.User_ID || 0);
+        return enrichAttendeeRowWithUserData(
+          row,
+          usersById.get(userId) || null,
+          detailsById.get(userId) || null,
+        );
+      });
+      attendeesCacheRef.current.set(targetEventRequestId, rows);
+      setAttendees(rows);
     } catch (error) {
-      setAttendees([]);
+      if (!cachedRows) {
+        setAttendees([]);
+      }
       setNotice({ kind: 'error', text: error.message || 'Unable to load attendees.' });
     } finally {
-      setIsLoadingAttendees(false);
+      if (attendeeLoadSeqRef.current === loadSeq) {
+        setIsLoadingAttendees(false);
+      }
     }
   }, []);
 
@@ -252,16 +392,43 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     loadEvents();
   }, [loadEvents]);
 
+  const filteredEvents = useMemo(() => {
+    const todayStart = toManilaDayStartMs(new Date());
+    const weekEnd = todayStart + (6 * DAY_IN_MS);
+
+    return events.filter((row) => {
+      const eventDay = toManilaDayStartMs(row?.Start_Date || row?.Created_At || new Date());
+      if (eventTimeFilter === 'today') {
+        return eventDay === todayStart;
+      }
+      if (eventTimeFilter === 'this_week') {
+        return eventDay >= todayStart && eventDay <= weekEnd;
+      }
+      if (eventTimeFilter === 'upcoming') {
+        return eventDay > weekEnd;
+      }
+      return true;
+    });
+  }, [events, eventTimeFilter]);
+
   const selectedEvent = useMemo(() => (
     events.find((row) => Number(row.Event_Request_ID || 0) === Number(selectedRequestId || 0)) || null
   ), [events, selectedRequestId]);
 
   // Auto-select first event when nothing is selected yet
   useEffect(() => {
-    if (selectedRequestId == null && events.length > 0) {
-      setSelectedRequestId(events[0].Event_Request_ID);
+    if (!filteredEvents.length) {
+      setSelectedRequestId(null);
+      return;
     }
-  }, [events, selectedRequestId]);
+
+    const hasSelectedInFilter = filteredEvents.some(
+      (row) => Number(row.Event_Request_ID || 0) === Number(selectedRequestId || 0),
+    );
+    if (!hasSelectedInFilter) {
+      setSelectedRequestId(filteredEvents[0].Event_Request_ID);
+    }
+  }, [filteredEvents, selectedRequestId]);
 
   // Load attendees whenever the selected event changes
   useEffect(() => {
@@ -275,6 +442,20 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     setQualityReason('');
     setDetailDraft(createDetailDraft(null));
   }, [selectedEvent, loadAttendees]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return undefined;
+    const intervalId = window.setInterval(() => {
+      void loadEvents({ silent: true });
+      if (selectedEvent?.Event_Request_ID) {
+        void loadAttendees(selectedEvent.Event_Request_ID, { silent: true });
+      }
+    }, 30000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [loadEvents, loadAttendees, selectedEvent?.Event_Request_ID]);
 
   // Realtime: keep assigned events + attendees in sync
   useEffect(() => {
@@ -337,18 +518,28 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           if (payload.eventType === 'INSERT') {
             setAttendees((prev) => {
               const exists = prev.some((row) => Number(row.Event_Attendee_ID) === Number(payload.new.Event_Attendee_ID));
-              return exists ? prev : [...prev, payload.new];
+              const nextRows = exists ? prev : [...prev, payload.new];
+              attendeesCacheRef.current.set(targetEventRequestId, nextRows);
+              return nextRows;
             });
           } else if (payload.eventType === 'UPDATE') {
-            setAttendees((prev) => prev.map((row) => (
-              Number(row.Event_Attendee_ID) === Number(payload.new.Event_Attendee_ID)
-                ? payload.new
-                : row
-            )));
+            setAttendees((prev) => {
+              const nextRows = prev.map((row) => (
+                Number(row.Event_Attendee_ID) === Number(payload.new.Event_Attendee_ID)
+                  ? payload.new
+                  : row
+              ));
+              attendeesCacheRef.current.set(targetEventRequestId, nextRows);
+              return nextRows;
+            });
           } else if (payload.eventType === 'DELETE') {
-            setAttendees((prev) => prev.filter((row) => (
-              Number(row.Event_Attendee_ID) !== Number(payload.old?.Event_Attendee_ID)
-            )));
+            setAttendees((prev) => {
+              const nextRows = prev.filter((row) => (
+                Number(row.Event_Attendee_ID) !== Number(payload.old?.Event_Attendee_ID)
+              ));
+              attendeesCacheRef.current.set(targetEventRequestId, nextRows);
+              return nextRows;
+            });
           }
         },
       )
@@ -360,32 +551,6 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     };
   }, [staffUserId, selectedEvent?.Event_Request_ID]);
 
-  const handleAttendanceStatusChange = async (attendee, nextStatus) => {
-    setIsSaving(true);
-    setNotice({ kind: '', text: '' });
-
-    try {
-      const result = await supabase
-        .from(EVENT_ATTENDEES_TABLE)
-        .update({ Attendance_Status: nextStatus })
-        .eq('Event_Attendee_ID', attendee.Event_Attendee_ID)
-        .select('*')
-        .single();
-
-      if (result.error) throw result.error;
-
-      setAttendees((current) => current.map((row) => (
-        Number(row.Event_Attendee_ID || 0) === Number(result.data.Event_Attendee_ID || 0)
-          ? result.data
-          : row
-      )));
-    } catch (error) {
-      setNotice({ kind: 'error', text: error.message || 'Unable to update attendee status.' });
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
   const stopCamera = useCallback(() => {
     if (cameraStreamRef.current) {
       cameraStreamRef.current.getTracks().forEach((track) => track.stop());
@@ -395,6 +560,41 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       videoRef.current.srcObject = null;
     }
   }, []);
+
+  const startCameraScanner = useCallback(async () => {
+    if (isCameraOn || isStartingCamera) return;
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraStatus({ kind: 'error', message: 'Camera API is unavailable on this browser/device.' });
+      return;
+    }
+
+    setIsStartingCamera(true);
+    setCameraStatus({ kind: 'info', message: 'Initializing camera scanner...' });
+
+    try {
+      stopCamera();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      });
+
+      cameraStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.muted = true;
+        videoRef.current.playsInline = true;
+        await videoRef.current.play();
+      }
+
+      setIsCameraOn(true);
+      setCameraStatus({ kind: 'success', message: 'Scanner is running. Point camera at attendee RSVP QR/waybill.' });
+    } catch (error) {
+      setCameraStatus({ kind: 'error', message: error?.message || 'Could not access the camera.' });
+    } finally {
+      setIsStartingCamera(false);
+    }
+  }, [isCameraOn, isStartingCamera, stopCamera]);
 
   const loadSubmissionDetailsById = useCallback(async (submissionId) => {
     const targetId = Number(submissionId || 0);
@@ -477,10 +677,15 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       if (updated?.Event_Attendee_ID) {
         setAttendees((current) => {
           const exists = current.some((row) => Number(row.Event_Attendee_ID) === Number(updated.Event_Attendee_ID));
-          if (!exists) return [updated, ...current];
-          return current.map((row) => (
+          const nextRows = !exists
+            ? [updated, ...current]
+            : current.map((row) => (
             Number(row.Event_Attendee_ID) === Number(updated.Event_Attendee_ID) ? updated : row
-          ));
+            ));
+          if (selectedEvent?.Event_Request_ID) {
+            attendeesCacheRef.current.set(Number(selectedEvent.Event_Request_ID), nextRows);
+          }
+          return nextRows;
         });
       } else {
         await loadAttendees(selectedEvent.Event_Request_ID);
@@ -640,10 +845,15 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       if (updatedAttendee?.Event_Attendee_ID) {
         setAttendees((current) => {
           const exists = current.some((row) => Number(row.Event_Attendee_ID) === Number(updatedAttendee.Event_Attendee_ID));
-          if (!exists) return [updatedAttendee, ...current];
-          return current.map((row) => (
+          const nextRows = !exists
+            ? [updatedAttendee, ...current]
+            : current.map((row) => (
             Number(row.Event_Attendee_ID) === Number(updatedAttendee.Event_Attendee_ID) ? updatedAttendee : row
-          ));
+            ));
+          if (selectedEvent?.Event_Request_ID) {
+            attendeesCacheRef.current.set(Number(selectedEvent.Event_Request_ID), nextRows);
+          }
+          return nextRows;
         });
       }
 
@@ -675,6 +885,18 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       if (resolvedDecision === 'Approved') {
         setQualityReason('');
       }
+
+      // Auto-reset review panel and resume scanner for next attendee.
+      setActiveReview(null);
+      setDetailDraft(createDetailDraft(null));
+      setQualityReason('');
+      setManualWaybillCode('');
+      setCameraStatus({
+        kind: 'info',
+        message: 'Decision saved. Scanner is restarting for the next RSVP...',
+      });
+      await loadAttendees(eventRequestId);
+      void startCameraScanner();
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to submit hair quality decision.' });
       setCameraStatus({ kind: 'error', message: error.message || 'Hair quality review failed.' });
@@ -682,7 +904,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       setIsSubmittingQuality(false);
       setIsSaving(false);
     }
-  }, [activeReview, qualityReason, reviewStatusMeta.isFinal, selectedEvent]);
+  }, [activeReview, qualityReason, reviewStatusMeta.isFinal, selectedEvent, loadAttendees, startCameraScanner]);
 
   const handleToggleCamera = async () => {
     if (reviewStatusMeta.needsDecision) {
@@ -699,35 +921,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       return;
     }
 
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraStatus({ kind: 'error', message: 'Camera API is unavailable on this browser/device.' });
-      return;
-    }
-
-    setIsStartingCamera(true);
-    setCameraStatus({ kind: 'info', message: 'Initializing camera scanner...' });
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
-      });
-
-      cameraStreamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.muted = true;
-        videoRef.current.playsInline = true;
-        await videoRef.current.play();
-      }
-
-      setIsCameraOn(true);
-      setCameraStatus({ kind: 'success', message: 'Scanner is running. Point camera at attendee RSVP QR/waybill.' });
-    } catch (error) {
-      setCameraStatus({ kind: 'error', message: error?.message || 'Could not access the camera.' });
-    } finally {
-      setIsStartingCamera(false);
-    }
+    await startCameraScanner();
   };
 
   const handleManualScanLookup = () => {
@@ -806,13 +1000,14 @@ export default function AssignedEventOperationsPage({ userProfile }) {
 
     try {
       const resolvedStaffId = await resolveStaffUserId();
-      const printedAt = new Date().toISOString();
+      const printedAt = getManilaSqlTimestamp();
 
       const updateResult = await supabase
         .from(EVENT_ATTENDEES_TABLE)
         .update({
           Waybill_Printed_At: printedAt,
           Waybill_Printed_By: resolvedStaffId || null,
+          Updated_At: printedAt,
         })
         .eq('Event_Attendee_ID', attendee.Event_Attendee_ID)
         .select('*')
@@ -820,14 +1015,45 @@ export default function AssignedEventOperationsPage({ userProfile }) {
 
       if (updateResult.error) throw updateResult.error;
 
-      const updatedAttendee = updateResult.data;
-      setAttendees((current) => current.map((row) => (
-        Number(row.Event_Attendee_ID || 0) === Number(updatedAttendee.Event_Attendee_ID || 0)
-          ? updatedAttendee
-          : row
-      )));
+      const updatedAttendee = {
+        ...attendee,
+        ...(updateResult.data || {}),
+      };
+      setAttendees((current) => {
+        const nextRows = current.map((row) => (
+          Number(row.Event_Attendee_ID || 0) === Number(updatedAttendee.Event_Attendee_ID || 0)
+            ? updatedAttendee
+            : row
+        ));
+        const eventRequestId = Number(updatedAttendee?.Event_Request_ID || selectedEvent?.Event_Request_ID || 0);
+        if (eventRequestId) {
+          attendeesCacheRef.current.set(eventRequestId, nextRows);
+        }
+        return nextRows;
+      });
 
-      const waybillCode = updatedAttendee.Waybill_Code || `EVT-WB-${updatedAttendee.Event_Attendee_ID}`;
+      const waybillCode =
+        updatedAttendee.Waybill_Code
+        || `WB${String(Number(updatedAttendee.Event_Attendee_ID || 0)).padStart(6, '0').slice(-6)}`;
+      const qrPayload = JSON.stringify({
+        Payload_Type: 'Event_RSVP_Waybill',
+        Event_Request_ID: Number(selectedEvent.Event_Request_ID || 0) || null,
+        Event_Attendee_ID: Number(updatedAttendee.Event_Attendee_ID || 0) || null,
+        User_ID: Number(updatedAttendee.User_ID || 0) || null,
+        Waybill_Code: waybillCode,
+      });
+      let qrDataUrl = '';
+      try {
+        qrDataUrl = await QRCode.toDataURL(qrPayload, {
+          errorCorrectionLevel: 'M',
+          margin: 1,
+          width: 220,
+          color: { dark: '#0f172a', light: '#ffffff' },
+        });
+      } catch {
+        qrDataUrl = '';
+      }
+
       const printWindow = window.open('', '_blank', 'width=760,height=900');
       if (!printWindow) {
         throw new Error('Browser blocked popup window for printing. Please allow popups and try again.');
@@ -843,13 +1069,23 @@ export default function AssignedEventOperationsPage({ userProfile }) {
               .line { margin: 6px 0; font-size: 14px; }
               .box { border: 2px solid #1e293b; border-radius: 8px; padding: 14px; margin-top: 12px; }
               .code { font-size: 24px; letter-spacing: 2px; font-weight: 700; }
+              .qr-wrap { margin-top: 14px; text-align: center; }
+              .qr-wrap img { width: 220px; height: 220px; border: 1px solid #cbd5e1; border-radius: 8px; }
+              .qr-fallback { width: 220px; height: 220px; margin: 0 auto; border: 1px dashed #64748b; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; letter-spacing: 1px; }
+              .qr-caption { margin-top: 8px; font-size: 12px; color: #334155; }
             </style>
           </head>
           <body>
             <h1>Hair Submission Waybill</h1>
             <div class="box">
               <div class="line"><strong>Waybill Code:</strong> <span class="code">${waybillCode}</span></div>
-              <div class="line"><strong>Printed At:</strong> ${formatDateTime(printedAt)}</div>
+              <div class="line"><strong>Printed At:</strong> ${formatDateTime(updatedAttendee.Waybill_Printed_At || printedAt)}</div>
+              <div class="qr-wrap">
+                ${qrDataUrl
+                  ? `<img id="waybill-qr" src="${qrDataUrl}" alt="Waybill QR ${waybillCode}" />`
+                  : `<div class="qr-fallback">${waybillCode}</div>`}
+                <div class="qr-caption">Scan this QR for RSVP / waybill lookup</div>
+              </div>
             </div>
 
             <h2>Event Details</h2>
@@ -861,6 +1097,24 @@ export default function AssignedEventOperationsPage({ userProfile }) {
             <div class="line"><strong>Name:</strong> ${updatedAttendee.Full_Name || 'N/A'}</div>
             <div class="line"><strong>Email:</strong> ${updatedAttendee.Email || 'N/A'}</div>
             <div class="line"><strong>Contact:</strong> ${updatedAttendee.Contact_Number || 'N/A'}</div>
+            <script>
+              (function () {
+                function triggerPrint() {
+                  setTimeout(function () { window.print(); }, 120);
+                }
+                var img = document.getElementById('waybill-qr');
+                if (!img) {
+                  triggerPrint();
+                  return;
+                }
+                if (img.complete) {
+                  triggerPrint();
+                } else {
+                  img.onload = triggerPrint;
+                  img.onerror = triggerPrint;
+                }
+              })();
+            </script>
           </body>
         </html>
       `;
@@ -869,7 +1123,6 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       printWindow.document.write(html);
       printWindow.document.close();
       printWindow.focus();
-      printWindow.print();
 
       setNotice({ kind: 'success', text: `Waybill printed for ${updatedAttendee.Full_Name}.` });
     } catch (error) {
@@ -897,15 +1150,224 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     });
   }, [attendees, attendeeSearch]);
 
+  const unprintedAttendeeCount = useMemo(
+    () => attendees.filter((row) => !row?.Waybill_Printed_At).length,
+    [attendees],
+  );
+
+  const handleRefreshAll = useCallback(async () => {
+    await loadEvents();
+    if (selectedEvent?.Event_Request_ID) {
+      await loadAttendees(selectedEvent.Event_Request_ID, { force: true });
+    }
+    setNotice({ kind: 'success', text: 'Data refreshed.' });
+  }, [loadAttendees, loadEvents, selectedEvent?.Event_Request_ID]);
+
+  const handlePrintAllWaybills = useCallback(async () => {
+    if (!selectedEvent || !supabase) return;
+
+    const targetRows = attendees.filter((row) => Number(row?.Event_Attendee_ID || 0) > 0);
+    if (!targetRows.length) {
+      setNotice({ kind: 'warning', text: 'No attendees to print in this event.' });
+      return;
+    }
+
+    setIsSaving(true);
+    setNotice({ kind: '', text: '' });
+
+    try {
+      const resolvedStaffId = await resolveStaffUserId();
+      const printedAt = getManilaSqlTimestamp();
+      const targetIds = targetRows.map((row) => Number(row.Event_Attendee_ID)).filter((id) => id > 0);
+
+      const updateResult = await supabase
+        .from(EVENT_ATTENDEES_TABLE)
+        .update({
+          Waybill_Printed_At: printedAt,
+          Waybill_Printed_By: resolvedStaffId || null,
+          Updated_At: printedAt,
+        })
+        .eq('Event_Request_ID', Number(selectedEvent.Event_Request_ID || 0))
+        .in('Event_Attendee_ID', targetIds)
+        .select('*');
+
+      if (updateResult.error) throw updateResult.error;
+
+      const updatedRows = updateResult.data || [];
+      const existingById = new Map(
+        attendees.map((row) => [Number(row.Event_Attendee_ID || 0), row]),
+      );
+      const updatedById = new Map(
+        updatedRows.map((row) => {
+          const id = Number(row.Event_Attendee_ID || 0);
+          return [id, { ...(existingById.get(id) || {}), ...row }];
+        }),
+      );
+
+      const nextRows = attendees.map((row) => (
+        updatedById.get(Number(row.Event_Attendee_ID || 0)) || row
+      ));
+      setAttendees(nextRows);
+      attendeesCacheRef.current.set(Number(selectedEvent.Event_Request_ID || 0), nextRows);
+
+      const printRows = nextRows.filter((row) => Number(row?.Event_Attendee_ID || 0) > 0);
+      const rowHtmlList = await Promise.all(printRows.map(async (row) => {
+        const waybillCode = row.Waybill_Code
+          || `WB${String(Number(row.Event_Attendee_ID || 0)).padStart(6, '0').slice(-6)}`;
+        const qrPayload = JSON.stringify({
+          Payload_Type: 'Event_RSVP_Waybill',
+          Event_Request_ID: Number(selectedEvent.Event_Request_ID || 0) || null,
+          Event_Attendee_ID: Number(row.Event_Attendee_ID || 0) || null,
+          User_ID: Number(row.User_ID || 0) || null,
+          Waybill_Code: waybillCode,
+        });
+
+        let qrDataUrl = '';
+        try {
+          qrDataUrl = await QRCode.toDataURL(qrPayload, {
+            errorCorrectionLevel: 'M',
+            margin: 1,
+            width: 220,
+            color: { dark: '#0f172a', light: '#ffffff' },
+          });
+        } catch {
+          qrDataUrl = '';
+        }
+
+        return `
+          <section class="ticket">
+            <h1>Hair Submission Waybill</h1>
+            <div class="box">
+              <div class="line"><strong>Waybill Code:</strong> <span class="code">${escapeHtml(waybillCode)}</span></div>
+              <div class="line"><strong>Printed At:</strong> ${escapeHtml(formatDateTime(row.Waybill_Printed_At || printedAt))}</div>
+              <div class="qr-wrap">
+                ${qrDataUrl
+                  ? `<img src="${qrDataUrl}" alt="Waybill QR ${escapeHtml(waybillCode)}" />`
+                  : `<div class="qr-fallback">${escapeHtml(waybillCode)}</div>`}
+                <div class="qr-caption">Scan this QR for RSVP / waybill lookup</div>
+              </div>
+            </div>
+            <h2>Event Details</h2>
+            <div class="line"><strong>Event:</strong> ${escapeHtml(selectedEvent.Event_Name || 'N/A')}</div>
+            <div class="line"><strong>Venue:</strong> ${escapeHtml(selectedEvent.Venue_Name || buildAddress(selectedEvent) || 'N/A')}</div>
+            <div class="line"><strong>Schedule:</strong> ${escapeHtml(`${formatDateTime(selectedEvent.Start_Date)} - ${formatDateTime(selectedEvent.End_Date)}`)}</div>
+            <h2>Attendee Details</h2>
+            <div class="line"><strong>Name:</strong> ${escapeHtml(row.Full_Name || 'N/A')}</div>
+            <div class="line"><strong>Email:</strong> ${escapeHtml(row.Email || 'N/A')}</div>
+            <div class="line"><strong>Contact:</strong> ${escapeHtml(row.Contact_Number || 'N/A')}</div>
+          </section>
+        `;
+      }));
+
+      const printWindow = window.open('', '_blank', 'width=860,height=980');
+      if (!printWindow) {
+        throw new Error('Browser blocked popup window for printing. Please allow popups and try again.');
+      }
+
+      const html = `
+        <html>
+          <head>
+            <title>Waybills - ER-${Number(selectedEvent.Event_Request_ID || 0)}</title>
+            <style>
+              @page { size: A4 portrait; margin: 14mm; }
+              body { font-family: Arial, sans-serif; color: #0f172a; }
+              .ticket { page-break-after: always; }
+              .ticket:last-child { page-break-after: auto; }
+              h1 { margin: 0 0 12px; font-size: 22px; }
+              h2 { margin: 20px 0 8px; font-size: 16px; }
+              .line { margin: 6px 0; font-size: 14px; }
+              .box { border: 2px solid #1e293b; border-radius: 8px; padding: 14px; margin-top: 12px; }
+              .code { font-size: 24px; letter-spacing: 2px; font-weight: 700; }
+              .qr-wrap { margin-top: 14px; text-align: center; }
+              .qr-wrap img { width: 220px; height: 220px; border: 1px solid #cbd5e1; border-radius: 8px; object-fit: contain; }
+              .qr-fallback { width: 220px; height: 220px; margin: 0 auto; border: 1px dashed #64748b; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; letter-spacing: 1px; }
+              .qr-caption { margin-top: 8px; font-size: 12px; color: #334155; }
+            </style>
+          </head>
+          <body>
+            ${rowHtmlList.join('')}
+            <script>
+              (function () {
+                function triggerPrint() {
+                  setTimeout(function () { window.print(); }, 140);
+                }
+                var images = Array.prototype.slice.call(document.images || []);
+                if (!images.length) {
+                  triggerPrint();
+                  return;
+                }
+                var remaining = images.length;
+                function done() {
+                  remaining -= 1;
+                  if (remaining <= 0) triggerPrint();
+                }
+                images.forEach(function (img) {
+                  if (img.complete) {
+                    done();
+                  } else {
+                    img.onload = done;
+                    img.onerror = done;
+                  }
+                });
+              })();
+            </script>
+          </body>
+        </html>
+      `;
+
+      printWindow.document.open();
+      printWindow.document.write(html);
+      printWindow.document.close();
+      printWindow.focus();
+
+      setNotice({ kind: 'success', text: `Printed ${printRows.length} waybill(s) for ER-${selectedEvent.Event_Request_ID}.` });
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to print all waybills.' });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [attendees, resolveStaffUserId, selectedEvent]);
+
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">Assigned Event Operations</h1>
-        <p className="text-sm text-slate-600">View events admin assigned to you, search attendees, and print waybills.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">Manage Assigned Events</h1>
+          <p className="text-sm text-slate-600">View events admin assigned to you, search attendees, and print waybills.</p>
+          <p className="mt-1 text-xs text-emerald-700">
+            Live updates are active. Data also refreshes every 30 seconds automatically.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => { void handleRefreshAll(); }}
+            disabled={isLoadingEvents || isLoadingAttendees || isSaving}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+          >
+            {(isLoadingEvents || isLoadingAttendees || isSaving) ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowHowToModal(true)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+          >
+            <HelpCircle size={12} />
+            How to use
+          </button>
+        </div>
       </div>
 
       {notice.text && (
-        <div className={`rounded-lg px-4 py-3 text-sm ${notice.kind === 'error' ? 'border border-rose-200 bg-rose-50 text-rose-700' : 'border border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+        <div className={`rounded-lg px-4 py-3 text-sm ${
+          notice.kind === 'error'
+            ? 'border border-rose-200 bg-rose-50 text-rose-700'
+            : notice.kind === 'warning'
+              ? 'border border-amber-200 bg-amber-50 text-amber-700'
+              : 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+        }`}>
           {notice.text}
         </div>
       )}
@@ -919,26 +1381,45 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 Assigned Events
               </h2>
               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-700">
-                {events.length}
+                {filteredEvents.length}{filteredEvents.length !== events.length ? ` / ${events.length}` : ''}
               </span>
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-1">
+              {EVENT_FILTERS.map((filterItem) => {
+                const active = eventTimeFilter === filterItem.id;
+                return (
+                  <button
+                    key={filterItem.id}
+                    type="button"
+                    onClick={() => setEventTimeFilter(filterItem.id)}
+                    className={`rounded-md border px-2 py-1 text-[11px] font-semibold transition ${
+                      active
+                        ? 'border-slate-900 bg-slate-900 text-white'
+                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {filterItem.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
           <div className="max-h-[640px] overflow-auto">
-            {isLoadingEvents && events.length === 0 ? (
+            {isLoadingEvents && filteredEvents.length === 0 ? (
               <div className="flex items-center gap-2 px-4 py-5 text-sm text-slate-600">
                 <Loader2 size={15} className="animate-spin" />Loading...
               </div>
-            ) : events.length === 0 ? (
+            ) : filteredEvents.length === 0 ? (
               <div className="flex flex-col items-center px-4 py-10 text-center">
                 <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-400">
                   <Inbox size={20} />
                 </div>
-                <p className="mt-2.5 text-sm font-semibold text-slate-700">No assigned events</p>
-                <p className="text-xs text-slate-500">Events appear here once admin assigns you to an approved request.</p>
+                <p className="mt-2.5 text-sm font-semibold text-slate-700">No events in this filter</p>
+                <p className="text-xs text-slate-500">Try another filter (Today, This Week, Upcoming).</p>
               </div>
             ) : (
               <ul className="divide-y divide-slate-100">
-                {events.map((row) => {
+                {filteredEvents.map((row) => {
                   const active = Number(row.Event_Request_ID || 0) === Number(selectedRequestId || 0);
                   return (
                     <li key={row.Event_Request_ID}>
@@ -1143,7 +1624,11 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                       <div className="md:text-right">
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Codes</p>
                         <p className="font-mono text-slate-800">{activeReview?.waybillCode || activeReview?.attendee?.Waybill_Code || 'N/A'}</p>
-                        <p className="font-mono text-slate-700">{activeReview?.submission?.Submission_Code || 'No submission code'}</p>
+                        <p className="font-mono text-slate-700">
+                          {activeReview?.submission?.Submission_ID
+                            ? `Submission #${activeReview.submission.Submission_ID}`
+                            : 'No submission linked'}
+                        </p>
                         <p className="text-slate-600">Submission status: <strong>{activeReview?.submission?.Status || 'Pending'}</strong></p>
                         <p className="text-slate-600">
                           Decision:
@@ -1330,12 +1815,26 @@ export default function AssignedEventOperationsPage({ userProfile }) {
               {/* Attendees */}
               <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3.5">
-                  <div className="flex items-center gap-2">
-                    <Users size={15} className="text-slate-500" />
-                    <h3 className="text-sm font-bold text-slate-800">Attendee List</h3>
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-700">
-                      {filteredAttendees.length}{attendeeSearch ? ` / ${attendees.length}` : ''}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      <Users size={15} className="text-slate-500" />
+                      <h3 className="text-sm font-bold text-slate-800">Attendee List</h3>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-700">
+                        {filteredAttendees.length}{attendeeSearch ? ` / ${attendees.length}` : ''}
+                      </span>
+                    </div>
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                      Unprinted: {unprintedAttendeeCount}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => { void handlePrintAllWaybills(); }}
+                      disabled={isSaving || attendees.length === 0}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+                    >
+                      {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Printer size={12} />}
+                      Print All Waybills
+                    </button>
                   </div>
                   <div className="relative w-full sm:w-72">
                     <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -1409,16 +1908,17 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                             </td>
                             <td className="px-5 py-3 align-top font-mono text-xs text-slate-700">{attendee.Waybill_Code || 'Pending code'}</td>
                             <td className="px-5 py-3 align-top">
-                              <select
-                                value={attendee.Attendance_Status || 'Not Marked'}
-                                onChange={(event) => handleAttendanceStatusChange(attendee, event.target.value)}
-                                className="rounded border border-slate-300 px-2 py-1 text-xs transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
-                                disabled={isSaving}
+                              <span
+                                className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${
+                                  String(attendee.Attendance_Status || '').toLowerCase() === 'present'
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    : String(attendee.Attendance_Status || '').toLowerCase().replace(/\s+/g, '') === 'noshow'
+                                      ? 'border-rose-200 bg-rose-50 text-rose-700'
+                                      : 'border-slate-200 bg-slate-100 text-slate-700'
+                                }`}
                               >
-                                <option value="Not Marked">Not Marked</option>
-                                <option value="Present">Present</option>
-                                <option value="No Show">No Show</option>
-                              </select>
+                                {attendee.Attendance_Status || 'Not Marked'}
+                              </span>
                             </td>
                             <td className="px-5 py-3 align-top text-xs text-slate-600">
                               {attendee.RSVP_Scanned_At ? (
@@ -1462,6 +1962,38 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           )}
         </section>
       </div>
+
+      {showHowToModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4">
+          <div className="w-full max-w-xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 px-5 py-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Guide</p>
+                <h3 className="text-lg font-bold text-slate-900">How to Use Manage Assigned Events</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowHowToModal(false)}
+                className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+            <div className="px-5 pb-5 text-sm text-slate-700">
+              <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+                Always print all waybills before going to the event.
+              </p>
+              <div className="mt-3 space-y-2 text-slate-700">
+                <p>1. Pick an event using the left panel filters: <strong>Today</strong>, <strong>This Week</strong>, or <strong>Upcoming</strong>.</p>
+                <p>2. Click <strong>Print All Waybills</strong> to print every attendee waybill with QR before event deployment.</p>
+                <p>3. At the event, use <strong>Start Camera</strong> to scan RSVP QR or waybill and load donor hair details.</p>
+                <p>4. Save hair detail edits if needed, then submit one final decision: <strong>Approve</strong>, <strong>Reject</strong>, or <strong>Rejected Cut</strong>.</p>
+                <p>5. Use <strong>Refresh</strong> anytime if you want an immediate sync; live updates are already active.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

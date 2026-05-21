@@ -643,11 +643,14 @@ export default function EventApplicationIntakePage({ userProfile }) {
         .update(nextValues)
         .eq('Event_Application_ID', selectedRow.Event_Application_ID)
         .select('*')
-        .single();
+        .maybeSingle();
 
       if (result.error) throw result.error;
 
-      const updated = result.data;
+      const updated = result.data || {
+        ...selectedRow,
+        ...nextValues,
+      };
       setRows((current) => current.map((row) => (
         Number(row.Event_Application_ID || 0) === Number(updated.Event_Application_ID || 0)
           ? updated
@@ -708,6 +711,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
       Event_By: requestDraft.eventBy.trim() || null,
       Partnered_With: requestDraft.partneredWith.trim() || null,
       Partner_Social_Media_Link: requestDraft.partnerSocialMediaLink.trim() || null,
+      Status: 'Pending Admin Approval',
       Staff_Prepared_By_User_ID: resolvedStaffId,
       Staff_Contact_Notes: contactNotes.trim() || null,
     };
@@ -730,32 +734,47 @@ export default function EventApplicationIntakePage({ userProfile }) {
 
     try {
       if (linkedRequestId > 0 && canAppealRejectedRequest) {
+        const baseAppealPayload = {
+          ...payload,
+          Admin_Decision_Reason: null,
+          Admin_Reviewer_User_ID: null,
+          Admin_Reviewed_At: null,
+        };
+
         const updateRequestResult = await supabase
           .from(EVENT_REQUESTS_TABLE)
           .update({
-            ...payload,
-            Status: 'Pending Admin Approval',
-            Admin_Decision_Reason: null,
-            Admin_Reviewer_User_ID: null,
-            Admin_Reviewed_At: null,
+            ...baseAppealPayload,
+            Status: 'Appealed',
           })
-          .eq('Event_Request_ID', linkedRequestId)
-          .select('Event_Request_ID')
-          .single();
+          .eq('Event_Request_ID', linkedRequestId);
+        if (updateRequestResult.error) {
+          const appealErrorText = String(updateRequestResult.error?.message || '').toLowerCase();
+          const blockedRejectedToAppealed = appealErrorText.includes('staff cannot change event request status from rejected to appealed');
+          if (!blockedRejectedToAppealed) throw updateRequestResult.error;
 
-        if (updateRequestResult.error) throw updateRequestResult.error;
+          // Backward compatibility for DBs still running older trigger logic:
+          // allow resubmission using Pending Admin Approval.
+          const retryResult = await supabase
+            .from(EVENT_REQUESTS_TABLE)
+            .update({
+              ...baseAppealPayload,
+              Status: 'Pending Admin Approval',
+            })
+            .eq('Event_Request_ID', linkedRequestId);
+
+          if (retryResult.error) throw retryResult.error;
+        }
 
         const updateApplicationResult = await supabase
           .from(EVENT_APPLICATIONS_TABLE)
           .update({
-            Status: 'Pending Admin Decision',
+            Status: 'Appealed',
             Staff_Contact_Notes: contactNotes.trim() || null,
             Staff_Review_Notes: staffNotes.trim() || null,
             Staff_Contacted_At: contactNotes.trim() ? getUtc8SqlNow() : selectedRow.Staff_Contacted_At,
           })
-          .eq('Event_Application_ID', selectedRow.Event_Application_ID)
-          .select('*')
-          .single();
+          .eq('Event_Application_ID', selectedRow.Event_Application_ID);
 
         if (updateApplicationResult.error) throw updateApplicationResult.error;
 
@@ -764,13 +783,13 @@ export default function EventApplicationIntakePage({ userProfile }) {
         if (!smtpKickResult.ok) {
           console.warn('[SMTP] Trigger after staff appeal submit failed:', smtpKickResult.message || smtpKickResult);
         }
-        setNotice({ kind: 'success', text: `Appeal submitted. Request ER-${linkedRequestId} was re-submitted to admin.` });
+        setNotice({ kind: 'success', text: `Appeal submitted. Request ER-${linkedRequestId} is now marked as Appealed for admin re-decision.` });
       } else {
         const insertResult = await supabase
           .from(EVENT_REQUESTS_TABLE)
           .insert(payload)
-          .select('*')
-          .single();
+          .select('Event_Request_ID')
+          .maybeSingle();
 
         if (insertResult.error) throw insertResult.error;
 
@@ -779,11 +798,25 @@ export default function EventApplicationIntakePage({ userProfile }) {
         if (!smtpKickResult.ok) {
           console.warn('[SMTP] Trigger after staff request submit failed:', smtpKickResult.message || smtpKickResult);
         }
-        setNotice({ kind: 'success', text: `Request submitted to admin (ER-${insertResult.data?.Event_Request_ID}).` });
+        const createdRequestId = Number(insertResult.data?.Event_Request_ID || 0);
+        setNotice({
+          kind: 'success',
+          text: createdRequestId > 0
+            ? `Request submitted to admin (ER-${createdRequestId}).`
+            : 'Request submitted to admin.',
+        });
       }
       setShowSubmitModal(false);
     } catch (error) {
-      setNotice({ kind: 'error', text: error.message || 'Unable to create event request.' });
+      const raw = String(error?.message || '').trim();
+      if (raw.toLowerCase().includes('new row violates row-level security policy for table "event_requests"')) {
+        setNotice({
+          kind: 'error',
+          text: 'Event request submit is blocked by database RLS. Apply the latest Supabase migrations, then retry.',
+        });
+      } else {
+        setNotice({ kind: 'error', text: raw || 'Unable to create event request.' });
+      }
     } finally {
       setIsSaving(false);
     }
@@ -823,30 +856,31 @@ export default function EventApplicationIntakePage({ userProfile }) {
     <div className="space-y-5 rounded-xl border border-slate-200 bg-white p-5">
       <div>
         <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Applicant</p>
-        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
-          <InfoItem icon={User} label="Full Name">{applicantFullName(selectedRow)}</InfoItem>
-          <InfoItem icon={User} label="Gender">{selectedRow.Applicant_Gender || 'N/A'}</InfoItem>
-          <InfoItem icon={FileText} label="Valid ID Type">{selectedRow.Applicant_Valid_ID_Type || 'N/A'}</InfoItem>
-          <InfoItem icon={Phone} label="Preferred Contact Method">
-            <span className="capitalize">{selectedRow.Preferred_Contact_Method || 'N/A'}</span>
-          </InfoItem>
-          <InfoItem icon={Phone} label="Preferred Contact Detail">
-            {selectedRow.Preferred_Contact_Detail || 'N/A'}
-          </InfoItem>
-          <InfoItem icon={Mail} label="Email">
-            {selectedRow.Applicant_Email ? (
-              <a href={`mailto:${selectedRow.Applicant_Email}`} className="text-teal-700 hover:underline">
-                {selectedRow.Applicant_Email}
-              </a>
-            ) : 'N/A'}
-          </InfoItem>
-          <InfoItem icon={Phone} label="Number">
-            {selectedRow.Applicant_Contact_Number ? (
-              <a href={`tel:${selectedRow.Applicant_Contact_Number}`} className="text-teal-700 hover:underline">
-                {selectedRow.Applicant_Contact_Number}
-              </a>
-            ) : 'N/A'}
-          </InfoItem>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Applicant Profile</p>
+            <div className="grid grid-cols-1 gap-3">
+              <InfoItem icon={User} label="Full Name">{applicantFullName(selectedRow)}</InfoItem>
+              <InfoItem icon={User} label="Gender">{selectedRow.Applicant_Gender || 'N/A'}</InfoItem>
+              <InfoItem icon={FileText} label="Valid ID Type">{selectedRow.Applicant_Valid_ID_Type || 'N/A'}</InfoItem>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Preferred Contact</p>
+            <div className="grid grid-cols-1 gap-3">
+              <InfoItem icon={Phone} label="Contact Method">
+                <span className="capitalize">{selectedRow.Preferred_Contact_Method || 'N/A'}</span>
+              </InfoItem>
+              <InfoItem icon={Mail} label="Contact Email">
+                {selectedRow.Applicant_Email ? (
+                  <a href={`mailto:${selectedRow.Applicant_Email}`} className="text-teal-700 hover:underline">
+                    {selectedRow.Applicant_Email}
+                  </a>
+                ) : 'N/A'}
+              </InfoItem>
+            </div>
+          </div>
         </div>
       </div>
 

@@ -54,6 +54,7 @@ function formatDateTime(value) {
 function statusLabel(value) {
   const key = normalizeStatus(value);
   if (key === 'pendingadminapproval') return 'Pending Admin Approval';
+  if (key === 'appealed') return 'Appealed';
   if (key === 'approved') return 'Approved';
   if (key === 'rejected') return 'Rejected';
   if (key === 'cancelled') return 'Cancelled';
@@ -63,6 +64,7 @@ function statusLabel(value) {
 function statusPillClass(value) {
   const key = normalizeStatus(value);
   if (key === 'pendingadminapproval') return 'border border-amber-200 bg-amber-50 text-amber-700';
+  if (key === 'appealed') return 'border border-violet-200 bg-violet-50 text-violet-700';
   if (key === 'approved') return 'border border-emerald-200 bg-emerald-50 text-emerald-700';
   if (key === 'rejected') return 'border border-rose-200 bg-rose-50 text-rose-700';
   if (key === 'cancelled') return 'border border-slate-300 bg-slate-100 text-slate-700';
@@ -227,6 +229,7 @@ export default function ManageEventRequestsPage() {
     return rows.filter((row) => {
       const key = normalizeStatus(row.Status);
       if (statusFilter === 'pendingadminapproval') return key === 'pendingadminapproval';
+      if (statusFilter === 'appealed') return key === 'appealed';
       if (statusFilter === 'approved') return key === 'approved';
       if (statusFilter === 'rejected') return key === 'rejected';
       if (statusFilter === 'cancelled') return key === 'cancelled';
@@ -254,6 +257,7 @@ export default function ManageEventRequestsPage() {
       const statusKey = normalizeStatus(row.Status);
       acc.all += 1;
       if (statusKey === 'pendingadminapproval') acc.pendingadminapproval += 1;
+      if (statusKey === 'appealed') acc.appealed += 1;
       if (statusKey === 'approved') acc.approved += 1;
       if (statusKey === 'rejected') acc.rejected += 1;
       if (statusKey === 'cancelled') acc.cancelled += 1;
@@ -261,6 +265,7 @@ export default function ManageEventRequestsPage() {
     }, {
       all: 0,
       pendingadminapproval: 0,
+      appealed: 0,
       approved: 0,
       rejected: 0,
       cancelled: 0,
@@ -272,7 +277,7 @@ export default function ManageEventRequestsPage() {
   ), [rows, selectedId]);
 
   const selectedStatusKey = useMemo(() => normalizeStatus(selectedRow?.Status), [selectedRow]);
-  const canDecide = selectedStatusKey === 'pendingadminapproval';
+  const canDecide = selectedStatusKey === 'pendingadminapproval' || selectedStatusKey === 'appealed';
 
   const assignedStaffLabel = useMemo(() => {
     const id = Number(selectedRow?.Assigned_Staff_User_ID || 0);
@@ -290,7 +295,7 @@ export default function ManageEventRequestsPage() {
         body: 'Choose an event request from the queue to review and decide.',
       };
     }
-    if (selectedStatusKey === 'pendingadminapproval') {
+    if (selectedStatusKey === 'pendingadminapproval' || selectedStatusKey === 'appealed') {
       return {
         icon: AlertTriangle,
         tone: 'border-amber-200 bg-amber-50 text-amber-800',
@@ -380,7 +385,7 @@ export default function ManageEventRequestsPage() {
   const openApproveModal = () => {
     if (!selectedRow) return;
     if (!canDecide) {
-      setNotice({ kind: 'error', text: 'Only pending admin approval requests can be approved.' });
+      setNotice({ kind: 'error', text: 'Only pending or appealed requests can be approved.' });
       return;
     }
     setAssignedStaffId(String(selectedRow.Assigned_Staff_User_ID || ''));
@@ -390,7 +395,7 @@ export default function ManageEventRequestsPage() {
   const openRejectModal = () => {
     if (!selectedRow) return;
     if (!canDecide) {
-      setNotice({ kind: 'error', text: 'Only pending admin approval requests can be rejected.' });
+      setNotice({ kind: 'error', text: 'Only pending or appealed requests can be rejected.' });
       return;
     }
     setRejectReason('');
@@ -454,7 +459,15 @@ export default function ManageEventRequestsPage() {
       setIsApproveModalOpen(false);
       setIsResultModalOpen(true);
     } catch (error) {
-      setNotice({ kind: 'error', text: error.message || 'Unable to approve event request.' });
+      const raw = String(error?.message || '').trim();
+      if (raw.toLowerCase().includes('admin cannot change event application status directly')) {
+        setNotice({
+          kind: 'error',
+          text: 'Appealed approval is blocked by older DB workflow logic. Apply migration 136_allow_appealed_application_to_sync_approved.sql, then retry.',
+        });
+      } else {
+        setNotice({ kind: 'error', text: raw || 'Unable to approve event request.' });
+      }
     } finally {
       setIsSaving(false);
     }
@@ -613,6 +626,7 @@ export default function ManageEventRequestsPage() {
               {[
                 { key: 'all', label: 'All' },
                 { key: 'pendingadminapproval', label: 'Pending Admin' },
+                { key: 'appealed', label: 'Appealed' },
                 { key: 'approved', label: 'Approved' },
                 { key: 'rejected', label: 'Rejected' },
                 { key: 'cancelled', label: 'Cancelled' },
@@ -748,58 +762,51 @@ export default function ManageEventRequestsPage() {
                 <div className="mt-3 space-y-7 text-sm">
                   <div>
                     <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Applicant</p>
-                    <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
-                      <div className="flex items-start gap-2.5">
-                        <User size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Full Name</p>
-                          <p className="text-lg font-semibold text-slate-700">{applicantFullName(selectedRow.Application)}</p>
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Applicant Profile</p>
+                        <div className="grid grid-cols-1 gap-3">
+                          <div className="flex items-start gap-2.5">
+                            <User size={14} className="mt-0.5 text-slate-400" />
+                            <div>
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Full Name</p>
+                              <p className="text-lg font-semibold text-slate-700">{applicantFullName(selectedRow.Application)}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-2.5">
+                            <User size={14} className="mt-0.5 text-slate-400" />
+                            <div>
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Gender</p>
+                              <p className="text-lg font-semibold text-slate-700">{selectedRow.Application?.Applicant_Gender || 'N/A'}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-2.5">
+                            <FileText size={14} className="mt-0.5 text-slate-400" />
+                            <div>
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Valid ID Type</p>
+                              <p className="text-lg font-semibold text-slate-700">{selectedRow.Application?.Applicant_Valid_ID_Type || 'N/A'}</p>
+                            </div>
+                          </div>
                         </div>
                       </div>
-                      <div className="flex items-start gap-2.5">
-                        <User size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Gender</p>
-                          <p className="text-lg font-semibold text-slate-700">{selectedRow.Application?.Applicant_Gender || 'N/A'}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2.5">
-                        <FileText size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Valid ID Type</p>
-                          <p className="text-lg font-semibold text-slate-700">{selectedRow.Application?.Applicant_Valid_ID_Type || 'N/A'}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2.5">
-                        <Phone size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Preferred Contact Method</p>
-                          <p className="text-lg font-semibold text-slate-700">
-                            {(selectedRow.Application?.Preferred_Contact_Method || 'N/A')}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2.5">
-                        <Phone size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Preferred Contact Detail</p>
-                          <p className="text-lg font-semibold text-slate-700">
-                            {selectedRow.Application?.Preferred_Contact_Detail || 'N/A'}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2.5">
-                        <Mail size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Email</p>
-                          <p className="text-lg font-semibold text-teal-700">{selectedRow.Application?.Applicant_Email || 'N/A'}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2.5">
-                        <Phone size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Number</p>
-                          <p className="text-lg font-semibold text-teal-700">{selectedRow.Application?.Applicant_Contact_Number || 'N/A'}</p>
+
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Preferred Contact</p>
+                        <div className="grid grid-cols-1 gap-3">
+                          <div className="flex items-start gap-2.5">
+                            <Phone size={14} className="mt-0.5 text-slate-400" />
+                            <div>
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Contact Method</p>
+                              <p className="text-lg font-semibold text-slate-700">{selectedRow.Application?.Preferred_Contact_Method || 'N/A'}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-2.5">
+                            <Mail size={14} className="mt-0.5 text-slate-400" />
+                            <div>
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Contact Email</p>
+                              <p className="text-lg font-semibold text-teal-700">{selectedRow.Application?.Applicant_Email || 'N/A'}</p>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     </div>

@@ -50,7 +50,27 @@ const TAB_ACTIVE = 'active';
 const TEXTURE_OPTIONS = ['Straight', 'Wavy', 'Curly', 'Coily'];
 const COLOR_OPTIONS = ['Black', 'Dark Brown', 'Light Brown', 'Auburn', 'Blonde', 'Grey'];
 const DENSITY_OPTIONS = ['Light', 'Medium', 'Heavy'];
-const CAP_SIZE_OPTIONS = ['XS', 'S', 'M', 'L', 'XL'];
+const CAP_SIZE_OPTIONS = [
+  { value: 'Small', label: 'Small (21-21.5 inches)' },
+  { value: 'Medium', label: 'Medium (22-22.5 inches)' },
+  { value: 'Large', label: 'Large (23-23.5 inches)' },
+];
+
+function normalizeCapSizeKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function toCanonicalCapSize(value) {
+  const key = normalizeCapSizeKey(value);
+  if (!key) return '';
+  if (['small', 's', 'xs'].includes(key) || key.startsWith('small')) return 'Small';
+  if (['medium', 'm'].includes(key) || key.startsWith('medium')) return 'Medium';
+  if (['large', 'l', 'xl'].includes(key) || key.startsWith('large')) return 'Large';
+  return '';
+}
 
 const VIEW_DEFS = [
   { key: 'front', label: 'Front', required: true },
@@ -1401,7 +1421,7 @@ const DEFAULT_WIG_FORM = Object.freeze({
   hairColor: COLOR_OPTIONS[0],
   hairTexture: TEXTURE_OPTIONS[0],
   hairDensity: DENSITY_OPTIONS[1],
-  capSize: CAP_SIZE_OPTIONS[2],
+  capSize: CAP_SIZE_OPTIONS[1].value,
   style: '',
 });
 
@@ -1485,6 +1505,7 @@ function CreateFilterTab({
     try {
       const lengthValueRaw = wigForm.hairLength === '' ? null : Number(wigForm.hairLength);
       const sanitizedLength = Number.isFinite(lengthValueRaw) ? lengthValueRaw : null;
+      const canonicalCapSize = toCanonicalCapSize(wigForm.capSize);
 
       // 1. Upload source images to a draft folder keyed by timestamp+random.
       const draftKey = shortDraftKey();
@@ -1522,7 +1543,7 @@ function CreateFilterTab({
         Pending_Hair_Color: wigForm.hairColor || null,
         Pending_Hair_Texture: wigForm.hairTexture || null,
         Pending_Hair_Density: wigForm.hairDensity || null,
-        Pending_Cap_Size: wigForm.capSize || null,
+        Pending_Cap_Size: canonicalCapSize || null,
         Pending_Style: wigForm.style.trim() || null,
       };
       const { data: inserted, error: insErr } = await supabase
@@ -1547,7 +1568,7 @@ function CreateFilterTab({
           hair_color: wigForm.hairColor || null,
           hair_texture: wigForm.hairTexture || null,
           hair_density: wigForm.hairDensity || null,
-          cap_size: wigForm.capSize || null,
+          cap_size: canonicalCapSize || null,
           style: wigForm.style.trim() || null,
           hair_length: sanitizedLength,
         }),
@@ -1630,7 +1651,7 @@ function CreateFilterTab({
           Hair_Color: currentFilter.Pending_Hair_Color || null,
           Hair_Texture: currentFilter.Pending_Hair_Texture || null,
           Hair_Density: currentFilter.Pending_Hair_Density || null,
-          Cap_Size: currentFilter.Pending_Cap_Size || null,
+          Cap_Size: toCanonicalCapSize(currentFilter.Pending_Cap_Size) || null,
           Style: (currentFilter.Pending_Style || '').trim() || null,
         };
         const { error: specErr } = await supabase
@@ -1805,7 +1826,7 @@ function CreateFilterTab({
                   value={wigForm.capSize}
                   onChange={(e) => updateWigForm({ capSize: e.target.value })}
                 >
-                  {CAP_SIZE_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+                  {CAP_SIZE_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
                 </select>
               </label>
               <label className="block">
@@ -2635,7 +2656,7 @@ export default function WigAiStudioPage({ userProfile }) {
       const data = result.data || {};
       const bundle = data.bundle || {};
       const wig = data.wig || {};
-      const bundleCode = bundle.Bundle_Waybill_Code || `WB-${bundle.Bundle_ID}`;
+      const bundleCode = bundle.Bundle_Waybill_Code || `WB${String(Number(bundle.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`;
       const wigLabel = wig.Wig_Code || wig.Wig_Name || `Wig #${wig.Wig_ID}`;
       const previousStock = Number(data.previous_stock ?? 0);
       const nextStock = Number(data.next_stock ?? previousStock + 1);

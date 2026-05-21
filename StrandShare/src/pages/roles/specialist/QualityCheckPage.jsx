@@ -69,6 +69,12 @@ function statusBadgeStyle(status, primaryColor, tertiaryColor) {
   return { backgroundColor: '#f1f5f9', color: '#475569', borderColor: '#cbd5e1' };
 }
 
+function deriveSubmissionLabel(submissionId) {
+  const id = Number(submissionId || 0);
+  if (!id) return '#N/A';
+  return `#${id}`;
+}
+
 export default function QualityCheckPage({ userProfile }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0275d8';
@@ -126,7 +132,7 @@ export default function QualityCheckPage({ userProfile }) {
     try {
       const submissionsResult = await supabase
         .from(HAIR_SUBMISSIONS_TABLE)
-        .select('Submission_ID, User_ID, Status, Submission_Code, Created_At, Updated_At, Bundle_ID, From_Event, Donor_Notes')
+        .select('Submission_ID, User_ID, Status, Created_At, Updated_At, Bundle_ID, From_Event, Donor_Notes')
         .eq('From_Event', false)
         .in('Status', ACTIVE_STATUSES)
         .is('Bundle_ID', null)
@@ -158,7 +164,7 @@ export default function QualityCheckPage({ userProfile }) {
           submissionId: row.Submission_ID,
           userId,
           status: row.Status,
-          submissionCode: row.Submission_Code || `HS-${row.Submission_ID}`,
+          submissionCode: deriveSubmissionLabel(row.Submission_ID),
           createdAt: row.Created_At,
           updatedAt: row.Updated_At,
           donorNotes: row.Donor_Notes || '',
@@ -302,7 +308,7 @@ export default function QualityCheckPage({ userProfile }) {
 
     try {
       const waybill = parseWaybillQrPayload(decodedText);
-      if (!waybill || (!waybill.submissionId && !waybill.submissionCode && !waybill.userId)) {
+      if (!waybill || (!waybill.submissionId && !waybill.waybillCode && !waybill.userId)) {
         setCameraStatus({ tone: 'error', message: 'Scan did not match a hair submission waybill.' });
         return;
       }
@@ -311,19 +317,33 @@ export default function QualityCheckPage({ userProfile }) {
       if (waybill.submissionId) {
         lookup = await supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Status, Submission_Code, From_Event, Bundle_ID')
+          .select('Submission_ID, User_ID, Status, From_Event, Bundle_ID')
           .eq('Submission_ID', waybill.submissionId)
           .maybeSingle();
-      } else if (waybill.submissionCode) {
-        lookup = await supabase
-          .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Status, Submission_Code, From_Event, Bundle_ID')
-          .eq('Submission_Code', waybill.submissionCode)
-          .maybeSingle();
+      } else if (waybill.waybillCode) {
+        const normalizedCode = String(waybill.waybillCode || '').trim().toUpperCase();
+        const compact = normalizedCode.replace(/[^A-Z0-9]/g, '');
+        if (/^WB[A-Z0-9]{6}$/.test(compact)) {
+          const decodedId = Number.parseInt(compact.slice(2), 36);
+          if (Number.isInteger(decodedId) && decodedId > 0) {
+            lookup = await supabase
+              .from(HAIR_SUBMISSIONS_TABLE)
+              .select('Submission_ID, User_ID, Status, From_Event, Bundle_ID')
+              .eq('Submission_ID', decodedId)
+              .maybeSingle();
+          }
+        }
+        if (!lookup) {
+          setCameraStatus({
+            tone: 'warning',
+            message: 'This QR contains only waybill code. Please scan QR with submission ID payload.',
+          });
+          return;
+        }
       } else {
         lookup = await supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Status, Submission_Code, From_Event, Bundle_ID, Updated_At')
+          .select('Submission_ID, User_ID, Status, From_Event, Bundle_ID, Updated_At')
           .eq('User_ID', waybill.userId)
           .eq('From_Event', false)
           .is('Bundle_ID', null)
@@ -346,28 +366,30 @@ export default function QualityCheckPage({ userProfile }) {
       }
 
       if (!submission?.Submission_ID) {
-        setCameraStatus({ tone: 'error', message: `No non-event submission found for ${waybill.submissionCode || waybill.submissionId || `user #${waybill.userId}`}.` });
+        setCameraStatus({ tone: 'error', message: `No non-event submission found for ${waybill.waybillCode || waybill.submissionId || `user #${waybill.userId}`}.` });
         return;
       }
 
       if (submission.From_Event !== false) {
+        const submissionLabel = deriveSubmissionLabel(submission.Submission_ID);
         setCameraStatus({
           tone: 'warning',
-          message: `Waybill ${submission.Submission_Code || `#${submission.Submission_ID}`} belongs to an event donation. Use Assigned Event Operations.`,
+          message: `Waybill ${submissionLabel} belongs to an event donation. Use Assigned Event Operations.`,
         });
         return;
       }
 
       if (submission.Bundle_ID) {
+        const submissionLabel = deriveSubmissionLabel(submission.Submission_ID);
         setCameraStatus({
           tone: 'info',
-          message: `Waybill ${submission.Submission_Code || `#${submission.Submission_ID}`} is already assigned to a bundle.`,
+          message: `Waybill ${submissionLabel} is already assigned to a bundle.`,
         });
         return;
       }
 
       const statusKey = String(submission.Status || '').toLowerCase().replace(/[_\s-]+/g, '');
-      const submissionLabel = submission.Submission_Code || `#${submission.Submission_ID}`;
+      const submissionLabel = deriveSubmissionLabel(submission.Submission_ID);
 
       if (statusKey === 'pending') {
         setCameraStatus({
@@ -689,7 +711,7 @@ export default function QualityCheckPage({ userProfile }) {
                     handleSubmitManualCode();
                   }
                 }}
-                placeholder="HS-2026-000042"
+                placeholder="WB7K2Q9A"
                 className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none"
                 style={{ color: primaryTextColor }}
               />

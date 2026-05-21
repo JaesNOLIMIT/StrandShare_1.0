@@ -2251,19 +2251,42 @@ export default function PartnershipApplicationPage() {
               <fieldset className="space-y-4 rounded-2xl border bg-white p-5 shadow-sm" style={{ borderColor: `${secondaryColor}33` }}>
                 <legend className="px-2 text-sm font-bold" style={{ color: primaryTextColor }}>Review & Confirmation</legend>
                 <p className="text-sm" style={{ color: secondaryTextColor }}>Please confirm all details before proceeding to email verification.</p>
-                <div className="grid grid-cols-1 gap-2 text-sm text-slate-700 md:grid-cols-2">
-                  <div><span className="font-semibold">Hospital Name:</span> {form.hospitalName || 'N/A'}</div>
-                  <div><span className="font-semibold">Hospital Contact:</span> {form.hospitalHeadContactNumber || 'N/A'}</div>
-                  <div><span className="font-semibold">Head / Owner:</span> {form.hospitalHeadName || 'N/A'}</div>
-                  <div><span className="font-semibold">Head Position:</span> {form.hospitalHeadTitle || 'N/A'}</div>
-                  <div><span className="font-semibold">Head Contact:</span> {form.hospitalHeadContactNumber || 'N/A'}</div>
-                  <div><span className="font-semibold">Head Email:</span> {form.hospitalHeadEmail || 'N/A'}</div>
-                  <div className="md:col-span-2"><span className="font-semibold">Hospital Address:</span> {[form.street, form.barangay, form.city, form.province, form.region, form.country].filter(Boolean).join(', ') || 'N/A'}</div>
-                  <div className="md:col-span-2"><span className="font-semibold">Map Coordinates:</span> {form.latitude && form.longitude ? `${form.latitude}, ${form.longitude}` : 'N/A'}</div>
-                  <div><span className="font-semibold">H-Representative:</span> {[form.firstName, form.middleName, form.lastName, form.suffix].filter(Boolean).join(' ') || 'N/A'}</div>
-                  <div><span className="font-semibold">H-Representative Contact:</span> {form.leadContactNumber || 'N/A'}</div>
-                  <div className="md:col-span-2"><span className="font-semibold">H-Representative Email:</span> {form.email || 'N/A'}</div>
-                  <div className="md:col-span-2"><span className="font-semibold">H-Representative Address:</span> {[form.leadStreet, form.leadBarangay, form.leadCity, form.leadProvince, form.leadRegion, form.leadCountry].filter(Boolean).join(', ') || 'N/A'}</div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <section className="rounded-xl border bg-slate-50 p-3" style={{ borderColor: `${secondaryColor}22` }}>
+                    <p className="text-xs font-bold uppercase tracking-[0.16em]" style={{ color: secondaryTextColor }}>Hospital Profile</p>
+                    <div className="mt-2 space-y-1.5 text-sm text-slate-700">
+                      <div><span className="font-semibold">Hospital Name:</span> {form.hospitalName || 'N/A'}</div>
+                      <div><span className="font-semibold">Hospital Contact:</span> {form.hospitalHeadContactNumber || 'N/A'}</div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-xl border bg-slate-50 p-3" style={{ borderColor: `${secondaryColor}22` }}>
+                    <p className="text-xs font-bold uppercase tracking-[0.16em]" style={{ color: secondaryTextColor }}>Head / Owner</p>
+                    <div className="mt-2 space-y-1.5 text-sm text-slate-700">
+                      <div><span className="font-semibold">Name:</span> {form.hospitalHeadName || 'N/A'}</div>
+                      <div><span className="font-semibold">Position:</span> {form.hospitalHeadTitle || 'N/A'}</div>
+                      <div><span className="font-semibold">Contact:</span> {form.hospitalHeadContactNumber || 'N/A'}</div>
+                      <div><span className="font-semibold">Email:</span> {form.hospitalHeadEmail || 'N/A'}</div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-xl border bg-slate-50 p-3 md:col-span-2" style={{ borderColor: `${secondaryColor}22` }}>
+                    <p className="text-xs font-bold uppercase tracking-[0.16em]" style={{ color: secondaryTextColor }}>Hospital Location</p>
+                    <div className="mt-2 space-y-1.5 text-sm text-slate-700">
+                      <div><span className="font-semibold">Address:</span> {[form.street, form.barangay, form.city, form.province, form.region, form.country].filter(Boolean).join(', ') || 'N/A'}</div>
+                      <div><span className="font-semibold">Map Coordinates:</span> {form.latitude && form.longitude ? `${form.latitude}, ${form.longitude}` : 'N/A'}</div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-xl border bg-slate-50 p-3 md:col-span-2" style={{ borderColor: `${secondaryColor}22` }}>
+                    <p className="text-xs font-bold uppercase tracking-[0.16em]" style={{ color: secondaryTextColor }}>H-Representative Account</p>
+                    <div className="mt-2 grid grid-cols-1 gap-1.5 text-sm text-slate-700 md:grid-cols-2">
+                      <div><span className="font-semibold">Name:</span> {[form.firstName, form.middleName, form.lastName, form.suffix].filter(Boolean).join(' ') || 'N/A'}</div>
+                      <div><span className="font-semibold">Contact:</span> {form.leadContactNumber || 'N/A'}</div>
+                      <div className="md:col-span-2"><span className="font-semibold">Email:</span> {form.email || 'N/A'}</div>
+                      <div className="md:col-span-2"><span className="font-semibold">Address:</span> {[form.leadStreet, form.leadBarangay, form.leadCity, form.leadProvince, form.leadRegion, form.leadCountry].filter(Boolean).join(', ') || 'N/A'}</div>
+                    </div>
+                  </section>
                 </div>
               </fieldset>
             ) : null}

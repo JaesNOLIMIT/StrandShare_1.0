@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   X,
 } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
@@ -25,6 +26,7 @@ const USERS_TABLE = 'users';
 const HOSPITAL_LOGOS_BUCKET = 'hospital_logos';
 const PSGC_BASE_URL = 'https://psgc.gitlab.io/api';
 const PHILIPPINE_TIME_ZONE = 'Asia/Manila';
+let hospitalInviteAdminClient = null;
 
 const PAGE_TABS = [
   { id: 'manage', label: 'Manage H-Representatives' },
@@ -146,6 +148,57 @@ function mapHospitalStaffError(rawMessage) {
   }
 
   return message;
+}
+
+function mapHospitalInviteError(rawMessage) {
+  const message = String(rawMessage || 'Unable to send hospital invite email.');
+  const lowerMessage = message.toLowerCase();
+
+  if (!message || lowerMessage.includes('missing-service-role')) {
+    return 'Invite email service is not configured. Add REACT_APP_SUPABASE_SERVICE_ROLE_KEY in .env.local and restart the app.';
+  }
+
+  if (lowerMessage.includes('already registered') || lowerMessage.includes('already been registered') || lowerMessage.includes('user already exists')) {
+    return 'Account already exists in Auth. Invite email will be re-created and resent using the invite-user template.';
+  }
+
+  if (lowerMessage.includes('invalid email')) {
+    return 'Invalid H-Representative email address.';
+  }
+
+  if (lowerMessage.includes('row-level security')) {
+    return 'Invite email action blocked by database/auth policy.';
+  }
+
+  return message;
+}
+
+function buildTemporaryPassword() {
+  const numeric = Math.floor(100000 + (Math.random() * 900000));
+  return `Strand-${numeric}!Aa`;
+}
+
+function createHospitalInviteAdminClient() {
+  if (hospitalInviteAdminClient) {
+    return hospitalInviteAdminClient;
+  }
+
+  const url = process.env.REACT_APP_SUPABASE_URL;
+  const serviceRoleKey = process.env.REACT_APP_SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceRoleKey) {
+    return null;
+  }
+
+  hospitalInviteAdminClient = createClient(url, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      storageKey: 'strandshare-hospital-invite-admin-client',
+    },
+  });
+
+  return hospitalInviteAdminClient;
 }
 
 function formatDateTime(value) {
@@ -668,6 +721,293 @@ export default function ManageHospitalAccountsPage() {
     return resolvedUserId;
   }, [adminUserId]);
 
+  const ensureHospitalRepresentativeAssignment = useCallback(async (hospitalId, userId, assignedAt) => {
+    const targetHospitalId = Number(hospitalId || 0);
+    const targetUserId = Number(userId || 0);
+    if (!targetHospitalId || !targetUserId) {
+      throw new Error('Unable to assign H-Representative: missing Hospital_ID or User_ID.');
+    }
+
+    const existingLinkResult = await supabase
+      .from(HOSPITAL_STAFF_TABLE)
+      .select('Link_ID,Hospital_ID,User_ID')
+      .eq('User_ID', targetUserId)
+      .maybeSingle();
+
+    if (existingLinkResult.error) {
+      throw new Error(mapHospitalStaffError(existingLinkResult.error.message));
+    }
+
+    const existingLink = existingLinkResult.data || null;
+
+    if (!existingLink?.Link_ID) {
+      const insertResult = await supabase
+        .from(HOSPITAL_STAFF_TABLE)
+        .insert({
+          Hospital_ID: targetHospitalId,
+          User_ID: targetUserId,
+          Assigned_Date: assignedAt,
+        });
+      if (insertResult.error) {
+        throw new Error(mapHospitalStaffError(insertResult.error.message));
+      }
+      return;
+    }
+
+    if (Number(existingLink.Hospital_ID || 0) === targetHospitalId) {
+      return;
+    }
+
+    const updateResult = await supabase
+      .from(HOSPITAL_STAFF_TABLE)
+      .update({
+        Hospital_ID: targetHospitalId,
+        Assigned_Date: assignedAt,
+      })
+      .eq('Link_ID', existingLink.Link_ID);
+
+    if (updateResult.error) {
+      throw new Error(mapHospitalStaffError(updateResult.error.message));
+    }
+  }, []);
+
+const sendHospitalRepresentativeInvite = useCallback(async ({
+    hospital,
+    applicantUser,
+    reviewedAt,
+  }) => {
+    const adminInviteClient = createHospitalInviteAdminClient();
+    if (!adminInviteClient) {
+      throw new Error(mapHospitalInviteError('missing-service-role'));
+    }
+
+    const email = String(applicantUser?.email || hospital?.Hospital_Head_Email || '').trim().toLowerCase();
+    if (!email) {
+      throw new Error('H-Representative email is missing. Please ensure applicant email exists before approval.');
+    }
+
+    const details = Array.isArray(applicantUser?.user_details)
+      ? applicantUser.user_details[0]
+      : applicantUser?.user_details || null;
+    const fullName = [
+      details?.first_name,
+      details?.middle_name,
+      details?.last_name,
+      details?.suffix,
+    ].map((part) => String(part || '').trim()).filter(Boolean).join(' ') || String(hospital?.Hospital_Head_Name || '').trim();
+
+    const temporaryPassword = buildTemporaryPassword();
+    const accountLabel = 'Hospital';
+    const accountValue = String(hospital?.Hospital_Name || `Hospital #${hospital?.Hospital_ID || 'N/A'}`).trim();
+    const metadata = {
+      account_type: 'partner_hospital',
+      decision: 'approved',
+      role_label: 'H-Representative',
+      account_label: accountLabel,
+      account_value: accountValue,
+      recipient_email: email,
+      recipient_name: fullName || '',
+      review_notes: '',
+      has_access_window: false,
+      access_window: '',
+      temporary_password: temporaryPassword,
+      display_name: fullName || '',
+      full_name: fullName || '',
+      name: fullName || '',
+      hospital_id: Number(hospital?.Hospital_ID || 0) || null,
+      hospital_name: String(hospital?.Hospital_Name || '').trim(),
+      approved_at: reviewedAt,
+    };
+
+    let authUserId = String(applicantUser?.auth_user_id || '').trim() || null;
+    if (authUserId) {
+      const updateAuthResult = await adminInviteClient.auth.admin.updateUserById(authUserId, {
+        email_confirm: true,
+        password: temporaryPassword,
+        user_metadata: {
+          role: 'h_representative',
+          hospital_id: Number(hospital?.Hospital_ID || 0) || null,
+          account_type: 'partner_hospital',
+        },
+      });
+
+      if (updateAuthResult.error) {
+        throw new Error(mapHospitalInviteError(updateAuthResult.error.message));
+      }
+    }
+
+    const invitePayload = {
+      redirectTo: `${window.location.origin}/complete-account`,
+      data: metadata,
+    };
+
+    const isAlreadyRegisteredError = (errorMessage = '') => {
+      const lower = String(errorMessage || '').toLowerCase();
+      return lower.includes('already registered')
+        || lower.includes('already been registered')
+        || lower.includes('user already exists');
+    };
+
+    const findAuthUserIdByEmail = async (targetEmail) => {
+      let page = 1;
+      const perPage = 200;
+      while (page <= 50) {
+        const listResult = await adminInviteClient.auth.admin.listUsers({ page, perPage });
+        if (listResult.error) {
+          throw new Error(mapHospitalInviteError(listResult.error.message));
+        }
+
+        const users = Array.isArray(listResult.data?.users) ? listResult.data.users : [];
+        if (users.length === 0) break;
+
+        const match = users.find((item) => String(item?.email || '').trim().toLowerCase() === targetEmail);
+        if (match?.id) {
+          return String(match.id).trim();
+        }
+
+        if (users.length < perPage) break;
+        page += 1;
+      }
+      return null;
+    };
+
+    let inviteResult = await adminInviteClient.auth.admin.inviteUserByEmail(email, invitePayload);
+    if (inviteResult.error && isAlreadyRegisteredError(inviteResult.error.message)) {
+      const existingAuthUserId = authUserId || await findAuthUserIdByEmail(email);
+      if (existingAuthUserId) {
+        const deleteResult = await adminInviteClient.auth.admin.deleteUser(existingAuthUserId);
+        if (deleteResult.error) {
+          throw new Error(mapHospitalInviteError(deleteResult.error.message));
+        }
+      }
+      authUserId = null;
+      inviteResult = await adminInviteClient.auth.admin.inviteUserByEmail(email, invitePayload);
+    }
+
+    if (inviteResult.error) {
+      throw new Error(mapHospitalInviteError(inviteResult.error.message));
+    }
+
+    const invitedAuthUserId = String(inviteResult.data?.user?.id || '').trim() || null;
+    if (invitedAuthUserId) {
+      authUserId = invitedAuthUserId;
+    }
+
+    if (!authUserId) {
+      throw new Error('Invite email was sent but auth user id could not be resolved.');
+    }
+
+    const updateAuthResult = await adminInviteClient.auth.admin.updateUserById(authUserId, {
+      email_confirm: true,
+      password: temporaryPassword,
+      user_metadata: {
+        role: 'h_representative',
+        hospital_id: Number(hospital?.Hospital_ID || 0) || null,
+        account_type: 'partner_hospital',
+      },
+    });
+
+    if (updateAuthResult.error) {
+      throw new Error(mapHospitalInviteError(updateAuthResult.error.message));
+    }
+
+    return {
+      authUserId,
+      inviteMode: 'invite',
+    };
+  }, []);
+
+  const provisionApprovedHospitalAccount = useCallback(async (hospital, reviewedAt) => {
+    const hospitalId = Number(hospital?.Hospital_ID || 0);
+    if (!hospitalId) {
+      throw new Error('Hospital approval provisioning failed: missing Hospital_ID.');
+    }
+
+    const applicantUserId = Number(hospital?.Created_By || 0);
+    if (!applicantUserId) {
+      throw new Error('Hospital approval provisioning failed: Created_By is missing.');
+    }
+
+    const applicantUserResult = await supabase
+      .from(USERS_TABLE)
+      .select(`
+        user_id,
+        email,
+        auth_user_id,
+        role,
+        is_active,
+        user_details:user_details (
+          first_name,
+          middle_name,
+          last_name,
+          suffix
+        )
+      `)
+      .eq('user_id', applicantUserId)
+      .maybeSingle();
+
+    if (applicantUserResult.error) {
+      throw new Error(applicantUserResult.error.message || 'Unable to resolve H-Representative applicant user.');
+    }
+
+    const applicantUser = applicantUserResult.data || null;
+    if (!applicantUser?.user_id) {
+      throw new Error('Hospital approval provisioning failed: applicant user record was not found.');
+    }
+
+    await ensureHospitalRepresentativeAssignment(hospitalId, applicantUser.user_id, reviewedAt);
+
+    const currentRoleKey = normalizeRoleSlug(applicantUser.role);
+    const shouldSetRepresentativeRole = [
+      '',
+      'user',
+      'partner',
+      'hospital',
+      'hstaff',
+      'hrepresentative',
+      'hospitalrepresentative',
+    ].includes(currentRoleKey);
+
+    const userUpdatePayload = {
+      is_active: true,
+      updated_at: reviewedAt,
+    };
+    if (shouldSetRepresentativeRole && currentRoleKey !== 'hrepresentative') {
+      userUpdatePayload.role = 'h_representative';
+    }
+
+    const baseUserUpdateResult = await supabase
+      .from(USERS_TABLE)
+      .update(userUpdatePayload)
+      .eq('user_id', applicantUser.user_id);
+
+    if (baseUserUpdateResult.error) {
+      throw new Error(baseUserUpdateResult.error.message || 'Unable to activate approved H-Representative account.');
+    }
+
+    const inviteOutcome = await sendHospitalRepresentativeInvite({
+      hospital,
+      applicantUser,
+      reviewedAt,
+    });
+
+    if (!applicantUser.auth_user_id && inviteOutcome?.authUserId) {
+      const authLinkUpdateResult = await supabase
+        .from(USERS_TABLE)
+        .update({
+          auth_user_id: inviteOutcome.authUserId,
+          updated_at: reviewedAt,
+        })
+        .eq('user_id', applicantUser.user_id);
+
+      if (authLinkUpdateResult.error) {
+        throw new Error(authLinkUpdateResult.error.message || 'Unable to link auth_user_id after invite.');
+      }
+    }
+
+    return inviteOutcome;
+  }, [ensureHospitalRepresentativeAssignment, sendHospitalRepresentativeInvite]);
+
   const handleHospitalApplicationDecision = (hospital, nextStatus) => {
     if (!['Approved', 'Rejected'].includes(nextStatus)) {
       setErrorMessage('Unsupported application decision.');
@@ -714,6 +1054,11 @@ export default function ManageHospitalAccountsPage() {
       }
     }
 
+    if (nextStatus === 'Approved' && !createHospitalInviteAdminClient()) {
+      setErrorMessage(mapHospitalInviteError('missing-service-role'));
+      return;
+    }
+
     try {
       setApplicationActionHospitalId(hospitalId);
       const reviewerUserId = await resolveAdminUserId();
@@ -742,7 +1087,14 @@ export default function ManageHospitalAccountsPage() {
         Number(row.Hospital_ID) === hospitalId ? updatedHospital : row
       )));
 
-      setSuccessMessage(`Hospital application ${statusVerb} successfully.`);
+      let inviteNote = '';
+      if (nextStatus === 'Approved') {
+        await provisionApprovedHospitalAccount(updatedHospital, reviewedAt);
+        await Promise.all([fetchHospitalStaffLinks(), fetchHStaffUsers()]);
+        inviteNote = ' H-Representative was assigned and invite email with credentials was sent.';
+      }
+
+      setSuccessMessage(`Hospital application ${statusVerb} successfully.${inviteNote}`);
       setDecisionTarget(null);
       setDecisionReviewNotes('');
     } catch (error) {

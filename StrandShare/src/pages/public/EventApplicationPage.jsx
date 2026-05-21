@@ -241,6 +241,21 @@ function mapStorageUploadError(rawMessage) {
   return message || 'Unable to upload file.';
 }
 
+function mapEventApplicationSubmitError(rawMessage) {
+  const message = String(rawMessage || '').trim();
+  const lower = message.toLowerCase();
+
+  if (lower.includes('row-level security') && lower.includes('event_applications')) {
+    return 'Submit blocked by Event_Applications policy. Ask admin to re-apply the latest Event_Applications RLS SQL migrations, then retry.';
+  }
+
+  if (lower.includes('row-level security')) {
+    return 'Submit blocked by database policy. Please retry, or ask admin to re-apply the Event_Applications RLS policies.';
+  }
+
+  return message || 'Unable to submit event application.';
+}
+
 function normalizePreferredContactLabel(value) {
   const key = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
   if (key === 'phonecall' || key === 'phone' || key === 'call') return 'Phone Call';
@@ -349,6 +364,26 @@ function createIsolatedAuthClient() {
   });
 
   return isolatedAuthClient;
+}
+
+async function insertEventApplicationIntake(payload) {
+  const anonClient = createIsolatedAuthClient();
+  const primaryInsert = await anonClient
+    .from(EVENT_APPLICATIONS_TABLE)
+    .insert(payload);
+
+  if (!primaryInsert.error) {
+    return;
+  }
+
+  // Fallback for environments with custom auth behavior.
+  const fallbackInsert = await supabase
+    .from(EVENT_APPLICATIONS_TABLE)
+    .insert(payload);
+
+  if (fallbackInsert.error) {
+    throw fallbackInsert.error;
+  }
 }
 
 function LocationPinPicker({ latitude, longitude, onChange }) {
@@ -1393,15 +1428,17 @@ export default function EventApplicationPage() {
         Event_Poster_Photo_URL: posterPhotoUpload.url,
         Social_Page_Name: form.socialPageName.trim() || null,
         Social_Page_URL: form.socialPageUrl.trim() || null,
+        Status: 'Pending Staff Review',
+        Staff_Reviewer_User_ID: null,
+        Staff_Reviewed_At: null,
+        Staff_Rejected_By_User_ID: null,
+        Staff_Rejected_At: null,
+        Staff_Rejection_Reason: null,
+        Linked_Event_Request_ID: null,
+        Resubmission_Count: 0,
       };
 
-      const { error } = await supabase
-        .from(EVENT_APPLICATIONS_TABLE)
-        .insert(payload);
-
-      if (error) {
-        throw error;
-      }
+      await insertEventApplicationIntake(payload);
 
       const smtpKickResult = await triggerSmtpNow('event_application_submitted');
       if (!smtpKickResult.ok) {
@@ -1417,7 +1454,7 @@ export default function EventApplicationPage() {
       }
       window.location.assign('/apply-event/success');
     } catch (submitError) {
-      setErrorMessage(submitError?.message || 'Unable to submit event application.');
+      setErrorMessage(mapEventApplicationSubmitError(submitError?.message || submitError));
     } finally {
       setIsSubmitting(false);
     }

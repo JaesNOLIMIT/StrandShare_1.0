@@ -20,8 +20,8 @@ import RoleReportsPage from '../../shared/features/RoleReportsPage';
 const staffNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'event-application-intake', label: 'Manage Event Application', icon: CheckCircle },
-  { id: 'assigned-event-operations', label: 'Assigned Event Operations', icon: FileText },
-  { id: 'update-wig-request-status', label: 'Update Wig Request Status', icon: Package },
+  { id: 'assigned-event-operations', label: 'Manage Assigned Events', icon: FileText },
+  { id: 'update-wig-request-status', label: 'Manage Wig Request', icon: Package },
   { id: 'manage-requirements', label: 'Manage Requirements', icon: SlidersHorizontal },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'settings', label: 'Settings', icon: Settings },

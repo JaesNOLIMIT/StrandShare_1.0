@@ -39,6 +39,7 @@ const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
 const WIGS_TABLE = 'Wigs';
 const USER_DETAILS_TABLE = 'user_details';
+const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 
 const REPORT_TEMPLATES = [
@@ -252,7 +253,7 @@ export default function GenerateReportsPage({ userProfile }) {
       const [submissionsRes, bundlesRes, wigsRes] = await Promise.all([
         supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Event_Request_ID, Status, Submission_Code, Created_At, Updated_At, Bundle_ID')
+          .select('Submission_ID, User_ID, Event_Attendee_ID, Event_Request_ID, Status, Created_At, Updated_At, Bundle_ID')
           .order('Updated_At', { ascending: false })
           .limit(2000),
         supabase
@@ -271,9 +272,42 @@ export default function GenerateReportsPage({ userProfile }) {
       if (bundlesRes.error) throw bundlesRes.error;
       if (wigsRes.error) throw wigsRes.error;
 
-      const submissionRows = submissionsRes.data || [];
+      const submissionRowsRaw = submissionsRes.data || [];
       const bundleRows = bundlesRes.data || [];
       const wigRows = wigsRes.data || [];
+
+      const attendeeIds = Array.from(new Set(submissionRowsRaw.map((r) => Number(r.Event_Attendee_ID || 0)).filter(Boolean)));
+      let attendeeToRequestId = {};
+      let attendeeToWaybillCode = {};
+      if (attendeeIds.length) {
+        const { data, error } = await supabase
+          .from(EVENT_ATTENDEES_TABLE)
+          .select('Event_Attendee_ID, Event_Request_ID, Waybill_Code')
+          .in('Event_Attendee_ID', attendeeIds);
+        if (error) throw error;
+        attendeeToRequestId = (data || []).reduce((acc, row) => {
+          const attendeeId = Number(row.Event_Attendee_ID || 0);
+          if (!attendeeId) return acc;
+          acc[attendeeId] = Number(row.Event_Request_ID || 0) || null;
+          return acc;
+        }, {});
+        attendeeToWaybillCode = (data || []).reduce((acc, row) => {
+          const attendeeId = Number(row.Event_Attendee_ID || 0);
+          if (!attendeeId) return acc;
+          acc[attendeeId] = String(row.Waybill_Code || '').trim() || null;
+          return acc;
+        }, {});
+      }
+
+      const submissionRows = submissionRowsRaw.map((row) => {
+        const attendeeId = Number(row.Event_Attendee_ID || 0);
+        const resolvedEventRequestId = Number(attendeeToRequestId[attendeeId] || row.Event_Request_ID || 0) || null;
+        return {
+          ...row,
+          _resolvedEventRequestId: resolvedEventRequestId,
+          _resolvedWaybillCode: String(attendeeToWaybillCode[attendeeId] || '').trim() || '',
+        };
+      });
 
       setSubmissions(submissionRows);
       setBundles(bundleRows);
@@ -288,7 +322,7 @@ export default function GenerateReportsPage({ userProfile }) {
       setBundleMembers(bundlesByMembers);
 
       const userIds = Array.from(new Set(submissionRows.map((r) => Number(r.User_ID || 0)).filter(Boolean)));
-      const driveIds = Array.from(new Set(submissionRows.map((r) => Number(r.Event_Request_ID || 0)).filter(Boolean)));
+      const driveIds = Array.from(new Set(submissionRows.map((r) => Number(r._resolvedEventRequestId || 0)).filter(Boolean)));
 
       if (userIds.length) {
         const { data, error } = await supabase
@@ -370,17 +404,18 @@ export default function GenerateReportsPage({ userProfile }) {
       return submissions
         .filter((row) => {
           if (statusFilter !== 'all' && statusKey(row.Status) !== statusFilter) return false;
-          if (driveFilter !== 'all' && Number(row.Event_Request_ID) !== Number(driveFilter)) return false;
+          if (driveFilter !== 'all' && Number(row._resolvedEventRequestId || 0) !== Number(driveFilter)) return false;
           if ((dateFrom || dateTo) && !isWithinRange(row.Updated_At || row.Created_At, dateFrom, dateTo)) return false;
           return true;
         })
         .map((row) => {
           const donor = donorsById[Number(row.User_ID || 0)];
-          const drive = drivesById[Number(row.Event_Request_ID || 0)];
+          const resolvedEventRequestId = Number(row._resolvedEventRequestId || row.Event_Request_ID || 0);
+          const drive = drivesById[resolvedEventRequestId];
           return {
-            code: row.Submission_Code || `HS-${row.Submission_ID}`,
+            code: row._resolvedWaybillCode || `#${Number(row.Submission_ID || 0)}`,
             donor: donor ? buildFullName(donor.first_name, donor.middle_name, donor.last_name, donor.suffix) : `User #${row.User_ID || 0}`,
-            drive: drive?.Event_Name || (row.Event_Request_ID ? `Event #${row.Event_Request_ID}` : '-'),
+            drive: drive?.Event_Name || (resolvedEventRequestId ? `Event #${resolvedEventRequestId}` : '-'),
             status: row.Status || '-',
             created: formatDateTime(row.Created_At),
             updated: formatDateTime(row.Updated_At),
@@ -398,7 +433,7 @@ export default function GenerateReportsPage({ userProfile }) {
         .map((row) => {
           const memberCount = bundleMembers[Number(row.Bundle_ID)] || 0;
           return {
-            code: row.Bundle_Waybill_Code || `WB-${row.Bundle_ID}`,
+            code: row.Bundle_Waybill_Code || `WB${String(Number(row.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`,
             status: row.Status || '-',
             members: memberCount,
             notes: row.Notes || '-',
@@ -410,7 +445,7 @@ export default function GenerateReportsPage({ userProfile }) {
 
     if (selectedTemplateId === 'wig_inventory') {
       const bundleCodeById = bundles.reduce((acc, b) => {
-        acc[Number(b.Bundle_ID)] = b.Bundle_Waybill_Code || `WB-${b.Bundle_ID}`;
+        acc[Number(b.Bundle_ID)] = b.Bundle_Waybill_Code || `WB${String(Number(b.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`;
         return acc;
       }, {});
       return wigs
@@ -423,7 +458,7 @@ export default function GenerateReportsPage({ userProfile }) {
           code: row.Wig_Code || `WIG-${row.Wig_ID}`,
           name: row.Wig_Name || '-',
           status: row.Wig_Status || '-',
-          bundleCode: bundleCodeById[Number(row.Bundle_ID)] || (row.Bundle_ID ? `WB-${row.Bundle_ID}` : '-'),
+          bundleCode: bundleCodeById[Number(row.Bundle_ID)] || (row.Bundle_ID ? `WB${String(Number(row.Bundle_ID || 0)).padStart(6, '0').slice(-6)}` : '-'),
           donatedHairs: Number(row.Total_Donated_Hairs || 0),
           completed: row.Completed_At ? formatDateTime(row.Completed_At) : '-',
         }));
@@ -432,7 +467,7 @@ export default function GenerateReportsPage({ userProfile }) {
     if (selectedTemplateId === 'donor_throughput') {
       const grouped = new Map();
       submissions.forEach((row) => {
-        const driveId = Number(row.Event_Request_ID || 0);
+        const driveId = Number(row._resolvedEventRequestId || row.Event_Request_ID || 0);
         if (driveFilter !== 'all' && driveId !== Number(driveFilter)) return;
         if ((dateFrom || dateTo) && !isWithinRange(row.Created_At, dateFrom, dateTo)) return;
         if (!grouped.has(driveId)) {

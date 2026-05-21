@@ -34,6 +34,7 @@ import {
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
 const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
+const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const WIG_SPECIFICATIONS_TABLE = 'Wig_Specifications';
 const WIGS_TABLE = 'Wigs';
@@ -113,6 +114,9 @@ function normalizeErrorMessage(error, fallback) {
   if (key.includes('already in wig in production')) return 'This waybill is already in production and cannot be scanned again.';
   if (key.includes('already in wig created')) return 'This waybill is already completed as Wig Created.';
   if (key.includes('already scanned')) return 'This QR was already scanned.';
+  if (key.includes('column hs.submission_code does not exist')) {
+    return 'Bundling scan function is outdated in the database. Run the latest Supabase migrations, then refresh.';
+  }
   if (key.includes('row-level security')) return 'You do not have permission for this operation. Please contact admin.';
   if (key.includes('not found')) return 'Record not found. Refresh and try again.';
   if (key.includes('permission') || key.includes('not assigned') || key.includes('only specialist/admin')) {
@@ -229,13 +233,13 @@ export default function BundlingPage() {
       if (bundleIds.length) {
         const membersResult = await supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Submission_Code, Status, Bundle_ID, Event_Request_ID, Updated_At')
+          .select('Submission_ID, User_ID, Status, Bundle_ID, Event_Attendee_ID, Event_Request_ID, Updated_At')
           .in('Bundle_ID', bundleIds);
         if (membersResult.error) throw membersResult.error;
 
         const memberRows = membersResult.data || [];
         const userIds = Array.from(new Set(memberRows.map((r) => Number(r.User_ID || 0)).filter(Boolean)));
-        const requestIds = Array.from(new Set(memberRows.map((r) => Number(r.Event_Request_ID || 0)).filter(Boolean)));
+        const attendeeIds = Array.from(new Set(memberRows.map((r) => Number(r.Event_Attendee_ID || 0)).filter(Boolean)));
         const submissionIds = Array.from(new Set(memberRows.map((r) => Number(r.Submission_ID || 0)).filter(Boolean)));
 
         let usersByUserId = {};
@@ -250,6 +254,37 @@ export default function BundlingPage() {
             return acc;
           }, {});
         }
+
+        let attendeeToRequestId = {};
+        let attendeeToWaybillCode = {};
+        if (attendeeIds.length) {
+          const { data, error } = await supabase
+            .from(EVENT_ATTENDEES_TABLE)
+            .select('Event_Attendee_ID, Event_Request_ID, Waybill_Code')
+            .in('Event_Attendee_ID', attendeeIds);
+          if (error) throw error;
+          attendeeToRequestId = (data || []).reduce((acc, r) => {
+            const attendeeId = Number(r.Event_Attendee_ID || 0);
+            if (!attendeeId) return acc;
+            acc[attendeeId] = Number(r.Event_Request_ID || 0) || null;
+            return acc;
+          }, {});
+          attendeeToWaybillCode = (data || []).reduce((acc, r) => {
+            const attendeeId = Number(r.Event_Attendee_ID || 0);
+            if (!attendeeId) return acc;
+            acc[attendeeId] = String(r.Waybill_Code || '').trim() || null;
+            return acc;
+          }, {});
+        }
+
+        const requestIds = Array.from(new Set(
+          memberRows
+            .map((r) => {
+              const attendeeId = Number(r.Event_Attendee_ID || 0);
+              return Number(attendeeToRequestId[attendeeId] || r.Event_Request_ID || 0);
+            })
+            .filter(Boolean),
+        ));
 
         let eventsByRequestId = {};
         if (requestIds.length) {
@@ -286,7 +321,9 @@ export default function BundlingPage() {
           if (!acc[key]) acc[key] = [];
 
           const userId = Number(row.User_ID || 0);
-          const requestId = Number(row.Event_Request_ID || 0);
+          const attendeeId = Number(row.Event_Attendee_ID || 0);
+          const requestId = Number(attendeeToRequestId[attendeeId] || row.Event_Request_ID || 0);
+          const waybillCode = String(attendeeToWaybillCode[attendeeId] || '').trim();
           const userDetails = usersByUserId[userId] || {};
           const eventRequest = eventsByRequestId[requestId] || {};
           const detail = detailsBySubmissionId[Number(row.Submission_ID || 0)] || null;
@@ -294,8 +331,9 @@ export default function BundlingPage() {
           acc[key].push({
             submissionId: Number(row.Submission_ID || 0),
             userId,
-            submissionCode: row.Submission_Code || `HS-${row.Submission_ID}`,
+            submissionCode: waybillCode || `#${Number(row.Submission_ID || 0)}`,
             status: row.Status || '',
+            eventAttendeeId: attendeeId || null,
             eventRequestId: requestId || null,
             donorName: buildFullName(
               userDetails.first_name,
@@ -454,7 +492,7 @@ export default function BundlingPage() {
 
       const payload = result.data || {};
       const closedBundle = payload.bundle || {};
-      const bundleCode = closedBundle.Bundle_Waybill_Code || `WB-${draft.Bundle_ID}`;
+      const bundleCode = closedBundle.Bundle_Waybill_Code || `WB${String(Number(draft.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`;
       const memberCount = Number(payload.member_count || (bundleMembersByBundleId[draft.Bundle_ID] || []).length || 0);
 
       if (Number(scannerDraftBundleId || 0) === Number(draft.Bundle_ID)) {
@@ -570,7 +608,7 @@ export default function BundlingPage() {
 
       const payload = result.data || {};
       const memberCount = Number(payload?.member_count || 0);
-      const submissionCode = payload?.submission?.Submission_Code || waybill;
+      const submissionCode = payload?.submission?.Waybill_Code || waybill;
 
       setScannerWaybillCode('');
       await loadData();
@@ -611,7 +649,7 @@ export default function BundlingPage() {
 
       const payload = result.data || {};
       const closedBundle = payload.bundle || {};
-      const code = closedBundle.Bundle_Waybill_Code || `WB-${bundleId}`;
+      const code = closedBundle.Bundle_Waybill_Code || `WB${String(Number(bundleId || 0)).padStart(6, '0').slice(-6)}`;
       const memberCount = Number(payload.member_count || scannerBundleMemberCount || 0);
 
       await loadData();
@@ -1143,7 +1181,7 @@ export default function BundlingPage() {
                         style={active ? { backgroundColor: withColorAlpha(primaryColor, 0.06), boxShadow: `inset 3px 0 0 ${primaryColor}` } : undefined}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono text-sm font-semibold" style={{ color: primaryTextColor }}>{bundle.Bundle_Waybill_Code || `WB-${bundle.Bundle_ID}`}</span>
+                          <span className="font-mono text-sm font-semibold" style={{ color: primaryTextColor }}>{bundle.Bundle_Waybill_Code || `WB${String(Number(bundle.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`}</span>
                           <span className="inline-flex rounded-full border px-1.5 py-0.5 text-[10px] font-semibold" style={bundleStatusStyle(statusKey, primaryColor, tertiaryColor, secondaryTextColor)}>{bundle.Status}</span>
                         </div>
                         <span className="text-xs" style={{ color: tertiaryTextColor }}>{count} hair{count === 1 ? '' : 's'} - {formatDateTime(bundle.Created_At)}</span>
@@ -1302,7 +1340,7 @@ export default function BundlingPage() {
                           void handleScanWaybillIntoBundle(scannerWaybillCode, { fromCamera: false });
                         }
                       }}
-                      placeholder="Scan or type waybill (HS-YYYY-XXXXXX)"
+                      placeholder="Scan or type waybill (WBXXXXXX)"
                       className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
                       style={{ color: primaryTextColor }}
                     />
@@ -1371,7 +1409,7 @@ export default function BundlingPage() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="font-mono text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      {selectedBundleRow.Bundle_Waybill_Code || `WB-${selectedBundleRow.Bundle_ID}`}
+                      {selectedBundleRow.Bundle_Waybill_Code || `WB${String(Number(selectedBundleRow.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`}
                     </p>
                     <span
                       className="mt-1 inline-flex rounded-full border px-2.5 py-0.5 text-xs font-semibold"

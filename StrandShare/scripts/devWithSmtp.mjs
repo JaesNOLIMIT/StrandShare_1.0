@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 const children = [];
 let shuttingDown = false;
 
-function run(name, command, args) {
+function run(name, command, args, { required = true } = {}) {
   const child = spawn(command, args, {
     stdio: 'inherit',
     shell: true,
@@ -12,7 +12,15 @@ function run(name, command, args) {
 
   child.on('exit', (code, signal) => {
     if (shuttingDown) return;
-    console.log(`[dev] ${name} exited (code=${code ?? 'null'} signal=${signal ?? 'null'})`);
+    const printedCode = code ?? 'null';
+    const printedSignal = signal ?? 'null';
+
+    if (!required) {
+      console.warn(`[dev] ${name} exited (code=${printedCode} signal=${printedSignal}). Continuing web dev server.`);
+      return;
+    }
+
+    console.log(`[dev] ${name} exited (code=${printedCode} signal=${printedSignal})`);
     shutdown(code ?? 0);
   });
 
@@ -36,5 +44,5 @@ function shutdown(exitCode = 0) {
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 
-run('web', 'npm', ['run', 'start:web']);
-run('smtp-trigger', 'npm', ['run', 'smtp:trigger:server']);
+run('web', 'npm', ['run', 'start:web'], { required: true });
+run('smtp-trigger', 'npm', ['run', 'smtp:trigger:server'], { required: false });

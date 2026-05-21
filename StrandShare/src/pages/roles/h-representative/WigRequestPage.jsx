@@ -12,20 +12,24 @@ const USER_DETAILS_TABLE = 'user_details';
 const LEGACY_USER_DETAILS_TABLE = 'User_Details';
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
 const WIG_REQUESTS_TABLE = 'Wig_Requests';
-const WIG_REQUEST_SPECS_TABLE = 'Wig_Request_Specifications';
+const WIG_SPECS_TABLE = 'Wig_Specifications';
+const WIGS_TABLE = 'Wigs';
+const WIG_FILTERS_TABLE = 'Wig_AI_Filters';
 
 const PATIENT_ASSETS_BUCKET = 'patient_assets';
 const PROFILE_PICTURES_BUCKET = 'profile_pictures';
 const WIG_REQUEST_PREVIEWS_BUCKET = 'wig_request_previews';
+const WIG_AI_FILTERS_BUCKET = 'wig_ai_filters';
+const WIG_AI_SOURCES_BUCKET = 'wig_ai_sources';
+const BRANDING_BUCKET = 'branding_assests';
 
 const REQUEST_STATUS = {
   pending: 'Pending',
   acceptedWithAllocatedWig: 'Accepted - Wig Allocated',
   acceptedNoWigAvailable: 'Accepted - No Wig Available',
-  inProduction: 'In Production',
   toBeRelease: 'To Be Release',
   releasing: 'Releasing',
-  completed: 'Completed',
+  released: 'Released',
   rejected: 'Rejected',
   cancelled: 'Cancelled',
 };
@@ -40,29 +44,24 @@ const SUBMITTED_STATUS_FILTERS = [
   { id: 'pending', label: 'Pending' },
   { id: 'accepted_allocated', label: 'Accepted - Wig Allocated' },
   { id: 'accepted_no_wig', label: 'Accepted - No Wig Available' },
-  { id: 'in_production', label: 'In Production' },
   { id: 'to_be_release', label: 'To Be Release' },
   { id: 'releasing', label: 'Releasing' },
-  { id: 'completed', label: 'Completed' },
+  { id: 'released', label: 'Released' },
   { id: 'rejected', label: 'Rejected' },
   { id: 'cancelled', label: 'Cancelled' },
 ];
 
-const styleOptions = ['Shoulder-Length Wavy', 'Straight Bob', 'Long Layered', 'Pixie Cut'];
-const colorOptions = ['Natural Black', 'Dark Brown', 'Medium Brown', 'Light Brown', 'Custom'];
-const lengthOptions = ['Short', 'Medium', 'Long'];
-const textureOptions = ['Straight', 'Wavy', 'Curly'];
-const capSizeOptions = ['Small', 'Medium', 'Large'];
+const CAP_SIZE_OPTIONS = [
+  { value: 'Small', label: 'Small (21-21.5 inches)' },
+  { value: 'Medium', label: 'Medium (22-22.5 inches)' },
+  { value: 'Large', label: 'Large (23-23.5 inches)' },
+];
 
 const EMPTY_FORM = {
   patientId: '',
   patientCode: '',
   medicalCondition: '',
-  stylePreference: styleOptions[0],
-  preferredColor: '',
-  preferredLength: '',
-  hairTexture: '',
-  capSize: '',
+  wigSpecificationId: '',
   specialNoteTemplate: '',
 };
 
@@ -86,6 +85,30 @@ function normalizeStatusKey(value) {
 
 function normalizeSearchText(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function normalizeCapSizeKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function toCanonicalCapSize(value) {
+  const key = normalizeCapSizeKey(value);
+
+  if (['small', 's', 'xs'].includes(key) || key.startsWith('small')) return 'Small';
+  if (['medium', 'm'].includes(key) || key.startsWith('medium')) return 'Medium';
+  if (['large', 'l', 'xl'].includes(key) || key.startsWith('large')) return 'Large';
+
+  return '';
+}
+
+function getCapSizeLabel(value) {
+  const canonical = toCanonicalCapSize(value);
+  if (!canonical) return '';
+  const matched = CAP_SIZE_OPTIONS.find((row) => row.value === canonical);
+  return matched?.label || canonical;
 }
 
 function getFirstPresentValue(source, keys) {
@@ -157,11 +180,18 @@ function buildAddress(detailsRow) {
 }
 
 function formatRequestCode(reqId) {
-  const safeId = Number(reqId || 0);
-  if (!safeId) {
-    return 'WR-0000';
+  const rawCode = String(reqId || '').trim();
+  if (rawCode) {
+    const cleanedCode = rawCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (/^WR[A-Z0-9]{6}$/.test(cleanedCode)) {
+      return cleanedCode;
+    }
+    if (/^[0-9]+$/.test(cleanedCode)) {
+      return `WR${cleanedCode.padStart(6, '0').slice(-6)}`;
+    }
+    return cleanedCode.startsWith('WR') ? cleanedCode : `WR${cleanedCode}`;
   }
-  return `WR-${String(safeId).padStart(4, '0')}`;
+  return 'WR------';
 }
 
 function getPatientFullName(patient, linkedDetails = null) {
@@ -204,12 +234,38 @@ function isSameDay(timestampValue, dateValue = new Date()) {
   return parsed.toDateString() === dateValue.toDateString();
 }
 
-function serializeSpecialNotes({ specialNoteTemplate }) {
-  const payload = {
-    specialNoteTemplate: String(specialNoteTemplate || '').trim(),
-  };
+function serializeSpecialNotes(payload) {
+  return `SSMETA:${JSON.stringify(payload || {})}`;
+}
 
-  return `SSMETA:${JSON.stringify(payload)}`;
+function parseSpecialNotesPayload(specialNotesValue) {
+  const raw = String(specialNotesValue || '').trim();
+  if (!raw) {
+    return {};
+  }
+
+  if (!raw.startsWith('SSMETA:')) {
+    return {
+      specialNoteTemplate: raw,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(raw.slice(7));
+    if (parsed && typeof parsed === 'object') {
+      return parsed;
+    }
+    return {};
+  } catch {
+    return {
+      specialNoteTemplate: raw,
+    };
+  }
+}
+
+function normalizeSpecNumber(value) {
+  const num = Number(value || 0);
+  return Number.isFinite(num) && num > 0 ? num : 0;
 }
 
 function getCanonicalStatusKey(status) {
@@ -228,7 +284,7 @@ function getCanonicalStatusKey(status) {
   }
 
   if (['inproduction', 'production', 'inprocess'].includes(key)) {
-    return 'in_production';
+    return 'accepted_no_wig';
   }
 
   if (['toberelease', 'forrelease', 'releasequeue'].includes(key)) {
@@ -244,7 +300,7 @@ function getCanonicalStatusKey(status) {
   }
 
   if (['completed', 'complete', 'released', 'releasecompleted', 'done'].includes(key)) {
-    return 'completed';
+    return 'released';
   }
 
   if (['rejected', 'declined', 'denied'].includes(key)) {
@@ -268,10 +324,9 @@ function getStatusLabel(status) {
 
   if (key === 'accepted_allocated') return REQUEST_STATUS.acceptedWithAllocatedWig;
   if (key === 'accepted_no_wig') return REQUEST_STATUS.acceptedNoWigAvailable;
-  if (key === 'in_production') return REQUEST_STATUS.inProduction;
   if (key === 'to_be_release') return REQUEST_STATUS.toBeRelease;
   if (key === 'releasing') return REQUEST_STATUS.releasing;
-  if (key === 'completed') return REQUEST_STATUS.completed;
+  if (key === 'released') return REQUEST_STATUS.released;
   if (key === 'rejected') return REQUEST_STATUS.rejected;
   if (key === 'cancelled') return REQUEST_STATUS.cancelled;
   return REQUEST_STATUS.pending;
@@ -281,10 +336,9 @@ function statusClass(status) {
   const key = getCanonicalStatusKey(status);
   if (key === 'accepted_allocated') return 'bg-emerald-100 text-emerald-700';
   if (key === 'accepted_no_wig') return 'bg-lime-100 text-lime-700';
-  if (key === 'in_production') return 'bg-sky-100 text-sky-700';
   if (key === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (key === 'releasing') return 'bg-teal-100 text-teal-700';
-  if (key === 'completed') return 'bg-green-100 text-green-700';
+  if (key === 'released') return 'bg-green-100 text-green-700';
   if (key === 'rejected') return 'bg-red-100 text-red-700';
   if (key === 'cancelled') return 'bg-slate-200 text-slate-700';
   return 'bg-amber-100 text-amber-700';
@@ -314,13 +368,13 @@ function getJourneyPath(statusKey) {
       note: 'H-Representative approved schedule and release processing is ongoing.',
     },
     {
-      id: 'completed',
-      title: REQUEST_STATUS.completed,
+      id: 'released',
+      title: REQUEST_STATUS.released,
       note: 'Release is completed and request has reached its final state.',
     },
   ];
 
-  const productionPath = [
+  const noWigPath = [
     {
       id: 'pending',
       title: REQUEST_STATUS.pending,
@@ -329,12 +383,7 @@ function getJourneyPath(statusKey) {
     {
       id: 'accepted_no_wig',
       title: REQUEST_STATUS.acceptedNoWigAvailable,
-      note: 'Request accepted but no suitable wig is currently available.',
-    },
-    {
-      id: 'in_production',
-      title: REQUEST_STATUS.inProduction,
-      note: 'Wig is being prepared or produced for this patient.',
+      note: 'Request accepted but no suitable wig is currently available yet.',
     },
     {
       id: 'to_be_release',
@@ -347,8 +396,8 @@ function getJourneyPath(statusKey) {
       note: 'H-Representative approved schedule and release processing is ongoing.',
     },
     {
-      id: 'completed',
-      title: REQUEST_STATUS.completed,
+      id: 'released',
+      title: REQUEST_STATUS.released,
       note: 'Release is completed and request has reached its final state.',
     },
   ];
@@ -384,23 +433,19 @@ function getJourneyPath(statusKey) {
   }
 
   if (statusKey === 'accepted_no_wig') {
-    return { steps: productionPath, currentStepId: 'accepted_no_wig' };
-  }
-
-  if (statusKey === 'in_production') {
-    return { steps: productionPath, currentStepId: 'in_production' };
+    return { steps: noWigPath, currentStepId: 'accepted_no_wig' };
   }
 
   if (statusKey === 'to_be_release') {
-    return { steps: productionPath, currentStepId: 'to_be_release' };
+    return { steps: noWigPath, currentStepId: 'to_be_release' };
   }
 
   if (statusKey === 'releasing') {
-    return { steps: productionPath, currentStepId: 'releasing' };
+    return { steps: noWigPath, currentStepId: 'releasing' };
   }
 
-  if (statusKey === 'completed') {
-    return { steps: productionPath, currentStepId: 'completed' };
+  if (statusKey === 'released') {
+    return { steps: noWigPath, currentStepId: 'released' };
   }
 
   if (statusKey === 'rejected') {
@@ -411,40 +456,32 @@ function getJourneyPath(statusKey) {
     return { steps: cancelledPath, currentStepId: 'cancelled' };
   }
 
-  return { steps: productionPath, currentStepId: 'pending' };
+  return { steps: noWigPath, currentStepId: 'pending' };
 }
 
 function mapWigRequestInsertError(rawMessage) {
   const message = String(rawMessage || 'Unable to submit wig request.');
   const lowerMessage = message.toLowerCase();
 
+  if (lowerMessage.includes('create_wig_request_with_spec') && lowerMessage.includes('function')) {
+    return 'Database submit function is missing. Apply SQL migration 113_fix_wig_request_submit_rls_and_rpc.sql, then retry.';
+  }
+
   if (lowerMessage.includes('row-level security')) {
-    return 'Action blocked by database policy. Make sure your account has H-Representative permissions.';
+    return 'Action blocked by database policy. Apply SQL migration 113_fix_wig_request_submit_rls_and_rpc.sql, then retry.';
+  }
+
+  if (lowerMessage.includes('permission denied') && lowerMessage.includes('wig_request')) {
+    return 'Permission denied on wig request tables. Apply SQL migration 113_fix_wig_request_submit_rls_and_rpc.sql, then retry.';
   }
 
   return message;
 }
 
-function mapPreviewUploadError(rawMessage) {
-  const message = String(rawMessage || 'Unable to upload preview PDF.');
-  const lowerMessage = message.toLowerCase();
-
-  if (lowerMessage.includes('row-level security')) {
-    return 'Upload blocked by Storage RLS policy. Apply the wig request preview bucket SQL migration first.';
-  }
-
-  if (lowerMessage.includes('bucket')) {
-    return 'Preview bucket was not found. Apply the wig request preview bucket SQL migration first.';
-  }
-
-  if (
-    (lowerMessage.includes('preview_pdf_url') || lowerMessage.includes('pdf_url'))
-    && lowerMessage.includes('column')
-  ) {
-    return 'Preview uploaded, but Wig_Requests.Pdf_Url is missing. Apply the SQL migration that adds the PDF URL column.';
-  }
-
-  return message;
+function isRlsBlockedError(rawMessage) {
+  const lowerMessage = String(rawMessage || '').toLowerCase();
+  return lowerMessage.includes('row-level security')
+    || (lowerMessage.includes('permission denied') && lowerMessage.includes('wig_request'));
 }
 
 function isAbsoluteUrl(value) {
@@ -467,6 +504,75 @@ function resolveStoragePublicUrl(bucket, pathValue) {
 
   const { data } = supabase.storage.from(bucket).getPublicUrl(normalizedPath);
   return data?.publicUrl || '';
+}
+
+async function resolveStorageSignedUrl(bucket, pathValue, expiresInSeconds = 3600) {
+  const normalizedPath = String(pathValue || '').trim();
+  if (!normalizedPath || !supabase) {
+    return '';
+  }
+
+  if (isAbsoluteUrl(normalizedPath)) {
+    return normalizedPath;
+  }
+
+  const { data, error } = await supabase.storage
+    .from(bucket)
+    .createSignedUrl(normalizedPath, expiresInSeconds);
+
+  if (error) {
+    return '';
+  }
+
+  return String(data?.signedUrl || '').trim();
+}
+
+function isDataUrl(value) {
+  return /^data:/i.test(String(value || '').trim());
+}
+
+async function fetchImageAsDataUrl(imageUrl) {
+  const normalizedUrl = String(imageUrl || '').trim();
+  if (!normalizedUrl) {
+    return '';
+  }
+
+  if (isDataUrl(normalizedUrl)) {
+    return normalizedUrl;
+  }
+
+  try {
+    const response = await fetch(normalizedUrl, {
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      return '';
+    }
+
+    const blob = await response.blob();
+    if (!blob || !blob.size) {
+      return '';
+    }
+
+    return await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result || ''));
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return '';
+  }
+}
+
+function getPdfImageFormat(dataUrl) {
+  const normalized = String(dataUrl || '').trim().toLowerCase();
+  if (normalized.startsWith('data:image/png')) return 'PNG';
+  if (normalized.startsWith('data:image/webp')) return 'WEBP';
+  return 'JPEG';
 }
 
 function getAvatarInitials(nameValue) {
@@ -557,6 +663,41 @@ function PreviewRow({ label, value }) {
   );
 }
 
+function WigPreviewImage({ label, candidates = [] }) {
+  const normalizedCandidates = useMemo(
+    () => (Array.isArray(candidates) ? candidates.filter(Boolean) : []),
+    [candidates],
+  );
+  const candidateKey = useMemo(() => normalizedCandidates.join('|'), [normalizedCandidates]);
+  const [candidateIndex, setCandidateIndex] = useState(0);
+
+  useEffect(() => {
+    setCandidateIndex(0);
+  }, [candidateKey]);
+
+  const currentSrc = normalizedCandidates[candidateIndex] || '';
+
+  return (
+    <div className="rounded-md border border-slate-200 bg-slate-50 p-1.5">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+      {currentSrc ? (
+        <img
+          src={currentSrc}
+          alt={`${label} wig preview`}
+          className="mt-1 h-24 w-full rounded object-cover"
+          onError={() => {
+            setCandidateIndex((prev) => (prev < normalizedCandidates.length - 1 ? prev + 1 : prev));
+          }}
+        />
+      ) : (
+        <div className="mt-1 flex h-24 items-center justify-center rounded border border-dashed border-slate-300 bg-white text-[11px] text-slate-500">
+          No image
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function WigRequestPage({ userProfile }) {
   const { theme } = useTheme();
   const [activeTab, setActiveTab] = useState('new-request');
@@ -566,17 +707,20 @@ export default function WigRequestPage({ userProfile }) {
   const [usersById, setUsersById] = useState({});
   const [userDetailsByUserId, setUserDetailsByUserId] = useState({});
   const [wigRequests, setWigRequests] = useState([]);
+  const [wigSpecifications, setWigSpecifications] = useState([]);
 
   const [form, setForm] = useState(EMPTY_FORM);
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
   const [patientSearchOpen, setPatientSearchOpen] = useState(false);
   const [submittedStatusFilter, setSubmittedStatusFilter] = useState('all');
   const [submittedSearchTerm, setSubmittedSearchTerm] = useState('');
+  const [capSizeFilter, setCapSizeFilter] = useState('all');
 
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [isResolvingHospital, setIsResolvingHospital] = useState(false);
   const [isLoadingPatients, setIsLoadingPatients] = useState(false);
   const [isLoadingSubmitted, setIsLoadingSubmitted] = useState(false);
+  const [isLoadingWigSpecifications, setIsLoadingWigSpecifications] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingPreview, setIsUploadingPreview] = useState(false);
   const [selectedSubmittedRequest, setSelectedSubmittedRequest] = useState(null);
@@ -641,6 +785,23 @@ export default function WigRequestPage({ userProfile }) {
     };
   }, [selectedPatient, usersById, userDetailsByUserId]);
 
+  const selectedRequestedSpecification = useMemo(() => {
+    const targetSpecId = normalizeSpecNumber(form.wigSpecificationId);
+    if (!targetSpecId) {
+      return null;
+    }
+
+    return wigSpecifications.find((row) => normalizeSpecNumber(row.specificationId) === targetSpecId) || null;
+  }, [form.wigSpecificationId, wigSpecifications]);
+
+  const filteredWigSpecifications = useMemo(() => {
+    if (capSizeFilter === 'all') {
+      return wigSpecifications;
+    }
+
+    return wigSpecifications.filter((row) => normalizeCapSizeKey(row.capSize) === capSizeFilter);
+  }, [wigSpecifications, capSizeFilter]);
+
   const filteredPatientOptions = useMemo(() => {
     const query = normalizeSearchText(patientSearchTerm);
 
@@ -687,27 +848,52 @@ export default function WigRequestPage({ userProfile }) {
   }, [patients, patientSearchTerm, userDetailsByUserId]);
 
   const submittedRows = useMemo(() => {
-    return wigRequests.map((requestRow) => {
-      const reqId = Number(requestRow.Req_ID || 0);
+      return wigRequests.map((requestRow) => {
+        const reqId = Number(requestRow.Req_ID || 0);
       const patient = patientById.get(Number(requestRow.Patient_ID)) || null;
       const linkedDetails = patient ? userDetailsByUserId[Number(patient.User_ID || 0)] : null;
+      const rawStatusReason = String(requestRow.Status_Reason || requestRow.status_reason || '').trim();
+      const specialNotesPayload = rawStatusReason.startsWith('SSMETA:')
+        ? parseSpecialNotesPayload(rawStatusReason)
+        : {};
+      const requestedWigId = normalizeSpecNumber(requestRow.Requested_Wig_ID);
+      const requestedSpecRow = requestedWigId
+        ? (wigSpecifications.find((row) => normalizeSpecNumber(row.wigId) === requestedWigId) || null)
+        : null;
 
-      return {
-        reqId,
-        requestId: formatRequestCode(reqId),
-        patient: getPatientFullName(patient, linkedDetails),
+        return {
+          reqId,
+          requestId: formatRequestCode(requestRow.Request_Code || ''),
+          patient: getPatientFullName(patient, linkedDetails),
         medicalCondition: patient?.Medical_Condition || 'N/A',
         requestDate: requestRow.Request_Date,
         updatedAt: requestRow.Updated_At || requestRow.updated_at || requestRow.Request_Date,
         previewPdfUrl: String(requestRow.Pdf_Url || requestRow.Preview_Pdf_Url || '').trim(),
-        statusReason: String(requestRow.Status_Reason || requestRow.status_reason || '').trim(),
+        statusReason: rawStatusReason.startsWith('SSMETA:') ? '' : rawStatusReason,
         status: requestRow.Status || REQUEST_STATUS.pending,
         statusKey: getCanonicalStatusKey(requestRow.Status || REQUEST_STATUS.pending),
         statusLabel: getStatusLabel(requestRow.Status || REQUEST_STATUS.pending),
         rawStatus: requestRow.Status || REQUEST_STATUS.pending,
+          requestSpecId: requestedSpecRow?.specificationId || null,
+          requestSpecWigName: String(requestedSpecRow?.wigName || '').trim() || 'N/A',
+          requestSpecStyle: String(requestedSpecRow?.style || '').trim() || 'N/A',
+          requestSpecColor: String(requestedSpecRow?.color || '').trim() || 'N/A',
+          requestSpecLength: String(requestedSpecRow?.hairLength ?? '').trim() || 'N/A',
+          requestSpecTexture: String(requestedSpecRow?.texture || '').trim() || 'N/A',
+          requestSpecDensity: String(requestedSpecRow?.density || '').trim() || 'N/A',
+          requestSpecCapSize: String(requestedSpecRow?.capSizeLabel || requestedSpecRow?.capSize || '').trim() || 'N/A',
+        requestSpecSpecialNote: String(specialNotesPayload?.specialNoteTemplate || '').trim() || 'N/A',
+        requestSpecFrontImageUrl: requestedSpecRow?.frontImageUrl || '',
+        requestSpecSideImageUrl: requestedSpecRow?.sideImageUrl || '',
+        requestSpecTopImageUrl: requestedSpecRow?.topImageUrl || '',
+        requestSpecBackImageUrl: requestedSpecRow?.backImageUrl || '',
+        requestSpecFrontImageCandidates: requestedSpecRow?.frontImageCandidates || [],
+        requestSpecSideImageCandidates: requestedSpecRow?.sideImageCandidates || [],
+        requestSpecTopImageCandidates: requestedSpecRow?.topImageCandidates || [],
+        requestSpecBackImageCandidates: requestedSpecRow?.backImageCandidates || [],
       };
     });
-  }, [wigRequests, patientById, userDetailsByUserId]);
+  }, [wigRequests, patientById, userDetailsByUserId, wigSpecifications]);
 
   const statusFilteredSubmittedRows = useMemo(() => {
     if (submittedStatusFilter === 'all') {
@@ -730,6 +916,13 @@ export default function WigRequestPage({ userProfile }) {
         row.medicalCondition,
         row.statusLabel,
         row.statusReason,
+        row.requestSpecId,
+        row.requestSpecWigName,
+        row.requestSpecStyle,
+        row.requestSpecColor,
+        row.requestSpecDensity,
+        row.requestSpecTexture,
+        row.requestSpecCapSize,
         formatRequestDateTime(row.requestDate),
       ]
         .map((value) => normalizeSearchText(value))
@@ -744,13 +937,13 @@ export default function WigRequestPage({ userProfile }) {
     const newToday = wigRequests.filter((row) => isSameDay(row.Request_Date)).length;
     const pendingCount = wigRequests.filter((row) => getCanonicalStatusKey(row.Status) === 'pending').length;
     const acceptedAllocatedCount = wigRequests.filter((row) => getCanonicalStatusKey(row.Status) === 'accepted_allocated').length;
-    const inProductionCount = wigRequests.filter((row) => getCanonicalStatusKey(row.Status) === 'in_production').length;
+    const toBeReleaseCount = wigRequests.filter((row) => getCanonicalStatusKey(row.Status) === 'to_be_release').length;
 
     return [
       { label: 'New Today', value: String(newToday) },
       { label: 'Pending', value: String(pendingCount) },
       { label: 'Accepted + Allocated', value: String(acceptedAllocatedCount) },
-      { label: 'In Production', value: String(inProductionCount) },
+      { label: 'To Be Release', value: String(toBeReleaseCount) },
     ];
   }, [wigRequests]);
 
@@ -766,15 +959,26 @@ export default function WigRequestPage({ userProfile }) {
       contactNumber: selectedPatientProfile.contactNumber,
       address: selectedPatientProfile.address,
       medicalCondition: selectedPatientProfile.medicalCondition,
-      stylePreference: form.stylePreference,
-      preferredColor: form.preferredColor,
-      preferredLength: form.preferredLength,
-      hairTexture: form.hairTexture,
-      capSize: form.capSize,
+      wigSpecificationId: selectedRequestedSpecification?.specificationId || '',
+      stylePreference: selectedRequestedSpecification?.style || '',
+      preferredColor: selectedRequestedSpecification?.color || '',
+      preferredLength: selectedRequestedSpecification?.hairLength ?? '',
+      hairTexture: selectedRequestedSpecification?.texture || '',
+      hairDensity: selectedRequestedSpecification?.density || '',
+      capSize: selectedRequestedSpecification?.capSizeLabel || selectedRequestedSpecification?.capSize || '',
+      wigName: selectedRequestedSpecification?.wigName || '',
+      requestSpecFrontImageUrl: selectedRequestedSpecification?.frontImageUrl || '',
+      requestSpecSideImageUrl: selectedRequestedSpecification?.sideImageUrl || '',
+      requestSpecTopImageUrl: selectedRequestedSpecification?.topImageUrl || '',
+      requestSpecBackImageUrl: selectedRequestedSpecification?.backImageUrl || '',
+      requestSpecFrontImageCandidates: selectedRequestedSpecification?.frontImageCandidates || [],
+      requestSpecSideImageCandidates: selectedRequestedSpecification?.sideImageCandidates || [],
+      requestSpecTopImageCandidates: selectedRequestedSpecification?.topImageCandidates || [],
+      requestSpecBackImageCandidates: selectedRequestedSpecification?.backImageCandidates || [],
       specialNote: form.specialNoteTemplate,
       statusOnSubmit: REQUEST_STATUS.pending,
     };
-  }, [hospitalId, selectedPatientProfile, form]);
+  }, [hospitalId, selectedPatientProfile, selectedRequestedSpecification, form.specialNoteTemplate]);
 
   const selectedSubmittedRequestPreviewUrl = useMemo(() => {
     if (!selectedSubmittedRequest) {
@@ -796,6 +1000,35 @@ export default function WigRequestPage({ userProfile }) {
 
   const previewBrandName = String(theme?.brandName || 'StrandShare').trim() || 'StrandShare';
   const previewLogoUrl = String(theme?.logoImage || '').trim();
+  const previewLogoPath = String(theme?.logoImagePath || '').trim();
+  const previewLogoCandidates = useMemo(() => {
+    const nextCandidates = [];
+    const pushCandidate = (value) => {
+      const normalized = String(value || '').trim();
+      if (!normalized || nextCandidates.includes(normalized)) {
+        return;
+      }
+      nextCandidates.push(normalized);
+    };
+
+    pushCandidate(previewLogoUrl);
+
+    if (previewLogoPath) {
+      pushCandidate(resolveStoragePublicUrl(BRANDING_BUCKET, previewLogoPath));
+    }
+
+    if (
+      previewLogoUrl
+      && !isAbsoluteUrl(previewLogoUrl)
+      && !isDataUrl(previewLogoUrl)
+      && !String(previewLogoUrl).startsWith('blob:')
+    ) {
+      pushCandidate(resolveStoragePublicUrl(BRANDING_BUCKET, previewLogoUrl));
+    }
+
+    return nextCandidates;
+  }, [previewLogoUrl, previewLogoPath]);
+  const previewLogoResolvedUrl = previewLogoCandidates[0] || '';
 
   const resolveAssignedHospital = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -969,14 +1202,167 @@ export default function WigRequestPage({ userProfile }) {
 
       if (requestError) throw requestError;
 
-      const requests = requestRows || [];
-      setWigRequests(requests);
+      setWigRequests(requestRows || []);
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to load submitted wig requests.' });
     } finally {
       setIsLoadingSubmitted(false);
     }
   }, [hospitalId]);
+
+  const loadWigSpecifications = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      setWigSpecifications([]);
+      return;
+    }
+
+    try {
+      setIsLoadingWigSpecifications(true);
+
+      const [specRes, wigsRes, filtersRes] = await Promise.all([
+        supabase
+          .from(WIG_SPECS_TABLE)
+          .select('Wig_Specification_ID, Wig_ID, Hair_Length, Hair_Color, Hair_Texture, Hair_Density, Cap_Size, Style')
+          .order('Wig_Specification_ID', { ascending: false }),
+        supabase
+          .from(WIGS_TABLE)
+          .select('Wig_ID, Wig_Code, Wig_Name, Wig_Status, Stock_Count'),
+        supabase
+          .from(WIG_FILTERS_TABLE)
+          .select('Wig_ID, Is_Active, Status, Source_Front_Path, Source_Side_Path, Source_Top_Path, Source_Back_Path, Updated_At')
+          .order('Updated_At', { ascending: false }),
+      ]);
+
+      if (specRes.error) throw specRes.error;
+      if (wigsRes.error) throw wigsRes.error;
+      if (filtersRes.error) throw filtersRes.error;
+
+      const wigById = new Map(
+        (wigsRes.data || [])
+          .map((row) => [Number(row.Wig_ID || 0), row])
+          .filter(([wigId]) => wigId > 0),
+      );
+
+      const filterByWigId = new Map();
+      (filtersRes.data || []).forEach((row) => {
+        const wigId = Number(row.Wig_ID || 0);
+        if (!wigId || filterByWigId.has(wigId)) {
+          return;
+        }
+
+        const statusKey = normalizeStatusKey(row.Status);
+        if (row.Is_Active || statusKey === 'approved' || statusKey === 'pendingreview') {
+          filterByWigId.set(wigId, row);
+        }
+      });
+
+      const sourcePathSet = new Set();
+      (filtersRes.data || []).forEach((row) => {
+        ['Source_Front_Path', 'Source_Side_Path', 'Source_Top_Path', 'Source_Back_Path'].forEach((col) => {
+          const pathValue = String(row?.[col] || '').trim();
+          if (pathValue) {
+            sourcePathSet.add(pathValue);
+          }
+        });
+      });
+
+      const signedSourceUrlByPath = new Map();
+      await Promise.all(
+        Array.from(sourcePathSet).map(async (pathValue) => {
+          const signedUrl = await resolveStorageSignedUrl(WIG_AI_SOURCES_BUCKET, pathValue, 3600);
+          if (signedUrl) {
+            signedSourceUrlByPath.set(pathValue, signedUrl);
+            return;
+          }
+          const legacySignedUrl = await resolveStorageSignedUrl(WIG_AI_FILTERS_BUCKET, pathValue, 3600);
+          if (legacySignedUrl) {
+            signedSourceUrlByPath.set(pathValue, legacySignedUrl);
+          }
+        }),
+      );
+
+      const specificationRows = [];
+      for (const specRow of (specRes.data || [])) {
+        const wigId = Number(specRow.Wig_ID || 0);
+        const wigRow = wigById.get(wigId) || null;
+        const filterRow = filterByWigId.get(wigId) || null;
+
+        const stockCount = Number(wigRow?.Stock_Count || 0);
+        const wigStatus = String(wigRow?.Wig_Status || '').trim();
+        const isAvailable = normalizeStatusKey(wigStatus) === 'available' && stockCount > 0;
+
+        const sourceFrontPath = String(filterRow?.Source_Front_Path || '').trim();
+        const sourceSidePath = String(filterRow?.Source_Side_Path || '').trim();
+        const sourceTopPath = String(filterRow?.Source_Top_Path || '').trim();
+        const sourceBackPath = String(filterRow?.Source_Back_Path || '').trim();
+        const capSizeCanonical = toCanonicalCapSize(specRow.Cap_Size);
+        const capSizeValue = capSizeCanonical || String(specRow.Cap_Size || '').trim();
+
+        const frontImageCandidates = [
+          signedSourceUrlByPath.get(sourceFrontPath),
+          resolveStoragePublicUrl(WIG_AI_FILTERS_BUCKET, sourceFrontPath),
+        ].filter(Boolean);
+
+        const sideImageCandidates = [
+          signedSourceUrlByPath.get(sourceSidePath),
+          resolveStoragePublicUrl(WIG_AI_FILTERS_BUCKET, sourceSidePath),
+        ].filter(Boolean);
+
+        const topImageCandidates = [
+          signedSourceUrlByPath.get(sourceTopPath),
+          resolveStoragePublicUrl(WIG_AI_FILTERS_BUCKET, sourceTopPath),
+        ].filter(Boolean);
+
+        const backImageCandidates = [
+          signedSourceUrlByPath.get(sourceBackPath),
+          resolveStoragePublicUrl(WIG_AI_FILTERS_BUCKET, sourceBackPath),
+        ].filter(Boolean);
+
+        const row = {
+          specificationId: Number(specRow.Wig_Specification_ID || 0),
+          wigId,
+          wigCode: String(wigRow?.Wig_Code || '').trim(),
+          wigName: String(wigRow?.Wig_Name || '').trim(),
+          wigStatus: wigStatus || 'N/A',
+          stockCount,
+          isAvailable,
+          style: String(specRow.Style || '').trim(),
+          color: String(specRow.Hair_Color || '').trim(),
+          texture: String(specRow.Hair_Texture || '').trim(),
+          density: String(specRow.Hair_Density || '').trim(),
+          capSize: capSizeValue,
+          capSizeLabel: getCapSizeLabel(capSizeValue) || capSizeValue,
+          hairLength: specRow.Hair_Length,
+          frontImageCandidates,
+          sideImageCandidates,
+          topImageCandidates,
+          backImageCandidates,
+          frontImageUrl: frontImageCandidates[0] || '',
+          sideImageUrl: sideImageCandidates[0] || '',
+          topImageUrl: topImageCandidates[0] || '',
+          backImageUrl: backImageCandidates[0] || '',
+        };
+
+        if (normalizeSpecNumber(row.specificationId)) {
+          specificationRows.push(row);
+        }
+      }
+
+      specificationRows.sort((a, b) => {
+        if (a.isAvailable !== b.isAvailable) {
+          return a.isAvailable ? -1 : 1;
+        }
+        return `${a.wigName} ${a.color} ${a.capSize}`.localeCompare(`${b.wigName} ${b.color} ${b.capSize}`);
+      });
+
+      setWigSpecifications(specificationRows);
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to load available wig specifications.' });
+      setWigSpecifications([]);
+    } finally {
+      setIsLoadingWigSpecifications(false);
+    }
+  }, []);
 
   useEffect(() => {
     resolveAssignedHospital();
@@ -988,12 +1374,40 @@ export default function WigRequestPage({ userProfile }) {
       setUsersById({});
       setUserDetailsByUserId({});
       setWigRequests([]);
+      setWigSpecifications([]);
       return;
     }
 
     fetchPatients();
     fetchSubmittedRequests();
-  }, [hospitalId, fetchPatients, fetchSubmittedRequests]);
+    loadWigSpecifications();
+  }, [hospitalId, fetchPatients, fetchSubmittedRequests, loadWigSpecifications]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase || !hospitalId) {
+      return undefined;
+    }
+
+    const channel = supabase
+      .channel(`hrep-wig-requests-${hospitalId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: WIG_REQUESTS_TABLE,
+          filter: `Hospital_ID=eq.${hospitalId}`,
+        },
+        () => {
+          void fetchSubmittedRequests();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [hospitalId, fetchSubmittedRequests]);
 
   useEffect(() => {
     const handlePointerDown = (event) => {
@@ -1068,19 +1482,21 @@ export default function WigRequestPage({ userProfile }) {
     return `wig_request_preview_${reqPart}_${patientPart}_${datePart}.pdf`;
   }, [selectedPatientProfile.fullName, form.patientCode]);
 
-  const buildPreviewPdfDocument = useCallback(() => {
+  const buildPreviewPdfDocument = useCallback(async () => {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
     const margin = 16;
     const contentWidth = pageWidth - margin * 2;
-    let y = 18;
+    const pageBottom = pageHeight - margin;
+    let y = 16;
 
     const ensureSpace = (spaceRequired = 8) => {
-      if (y + spaceRequired <= 280) {
+      if (y + spaceRequired <= pageBottom) {
         return;
       }
       doc.addPage();
-      y = 18;
+      y = 16;
     };
 
     const addDivider = () => {
@@ -1092,9 +1508,12 @@ export default function WigRequestPage({ userProfile }) {
 
     const addSectionTitle = (title) => {
       ensureSpace(8);
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(margin, y - 4.5, contentWidth, 7.5, 1.2, 1.2, 'F');
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(11);
-      doc.text(String(title || ''), margin, y);
+      doc.setTextColor(30, 41, 59);
+      doc.setFontSize(10.5);
+      doc.text(String(title || ''), margin + 1.4, y);
       y += 5;
     };
 
@@ -1105,35 +1524,76 @@ export default function WigRequestPage({ userProfile }) {
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9.5);
+      doc.setTextColor(15, 23, 42);
       doc.text(`${safeLabel}:`, margin, y);
 
       doc.setFont('helvetica', 'normal');
+      doc.setTextColor(30, 41, 59);
       doc.text(wrappedValue, margin + 42, y);
       y += Math.max(5, wrappedValue.length * 4.7);
     };
 
-    doc.setFillColor(15, 23, 42);
-    doc.roundedRect(margin, y - 4.5, 9, 9, 1.8, 1.8, 'F');
-    doc.setTextColor(255, 255, 255);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.5);
-    doc.text(getAvatarInitials(previewBrandName), margin + 2, y + 1.2);
+    const tryAddImage = (dataUrl, x, imageY, width, height) => {
+      if (!dataUrl) return false;
+      try {
+        doc.addImage(dataUrl, getPdfImageFormat(dataUrl), x, imageY, width, height);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const resolveFirstDataUrl = async (candidates = []) => {
+      const uniqueCandidates = Array.from(
+        new Set(
+          (Array.isArray(candidates) ? candidates : [candidates])
+            .map((item) => String(item || '').trim())
+            .filter(Boolean),
+        ),
+      );
+
+      for (const candidate of uniqueCandidates) {
+        const dataUrl = await fetchImageAsDataUrl(candidate);
+        if (dataUrl) {
+          return dataUrl;
+        }
+      }
+
+      return '';
+    };
+
+    const logoDataUrl = await resolveFirstDataUrl(previewLogoCandidates);
+
+    ensureSpace(30);
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(margin, y, contentWidth, 23, 2.2, 2.2, 'FD');
+
+    const logoX = margin + 3;
+    const logoY = y + 3;
+    if (!tryAddImage(logoDataUrl, logoX, logoY, 10, 10)) {
+      doc.setFillColor(15, 23, 42);
+      doc.roundedRect(logoX, logoY, 10, 10, 1.8, 1.8, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.text(getAvatarInitials(previewBrandName), logoX + 2, logoY + 6.2);
+    }
 
     doc.setTextColor(15, 23, 42);
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(13);
-    doc.text(previewBrandName, margin + 12, y + 1.5);
-    y += 7;
+    doc.setFontSize(12.5);
+    doc.text(previewBrandName, margin + 16, y + 7.4);
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(14);
-    doc.text('Wig Request Preview', margin, y);
-    y += 5;
+    doc.text('Wig Request Preview', margin + 16, y + 14.1);
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-    doc.text(`Generated: ${previewPayload.generatedAt}`, margin, y);
-    y += 7;
+    doc.setFontSize(9.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`Generated: ${previewPayload.generatedAt}`, margin + 16, y + 19.2);
+    y += 28;
 
     addDivider();
 
@@ -1150,12 +1610,85 @@ export default function WigRequestPage({ userProfile }) {
     addDivider();
 
     addSectionTitle('Wig Specifications');
+    addField('Wig Specification ID', previewPayload.wigSpecificationId);
+    addField('Wig Name', previewPayload.wigName);
     addField('Style Preference', previewPayload.stylePreference);
     addField('Preferred Color', previewPayload.preferredColor);
     addField('Preferred Length', previewPayload.preferredLength);
     addField('Hair Texture', previewPayload.hairTexture);
+    addField('Hair Density', previewPayload.hairDensity);
     addField('Cap Size', previewPayload.capSize);
     addField('Special Note', previewPayload.specialNote);
+
+    addDivider();
+
+    const wigImageSlots = [
+      {
+        label: 'Front',
+        candidates: [previewPayload.requestSpecFrontImageUrl, ...(previewPayload.requestSpecFrontImageCandidates || [])],
+      },
+      {
+        label: 'Side',
+        candidates: [previewPayload.requestSpecSideImageUrl, ...(previewPayload.requestSpecSideImageCandidates || [])],
+      },
+      {
+        label: 'Top',
+        candidates: [previewPayload.requestSpecTopImageUrl, ...(previewPayload.requestSpecTopImageCandidates || [])],
+      },
+      {
+        label: 'Back',
+        candidates: [previewPayload.requestSpecBackImageUrl, ...(previewPayload.requestSpecBackImageCandidates || [])],
+      },
+    ];
+
+    const wigImageData = await Promise.all(
+      wigImageSlots.map(async (slot) => ({
+        ...slot,
+        dataUrl: await resolveFirstDataUrl(slot.candidates),
+      })),
+    );
+
+    addSectionTitle('Requested Wig Preview');
+    const cardGap = 4;
+    const cardWidth = (contentWidth - cardGap) / 2;
+    const cardHeight = 50;
+
+    for (let idx = 0; idx < wigImageData.length; idx += 2) {
+      const rowSlots = wigImageData.slice(idx, idx + 2);
+      ensureSpace(cardHeight + 4);
+
+      for (let slotIndex = 0; slotIndex < rowSlots.length; slotIndex += 1) {
+        const slot = rowSlots[slotIndex];
+        const cardX = margin + slotIndex * (cardWidth + cardGap);
+        const cardY = y;
+
+        doc.setDrawColor(226, 232, 240);
+        doc.setFillColor(255, 255, 255);
+        doc.roundedRect(cardX, cardY, cardWidth, cardHeight, 1.5, 1.5, 'FD');
+
+        doc.setTextColor(71, 85, 105);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.text(slot.label, cardX + 2.5, cardY + 5);
+
+        const imageX = cardX + 2.5;
+        const imageY = cardY + 7;
+        const imageW = cardWidth - 5;
+        const imageH = cardHeight - 10;
+
+        if (!tryAddImage(slot.dataUrl, imageX, imageY, imageW, imageH)) {
+          doc.setDrawColor(203, 213, 225);
+          doc.setFillColor(248, 250, 252);
+          doc.roundedRect(imageX, imageY, imageW, imageH, 1, 1, 'FD');
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(8.5);
+          doc.setTextColor(148, 163, 184);
+          doc.text('No image available', imageX + 7, imageY + imageH / 2);
+        }
+      }
+
+      y += cardHeight + 4;
+    }
 
     addDivider();
 
@@ -1164,7 +1697,7 @@ export default function WigRequestPage({ userProfile }) {
     addField('Initial Status', previewPayload.statusOnSubmit);
 
     return doc;
-  }, [previewPayload, previewBrandName]);
+  }, [previewPayload, previewBrandName, previewLogoCandidates]);
 
   const uploadPreviewPdfForRequest = useCallback(async (reqIdValue) => {
     if (!supabase) {
@@ -1186,7 +1719,7 @@ export default function WigRequestPage({ userProfile }) {
       throw new Error('Unable to resolve your authenticated account. Please sign in again.');
     }
 
-    const doc = buildPreviewPdfDocument();
+    const doc = await buildPreviewPdfDocument();
     const fileName = buildPreviewFileName(safeReqId);
     const filePath = `${authUid}/preview-pdf/${Date.now()}_${fileName}`;
 
@@ -1233,6 +1766,15 @@ export default function WigRequestPage({ userProfile }) {
       return;
     }
 
+    const selectedSpecId = normalizeSpecNumber(form.wigSpecificationId);
+    const selectedSpec = selectedSpecId
+      ? (wigSpecifications.find((row) => normalizeSpecNumber(row.specificationId) === selectedSpecId) || null)
+      : null;
+    if (!selectedSpec) {
+      setNotice({ kind: 'error', text: 'Please select a target wig specification.' });
+      return;
+    }
+
     const requestedBy = Number(userProfile?.user_id || 0) || null;
 
     try {
@@ -1244,6 +1786,28 @@ export default function WigRequestPage({ userProfile }) {
         Patient_ID: selectedPatientId,
         Status: REQUEST_STATUS.pending,
         Requested_By: requestedBy,
+        Requested_Wig_ID: Number(selectedSpec.wigId || 0) || null,
+      };
+
+      const specialNotesPayload = serializeSpecialNotes({
+        specialNoteTemplate: String(form.specialNoteTemplate || '').trim(),
+        wigSpecificationId: selectedSpecId,
+        requestedWigId: Number(selectedSpec.wigId || 0) || null,
+        wigCode: String(selectedSpec.wigCode || '').trim() || null,
+      });
+
+      let newReqId = 0;
+
+      const rpcPayload = {
+        p_hospital_id: Number(hospitalId),
+        p_patient_id: selectedPatientId,
+        p_wig_specification_id: selectedSpecId,
+        p_special_notes: specialNotesPayload || null,
+        p_preferred_color: String(selectedSpec.color || '').trim() || null,
+        p_preferred_length: String(selectedSpec.hairLength ?? '').trim() || null,
+        p_hair_texture: String(selectedSpec.texture || '').trim() || null,
+        p_cap_size: toCanonicalCapSize(selectedSpec.capSize) || null,
+        p_style_preference: String(selectedSpec.style || '').trim() || null,
       };
 
       const { data: insertedRequest, error: requestError } = await supabase
@@ -1253,38 +1817,28 @@ export default function WigRequestPage({ userProfile }) {
         .maybeSingle();
 
       if (requestError) {
-        throw requestError;
+        if (isRlsBlockedError(requestError.message)) {
+          const rpcResult = await supabase.rpc('create_wig_request_with_spec', rpcPayload);
+          if (rpcResult.error) {
+            throw rpcResult.error;
+          }
+
+          const rpcReqId = Number(rpcResult.data || 0);
+          if (!rpcReqId) {
+            throw new Error('RPC submit completed without returning Req_ID.');
+          }
+
+          newReqId = rpcReqId;
+        } else {
+          throw requestError;
+        }
+      } else {
+        newReqId = Number(insertedRequest?.Req_ID || 0);
       }
 
-      const newReqId = Number(insertedRequest?.Req_ID || 0);
       if (!newReqId) {
         throw new Error('Unable to resolve the saved wig request ID.');
       }
-
-      const specialNotesPayload = serializeSpecialNotes({
-        specialNoteTemplate: form.specialNoteTemplate,
-      });
-
-      const specsPayload = {
-        Req_ID: newReqId,
-        Preferred_Color: String(form.preferredColor || '').trim() || null,
-        Preferred_Length: String(form.preferredLength || '').trim() || null,
-        Hair_Texture: String(form.hairTexture || '').trim() || null,
-        Cap_Size: String(form.capSize || '').trim() || null,
-        Style_Preference: String(form.stylePreference || '').trim() || null,
-        Special_Notes: specialNotesPayload || null,
-      };
-
-      const { error: specError } = await supabase
-        .from(WIG_REQUEST_SPECS_TABLE)
-        .insert(specsPayload);
-
-      if (specError) {
-        await supabase.from(WIG_REQUESTS_TABLE).delete().eq('Req_ID', newReqId);
-        throw specError;
-      }
-
-      let previewUploadWarning = '';
 
       try {
         setIsUploadingPreview(true);
@@ -1320,21 +1874,18 @@ export default function WigRequestPage({ userProfile }) {
             }
           }
         }
-      } catch (previewError) {
-        previewUploadWarning = mapPreviewUploadError(previewError.message);
+      } catch (_previewError) {
+        // Non-blocking: request row is already saved.
       } finally {
         setIsUploadingPreview(false);
       }
 
       setNotice({
         kind: 'success',
-        text: previewUploadWarning
-          ? `Wig request submitted successfully, but preview upload failed: ${previewUploadWarning}`
-          : 'Wig request submitted successfully. Preview PDF was uploaded to Supabase bucket.',
+        text: 'Wig request submitted successfully.',
       });
       resetForm();
-      setActiveTab('submitted');
-      await fetchSubmittedRequests();
+      void fetchSubmittedRequests();
     } catch (error) {
       setNotice({ kind: 'error', text: mapWigRequestInsertError(error.message) });
     } finally {
@@ -1357,7 +1908,7 @@ export default function WigRequestPage({ userProfile }) {
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">H-Representative Workflow</p>
         <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900 md:text-3xl">Wig Request Form</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Compact layout with live patient photo and right-side PDF preview that auto-uploads on submit.
+          Select patient, choose one existing wig specification, then submit a request with auto-generated PDF preview.
         </p>
       </div>
 
@@ -1532,81 +2083,138 @@ export default function WigRequestPage({ userProfile }) {
 
                 <div className="md:col-span-2 border-t border-slate-200 pt-2">
                   <p className="text-sm font-semibold text-slate-800">Request Specifications</p>
-                  <p className="text-xs text-slate-500">Choose available options, then add a special note as a list or comment.</p>
+                  <p className="text-xs text-slate-500">Choose one existing wig specification only. Staff cannot edit this after submission.</p>
+                </div>
+
+                <div className="md:col-span-2">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <label className={LABEL_CLASS}>Target Wig Specification</label>
+                    <button
+                      type="button"
+                      onClick={() => { void loadWigSpecifications(); }}
+                      disabled={isLoadingWigSpecifications || isSubmitting || isUploadingPreview}
+                      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-60"
+                    >
+                      {isLoadingWigSpecifications ? 'Refreshing...' : 'Refresh list'}
+                    </button>
+                  </div>
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Cap size filter</span>
+                    <select
+                      value={capSizeFilter}
+                      onChange={(event) => setCapSizeFilter(event.target.value)}
+                      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+                      disabled={isLoadingWigSpecifications || isSubmitting || isUploadingPreview}
+                    >
+                      <option value="all">All cap sizes</option>
+                      {CAP_SIZE_OPTIONS.map((size) => (
+                        <option key={size.value} value={normalizeCapSizeKey(size.value)}>{size.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <select
+                    name="wigSpecificationId"
+                    value={form.wigSpecificationId}
+                    onChange={handleFieldChange}
+                    className={INPUT_CLASS}
+                    disabled={isLoadingWigSpecifications || isSubmitting || isUploadingPreview}
+                  >
+                    <option value="">
+                      {isLoadingWigSpecifications ? 'Loading specifications...' : 'Select wig specification'}
+                    </option>
+                    {filteredWigSpecifications.map((specRow) => (
+                      <option key={specRow.specificationId} value={String(specRow.specificationId)}>
+                        Spec #{specRow.specificationId} | {specRow.wigCode || `Wig #${specRow.wigId}`} | {specRow.style || 'No style'} | {specRow.capSizeLabel || specRow.capSize || 'No cap'}
+                      </option>
+                    ))}
+                  </select>
+                  {!isLoadingWigSpecifications && wigSpecifications.length === 0 && (
+                    <p className="mt-1 text-xs text-amber-700">
+                      No wig specification records found. Ask specialist to create wig specifications first.
+                    </p>
+                  )}
                 </div>
 
                 <div>
-                  <label className={LABEL_CLASS}>Style Preference</label>
-                  <select
-                    name="stylePreference"
-                    value={form.stylePreference}
-                    onChange={handleFieldChange}
-                    className={INPUT_CLASS}
-                  >
-                    {styleOptions.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
+                  <label className={LABEL_CLASS}>Style</label>
+                  <input
+                    value={selectedRequestedSpecification?.style || ''}
+                    className={READONLY_INPUT_CLASS}
+                    readOnly
+                    disabled
+                  />
                 </div>
 
                 <div>
-                  <label className={LABEL_CLASS}>Preferred Color</label>
-                  <select
-                    name="preferredColor"
-                    value={form.preferredColor}
-                    onChange={handleFieldChange}
-                    className={INPUT_CLASS}
-                  >
-                    <option value="">Select preferred color</option>
-                    {colorOptions.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
+                  <label className={LABEL_CLASS}>Color</label>
+                  <input
+                    value={selectedRequestedSpecification?.color || ''}
+                    className={READONLY_INPUT_CLASS}
+                    readOnly
+                    disabled
+                  />
                 </div>
 
                 <div>
-                  <label className={LABEL_CLASS}>Preferred Length</label>
-                  <select
-                    name="preferredLength"
-                    value={form.preferredLength}
-                    onChange={handleFieldChange}
-                    className={INPUT_CLASS}
-                  >
-                    <option value="">Select preferred length</option>
-                    {lengthOptions.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
+                  <label className={LABEL_CLASS}>Length (inches)</label>
+                  <input
+                    value={selectedRequestedSpecification?.hairLength ?? ''}
+                    className={READONLY_INPUT_CLASS}
+                    readOnly
+                    disabled
+                  />
                 </div>
 
                 <div>
-                  <label className={LABEL_CLASS}>Hair Texture</label>
-                  <select
-                    name="hairTexture"
-                    value={form.hairTexture}
-                    onChange={handleFieldChange}
-                    className={INPUT_CLASS}
-                  >
-                    <option value="">Select hair texture</option>
-                    {textureOptions.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
+                  <label className={LABEL_CLASS}>Texture</label>
+                  <input
+                    value={selectedRequestedSpecification?.texture || ''}
+                    className={READONLY_INPUT_CLASS}
+                    readOnly
+                    disabled
+                  />
+                </div>
+
+                <div>
+                  <label className={LABEL_CLASS}>Density</label>
+                  <input
+                    value={selectedRequestedSpecification?.density || ''}
+                    className={READONLY_INPUT_CLASS}
+                    readOnly
+                    disabled
+                  />
                 </div>
 
                 <div>
                   <label className={LABEL_CLASS}>Cap Size</label>
-                  <select
-                    name="capSize"
-                    value={form.capSize}
-                    onChange={handleFieldChange}
-                    className={INPUT_CLASS}
-                  >
-                    <option value="">Select cap size</option>
-                    {capSizeOptions.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
+                  <input
+                    value={selectedRequestedSpecification?.capSizeLabel || selectedRequestedSpecification?.capSize || ''}
+                    className={READONLY_INPUT_CLASS}
+                    readOnly
+                    disabled
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className={LABEL_CLASS}>Selected Wig Preview</label>
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                    <WigPreviewImage
+                      label="Front"
+                      candidates={selectedRequestedSpecification?.frontImageCandidates || []}
+                    />
+                    <WigPreviewImage
+                      label="Side"
+                      candidates={selectedRequestedSpecification?.sideImageCandidates || []}
+                    />
+                    <WigPreviewImage
+                      label="Top"
+                      candidates={selectedRequestedSpecification?.topImageCandidates || []}
+                    />
+                    <WigPreviewImage
+                      label="Back"
+                      candidates={selectedRequestedSpecification?.backImageCandidates || []}
+                    />
+                  </div>
                 </div>
 
                 <div className="md:col-span-2">
@@ -1634,7 +2242,14 @@ export default function WigRequestPage({ userProfile }) {
 
                 <button
                   type="submit"
-                  disabled={isSubmitting || isLoadingPatients || isResolvingHospital || isUploadingPreview}
+                  disabled={
+                    isSubmitting
+                    || isLoadingPatients
+                    || isResolvingHospital
+                    || isUploadingPreview
+                    || !Number(form.patientId || 0)
+                    || !normalizeSpecNumber(form.wigSpecificationId)
+                  }
                   className="rounded-lg bg-slate-900 px-4 py-1.5 text-sm font-semibold text-white disabled:opacity-60"
                 >
                   {isSubmitting || isUploadingPreview ? 'Submitting...' : 'Submit Request'}
@@ -1658,9 +2273,9 @@ export default function WigRequestPage({ userProfile }) {
 
                 <div className="rounded-lg border border-slate-300 bg-white p-3 shadow-sm">
                   <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
-                    {previewLogoUrl ? (
+                    {previewLogoResolvedUrl ? (
                       <img
-                        src={previewLogoUrl}
+                        src={previewLogoResolvedUrl}
                         alt={`${previewBrandName} logo`}
                         className="h-9 w-9 rounded-md border border-slate-200 object-cover"
                       />
@@ -1699,18 +2314,19 @@ export default function WigRequestPage({ userProfile }) {
                     <PreviewRow label="Medical Condition" value={selectedPatientProfile.medicalCondition} />
 
                     <p className="pt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Request Specifications</p>
-                    <PreviewRow label="Style" value={form.stylePreference} />
-                    <PreviewRow label="Color" value={form.preferredColor} />
-                    <PreviewRow label="Length" value={form.preferredLength} />
-                    <PreviewRow label="Texture" value={form.hairTexture} />
-                    <PreviewRow label="Cap Size" value={form.capSize} />
+                    <PreviewRow label="Spec ID" value={selectedRequestedSpecification?.specificationId || ''} />
+                    <PreviewRow label="Style" value={selectedRequestedSpecification?.style || ''} />
+                    <PreviewRow label="Color" value={selectedRequestedSpecification?.color || ''} />
+                    <PreviewRow label="Length" value={selectedRequestedSpecification?.hairLength ?? ''} />
+                    <PreviewRow label="Texture" value={selectedRequestedSpecification?.texture || ''} />
+                    <PreviewRow label="Cap Size" value={selectedRequestedSpecification?.capSizeLabel || selectedRequestedSpecification?.capSize || ''} />
                     <PreviewRow label="Special Note" value={form.specialNoteTemplate} />
                     <PreviewRow label="Status" value={REQUEST_STATUS.pending} />
                   </div>
                 </div>
 
                 <div className="mt-3 rounded-lg border border-slate-300 bg-slate-100 px-2.5 py-2 text-xs text-slate-600">
-                  Preview PDF is automatically uploaded to Supabase when you submit this request.
+                  Preview PDF is automatically generated when you submit this request.
                 </div>
               </div>
             </aside>
@@ -1843,6 +2459,42 @@ export default function WigRequestPage({ userProfile }) {
                     <span className="font-semibold text-slate-900">Status Reason:</span> {selectedSubmittedRequest.statusReason}
                   </p>
                 )}
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <p className="text-sm font-semibold text-slate-900">Requested Wig Preference</p>
+                <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                  <p><span className="font-semibold text-slate-900">Spec ID:</span> {selectedSubmittedRequest.requestSpecId || 'N/A'}</p>
+                  <p><span className="font-semibold text-slate-900">Wig Name:</span> {selectedSubmittedRequest.requestSpecWigName}</p>
+                  <p><span className="font-semibold text-slate-900">Color:</span> {selectedSubmittedRequest.requestSpecColor}</p>
+                  <p><span className="font-semibold text-slate-900">Length:</span> {selectedSubmittedRequest.requestSpecLength}</p>
+                  <p><span className="font-semibold text-slate-900">Density:</span> {selectedSubmittedRequest.requestSpecDensity}</p>
+                  <p><span className="font-semibold text-slate-900">Style:</span> {selectedSubmittedRequest.requestSpecStyle}</p>
+                  <p><span className="font-semibold text-slate-900">Texture:</span> {selectedSubmittedRequest.requestSpecTexture}</p>
+                  <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedSubmittedRequest.requestSpecCapSize}</p>
+                </div>
+                <p className="mt-2 text-sm text-slate-700">
+                  <span className="font-semibold text-slate-900">Special Note:</span> {selectedSubmittedRequest.requestSpecSpecialNote}
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+                  {[
+                    ['Front', selectedSubmittedRequest.requestSpecFrontImageUrl],
+                    ['Side', selectedSubmittedRequest.requestSpecSideImageUrl],
+                    ['Top', selectedSubmittedRequest.requestSpecTopImageUrl],
+                    ['Back', selectedSubmittedRequest.requestSpecBackImageUrl],
+                  ].map(([label, imageUrl]) => (
+                    <div key={label} className="rounded-md border border-slate-200 bg-slate-50 p-1.5">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+                      {imageUrl ? (
+                        <img src={imageUrl} alt={`${label} requested wig`} className="mt-1 h-24 w-full rounded object-cover" />
+                      ) : (
+                        <div className="mt-1 flex h-24 items-center justify-center rounded border border-dashed border-slate-300 bg-white text-[11px] text-slate-500">
+                          No image
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
 
               {selectedSubmittedRequestJourney && (

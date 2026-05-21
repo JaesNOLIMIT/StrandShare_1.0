@@ -36,7 +36,11 @@ const TABS = [
 
 const TEXTURE_OPTIONS = ['Straight', 'Wavy', 'Curly', 'Coily'];
 const COLOR_OPTIONS = ['Black', 'Dark Brown', 'Light Brown', 'Auburn', 'Blonde', 'Grey'];
-const CAP_SIZE_OPTIONS = ['XS', 'S', 'M', 'L', 'XL'];
+const CAP_SIZE_OPTIONS = [
+  { value: 'Small', label: 'Small (21-21.5 inches)' },
+  { value: 'Medium', label: 'Medium (22-22.5 inches)' },
+  { value: 'Large', label: 'Large (23-23.5 inches)' },
+];
 const WIG_STATUS_OPTIONS = ['In Production', 'Ready for Release', 'Wig Allocated', 'Releasing', 'Released'];
 
 function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
@@ -292,7 +296,7 @@ export default function UploadWigStocksPage({ userProfile }) {
   }, []);
 
   const handleSelectBundle = useCallback(async (bundle) => {
-    const code = bundle.Bundle_Waybill_Code || `WB-${bundle.Bundle_ID}`;
+    const code = bundle.Bundle_Waybill_Code || `WB${String(Number(bundle.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`;
     setScannedBundle(bundle);
     await loadBundleMembers(bundle.Bundle_ID);
     setCameraStatus({
@@ -306,7 +310,7 @@ export default function UploadWigStocksPage({ userProfile }) {
     isScanProcessingRef.current = true;
     try {
       const parsed = parseBundleWaybillQrPayload(decodedText);
-      if (!parsed || (!parsed.bundleId && !parsed.bundleWaybillCode && !parsed.submissionCode)) {
+      if (!parsed || (!parsed.bundleId && !parsed.bundleWaybillCode)) {
         setCameraStatus({ tone: 'error', message: 'Scan did not match a wig bundle waybill.' });
         return;
       }
@@ -322,17 +326,17 @@ export default function UploadWigStocksPage({ userProfile }) {
         lookup = await supabase
           .from(HAIR_SUBMISSION_BUNDLES_TABLE)
           .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At')
-          .eq('Bundle_Waybill_Code', parsed.bundleWaybillCode || parsed.submissionCode)
+          .eq('Bundle_Waybill_Code', parsed.bundleWaybillCode)
           .maybeSingle();
       }
 
       if (lookup?.error) throw lookup.error;
       const bundle = lookup?.data;
       if (!bundle?.Bundle_ID) {
-        setCameraStatus({ tone: 'error', message: `No bundle found for ${parsed.bundleWaybillCode || parsed.submissionCode || parsed.bundleId}.` });
+        setCameraStatus({ tone: 'error', message: `No bundle found for ${parsed.bundleWaybillCode || parsed.bundleId}.` });
         return;
       }
-      const bundleCode = bundle.Bundle_Waybill_Code || `WB-${bundle.Bundle_ID}`;
+      const bundleCode = bundle.Bundle_Waybill_Code || `WB${String(Number(bundle.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`;
 
       const statusKey = String(bundle.Status || '').toLowerCase();
       if (isBundleCompletedStatus(statusKey)) {
@@ -468,7 +472,7 @@ export default function UploadWigStocksPage({ userProfile }) {
     const authFolder = sessionResult.data?.session?.user?.id;
     if (!authFolder) throw new Error('Could not resolve session for photo upload.');
     const ext = fileExtension(file);
-    const bundleCode = scannedBundle.Bundle_Waybill_Code || `WB-${scannedBundle.Bundle_ID}`;
+    const bundleCode = scannedBundle.Bundle_Waybill_Code || `WB${String(Number(scannedBundle.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`;
     const fileName = `${bundleCode}-${slotName}-${Date.now()}-${safeFileName(file.name)}`.replace(/[^a-zA-Z0-9._-]/g, '-');
     const finalName = fileName.endsWith(`.${ext}`) ? fileName : `${fileName}.${ext}`;
     const path = `${authFolder}/completed-wigs/${finalName}`;
@@ -517,7 +521,7 @@ export default function UploadWigStocksPage({ userProfile }) {
       if (error) throw error;
 
       const memberCount = data?.members?.length || 0;
-      const bundleCode = scannedBundle.Bundle_Waybill_Code || `WB-${scannedBundle.Bundle_ID}`;
+      const bundleCode = scannedBundle.Bundle_Waybill_Code || `WB${String(Number(scannedBundle.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`;
       setNotice({
         kind: 'success',
         text: data?.alreadyComplete
@@ -729,7 +733,7 @@ export default function UploadWigStocksPage({ userProfile }) {
                       value={manualCode}
                       onChange={(event) => setManualCode(event.target.value)}
                       onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); handleSubmitManualCode(); } }}
-                      placeholder="WB-2026-000017"
+                      placeholder="WB7K2Q9A"
                       className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none"
                       style={inputStyle}
                     />
@@ -771,7 +775,7 @@ export default function UploadWigStocksPage({ userProfile }) {
                               : { borderColor: '#e2e8f0' }
                           }
                         >
-                          <p className="font-mono text-xs font-semibold" style={{ color: primaryTextColor }}>{b.Bundle_Waybill_Code || `WB-${b.Bundle_ID}`}</p>
+                          <p className="font-mono text-xs font-semibold" style={{ color: primaryTextColor }}>{b.Bundle_Waybill_Code || `WB${String(Number(b.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`}</p>
                           <p className="text-xs" style={{ color: tertiaryTextColor }}>Created {formatDateTime(b.Created_At)}</p>
                           {b.Notes ? <p className="mt-0.5 truncate text-xs" style={{ color: secondaryTextColor }}>{b.Notes}</p> : null}
                         </button>
@@ -787,7 +791,7 @@ export default function UploadWigStocksPage({ userProfile }) {
             <section className="rounded-2xl border bg-white p-5 space-y-5" style={{ borderColor: '#e2e8f0' }}>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h2 className="text-lg font-semibold" style={headingStyle}>Complete Wig - {scannedBundle.Bundle_Waybill_Code || `WB-${scannedBundle.Bundle_ID}`}</h2>
+                  <h2 className="text-lg font-semibold" style={headingStyle}>Complete Wig - {scannedBundle.Bundle_Waybill_Code || `WB${String(Number(scannedBundle.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`}</h2>
                   <p className="text-xs" style={{ color: tertiaryTextColor }}>Hairs in bundle: {bundleMemberCount}</p>
                 </div>
                 <button
@@ -890,7 +894,7 @@ export default function UploadWigStocksPage({ userProfile }) {
                         style={inputStyle}
                       >
                         <option value="">Select cap size</option>
-                        {CAP_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
+                        {CAP_SIZE_OPTIONS.map((size) => <option key={size.value} value={size.value}>{size.label}</option>)}
                       </select>
                     </div>
                   </div>
