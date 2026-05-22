@@ -90,6 +90,7 @@ const FORM_STEPS = [
   { id: 3, title: 'Full Confirmation' },
   { id: 4, title: 'Verify Email' },
 ];
+const TERMS_AND_AGREEMENT_PDF_PATH = '/legal/donivra-terms-and-agreement.pdf';
 
 const INITIAL_FORM = {
   applicantValidIdType: 'philsys',
@@ -610,6 +611,8 @@ export default function EventApplicationPage() {
   const [eventPlacePhotoPreviewUrl, setEventPlacePhotoPreviewUrl] = useState('');
   const [eventPosterPhotoPreviewUrl, setEventPosterPhotoPreviewUrl] = useState('');
   const [currentStep, setCurrentStep] = useState(1);
+  const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
+  const [hasConfirmedTerms, setHasConfirmedTerms] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -933,6 +936,23 @@ export default function EventApplicationPage() {
     setCurrentStep((previous) => Math.max(1, previous - 1));
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
+
+  const handleDeclineTerms = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    window.location.assign('/');
+  }, []);
+
+  const handleAcceptTerms = useCallback(() => {
+    if (!hasConfirmedTerms) {
+      setErrorMessage('Please confirm that you agree to the Terms and Agreement before continuing.');
+      return;
+    }
+
+    setErrorMessage('');
+    setFieldErrors({});
+    setHasAcceptedTerms(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [hasConfirmedTerms]);
 
   const handleValidIdFileChange = (event) => {
     const file = event.target.files?.[0] || null;
@@ -1459,6 +1479,89 @@ export default function EventApplicationPage() {
       setIsSubmitting(false);
     }
   };
+
+  if (!hasAcceptedTerms) {
+    return (
+      <Wrapper>
+        <div className="min-h-screen bg-gradient-to-b from-slate-100 to-slate-50 px-4 py-8 md:px-8">
+          <div className="mx-auto max-w-4xl rounded-3xl border border-slate-200 bg-white/95 p-6 shadow-lg backdrop-blur md:p-8">
+            <button
+              type="button"
+              onClick={handleDeclineTerms}
+              className="mb-5 inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
+            >
+              <ArrowLeft size={16} />
+              Back To Landing
+            </button>
+
+            <h1 className="text-2xl font-bold text-slate-900 md:text-3xl">Terms and Conditions</h1>
+            <p className="mt-2 text-sm text-slate-600">
+              Review and accept the Donivra Terms and Agreement before starting the event application.
+            </p>
+
+            <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+              <iframe
+                title="Donivra Terms and Agreement"
+                src={TERMS_AND_AGREEMENT_PDF_PATH}
+                className="h-[60vh] w-full bg-white"
+              />
+            </div>
+
+            <p className="mt-2 text-xs text-slate-500">
+              If the preview does not load, open the file here:{' '}
+              <a
+                href={TERMS_AND_AGREEMENT_PDF_PATH}
+                target="_blank"
+                rel="noreferrer"
+                className="font-semibold text-slate-700 underline"
+              >
+                Donivra Terms and Agreement (PDF)
+              </a>
+            </p>
+
+            <label className="mt-4 flex items-start gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={hasConfirmedTerms}
+                onChange={(event) => {
+                  setHasConfirmedTerms(event.target.checked);
+                  if (event.target.checked) {
+                    setErrorMessage('');
+                  }
+                }}
+                className="mt-0.5 h-4 w-4 rounded border-slate-300"
+              />
+              <span>I have read and agree to the Donivra Terms and Agreement.</span>
+            </label>
+
+            {errorMessage ? (
+              <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {errorMessage}
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleDeclineTerms}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+              >
+                Decline
+              </button>
+              <button
+                type="button"
+                onClick={handleAcceptTerms}
+                className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white"
+                style={{ backgroundColor: primaryColor }}
+              >
+                Accept and Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      </Wrapper>
+    );
+  }
 
   return (
     <Wrapper>

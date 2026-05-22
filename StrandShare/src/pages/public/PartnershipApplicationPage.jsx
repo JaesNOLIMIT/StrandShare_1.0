@@ -176,6 +176,7 @@ const initialForm = {
 
 const LEAD_GENDER_OPTIONS = ['Male', 'Female', 'Non-binary', 'Prefer not to say'];
 const PHILIPPINE_TIME_ZONE = 'Asia/Manila';
+const TERMS_AND_AGREEMENT_PDF_PATH = '/legal/donivra-terms-and-agreement.pdf';
 
 function toTitle(value = '') {
   return String(value)
@@ -679,6 +680,8 @@ export default function PartnershipApplicationPage() {
   const secondaryTextColor = theme.secondaryTextColor || '#334155';
   const [form, setForm] = useState(initialForm);
   const [activePage, setActivePage] = useState(1);
+  const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
+  const [hasConfirmedTerms, setHasConfirmedTerms] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmissionComplete, setIsSubmissionComplete] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -1279,6 +1282,18 @@ export default function PartnershipApplicationPage() {
     window.location.assign('/');
   };
 
+  const acceptTermsAndContinue = () => {
+    if (!hasConfirmedTerms) {
+      setErrorMessage('Please confirm that you agree to the Terms and Agreement before continuing.');
+      return;
+    }
+
+    setErrorMessage('');
+    setSuccessMessage('');
+    setHasAcceptedTerms(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const goToLeadPage = () => {
     setErrorMessage('');
     setSuccessMessage('');
@@ -1609,6 +1624,99 @@ export default function PartnershipApplicationPage() {
       : activePage === 3
         ? 'Review & Confirmation'
         : 'Email Verification';
+
+  if (!hasAcceptedTerms) {
+    return (
+      <Wrapper>
+        <div className="min-h-screen px-4 py-8 md:px-8" style={{ backgroundColor }}>
+          <div className="mx-auto max-w-4xl">
+            <section className="overflow-hidden rounded-2xl border bg-white shadow-sm" style={{ borderColor: `${secondaryColor}44` }}>
+              <header
+                className="border-b px-5 py-5 md:px-7"
+                style={{
+                  borderColor: `${secondaryColor}33`,
+                  background: `linear-gradient(120deg, ${primaryColor}22, #ffffff)`,
+                }}
+              >
+                <h1 className="text-2xl font-extrabold tracking-tight md:text-3xl" style={{ color: primaryTextColor }}>
+                  Terms and Conditions
+                </h1>
+                <p className="mt-2 max-w-3xl text-sm md:text-base" style={{ color: secondaryTextColor }}>
+                  Review and accept the Donivra Terms and Agreement before starting the partnership application.
+                </p>
+              </header>
+
+              <div className="space-y-4 px-5 py-6 md:px-7 md:py-7">
+                <div className="overflow-hidden rounded-xl border bg-slate-50" style={{ borderColor: `${secondaryColor}33` }}>
+                  <iframe
+                    title="Donivra Terms and Agreement"
+                    src={TERMS_AND_AGREEMENT_PDF_PATH}
+                    className="h-[60vh] w-full bg-white"
+                  />
+                </div>
+
+                <p className="text-xs" style={{ color: secondaryTextColor }}>
+                  If the preview does not load, open the file here:{' '}
+                  <a
+                    href={TERMS_AND_AGREEMENT_PDF_PATH}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-semibold underline"
+                    style={{ color: primaryTextColor }}
+                  >
+                    Donivra Terms and Agreement (PDF)
+                  </a>
+                </p>
+
+                <label
+                  className="flex items-start gap-2 rounded-xl border bg-white px-3 py-3 text-sm"
+                  style={{ borderColor: `${secondaryColor}33`, color: secondaryTextColor }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={hasConfirmedTerms}
+                    onChange={(event) => {
+                      setHasConfirmedTerms(event.target.checked);
+                      if (event.target.checked) {
+                        setErrorMessage('');
+                      }
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300"
+                  />
+                  <span>I have read and agree to the Donivra Terms and Agreement.</span>
+                </label>
+
+                {errorMessage ? (
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                    {errorMessage}
+                  </div>
+                ) : null}
+
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={goBack}
+                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-4 py-2.5 text-sm font-semibold"
+                    style={{ borderColor: `${secondaryColor}44`, color: secondaryTextColor }}
+                  >
+                    <ArrowLeft size={14} /> Decline
+                  </button>
+                  <button
+                    type="button"
+                    onClick={acceptTermsAndContinue}
+                    className="inline-flex items-center gap-2 rounded-xl px-5 py-3 text-sm font-bold text-white"
+                    style={{ backgroundColor: primaryColor }}
+                  >
+                    Accept and Continue
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </Wrapper>
+    );
+  }
 
   if (isSubmissionComplete) {
     return (
