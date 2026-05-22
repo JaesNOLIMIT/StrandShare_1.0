@@ -1,66 +1,48 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, ChevronUp, HeartPulse, Mail, MapPin, Phone } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
 import { motion, useAnimation, useScroll, useSpring, useTransform } from 'framer-motion';
 import { useTheme } from '../../context/ThemeContext';
 import { TransitionFlipExit } from '../../components/transitions/TransitionFlip';
+import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from '../../lib/supabaseClient';
 import './landing-scroll.css';
 
+const EVENT_REQUESTS_TABLE = 'Event_Requests';
+const WIG_REQUESTS_TABLE = 'Wig_Requests';
+
+function normalizeKey(value) {
+  return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+}
+
+function labelFromStatusKey(value) {
+  const key = normalizeKey(value);
+  if (!key) return 'Unknown';
+  if (key === 'pendingstaffreview') return 'Pending Staff Review';
+  if (key === 'pendingadmindecision') return 'Pending Admin Decision';
+  if (key === 'pendingadminapproval') return 'Pending Admin Approval';
+  if (key === 'approved') return 'Approved';
+  if (key === 'rejected') return 'Rejected';
+  if (key === 'appealed') return 'Appealed';
+  if (key === 'cancelled') return 'Cancelled';
+  if (key === 'released' || key === 'completed') return 'Completed';
+  return String(value || 'Unknown');
+}
+
+function formatFlowTimestamp(value) {
+  if (!value) return 'No update time';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'No update time';
+  return parsed.toLocaleString('en-PH', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 /*  static content  */
-const aboutHighlights = [
-  {
-    title: 'Hospital-First Partnership',
-    body: 'StrandShare focuses on partnered hospitals that run community events to support patients experiencing hair loss.',
-    icon: '*',
-  },
-  {
-    title: 'Event-Driven Process',
-    body: 'Every request follows one process: hospital application, staff coordination, admin decision, and event execution readiness.',
-    icon: '+',
-  },
-  {
-    title: 'Patient-Centered Impact',
-    body: 'Hospital events strengthen continuity of care by improving outreach planning, scheduling, and measurable support delivery.',
-    icon: 'o',
-  },
-];
-
-const impactAreas = [
-  {
-    title: 'Why Apply as Partner Hospitals',
-    body: 'Event applications give hospitals a structured path to align staff support, venue planning, timeline readiness, and operational requirements.',
-  },
-  {
-    title: 'How Events Help Hospitals',
-    body: 'Hospitals gain clearer collaboration, predictable preparation, and stronger patient outreach through a managed event workflow.',
-  },
-  {
-    title: 'How Events Help StrandShare',
-    body: 'Events create traceable operations and consistent impact data, helping StrandShare scale support with quality and accountability.',
-  },
-];
-
-const partnerTracks = [
-  {
-    id: 'hospital',
-    eyebrow: 'Hospital Track',
-    title: 'Partner Hospital',
-    icon: 'hospital',
-    body: 'For hospitals and care centers that plan and run approved community events through StrandShare.',
-    points: [
-      'Submit hospital event partnership applications',
-      'Coordinate event requirements with assigned staff',
-      'Run approved events with better structure and accountability',
-    ],
-  },
-];
-
-const journeySteps = [
-  { num: 'I', title: 'Apply as Partner Hospital', detail: 'Submit your hospital partnership and event request through one application flow.' },
-  { num: 'II', title: 'Staff Coordination', detail: 'Staff contacts your team through your preferred channel to align full event details.' },
-  { num: 'III', title: 'Admin Decision', detail: 'Admin reviews the staff-endorsed request and issues approval or rejection.' },
-  { num: 'IV', title: 'Event Activation', detail: 'Approved hospitals proceed with an organized event workflow and operational support.' },
-];
-
 const applicationChecklist = [
   { group: 'Hospital Partnership Essentials', items: [
     'Hospital Name and Facility Details',
@@ -74,24 +56,6 @@ const applicationChecklist = [
     'Venue and Location Information',
     'Expected Attendee Volume',
   ]},
-];
-
-const faqs = [
-  { q: 'Who can apply for partnership?', a: 'Only hospitals and care centers can apply in this partnership flow.' },
-  { q: 'Who can apply for event?', a: 'Any user can submit an event application. Staff will contact the requester using the selected preferred contact method.' },
-  { q: 'Why is this partnership event-focused?', a: 'Events are the operating unit for planning, review, approval, and impact tracking across the hospital workflow.' },
-  { q: 'What happens after we submit?', a: 'Staff receives your request, contacts your team, and prepares the case for admin decision.' },
-  { q: 'Can we proceed immediately after applying?', a: 'No. Event requests require admin approval before event execution.' },
-  { q: 'Will we receive updates?', a: 'Yes. Your team will receive status updates during staff coordination and after admin decision.' },
-];
-
-const marqueeItems = [
-  'Hospital Events',
-  'Patient Support',
-  'Community Outreach',
-  'Staff Coordination',
-  'Admin Approval',
-  'Measured Impact',
 ];
 
 /*  helpers  */
@@ -218,6 +182,17 @@ function setupCtaCanvas(canvas, getThemeRgb) {
 /*  component  */
 export default function LandingPage() {
   const { theme } = useTheme();
+  const publicMetricsClient = useMemo(() => {
+    if (!isSupabaseConfigured || !supabaseUrl || !supabaseAnonKey) return null;
+    return createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+        storageKey: 'Donivra-landing-public-metrics',
+      },
+    });
+  }, []);
 
   /* theme tokens */
   const primaryColor   = String(theme?.primaryColor   || '#b8955a').trim();
@@ -229,7 +204,7 @@ export default function LandingPage() {
   const textTertiary   = String(theme?.tertiaryTextColor  || '#94a3b8').trim();
   const bodyFont       = String(theme?.secondaryFontFamily || theme?.selectedFont || theme?.fontFamily || 'DM Sans').trim();
   const headingFont    = String(theme?.selectedFont || theme?.fontFamily || 'Cormorant Garamond').trim();
-  const brandName      = String(theme?.brandName    || 'StrandShare').trim();
+  const brandName      = String(theme?.brandName    || 'Donivra').trim();
   const brandTagline   = String(theme?.brandTagline || 'Every Strand Counts').trim();
 
   const themeRgbRef = useRef({ primaryRgb: '184, 149, 90', textRgb: '15, 13, 10' });
@@ -270,6 +245,7 @@ export default function LandingPage() {
   const [topHoverActive, setTopHoverActive] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const [openFaq,    setOpenFaq]    = useState(-1);
+  const [liveFlowRows, setLiveFlowRows] = useState([]);
   const topHoverStateRef = useRef(false);
 
   /* transitions */
@@ -281,15 +257,76 @@ export default function LandingPage() {
   const incomingTransition = useMemo(() => {
     try {
       return typeof window !== 'undefined'
-        ? sessionStorage.getItem('strandshare:incoming-transition') || ''
+        ? sessionStorage.getItem('Donivra:incoming-transition') || ''
         : '';
     } catch { return ''; }
   }, []);
   const isReturningFromLogin = incomingTransition === 'back-from-login';
 
   useEffect(() => {
+    let isCancelled = false;
+    const metricsClient = publicMetricsClient || supabase;
+
+    const fetchLandingMetrics = async () => {
+      if (!isSupabaseConfigured || !metricsClient) {
+        return;
+      }
+
+      const flowTasks = await Promise.allSettled([
+        metricsClient
+          .from(EVENT_REQUESTS_TABLE)
+          .select('Event_Request_ID,Event_Name,Status,Updated_At')
+          .order('Updated_At', { ascending: false })
+          .limit(3),
+        metricsClient
+          .from(WIG_REQUESTS_TABLE)
+          .select('Req_ID,Status,Updated_At')
+          .order('Updated_At', { ascending: false })
+          .limit(3),
+      ]);
+
+      const nextFlowRows = [];
+      const eventRowsResult = flowTasks[0];
+      if (eventRowsResult.status === 'fulfilled' && !eventRowsResult.value.error) {
+        (eventRowsResult.value.data || []).forEach((row) => {
+          nextFlowRows.push({
+            id: `event-${row.Event_Request_ID}`,
+            stage: 'Event Request',
+            title: row.Event_Name || `ER-${row.Event_Request_ID}`,
+            status: labelFromStatusKey(row.Status),
+            updatedAt: formatFlowTimestamp(row.Updated_At),
+          });
+        });
+      }
+
+      const wigRowsResult = flowTasks[1];
+      if (wigRowsResult.status === 'fulfilled' && !wigRowsResult.value.error) {
+        (wigRowsResult.value.data || []).forEach((row) => {
+          nextFlowRows.push({
+            id: `wig-${row.Req_ID}`,
+            stage: 'Wig Request',
+            title: `WR-${String(row.Req_ID || '').padStart(4, '0')}`,
+            status: labelFromStatusKey(row.Status),
+            updatedAt: formatFlowTimestamp(row.Updated_At),
+          });
+        });
+      }
+
+      if (!isCancelled) {
+        setLiveFlowRows(nextFlowRows);
+      }
+    };
+
+    void fetchLandingMetrics();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [publicMetricsClient]);
+
+  useEffect(() => {
     if (isReturningFromLogin) {
-      try { sessionStorage.removeItem('strandshare:incoming-transition'); } catch { /* ignore */ }
+      try { sessionStorage.removeItem('Donivra:incoming-transition'); } catch { /* ignore */ }
       fadeControls.start({
         opacity: 1,
         scale: 1,
@@ -308,7 +345,7 @@ export default function LandingPage() {
         scale: 1.04,
         transition: { duration: 0.45, ease: [0.22, 0.61, 0.36, 1] },
       }).then(() => {
-        sessionStorage.setItem('strandshare:incoming-transition', 'login');
+        sessionStorage.setItem('Donivra:incoming-transition', 'login');
         goToHard(path);
       });
     } else if (path === '/apply-partnership' || path === '/apply-event') {
@@ -322,7 +359,7 @@ export default function LandingPage() {
   const handleTransitionDone = useCallback(() => {
     const path = pendingPathRef.current;
     if (path) {
-      sessionStorage.setItem('strandshare:incoming-transition', exitTransition || '');
+      sessionStorage.setItem('Donivra:incoming-transition', exitTransition || '');
       goToHard(path);
     }
   }, [exitTransition]);
@@ -413,7 +450,7 @@ export default function LandingPage() {
   /* intersection observer - scroll reveals */
   useEffect(() => {
     if (!rootRef.current || typeof IntersectionObserver === 'undefined') return;
-    const selector = '.eyebrow,.section-title,.section-lead,.about-card,.stat-item,.impact-card,.step,.req-item,.faq-item,.cta-title,.cta-sub,.cta-btns';
+    const selector = '.eyebrow,.section-title,.section-lead,.about-card,.impact-card,.step,.req-item,.cta-title,.cta-sub,.cta-btns';
     const io = new IntersectionObserver(entries => {
       entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('vis'); });
     }, { threshold: 0.12 });
@@ -421,35 +458,102 @@ export default function LandingPage() {
     return () => io.disconnect();
   }, []);
 
-  /* stat counter animation */
-  useEffect(() => {
-    const targets = [{ id: 'sn0', val: 200 }, { id: 'sn1', val: 1400 }, { id: 'sn2', val: 48 }];
-    const io = new IntersectionObserver(entries => {
-      entries.forEach(e => {
-        if (!e.isIntersecting) return;
-        targets.forEach(({ id, val }) => {
-          const el = document.getElementById(id);
-          if (!el) return;
-          const dur = 1800, start = performance.now();
-          const tick = now => {
-            const p = Math.min((now - start) / dur, 1);
-            const ease = 1 - (1 - p) ** 4;
-            el.textContent = Math.round(ease * val);
-            if (p < 1) requestAnimationFrame(tick);
-            else el.textContent = val + '+';
-          };
-          requestAnimationFrame(tick);
-        });
-        io.disconnect();
-      });
-    }, { threshold: 0.5 });
-    const anchor = document.getElementById('stat-anchor');
-    if (anchor) io.observe(anchor);
-    return () => io.disconnect();
-  }, []);
-
   const toggleFaq = useCallback(i => setOpenFaq(prev => (prev === i ? -1 : i)), []);
-  const marqueeDouble = [...marqueeItems, ...marqueeItems];
+  const aboutCards = useMemo(() => ([
+    {
+      title: 'Hospital-First Partnership',
+      body: 'Donivra supports approved partner hospitals through one connected operational workflow.',
+      icon: 'HF',
+    },
+    {
+      title: 'Event-Driven Process',
+      body: 'Event applications are validated by staff, then elevated to admin decision in a structured queue.',
+      icon: 'EP',
+    },
+    {
+      title: 'Patient-Centered Impact',
+      body: 'Wig request operations are tracked from request intake up to release and completion stages.',
+      icon: 'PI',
+    },
+  ]), []);
+
+  const impactCards = useMemo(() => ([
+    {
+      eyebrow: 'Partnership Intake',
+      title: 'Hospital Intake to Approval',
+      body: 'Hospital partnership intake is reviewed for eligibility and aligned to approved operational standards.',
+    },
+    {
+      eyebrow: 'Decision Pipeline',
+      title: 'Event Decision Pipeline',
+      body: 'Event requests move through staff coordination, then admin review for approval or rejection.',
+    },
+    {
+      eyebrow: 'Outcome Monitoring',
+      title: 'Wig Request Outcomes',
+      body: 'Wig request outcomes are monitored for fulfillment, release readiness, and completed delivery.',
+    },
+  ]), []);
+
+  const trackCards = useMemo(() => ([
+    {
+      id: 'hospital',
+      eyebrow: 'Hospital Track',
+      title: 'Partner Hospital',
+      icon: 'hospital',
+      body: 'Partner hospital flow is tied to event operations from intake, coordination, review, and activation.',
+      points: [
+        `Submit hospital partnership + event details in one intake flow`,
+        `Coordinate with assigned staff while request status is pending`,
+        `Proceed only after admin decision and status approval`,
+      ],
+    },
+  ]), []);
+
+  const journeyCards = useMemo(() => ([
+    { num: 'Apply', title: 'Apply as Partner Hospital', detail: 'Submit hospital details and event context through the partnership intake form.' },
+    { num: 'Coordinate', title: 'Staff Coordination', detail: 'Assigned staff validates details, clarifies schedule, and prepares request completeness.' },
+    { num: 'Review', title: 'Admin Decision', detail: 'Admin reviews the staff-endorsed request and confirms approval or rejection status.' },
+    { num: 'Support', title: 'Event & Wig Support', detail: 'Approved operations continue to event execution and downstream wig request handling.' },
+  ]), []);
+
+  const faqItems = useMemo(() => ([
+    {
+      q: 'Who can apply for partnership?',
+      a: 'Only hospitals and care centers can apply for partnership in this workflow.',
+    },
+    {
+      q: 'Who can apply for event?',
+      a: 'Any user can apply for event support requests through the public intake flow.',
+    },
+    {
+      q: 'How is the process connected in Donivra?',
+      a: 'The process is connected through Event_Applications -> Event_Requests -> Wig_Requests for end-to-end tracking.',
+    },
+    {
+      q: 'What happens after we submit?',
+      a: 'Staff coordinates details first, then admin finalizes approval or rejection status.',
+    },
+    {
+      q: 'Can we proceed immediately after applying?',
+      a: 'No. Admin approval is required before event execution can proceed.',
+    },
+    {
+      q: 'Do you track completion?',
+      a: 'Yes. Wig request outcomes are tracked through release and completion stages.',
+    },
+  ]), []);
+
+  const dynamicMarqueeItems = useMemo(() => ([
+    'Hospital Partnerships',
+    'Event Intake',
+    'Staff Coordination',
+    'Admin Decision',
+    'Wig Request Tracking',
+    'Release Operations',
+  ]), []);
+
+  const marqueeDouble = [...dynamicMarqueeItems, ...dynamicMarqueeItems];
 
   return (
     <div className="landing-scroll-root" style={cssVars} ref={rootRef}>
@@ -548,9 +652,8 @@ export default function LandingPage() {
           </h1>
 
           <p className={`hero-sub${heroVis ? ' vis' : ''}`}>
-            {brandName} connects partnered hospitals, hospital teams and communities
-            around one shared goal - dignified wig support for people experiencing hair loss.
-            Any user can apply for event requests, while partner hospital applications are for hospitals only.
+            {brandName} connects partnered hospitals, hospital teams, and community applicants
+            through one linked workflow from intake to release.
           </p>
 
           <div className={`hero-ctas${heroVis ? ' vis' : ''}`}>
@@ -590,7 +693,7 @@ export default function LandingPage() {
             workflow - from request to release.
           </p>
           <div className="about-grid">
-            {aboutHighlights.map(item => (
+            {aboutCards.map(item => (
               <article className="about-card" key={item.title}>
                 <div className="card-icon">{item.icon}</div>
                 <h3 className="card-title">{item.title}</h3>
@@ -601,35 +704,15 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/*  STATS  */}
-      <section id="stats">
-        <div className="container">
-          <div className="stats-grid" id="stat-anchor">
-            <div className="stat-item">
-              <div className="stat-num"><span id="sn0">0</span><small>+</small></div>
-              <div className="stat-label">Hospital Partnerships</div>
-            </div>
-            <div className="stat-item">
-              <div className="stat-num"><span id="sn1">0</span><small>+</small></div>
-              <div className="stat-label">Events Coordinated</div>
-            </div>
-            <div className="stat-item">
-              <div className="stat-num"><span id="sn2">0</span><small>+</small></div>
-              <div className="stat-label">Patients Supported</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/*  IMPACT  */}
       <section id="impact">
         <div className="container">
           <p className="eyebrow">Impact Areas</p>
           <h2 className="section-title">Where Our Work<br />Creates <em>Impact</em></h2>
           <div className="impact-grid">
-            {impactAreas.map((item, i) => (
+            {impactCards.map((item) => (
               <article className="impact-card" key={item.title}>
-                <div className="impact-num">{String(i + 1).padStart(2, '0')} - {item.title}</div>
+                <div className="impact-num">{item.eyebrow}</div>
                 <h3 className="impact-title">{item.title}</h3>
                 <p className="impact-body">{item.body}</p>
               </article>
@@ -647,7 +730,7 @@ export default function LandingPage() {
             Hospital partnership is focused on event execution. Submit your request, align details with staff, and move to admin decision.
           </p>
           <div className="impact-grid" style={{ gridTemplateColumns: 'repeat(1, 1fr)' }}>
-            {partnerTracks.map((track) => (
+            {trackCards.map((track) => (
               <article className="impact-card" key={track.id}>
                 <div
                   className="impact-num"
@@ -705,7 +788,7 @@ export default function LandingPage() {
             Four Steps to<br /><em>Change a Life</em>
           </h2>
           <div className="steps-wrap">
-            {journeySteps.map(step => (
+            {journeyCards.map(step => (
               <article className="step" key={step.title}>
                 <div className="step-num">{step.num}</div>
                 <h3 className="step-title">{step.title}</h3>
@@ -713,6 +796,39 @@ export default function LandingPage() {
               </article>
             ))}
           </div>
+        </div>
+      </section>
+
+      <section id="flow-live" style={{ background: 'var(--color-bg,#f5f0e8)', padding: '4rem 2rem 2rem' }}>
+        <div className="container">
+          <p className="eyebrow vis">System Flow Snapshot</p>
+          <h2 className="section-title vis">Latest <em>Operational Records</em></h2>
+          <p className="section-lead vis">
+            These are pulled from your real records in Event_Requests and Wig_Requests,
+            so the landing story stays connected to your actual workflow.
+          </p>
+          {liveFlowRows.length > 0 ? (
+            <div className="impact-grid" style={{ marginTop: 0 }}>
+              {liveFlowRows.map((row) => (
+                <article className="impact-card vis" key={row.id}>
+                  <div className="impact-num">{row.stage}</div>
+                  <h3 className="impact-title" style={{ fontSize: '1.1rem' }}>{row.title}</h3>
+                  <p className="impact-body">
+                    Status: <strong>{row.status}</strong><br />
+                    Updated: {row.updatedAt}
+                  </p>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <article className="impact-card vis">
+              <div className="impact-num">Live Data</div>
+              <h3 className="impact-title" style={{ fontSize: '1.1rem' }}>Waiting for accessible rows</h3>
+              <p className="impact-body">
+                No flow rows are visible to the public client yet. Once table read access is available, this section updates automatically.
+              </p>
+            </article>
+          )}
         </div>
       </section>
 
@@ -770,8 +886,8 @@ export default function LandingPage() {
           <p className="eyebrow">FAQ</p>
           <h2 className="section-title">Frequently Asked<br /><em>Questions</em></h2>
           <div className="faq-list">
-            {faqs.map((faq, i) => (
-              <article className={`faq-item${openFaq === i ? ' open' : ''}`} key={faq.q}>
+            {faqItems.map((faq, i) => (
+              <article className={`faq-item vis${openFaq === i ? ' open' : ''}`} key={faq.q}>
                 <button type="button" className="faq-q" onClick={() => toggleFaq(i)}>
                   <span>{faq.q}</span>
                   <span className="faq-icon">
@@ -818,13 +934,14 @@ export default function LandingPage() {
             <a href="#impact">Impact</a>
             <a href="#tracks">Tracks</a>
             <a href="#journey">How It Works</a>
+            <a href="#flow-live">Flow</a>
             <a href="#apply">Apply</a>
             <a href="#faq">FAQ</a>
           </div>
           <div className="footer-contact">
-            <span><Mail size={14} /> support@strandshare.org</span>
-            <span><Phone size={14} /> +63 912 345 6789</span>
-            <span><MapPin size={14} /> Manila, Philippines</span>
+            <span><Mail size={14} /> donivraproject@gmail.com</span>
+            <span><Phone size={14} /> +63 917 586 0145</span>
+            <span><MapPin size={14} /> Makati, Philippines</span>
           </div>
         </div>
       </footer>
@@ -833,5 +950,6 @@ export default function LandingPage() {
     </div>
   );
 }
+
 
 

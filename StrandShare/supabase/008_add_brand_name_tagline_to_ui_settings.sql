@@ -8,9 +8,10 @@ alter table if exists public."UI_Settings"
   add column if not exists "Brand_Tagline" varchar(255);
 
 update public."UI_Settings"
-set "Brand_Name" = 'StrandShare'
+set "Brand_Name" = 'Donivra'
 where coalesce("Brand_Name", '') = '';
 
 update public."UI_Settings"
 set "Brand_Tagline" = 'Every Strand Counts'
 where coalesce("Brand_Tagline", '') = '';
+

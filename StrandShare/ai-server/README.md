@@ -57,7 +57,7 @@ REACT_APP_AI_SERVER_URL=http://127.0.0.1:8000
 
 1. Provision a GPU VPS (any tier with an RTX/A-series card with >=4 GB VRAM).
 2. Install Docker + the NVIDIA Container Toolkit.
-3. `git pull` the repo, `cd StrandShare/ai-server`, populate `.env`.
+3. `git pull` the repo, `cd Donivra/ai-server`, populate `.env`.
 4. `docker compose up -d`.
 5. Point `REACT_APP_AI_SERVER_URL` at `https://<your-host>:8000` (put it
    behind your existing reverse proxy / TLS).
@@ -120,3 +120,4 @@ Any exception inside the background pipeline is caught in
 `main._run_job_safely`. The corresponding `Wig_AI_Filters` row is updated to
 `Status = 'failed'` with a truncated error message, which the Specialist UI
 surfaces as **"Please try again."** with a Retry button.
+

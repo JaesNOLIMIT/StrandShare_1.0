@@ -1,6 +1,6 @@
-# StrandShare - Hair Donation Platform
+# Donivra - Hair Donation Platform
 
-A modern, pixel-perfect React frontend for the StrandShare hair donation platform. Built with React, Tailwind CSS, Lucide React icons, and Recharts for analytics.
+A modern, pixel-perfect React frontend for the Donivra hair donation platform. Built with React, Tailwind CSS, Lucide React icons, and Recharts for analytics.
 
 ## Features
 
@@ -48,7 +48,7 @@ Configuration Files:
 
 1. Navigate to the project directory:
 ```bash
-cd StrandShare
+cd Donivra
 ```
 
 2. Install dependencies:
@@ -200,11 +200,11 @@ npm eject
 
 ## License
 
-© 2024 StrandShare. Built with love for the hair donation community.
+© 2024 Donivra. Built with love for the hair donation community.
 
 ## Support
 
 For issues or questions, please refer to the project documentation or contact the development team.
 
 
-c:\Adrian\Caspstone Project\StrandShare\Web_StrandShare_1.0\StrandShare\
+c:\Adrian\Caspstone Project\Donivra\Web_Donivra_1.0\Donivra\

@@ -22,11 +22,11 @@ const DEFAULT_AVATAR = `data:image/svg+xml;utf8,${encodeURIComponent(
   "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'><rect width='128' height='128' rx='64' fill='#f1f5f9'/><circle cx='64' cy='46' r='20' fill='#374151'/><path d='M18 116c4-22 21-35 46-35s42 13 46 35' fill='#374151'/></svg>",
 )}`;
 
-const USER_PROFILE_STORAGE_KEY = 'strandshare_user_profile';
-const USER_PROFILE_READY_EVENT = 'strandshare-profile-ready';
-const SETTINGS_PROFILE_CACHE_KEY = 'strandshare_settings_profile_cache';
-const SYSTEM_PREFS_CACHE_KEY = 'strandshare_system_prefs_cache';
-const NOTIFICATION_PREFS_CACHE_KEY = 'strandshare_notification_prefs_cache';
+const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
+const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
+const SETTINGS_PROFILE_CACHE_KEY = 'Donivra_settings_profile_cache';
+const SYSTEM_PREFS_CACHE_KEY = 'Donivra_system_prefs_cache';
+const NOTIFICATION_PREFS_CACHE_KEY = 'Donivra_notification_prefs_cache';
 const BRANDING_BUCKET = 'branding_assests';
 
 function normalizeGenderOption(value) {
@@ -492,7 +492,7 @@ export default function SettingsPage() {
   });
 
   const [brandingMeta, setBrandingMeta] = useState({
-    brandName: theme.brandName || 'StrandShare',
+    brandName: theme.brandName || 'Donivra',
     brandTagline: theme.brandTagline || 'Every Strand Counts',
     loginTitle: 'Welcome Back',
     loginSubtitle: 'Login to continue supporting our beautyAI community.',
@@ -1275,7 +1275,7 @@ export default function SettingsPage() {
     const { data: enrollData, error: enrollError } = await supabase.auth.mfa.enroll({
       factorType: 'totp',
       friendlyName: 'Google Authenticator',
-      issuer: 'StrandShare',
+      issuer: 'Donivra',
     });
 
     if (enrollError || !enrollData?.id) {
@@ -1553,7 +1553,7 @@ export default function SettingsPage() {
       setSelectedThemeId(defaultPreset ? defaultPreset.id : 'custom');
       setBrandingMeta((prev) => ({
         ...prev,
-        brandName: theme.brandName || 'StrandShare',
+        brandName: theme.brandName || 'Donivra',
         brandTagline: theme.brandTagline || 'Every Strand Counts',
         primaryFontFamily: theme.selectedFont || theme.fontFamily || prev.primaryFontFamily,
         secondaryFontFamily: theme.secondaryFontFamily || theme.selectedFont || theme.fontFamily || prev.secondaryFontFamily,
@@ -1663,7 +1663,7 @@ export default function SettingsPage() {
     setTempColors((prev) => ({ ...prev, ...defaultPreset.colors }));
     setBrandingMeta((prev) => ({
       ...prev,
-      brandName: 'StrandShare',
+      brandName: 'Donivra',
       brandTagline: 'Every Strand Counts',
       primaryFontFamily: defaultPreset.fontFamily || 'Poppins',
       secondaryFontFamily: defaultPreset.secondaryFontFamily || defaultPreset.fontFamily || 'Poppins',
@@ -2642,7 +2642,7 @@ export default function SettingsPage() {
                             className="w-7 h-7 rounded object-cover border border-slate-200"
                           />
                           <span className="text-[11px] font-bold text-slate-900">
-                            {brandingMeta.brandName || theme.brandName || 'StrandShare'}
+                            {brandingMeta.brandName || theme.brandName || 'Donivra'}
                           </span>
                         </div>
 
@@ -2779,3 +2779,4 @@ export default function SettingsPage() {
     </div>
   );
 }
+

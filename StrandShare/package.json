@@ -1,7 +1,7 @@
 {
-  "name": "strandshare",
+  "name": "Donivra",
   "version": "1.0.0",
-  "description": "A hair donation platform - StrandShare",
+  "description": "A hair donation platform - Donivra",
   "private": true,
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.14",
@@ -59,3 +59,4 @@
     ]
   }
 }
+

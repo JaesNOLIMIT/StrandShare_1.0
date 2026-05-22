@@ -16,8 +16,8 @@ import { isSupabaseConfigured, supabase } from './lib/supabaseClient';
 import { logAuditAction } from './lib/auditLogger';
 import { toCanonicalRole } from './lib/roleUtils';
 
-const USER_PROFILE_STORAGE_KEY = 'strandshare_user_profile';
-const USER_PROFILE_READY_EVENT = 'strandshare-profile-ready';
+const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
+const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
 
 function resolveDashboardByRole(roleValue) {
   const normalizedRole = toCanonicalRole(roleValue);
@@ -352,3 +352,4 @@ export default function App() {
     </ThemeProvider>
   );
 }
+

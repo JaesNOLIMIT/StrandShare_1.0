@@ -588,7 +588,7 @@ async function run() {
   const maxAttempts = toPositiveInt(readEnv('SMTP_MAX_ATTEMPTS', '5'), 5);
   const retryBaseMinutes = toPositiveInt(readEnv('SMTP_RETRY_BASE_MINUTES', '5'), 5);
   const fromEmail = requireEnv('SMTP_FROM_EMAIL', readEnv('SMTP_USER'));
-  const fromName = readEnv('SMTP_FROM_NAME', 'StrandShare');
+  const fromName = readEnv('SMTP_FROM_NAME', 'Donivra');
   const replyTo = readEnv('SMTP_REPLY_TO', '');
 
   const supabase = createSupabaseAdminClient();
@@ -639,3 +639,4 @@ run().catch((error) => {
   console.error(`[SMTP] Fatal error: ${error?.message || error}`);
   process.exit(1);
 });
+

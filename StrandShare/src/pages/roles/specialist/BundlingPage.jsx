@@ -905,7 +905,7 @@ export default function BundlingPage() {
 
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(14);
-      pdf.text('STRANDSHARE WIG BUNDLE WAYBILL', pageWidth / 2, margin + 6, { align: 'center' });
+      pdf.text('Donivra WIG BUNDLE WAYBILL', pageWidth / 2, margin + 6, { align: 'center' });
 
       pdf.setFontSize(10);
       pdf.setFont('helvetica', 'normal');
@@ -1601,13 +1601,13 @@ export default function BundlingPage() {
               </div>
             </div>
 
-            <div className="strandshare-bundle-print-area flex-1 overflow-y-auto bg-slate-100 p-4 print:overflow-visible print:bg-white print:p-0">
+            <div className="Donivra-bundle-print-area flex-1 overflow-y-auto bg-slate-100 p-4 print:overflow-visible print:bg-white print:p-0">
               <article
                 className="mx-auto max-w-md rounded-2xl border-2 border-dashed bg-white p-6 text-center shadow-sm print:m-0 print:rounded-none print:border-2 print:border-solid print:shadow-none"
                 style={{ borderColor: withColorAlpha(primaryColor, 0.5) }}
               >
                 <p className="text-[10px] font-bold uppercase tracking-[0.3em]" style={{ color: primaryColor }}>
-                  StrandShare Wig Bundle Waybill
+                  Donivra Wig Bundle Waybill
                 </p>
                 <p className="mt-1 text-xs font-semibold" style={{ color: secondaryTextColor }}>
                   Scan on Upload Wig Stocks when wig is completed
@@ -1638,8 +1638,8 @@ export default function BundlingPage() {
           <style>{`
             @media print {
               body * { visibility: hidden !important; }
-              .strandshare-bundle-print-area, .strandshare-bundle-print-area * { visibility: visible !important; }
-              .strandshare-bundle-print-area { position: absolute !important; inset: 0 !important; padding: 12mm !important; background: #fff !important; }
+              .Donivra-bundle-print-area, .Donivra-bundle-print-area * { visibility: visible !important; }
+              .Donivra-bundle-print-area { position: absolute !important; inset: 0 !important; padding: 12mm !important; background: #fff !important; }
             }
           `}</style>
         </div>,
@@ -1647,3 +1647,4 @@ export default function BundlingPage() {
     </div>
   );
 }
+

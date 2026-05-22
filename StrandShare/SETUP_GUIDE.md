@@ -1,4 +1,4 @@
-# StrandShare - Setup & Customization Guide
+# Donivra - Setup & Customization Guide
 
 ## Quick Start
 
@@ -298,4 +298,5 @@ src/index.css                  <- PRIMARY COLOR VARIABLE HERE ⭐
 
 ---
 
-Built with ❤️ for StrandShare
+Built with ❤️ for Donivra
+

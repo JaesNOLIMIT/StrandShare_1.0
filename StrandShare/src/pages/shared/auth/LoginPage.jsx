@@ -5,8 +5,8 @@ import { ArrowLeft, ArrowRight, Coins, Eye, EyeOff, Heart, Lock, Mail, QrCode, S
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
 
-const USER_PROFILE_STORAGE_KEY = 'strandshare_user_profile';
-const USER_PROFILE_READY_EVENT = 'strandshare-profile-ready';
+const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
+const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
 const EMAIL_OTP_COOLDOWN_SECONDS = 60;
 const DEFAULT_LOGIN_BG = 'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=1080&q=80';
 
@@ -309,7 +309,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
     const firstEnroll = await supabase.auth.mfa.enroll({
       factorType: 'totp',
       friendlyName: 'Google Authenticator',
-      issuer: 'StrandShare',
+      issuer: 'Donivra',
     });
 
     enrollData = firstEnroll.data;
@@ -320,7 +320,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
       const secondEnroll = await supabase.auth.mfa.enroll({
         factorType: 'totp',
         friendlyName: `Google Authenticator ${new Date().toISOString().slice(0, 10)}`,
-        issuer: 'StrandShare',
+        issuer: 'Donivra',
       });
       enrollData = secondEnroll.data;
       enrollError = secondEnroll.error;
@@ -590,7 +590,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
 
   const incomingTransition = useMemo(() => {
     try {
-      return typeof window !== 'undefined' ? sessionStorage.getItem('strandshare:incoming-transition') || '' : '';
+      return typeof window !== 'undefined' ? sessionStorage.getItem('Donivra:incoming-transition') || '' : '';
     } catch {
       return '';
     }
@@ -601,7 +601,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
 
   useEffect(() => {
     if (incomingTransition === 'login') {
-      try { sessionStorage.removeItem('strandshare:incoming-transition'); } catch { /* ignore */ }
+      try { sessionStorage.removeItem('Donivra:incoming-transition'); } catch { /* ignore */ }
       fadeControls.start({
         opacity: 1,
         scale: 1,
@@ -618,7 +618,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
       scale: 0.97,
       transition: { duration: 0.45, ease: [0.22, 0.61, 0.36, 1] },
     }).then(() => {
-      try { sessionStorage.setItem('strandshare:incoming-transition', 'back-from-login'); } catch { /* ignore */ }
+      try { sessionStorage.setItem('Donivra:incoming-transition', 'back-from-login'); } catch { /* ignore */ }
       window.location.assign('/');
     });
   };
@@ -694,7 +694,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
             {theme.logoImage ? (
               <img
                 src={theme.logoImage}
-                alt={`${theme.brandName || 'StrandShare'} logo`}
+                alt={`${theme.brandName || 'Donivra'} logo`}
                 className="w-8 h-8 rounded-lg object-cover border border-gray-200"
               />
             ) : (
@@ -715,7 +715,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
           <p className="text-gray-600 mb-8 text-sm">
             {mode === 'login'
               ? 'Login to continue supporting our beautiful community and making a difference.'
-              : 'Sign up to start your StrandShare journey and access your dashboard.'}
+              : 'Sign up to start your Donivra journey and access your dashboard.'}
           </p>
 
           {authNotice && (
@@ -1040,3 +1040,4 @@ export default function LoginPage({ authNotice, onClearNotice }) {
     </motion.div>
   );
 }
+

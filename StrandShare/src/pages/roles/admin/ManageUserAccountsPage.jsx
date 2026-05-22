@@ -194,7 +194,7 @@ function createManageUsersInviteAdminClient() {
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: false,
-      storageKey: 'strandshare-manage-users-invite-admin-client',
+      storageKey: 'Donivra-manage-users-invite-admin-client',
     },
   });
 
@@ -1230,3 +1230,4 @@ export default function ManageUserAccountsPage() {
     </div>
   );
 }
+

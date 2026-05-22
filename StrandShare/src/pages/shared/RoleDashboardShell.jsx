@@ -3,7 +3,7 @@ import Sidebar from '../../components/Sidebar';
 import Header from '../../components/Header';
 import { logAuditAction } from '../../lib/auditLogger';
 
-const SIDEBAR_COLLAPSED_STORAGE_KEY = 'strandshare.sidebar.collapsed';
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'Donivra.sidebar.collapsed';
 
 function getInitialSidebarCollapsed() {
   if (typeof window === 'undefined') {
@@ -106,3 +106,4 @@ export default function RoleDashboardShell({
     </div>
   );
 }
+

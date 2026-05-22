@@ -334,7 +334,7 @@ values (
   '#94a3b8',
   'Poppins',
   'Poppins',
-  'StrandShare',
+  'Donivra',
   'Every Strand Counts',
   '',
   '',
@@ -342,3 +342,4 @@ values (
   now()
 )
 on conflict ((true)) do nothing;
+

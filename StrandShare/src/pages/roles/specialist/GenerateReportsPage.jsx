@@ -101,7 +101,7 @@ const REPORT_TEMPLATES = [
   },
 ];
 
-const HISTORY_STORAGE_KEY = 'strandshare.qastylist.report.history';
+const HISTORY_STORAGE_KEY = 'Donivra.qastylist.report.history';
 const HISTORY_LIMIT = 25;
 
 function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
@@ -680,7 +680,7 @@ export default function GenerateReportsPage({ userProfile }) {
 
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(16);
-      pdf.text('StrandShare - QA Stylist Report', margin, margin + 4);
+      pdf.text('Donivra - QA Stylist Report', margin, margin + 4);
 
       pdf.setFont('helvetica', 'normal');
       pdf.setFontSize(11);
@@ -760,7 +760,7 @@ export default function GenerateReportsPage({ userProfile }) {
       for (let i = 1; i <= totalPages; i += 1) {
         pdf.setPage(i);
         pdf.text(`Page ${i} of ${totalPages}`, pageWidth - margin, pageHeight - margin / 2, { align: 'right' });
-        pdf.text('Confidential - StrandShare QA Report', margin, pageHeight - margin / 2);
+        pdf.text('Confidential - Donivra QA Report', margin, pageHeight - margin / 2);
       }
 
       const fileName = buildFileName(selectedTemplate.id, 'pdf');
@@ -1145,3 +1145,4 @@ export default function GenerateReportsPage({ userProfile }) {
     </div>
   );
 }
+

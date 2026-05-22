@@ -54,7 +54,7 @@ const DEFAULT_THEME = {
   secondaryFontFamily: 'Poppins',
   
   // Branding
-  brandName: 'StrandShare',
+  brandName: 'Donivra',
   brandTagline: 'Every Strand Counts',
   logoImage: 'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=1080&q=80',
   logoImagePath: '',
@@ -375,7 +375,7 @@ const mapSettingsRowToTheme = (row) => {
 export function ThemeProvider({ children }) {
   const [theme, setTheme] = useState(() => {
     try {
-      const saved = localStorage.getItem('strandshare_theme');
+      const saved = localStorage.getItem('Donivra_theme');
       const parsedTheme = saved ? JSON.parse(saved) : {};
       const mergedTheme = mergeTheme(parsedTheme);
       
@@ -628,7 +628,7 @@ export function ThemeProvider({ children }) {
   // Save theme to localStorage whenever it changes
   useEffect(() => {
     try {
-      localStorage.setItem('strandshare_theme', JSON.stringify(theme));
+      localStorage.setItem('Donivra_theme', JSON.stringify(theme));
       // Update CSS variables in real-time
       applyThemeVariables(theme);
       applyFaviconFromTheme(theme);
@@ -695,7 +695,7 @@ export function ThemeProvider({ children }) {
 
   const resetTheme = () => {
     setTheme(DEFAULT_THEME);
-    localStorage.removeItem('strandshare_theme');
+    localStorage.removeItem('Donivra_theme');
   };
 
   const uploadImage = (imageType, file) => {
@@ -733,3 +733,4 @@ export function ThemeProvider({ children }) {
     </ThemeContext.Provider>
   );
 }
+

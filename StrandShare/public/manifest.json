@@ -1,6 +1,6 @@
 {
-  "short_name": "StrandShare",
-  "name": "StrandShare - Hair Donation Platform",
+  "short_name": "Donivra",
+  "name": "Donivra - Hair Donation Platform",
   "description": "Join our community of donors and recipients. Your contribution brings confidence and joy to those battling hair loss.",
   "icons": [
     {
@@ -32,3 +32,4 @@
     }
   ]
 }
+

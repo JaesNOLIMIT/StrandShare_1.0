@@ -194,7 +194,7 @@ function createHospitalInviteAdminClient() {
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: false,
-      storageKey: 'strandshare-hospital-invite-admin-client',
+      storageKey: 'Donivra-hospital-invite-admin-client',
     },
   });
 
@@ -2936,4 +2936,5 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
     </div>
   );
 }
+
 

@@ -998,7 +998,7 @@ export default function WigRequestPage({ userProfile }) {
     );
   }, [selectedSubmittedRequest]);
 
-  const previewBrandName = String(theme?.brandName || 'StrandShare').trim() || 'StrandShare';
+  const previewBrandName = String(theme?.brandName || 'Donivra').trim() || 'Donivra';
   const previewLogoUrl = String(theme?.logoImage || '').trim();
   const previewLogoPath = String(theme?.logoImagePath || '').trim();
   const previewLogoCandidates = useMemo(() => {
@@ -2577,4 +2577,5 @@ export default function WigRequestPage({ userProfile }) {
     </div>
   );
 }
+
 

@@ -9,7 +9,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: strandshare/wig-ai-server:latest
+    image: Donivra/wig-ai-server:latest
     container_name: wig_ai_server
     restart: unless-stopped
     ports:
@@ -33,3 +33,4 @@ services:
 
 volumes:
   models:
+

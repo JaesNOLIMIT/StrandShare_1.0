@@ -9,7 +9,7 @@ export default function ConfirmationCompletePage() {
   const backgroundColor = theme.backgroundColor || '#f8fafc';
   const primaryTextColor = theme.primaryTextColor || '#0f172a';
   const secondaryTextColor = theme.secondaryTextColor || '#334155';
-  const brandName = theme.brandName || 'StrandShare';
+  const brandName = theme.brandName || 'Donivra';
 
   const goToLogin = () => {
     if (typeof window === 'undefined') return;
@@ -48,3 +48,4 @@ export default function ConfirmationCompletePage() {
     </main>
   );
 }
+

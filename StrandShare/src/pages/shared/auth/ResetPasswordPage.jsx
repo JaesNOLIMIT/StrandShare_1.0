@@ -414,7 +414,7 @@ export default function ResetPasswordPage() {
             {theme.logoImage ? (
               <img
                 src={theme.logoImage}
-                alt={`${theme.brandName || 'StrandShare'} logo`}
+                alt={`${theme.brandName || 'Donivra'} logo`}
                 className="w-8 h-8 rounded-lg object-cover border border-gray-200"
               />
             ) : (

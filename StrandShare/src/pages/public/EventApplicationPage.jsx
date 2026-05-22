@@ -359,7 +359,7 @@ function createIsolatedAuthClient() {
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: false,
-      storageKey: 'strandshare-event-application-otp-client',
+      storageKey: 'Donivra-event-application-otp-client',
     },
   });
 
@@ -626,7 +626,7 @@ export default function EventApplicationPage() {
 
   const incomingTransition = (() => {
     try {
-      return typeof window !== 'undefined' ? sessionStorage.getItem('strandshare:incoming-transition') : '';
+      return typeof window !== 'undefined' ? sessionStorage.getItem('Donivra:incoming-transition') : '';
     } catch {
       return '';
     }
@@ -634,7 +634,7 @@ export default function EventApplicationPage() {
 
   useEffect(() => {
     if (incomingTransition === 'apply') {
-      try { sessionStorage.removeItem('strandshare:incoming-transition'); } catch { /* ignore */ }
+      try { sessionStorage.removeItem('Donivra:incoming-transition'); } catch { /* ignore */ }
     }
   }, [incomingTransition]);
 
@@ -1613,7 +1613,7 @@ export default function EventApplicationPage() {
                       type="text"
                       value={form.socialPageName}
                       onChange={updateField('socialPageName')}
-                      placeholder="e.g., StrandShare PH, John's Page"
+                      placeholder="e.g., Donivra PH, John's Page"
                       className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:ring-2"
                       style={{ '--tw-ring-color': primaryColor }}
                     />
@@ -2009,3 +2009,4 @@ export default function EventApplicationPage() {
     </Wrapper>
   );
 }
+

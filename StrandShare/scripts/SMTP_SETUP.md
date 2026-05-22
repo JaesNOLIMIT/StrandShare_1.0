@@ -4,7 +4,7 @@ Use this to send queued emails from `public."SMTP_Email_Outbox"`.
 
 ## 1) Prepare Gmail sender
 
-1. Use a dedicated Gmail or Google Workspace mailbox for StrandShare.
+1. Use a dedicated Gmail or Google Workspace mailbox for Donivra.
 2. Enable 2-Step Verification on that account.
 3. Generate an App Password (16 characters).
 4. Keep that password for `SMTP_PASS`.
@@ -25,7 +25,7 @@ SMTP_SECURE=false
 SMTP_USER=suriagaadrian@gmail.com
 SMTP_PASS=dvsk ixhd zjva juaq
 SMTP_FROM_EMAIL=suriagaadrian@gmail.com
-SMTP_FROM_NAME=StrandShare
+SMTP_FROM_NAME=Donivra
 SMTP_REPLY_TO=<optional-reply-address>
 
 SMTP_BATCH_SIZE=25
@@ -51,7 +51,7 @@ $env:SMTP_SECURE="false"
 $env:SMTP_USER="<your-gmail-address>"
 $env:SMTP_PASS="<gmail-app-password>"
 $env:SMTP_FROM_EMAIL="<your-gmail-address>"
-$env:SMTP_FROM_NAME="StrandShare"
+$env:SMTP_FROM_NAME="Donivra"
 npm run smtp:worker:once
 ```
 
@@ -76,4 +76,5 @@ node scripts/processSmtpOutbox.mjs --loop --interval=30
 ## 5) Production recommendation
 
 Run this worker as a background service (PM2, Windows Task Scheduler, systemd, container, etc.) so queued notifications are delivered automatically.
+
 

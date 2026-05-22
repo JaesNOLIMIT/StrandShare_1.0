@@ -311,7 +311,7 @@ function createIsolatedAuthClient() {
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: false,
-      storageKey: 'strandshare-org-application-otp-client',
+      storageKey: 'Donivra-org-application-otp-client',
     },
   });
 
@@ -1586,7 +1586,7 @@ export default function PartnershipApplicationPage() {
 
   const incomingTransition = (() => {
     try {
-      return typeof window !== 'undefined' ? sessionStorage.getItem('strandshare:incoming-transition') : '';
+      return typeof window !== 'undefined' ? sessionStorage.getItem('Donivra:incoming-transition') : '';
     } catch {
       return '';
     }
@@ -1594,7 +1594,7 @@ export default function PartnershipApplicationPage() {
 
   useEffect(() => {
     if (incomingTransition === 'apply') {
-      try { sessionStorage.removeItem('strandshare:incoming-transition'); } catch { /* ignore */ }
+      try { sessionStorage.removeItem('Donivra:incoming-transition'); } catch { /* ignore */ }
     }
   }, [incomingTransition]);
 
@@ -1731,7 +1731,7 @@ export default function PartnershipApplicationPage() {
                       onChange={updateField('hospitalName')}
                       className={fieldClassName}
                       style={fieldStyle}
-                      placeholder="Example: StrandShare Medical Center"
+                      placeholder="Example: Donivra Medical Center"
                       required
                     />
                   </label>
@@ -2491,3 +2491,4 @@ export default function PartnershipApplicationPage() {
     </Wrapper>
   );
 }
+

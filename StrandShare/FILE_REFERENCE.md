@@ -1,4 +1,4 @@
-# StrandShare Frontend - File Reference Guide
+# Donivra Frontend - File Reference Guide
 
 ## 📁 Project Structure & File Purposes
 
@@ -333,3 +333,4 @@ export default function ComponentName() {
 **Last Updated**: March 2024
 **Version**: 1.0.0
 **Status**: Production Ready ✅
+

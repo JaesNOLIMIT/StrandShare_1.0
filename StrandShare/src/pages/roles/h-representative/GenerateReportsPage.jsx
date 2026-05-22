@@ -33,8 +33,8 @@ const PATIENTS_TABLE = 'Patients';
 const USERS_TABLE = 'users';
 const RELEASE_SCHEDULES_TABLE = 'Release_Schedules';
 
-const SCHEDULES_STORAGE_KEY = 'strandshare.hrep.report.schedules';
-const HISTORY_STORAGE_KEY = 'strandshare.hrep.report.history';
+const SCHEDULES_STORAGE_KEY = 'Donivra.hrep.report.schedules';
+const HISTORY_STORAGE_KEY = 'Donivra.hrep.report.history';
 
 const tabs = [
   { id: 'quick', label: 'Quick Generate' },
@@ -141,7 +141,7 @@ function createDefaultSchedules() {
       cadence: 'weekly',
       time: '07:00',
       format: 'csv',
-      recipients: 'hrepresentative@strandshare.org',
+      recipients: 'hrepresentative@Donivra.org',
       status: 'Active',
       createdAt: new Date().toISOString(),
       lastRunAt: null,
@@ -154,7 +154,7 @@ function createDefaultSchedules() {
       cadence: 'monthly',
       time: '08:00',
       format: 'pdf',
-      recipients: 'operations@strandshare.org',
+      recipients: 'operations@Donivra.org',
       status: 'Paused',
       createdAt: new Date().toISOString(),
       lastRunAt: null,
@@ -1696,3 +1696,4 @@ export default function GenerateReportsPage({ userProfile }) {
     </div>
   );
 }
+

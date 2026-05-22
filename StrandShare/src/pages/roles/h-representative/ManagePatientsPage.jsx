@@ -388,7 +388,7 @@ function createPatientInviteAdminClient() {
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: false,
-      storageKey: 'strandshare-hospital-patient-invite-auth-client',
+      storageKey: 'Donivra-hospital-patient-invite-auth-client',
     },
   });
 
@@ -2410,4 +2410,5 @@ function DrawerRow({ label, value }) {
     </div>
   );
 }
+
 

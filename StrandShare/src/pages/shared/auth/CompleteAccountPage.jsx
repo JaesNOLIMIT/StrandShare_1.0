@@ -3,8 +3,8 @@ import { AlertTriangle, CheckCircle2, Loader2, Save } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
-const USER_PROFILE_STORAGE_KEY = 'strandshare_user_profile';
-const USER_PROFILE_READY_EVENT = 'strandshare-profile-ready';
+const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
+const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
 
 const EMPTY_FORM = {
   firstName: '',
@@ -426,3 +426,4 @@ export default function CompleteAccountPage() {
     </div>
   );
 }
+
