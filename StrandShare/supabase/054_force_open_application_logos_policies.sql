@@ -20,8 +20,9 @@ values ('hospital_logos', 'hospital_logos', true)
 on conflict (id) do update set public = excluded.public;
 
 -- ---------------------------------------------------------------------------
--- Drop EVERY policy on storage.objects that mentions either bucket name
--- (catches restrictive policies, name-mismatched policies, etc.)
+-- Drop EVERY policy on storage.objects that references either bucket name,
+-- either in policy name OR in policy definition (qual/with_check). This
+-- catches restrictive policies with generic names.
 -- ---------------------------------------------------------------------------
 
 do $$
@@ -29,13 +30,20 @@ declare
   policy_record record;
 begin
   for policy_record in
-    select policyname
+    select
+      policyname,
+      coalesce(qual, '') as qual,
+      coalesce(with_check, '') as with_check
     from pg_policies
     where schemaname = 'storage'
       and tablename = 'objects'
       and (
         policyname ilike '%organization_logos%'
         or policyname ilike '%hospital_logos%'
+        or coalesce(qual, '') ilike '%organization_logos%'
+        or coalesce(qual, '') ilike '%hospital_logos%'
+        or coalesce(with_check, '') ilike '%organization_logos%'
+        or coalesce(with_check, '') ilike '%hospital_logos%'
       )
   loop
     execute format('drop policy if exists %I on storage.objects', policy_record.policyname);
@@ -81,21 +89,27 @@ declare
 begin
   raise notice '--- storage.objects policies for application logo buckets ---';
   for policy_record in
-    select policyname, cmd, permissive, roles
+    select policyname, cmd, permissive, roles, qual, with_check
     from pg_policies
     where schemaname = 'storage'
       and tablename = 'objects'
       and (
         policyname ilike '%organization_logos%'
         or policyname ilike '%hospital_logos%'
+        or coalesce(qual, '') ilike '%organization_logos%'
+        or coalesce(qual, '') ilike '%hospital_logos%'
+        or coalesce(with_check, '') ilike '%organization_logos%'
+        or coalesce(with_check, '') ilike '%hospital_logos%'
       )
     order by policyname
   loop
-    raise notice '% | cmd=% | permissive=% | roles=%',
+    raise notice '% | cmd=% | permissive=% | roles=% | using=% | with_check=%',
       policy_record.policyname,
       policy_record.cmd,
       policy_record.permissive,
-      policy_record.roles;
+      policy_record.roles,
+      policy_record.qual,
+      policy_record.with_check;
   end loop;
 end
 $$;

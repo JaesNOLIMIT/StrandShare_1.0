@@ -285,11 +285,11 @@ function mapStorageUploadError(rawMessage, bucketId = HOSPITAL_LOGOS_BUCKET) {
   const lower = message.toLowerCase();
 
   if (lower.includes('bucket') && lower.includes('not found')) {
-    return 'Hospital logo bucket is missing. Run migration 010_hospital_logos_storage_policies.sql and retry.';
+    return 'Hospital logo bucket is missing. Run migration 138_fix_hospital_logos_storage_policies.sql and retry.';
   }
 
   if (lower.includes('row-level security')) {
-    return 'Hospital logo upload blocked by Storage RLS policy. Run migration 054_force_open_application_logos_policies.sql in Supabase SQL Editor and retry. If still blocked, a leftover restrictive policy may exist - check pg_policies output.';
+    return 'Hospital logo upload blocked by Storage RLS policy. Run migration 138_fix_hospital_logos_storage_policies.sql in Supabase SQL Editor and retry. If still blocked, check storage.objects policies in pg_policies for leftover restrictive rules.';
   }
 
   return message;
@@ -621,7 +621,7 @@ function mapApplicationSchemaError(rawMessage) {
   }
 
   if (lower.includes('bucket') && lower.includes('hospital_logos')) {
-    return 'Hospital logo bucket is missing or blocked. Run migration 054_force_open_application_logos_policies.sql, then refresh the app.';
+    return 'Hospital logo bucket is missing or blocked. Run migration 138_fix_hospital_logos_storage_policies.sql, then refresh the app.';
   }
 
   if (lower.includes('storage') || lower.includes('row-level security')) {
@@ -633,6 +633,17 @@ function mapApplicationSchemaError(rawMessage) {
   }
 
   return message;
+}
+
+function isRecoverableOptionalLogoUploadError(rawMessage) {
+  const lower = String(rawMessage || '').trim().toLowerCase();
+  if (!lower) return false;
+  return (
+    lower.includes('row-level security')
+    || (lower.includes('bucket') && lower.includes('hospital_logos'))
+    || (lower.includes('bucket') && lower.includes('not found'))
+    || lower.includes('storage policy')
+  );
 }
 
 async function uploadApplicationLogo(file, entityName, bucketId = HOSPITAL_LOGOS_BUCKET) {
@@ -1527,10 +1538,21 @@ export default function PartnershipApplicationPage() {
       }
 
       let hospitalLogoUrl = '';
+      let logoUploadNotice = '';
 
       if (logoFile) {
-        const uploadResult = await uploadApplicationLogo(logoFile, entityName, HOSPITAL_LOGOS_BUCKET);
-        hospitalLogoUrl = uploadResult.publicUrl;
+        try {
+          const uploadResult = await uploadApplicationLogo(logoFile, entityName, HOSPITAL_LOGOS_BUCKET);
+          hospitalLogoUrl = uploadResult.publicUrl;
+        } catch (logoUploadError) {
+          const rawLogoUploadMessage = String(logoUploadError?.message || logoUploadError || '');
+          if (!isRecoverableOptionalLogoUploadError(rawLogoUploadMessage)) {
+            throw logoUploadError;
+          }
+          logoUploadNotice = mapStorageUploadError(rawLogoUploadMessage, HOSPITAL_LOGOS_BUCKET);
+          console.warn('[PartnershipApplication] Optional hospital logo upload failed; continuing without logo:', rawLogoUploadMessage);
+          hospitalLogoUrl = '';
+        }
       }
 
       const createHospitalResult = await supabase
@@ -1586,7 +1608,11 @@ export default function PartnershipApplicationPage() {
       if (otpClientRef.current) {
         await otpClientRef.current.auth.signOut().catch(() => undefined);
       }
-      setSuccessMessage('Application submitted successfully. Your partner hospital application is now pending admin review.');
+      setSuccessMessage(
+        logoUploadNotice
+          ? `Application submitted successfully. Your partner hospital application is now pending admin review. Logo upload was skipped: ${logoUploadNotice}`
+          : 'Application submitted successfully. Your partner hospital application is now pending admin review.'
+      );
       setSubmittedHospitalName(entityName);
       setIsSubmissionComplete(true);
     } catch (error) {
