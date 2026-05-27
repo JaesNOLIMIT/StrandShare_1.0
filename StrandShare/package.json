@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "A hair donation platform - Donivra",
   "private": true,
+  "engines": {
+    "node": "20.x"
+  },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.14",
     "@react-three/drei": "^9.114.0",
