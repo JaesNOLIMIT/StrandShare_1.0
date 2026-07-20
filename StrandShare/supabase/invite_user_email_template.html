@@ -54,6 +54,20 @@
                   <p style="margin:0 0 16px 0;font-size:14px;line-height:1.7;color:#c9c9c9;">
                     Your partner hospital account has been approved. Use the login credentials below, then change your password after your first login.
                   </p>
+                  {{ else if eq .Data.decision "access_enabled" }}
+                  <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.25;color:#ffffff;font-weight:800;">
+                    Partner Hospital Access Turned On
+                  </h1>
+                  <p style="margin:0 0 16px 0;font-size:14px;line-height:1.7;color:#c9c9c9;">
+                    Your partner hospital account access has been turned on. You can now log in using your H-Representative credentials.
+                  </p>
+                  {{ else if eq .Data.decision "access_disabled" }}
+                  <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.25;color:#ffffff;font-weight:800;">
+                    Partner Hospital Access Turned Off
+                  </h1>
+                  <p style="margin:0 0 16px 0;font-size:14px;line-height:1.7;color:#c9c9c9;">
+                    Your partner hospital account access has been turned off by an administrator.
+                  </p>
                   {{ else }}
                   <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.25;color:#ffffff;font-weight:800;">
                     Partner Hospital Application Rejected
@@ -107,6 +121,9 @@
                         <div><strong>{{ .Data.account_label }}:</strong> {{ .Data.account_value }}</div>
                         <div><strong>Role:</strong> {{ .Data.role_label }}</div>
                         <div><strong>Login Email:</strong> {{ .Data.recipient_email }}</div>
+                        {{ if .Data.access_status }}
+                        <div><strong>Access:</strong> {{ .Data.access_status }}</div>
+                        {{ end }}
                         {{ if .Data.review_notes }}
                         <div><strong>Review Notes:</strong> {{ .Data.review_notes }}</div>
                         {{ end }}

@@ -8,9 +8,6 @@ import philippineAddressOptions from '../../data/philippineAddressOptions.json';
 import { TransitionFlipEntrance } from '../../components/transitions/TransitionFlip';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-const USERS_TABLE = 'users';
-const USER_DETAILS_TABLE = 'user_details';
-const HOSPITALS_TABLE = 'Hospitals';
 const HOSPITAL_LOGOS_BUCKET = 'hospital_logos';
 const MAX_LOGO_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 let isolatedAuthClient = null;
@@ -175,7 +172,6 @@ const initialForm = {
 };
 
 const LEAD_GENDER_OPTIONS = ['Male', 'Female', 'Non-binary', 'Prefer not to say'];
-const PHILIPPINE_TIME_ZONE = 'Asia/Manila';
 const TERMS_AND_AGREEMENT_PDF_PATH = '/legal/donivra-terms-and-agreement.pdf';
 
 function toTitle(value = '') {
@@ -191,13 +187,6 @@ function buildDisplayName(firstName = '', lastName = '') {
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function normalizeRole(value = '') {
-  return String(value)
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_-]+/g, '');
 }
 
 function toSafeFileName(fileName = 'hospital-logo.png') {
@@ -251,28 +240,6 @@ function toStoredPhoneNumber(value = '') {
     : '';
 }
 
-function getPhilippineTimestamp(date = new Date()) {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: PHILIPPINE_TIME_ZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  });
-
-  const parts = formatter.formatToParts(date).reduce((acc, part) => {
-    if (part.type !== 'literal') {
-      acc[part.type] = part.value;
-    }
-    return acc;
-  }, {});
-
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+08:00`;
-}
-
 function toCoordinateOrNull(value = '') {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -285,11 +252,11 @@ function mapStorageUploadError(rawMessage, bucketId = HOSPITAL_LOGOS_BUCKET) {
   const lower = message.toLowerCase();
 
   if (lower.includes('bucket') && lower.includes('not found')) {
-    return 'Hospital logo bucket is missing. Run migration 138_fix_hospital_logos_storage_policies.sql and retry.';
+    return 'Hospital logo bucket is missing. Run migration 139_fix_hospital_logos_storage_policies.sql and retry.';
   }
 
   if (lower.includes('row-level security')) {
-    return 'Hospital logo upload blocked by Storage RLS policy. Run migration 138_fix_hospital_logos_storage_policies.sql in Supabase SQL Editor and retry. If still blocked, check storage.objects policies in pg_policies for leftover restrictive rules.';
+    return 'Hospital logo upload blocked by Storage RLS policy. Run migration 139_fix_hospital_logos_storage_policies.sql in Supabase SQL Editor and retry. If still blocked, check storage.objects policies in pg_policies for leftover restrictive rules.';
   }
 
   return message;
@@ -603,6 +570,13 @@ function mapApplicationSchemaError(rawMessage) {
   }
 
   if (
+    lower.includes('submit_partner_hospital_application')
+    || lower.includes('could not find the function')
+  ) {
+    return 'Partner hospital submission is not installed in Supabase yet. Run migration 140_partner_hospital_application_submit_rpc.sql, then refresh and submit again.';
+  }
+
+  if (
     (lower.includes('column') && lower.includes('hospitals') && lower.includes('does not exist'))
     || lower.includes('is_approved')
     || lower.includes('approval_status')
@@ -621,7 +595,7 @@ function mapApplicationSchemaError(rawMessage) {
   }
 
   if (lower.includes('bucket') && lower.includes('hospital_logos')) {
-    return 'Hospital logo bucket is missing or blocked. Run migration 138_fix_hospital_logos_storage_policies.sql, then refresh the app.';
+    return 'Hospital logo bucket is missing or blocked. Run migration 139_fix_hospital_logos_storage_policies.sql, then refresh the app.';
   }
 
   if (lower.includes('storage') || lower.includes('row-level security')) {
@@ -646,8 +620,8 @@ function isRecoverableOptionalLogoUploadError(rawMessage) {
   );
 }
 
-async function uploadApplicationLogo(file, entityName, bucketId = HOSPITAL_LOGOS_BUCKET) {
-  if (!supabase) {
+async function uploadApplicationLogo(file, entityName, bucketId = HOSPITAL_LOGOS_BUCKET, client = supabase) {
+  if (!client) {
     throw new Error('Supabase is not configured for file upload.');
   }
 
@@ -655,7 +629,7 @@ async function uploadApplicationLogo(file, entityName, bucketId = HOSPITAL_LOGOS
   const slug = toSlug(entityName) || 'application';
   const filePath = `applications/${slug}-${Date.now()}-${safeName}`;
 
-  const { error: uploadError } = await supabase.storage
+  const { error: uploadError } = await client.storage
     .from(bucketId)
     .upload(filePath, file, {
       upsert: false,
@@ -666,7 +640,7 @@ async function uploadApplicationLogo(file, entityName, bucketId = HOSPITAL_LOGOS
     throw new Error(mapStorageUploadError(uploadError.message, bucketId));
   }
 
-  const { data: publicUrlData } = supabase.storage
+  const { data: publicUrlData } = client.storage
     .from(bucketId)
     .getPublicUrl(filePath);
 
@@ -1053,7 +1027,7 @@ export default function PartnershipApplicationPage() {
   };
 
   const autoPinFromAddressSnapshot = useCallback(async (formSnapshot) => {
-    const query = [
+    const fullQuery = [
       formSnapshot?.hospitalName,
       formSnapshot?.street,
       formSnapshot?.barangay,
@@ -1066,27 +1040,61 @@ export default function PartnershipApplicationPage() {
       .filter(Boolean)
       .join(', ');
 
-    if (!query) {
+    const fallbackQueries = [
+      fullQuery,
+      [
+        formSnapshot?.street,
+        formSnapshot?.barangay,
+        formSnapshot?.city,
+        formSnapshot?.province,
+        formSnapshot?.region,
+        formSnapshot?.country || DEFAULT_COUNTRY,
+      ]
+        .map((part) => String(part || '').trim())
+        .filter(Boolean)
+        .join(', '),
+      [
+        formSnapshot?.city,
+        formSnapshot?.province,
+        formSnapshot?.region,
+        formSnapshot?.country || DEFAULT_COUNTRY,
+      ]
+        .map((part) => String(part || '').trim())
+        .filter(Boolean)
+        .join(', '),
+    ].filter(Boolean);
+
+    if (fallbackQueries.length === 0) {
       return false;
     }
 
     try {
-      const endpoint = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=ph&q=${encodeURIComponent(query)}`;
-      const response = await fetch(endpoint, { method: 'GET', headers: { Accept: 'application/json' } });
-      if (!response.ok) return false;
-      const rows = await response.json();
-      const first = Array.isArray(rows)
-        ? rows.find((row) => Number.isFinite(Number(row?.lat)) && Number.isFinite(Number(row?.lon)))
-        : null;
+      for (const query of fallbackQueries) {
+        const endpoint = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=ph&q=${encodeURIComponent(query)}`;
+        const response = await fetch(endpoint, { method: 'GET', headers: { Accept: 'application/json' } });
 
-      if (!first) return false;
+        if (!response.ok) {
+          continue;
+        }
 
-      setForm((previous) => ({
-        ...previous,
-        latitude: Number(first.lat).toFixed(7),
-        longitude: Number(first.lon).toFixed(7),
-      }));
-      return true;
+        const rows = await response.json();
+        const first = Array.isArray(rows)
+          ? rows.find((row) => Number.isFinite(Number(row?.lat)) && Number.isFinite(Number(row?.lon)))
+          : null;
+
+        if (!first) {
+          continue;
+        }
+
+        setForm((previous) => ({
+          ...previous,
+          latitude: Number(first.lat).toFixed(7),
+          longitude: Number(first.lon).toFixed(7),
+        }));
+        return true;
+      }
+
+      return false;
     } catch {
       return false;
     }
@@ -1193,6 +1201,7 @@ export default function PartnershipApplicationPage() {
         email: normalizedEmail,
         options: {
           shouldCreateUser: true,
+          emailRedirectTo: `${window.location.origin}/apply-partnership`,
         },
       });
 
@@ -1205,7 +1214,7 @@ export default function PartnershipApplicationPage() {
       setOtpVerifiedAuthUserId('');
       setOtpNotice({
         type: 'success',
-        message: `A 6-digit code was sent to ${normalizedEmail}. Enter it below to verify your email.`,
+        message: `A confirmation email was sent to ${normalizedEmail}. Enter the 6-digit code below to verify your email.`,
       });
       setOtpCooldownSeconds(60);
     } catch (error) {
@@ -1275,7 +1284,6 @@ export default function PartnershipApplicationPage() {
         }).catch(() => undefined);
       }
 
-      await otpClient.auth.signOut().catch(() => undefined);
     } catch (error) {
       setOtpVerifiedEmail('');
       setOtpVerifiedAuthUserId('');
@@ -1392,8 +1400,6 @@ export default function PartnershipApplicationPage() {
     const suffix = toTitle(form.suffix);
     const gender = toTitle(form.gender);
     const lastName = toTitle(form.lastName);
-    const nowIso = getPhilippineTimestamp();
-    const joinedDate = nowIso.slice(0, 10);
     const hospitalName = form.hospitalName.trim();
     const hospitalHeadName = form.hospitalHeadName.trim();
     const hospitalHeadTitle = form.hospitalHeadTitle.trim();
@@ -1408,133 +1414,21 @@ export default function PartnershipApplicationPage() {
     setIsSubmitting(true);
 
     try {
-      const existingUserResponse = await supabase
-        .from(USERS_TABLE)
-        .select('user_id, email, role, auth_user_id')
-        .eq('email', normalizedEmail)
-        .maybeSingle();
+      const submitClient = otpClientRef.current || createIsolatedAuthClient();
+      otpClientRef.current = submitClient;
 
-      if (existingUserResponse.error) {
-        throw new Error(existingUserResponse.error.message);
+      const { data: sessionData, error: sessionError } = await submitClient.auth.getSession();
+
+      if (sessionError) {
+        throw new Error(sessionError.message);
       }
 
-      const existingUser = existingUserResponse.data || null;
-      const existingRole = normalizeRole(existingUser?.role);
-      const allowedExistingRole = !existingRole
-        || ['user', 'partner', 'hospital', 'partnerhospital', 'hrepresentative'].includes(existingRole);
+      const verifiedSession = sessionData?.session || null;
+      const verifiedAuthUserId = verifiedSession?.user?.id || '';
+      const verifiedSessionEmail = String(verifiedSession?.user?.email || '').trim().toLowerCase();
 
-      if (existingUser && !allowedExistingRole) {
-        throw new Error('This email is linked to a restricted account role. Use a different email for the H-Representative account.');
-      }
-
-      if (existingUser?.auth_user_id && otpVerifiedAuthUserId && existingUser.auth_user_id !== otpVerifiedAuthUserId) {
-        throw new Error('The verified OTP account does not match this email. Request a new code and verify again.');
-      }
-
-      const authUserId = existingUser?.auth_user_id || otpVerifiedAuthUserId || null;
-
-      if (!authUserId) {
+      if (!verifiedSession || !verifiedAuthUserId || verifiedAuthUserId !== otpVerifiedAuthUserId || verifiedSessionEmail !== normalizedEmail) {
         throw new Error('Email verification session expired. Please request and verify a new 6-digit code.');
-      }
-
-      let userId = Number(existingUser?.user_id || 0);
-
-      if (existingUser?.user_id) {
-        const updateUserResult = await supabase
-          .from(USERS_TABLE)
-          .update({
-            auth_user_id: authUserId,
-            role: 'user',
-            access_start: null,
-            access_end: null,
-            is_active: false,
-            updated_at: nowIso,
-          })
-          .eq('user_id', existingUser.user_id)
-          .select('user_id')
-          .maybeSingle();
-
-        if (updateUserResult.error) {
-          throw new Error(updateUserResult.error.message);
-        }
-
-        userId = Number(updateUserResult.data?.user_id || existingUser.user_id);
-      } else {
-        const insertUserResult = await supabase
-          .from(USERS_TABLE)
-          .insert({
-            auth_user_id: authUserId,
-            email: normalizedEmail,
-            role: 'user',
-            access_start: null,
-            access_end: null,
-            is_active: false,
-            created_at: nowIso,
-            updated_at: nowIso,
-          })
-          .select('user_id')
-          .maybeSingle();
-
-        if (insertUserResult.error) {
-          throw new Error(insertUserResult.error.message);
-        }
-
-        userId = Number(insertUserResult.data?.user_id || 0);
-      }
-
-      if (!userId) {
-        throw new Error('Unable to resolve local user profile for the applicant.');
-      }
-
-      const userDetailsPayload = {
-        user_id: userId,
-        first_name: firstName,
-        middle_name: middleName || null,
-        suffix: suffix || null,
-        birthdate: form.birthdate || null,
-        gender: gender || null,
-        last_name: lastName,
-        contact_number: leadContactNumber,
-        street: form.leadStreet.trim(),
-        barangay: form.leadBarangay.trim() || null,
-        city: form.leadCity.trim(),
-        province: form.leadProvince.trim(),
-        region: form.leadRegion.trim(),
-        country: form.leadCountry.trim(),
-        updated_at: nowIso,
-      };
-
-      const existingDetailsResult = await supabase
-        .from(USER_DETAILS_TABLE)
-        .select('user_id')
-        .eq('user_id', userId)
-        .limit(1);
-
-      if (existingDetailsResult.error) {
-        throw new Error(existingDetailsResult.error.message);
-      }
-
-      if ((existingDetailsResult.data || []).length > 0) {
-        const updateDetailsResult = await supabase
-          .from(USER_DETAILS_TABLE)
-          .update(userDetailsPayload)
-          .eq('user_id', userId);
-
-        if (updateDetailsResult.error) {
-          throw new Error(updateDetailsResult.error.message);
-        }
-      } else {
-        const insertDetailsResult = await supabase
-          .from(USER_DETAILS_TABLE)
-          .insert({
-            ...userDetailsPayload,
-            joined_date: joinedDate,
-            created_at: nowIso,
-          });
-
-        if (insertDetailsResult.error) {
-          throw new Error(insertDetailsResult.error.message);
-        }
       }
 
       let hospitalLogoUrl = '';
@@ -1542,7 +1436,7 @@ export default function PartnershipApplicationPage() {
 
       if (logoFile) {
         try {
-          const uploadResult = await uploadApplicationLogo(logoFile, entityName, HOSPITAL_LOGOS_BUCKET);
+          const uploadResult = await uploadApplicationLogo(logoFile, entityName, HOSPITAL_LOGOS_BUCKET, submitClient);
           hospitalLogoUrl = uploadResult.publicUrl;
         } catch (logoUploadError) {
           const rawLogoUploadMessage = String(logoUploadError?.message || logoUploadError || '');
@@ -1555,39 +1449,40 @@ export default function PartnershipApplicationPage() {
         }
       }
 
-      const createHospitalResult = await supabase
-        .from(HOSPITALS_TABLE)
-        .insert({
-          Hospital_Name: hospitalName,
-          Hospital_Logo: hospitalLogoUrl || null,
-          Hospital_Head_Name: hospitalHeadName || null,
-          Hospital_Head_Title: hospitalHeadTitle || null,
-          Hospital_Head_Contact_Number: hospitalHeadContactNumber || null,
-          Hospital_Head_Email: hospitalHeadEmail || null,
-          Contact_Number: entityContactNumber,
-          Street: form.street.trim(),
-          Barangay: form.barangay.trim() || null,
-          City: form.city.trim(),
-          Province: form.province.trim(),
-          Region: form.region.trim(),
-          Country: form.country.trim(),
-          Latitude: selectedLat,
-          Longitude: selectedLng,
-          Is_Approved: false,
-          Approval_Status: 'Pending',
-          Approved_By: null,
-          Approved_At: null,
-          Review_Notes: null,
-          Created_By: userId,
-          Updated_By: userId,
-          Created_At: nowIso,
-          Updated_At: nowIso,
-        })
-        .select('Hospital_ID')
-        .maybeSingle();
+      const submitApplicationResult = await submitClient.rpc('submit_partner_hospital_application', {
+        p_email: normalizedEmail,
+        p_first_name: firstName,
+        p_middle_name: middleName || null,
+        p_last_name: lastName,
+        p_suffix: suffix || null,
+        p_birthdate: form.birthdate || null,
+        p_gender: gender || null,
+        p_lead_contact_number: leadContactNumber,
+        p_lead_street: form.leadStreet.trim(),
+        p_lead_barangay: form.leadBarangay.trim() || null,
+        p_lead_city: form.leadCity.trim(),
+        p_lead_province: form.leadProvince.trim(),
+        p_lead_region: form.leadRegion.trim(),
+        p_lead_country: form.leadCountry.trim(),
+        p_hospital_name: hospitalName,
+        p_hospital_logo_url: hospitalLogoUrl || null,
+        p_hospital_head_name: hospitalHeadName || null,
+        p_hospital_head_title: hospitalHeadTitle || null,
+        p_hospital_head_contact_number: hospitalHeadContactNumber || null,
+        p_hospital_head_email: hospitalHeadEmail || null,
+        p_hospital_contact_number: entityContactNumber,
+        p_hospital_street: form.street.trim(),
+        p_hospital_barangay: form.barangay.trim() || null,
+        p_hospital_city: form.city.trim(),
+        p_hospital_province: form.province.trim(),
+        p_hospital_region: form.region.trim(),
+        p_hospital_country: form.country.trim(),
+        p_latitude: selectedLat,
+        p_longitude: selectedLng,
+      });
 
-      if (createHospitalResult.error) {
-        throw new Error(createHospitalResult.error.message);
+      if (submitApplicationResult.error) {
+        throw new Error(submitApplicationResult.error.message);
       }
 
       setForm(initialForm);

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Partner Hospital Approved</title>
+  </head>
+  <body style="margin:0;padding:0;background-color:#111111;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your Donivra partner hospital account has been approved.</div>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#111111;padding:28px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;background-color:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="padding:22px 24px;background:#000000;border-bottom:1px solid #2a2a2a;font-family:Segoe UI,Arial,Helvetica,sans-serif;">
+                <div style="font-size:20px;line-height:1.2;font-weight:800;color:#ffffff;">Donivra</div>
+                <div style="font-size:12px;line-height:1.4;color:#b3b3b3;">Partner Hospital Account</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:28px 24px 20px 24px;font-family:Segoe UI,Arial,Helvetica,sans-serif;">
+                <p style="margin:0 0 10px 0;font-size:12px;line-height:1.4;color:#10b981;font-weight:700;letter-spacing:0.7px;text-transform:uppercase;">Application Approved</p>
+                <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.25;color:#ffffff;font-weight:800;">Your partner hospital account is ready</h1>
+                <p style="margin:0 0 16px 0;font-size:14px;line-height:1.7;color:#c9c9c9;">Hello {{manager_name}}, your hospital partnership application has been approved. Use the temporary credentials below to log in as the H-Representative manager.</p>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:10px 0 14px 0;">
+                  <tr>
+                    <td style="background-color:#121212;border:1px solid #2a2a2a;border-radius:12px;padding:16px;">
+                      <div style="font-size:11px;line-height:1.4;color:#9ca3af;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">Account Details</div>
+                      <div style="font-size:14px;line-height:1.8;color:#ffffff;">
+                        <div><strong>Hospital:</strong> {{hospital_name}}</div>
+                        <div><strong>Role:</strong> {{role_label}}</div>
+                        <div><strong>Login Email:</strong> {{recipient_email}}</div>
+                        <div><strong>Temporary Password:</strong> {{temporary_password}}</div>
+                        {{#review_notes}}<div><strong>Review Notes:</strong> {{review_notes}}</div>{{/review_notes}}
+                      </div>
+                    </td>
+                  </tr>
+                </table>
+                <div style="margin:0 0 16px 0;">
+                  <a href="{{login_url}}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 18px;border-radius:8px;">Go To Login</a>
+                </div>
+                <p style="margin:0;font-size:12px;line-height:1.7;color:#9ca3af;">Change your password after your first login.</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:14px 24px;background-color:#0d0d0d;border-top:1px solid #2a2a2a;font-family:Segoe UI,Arial,Helvetica,sans-serif;">
+                <p style="margin:0;font-size:11px;line-height:1.6;color:#8a8a8a;">This is an automated email from Donivra.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

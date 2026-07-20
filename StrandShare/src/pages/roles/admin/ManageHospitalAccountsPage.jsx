@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { createClient } from '@supabase/supabase-js';
 import {
   AlertTriangle,
-  ArrowRightLeft,
   Building2,
   Info,
   Loader2,
@@ -16,9 +16,9 @@ import {
   CheckCircle2,
   X,
 } from 'lucide-react';
-import { createClient } from '@supabase/supabase-js';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import { triggerSmtpNow } from '../../../lib/smtpTriggerClient';
 
 const HOSPITALS_TABLE = 'Hospitals';
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
@@ -26,11 +26,10 @@ const USERS_TABLE = 'users';
 const HOSPITAL_LOGOS_BUCKET = 'hospital_logos';
 const PSGC_BASE_URL = 'https://psgc.gitlab.io/api';
 const PHILIPPINE_TIME_ZONE = 'Asia/Manila';
-let hospitalInviteAdminClient = null;
+let hospitalActionAdminClient = null;
 
 const PAGE_TABS = [
   { id: 'manage', label: 'Manage H-Representatives' },
-  { id: 'assign', label: 'Assign H-Representative' },
   { id: 'applications', label: 'Hospital Applications' },
 ];
 
@@ -123,84 +122,6 @@ function mapStorageUploadError(rawMessage) {
   return message;
 }
 
-function normalizeRoleSlug(roleValue) {
-  return String(roleValue || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
-}
-
-function isHStaffRole(roleValue) {
-  const roleSlug = normalizeRoleSlug(roleValue);
-  return roleSlug === 'hospital' || roleSlug === 'hstaff' || roleSlug === 'hrepresentative';
-}
-
-function mapHospitalStaffError(rawMessage) {
-  const message = String(rawMessage || 'Unable to update hospital staff assignment.');
-  const lowerMessage = message.toLowerCase();
-
-  if (lowerMessage.includes('duplicate key value')) {
-    return 'This H-Representative is already assigned to a hospital.';
-  }
-
-  if (lowerMessage.includes('row-level security')) {
-    return 'Action blocked by database policy. Make sure your account has Admin permissions.';
-  }
-
-  return message;
-}
-
-function mapHospitalInviteError(rawMessage) {
-  const message = String(rawMessage || 'Unable to send hospital invite email.');
-  const lowerMessage = message.toLowerCase();
-
-  if (!message || lowerMessage.includes('missing-service-role')) {
-    return 'Invite email service is not configured. Add REACT_APP_SUPABASE_SERVICE_ROLE_KEY in .env.local and restart the app.';
-  }
-
-  if (lowerMessage.includes('already registered') || lowerMessage.includes('already been registered') || lowerMessage.includes('user already exists')) {
-    return 'Account already exists in Auth. Invite email will be re-created and resent using the invite-user template.';
-  }
-
-  if (lowerMessage.includes('invalid email')) {
-    return 'Invalid H-Representative email address.';
-  }
-
-  if (lowerMessage.includes('row-level security')) {
-    return 'Invite email action blocked by database/auth policy.';
-  }
-
-  return message;
-}
-
-function buildTemporaryPassword() {
-  const numeric = Math.floor(100000 + (Math.random() * 900000));
-  return `Strand-${numeric}!Aa`;
-}
-
-function createHospitalInviteAdminClient() {
-  if (hospitalInviteAdminClient) {
-    return hospitalInviteAdminClient;
-  }
-
-  const url = process.env.REACT_APP_SUPABASE_URL;
-  const serviceRoleKey = process.env.REACT_APP_SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) {
-    return null;
-  }
-
-  hospitalInviteAdminClient = createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-      storageKey: 'Donivra-hospital-invite-admin-client',
-    },
-  });
-
-  return hospitalInviteAdminClient;
-}
-
 function formatDateTime(value) {
   if (!value) return 'N/A';
   const parsed = new Date(value);
@@ -236,6 +157,91 @@ function getHospitalApprovalStatusLabel(statusKey) {
   return 'Pending';
 }
 
+function mapHospitalEmailError(rawMessage) {
+  const message = String(rawMessage || 'Unable to prepare hospital account email.');
+  const lowerMessage = message.toLowerCase();
+
+  if (!message || lowerMessage.includes('missing-service-role')) {
+    return 'Hospital email service is not configured. Add REACT_APP_SUPABASE_SERVICE_ROLE_KEY in .env.local and restart the app.';
+  }
+
+  if (lowerMessage.includes('user not found')) {
+    return 'The manager Auth account was not found. Ask the applicant to verify email again or resubmit the application.';
+  }
+
+  return message;
+}
+
+function buildTemporaryPassword() {
+  const numeric = Math.floor(100000 + (Math.random() * 900000));
+  return `Strand-${numeric}!Aa`;
+}
+
+function createHospitalActionAdminClient() {
+  if (hospitalActionAdminClient) {
+    return hospitalActionAdminClient;
+  }
+
+  const url = process.env.REACT_APP_SUPABASE_URL;
+  const serviceRoleKey = process.env.REACT_APP_SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceRoleKey) {
+    return null;
+  }
+
+  hospitalActionAdminClient = createClient(url, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      storageKey: 'Donivra-hospital-action-admin-client',
+    },
+  });
+
+  return hospitalActionAdminClient;
+}
+
+function formatHospitalAddress(hospital) {
+  return [
+    hospital?.Street,
+    hospital?.Barangay,
+    hospital?.City,
+    hospital?.Province,
+    hospital?.Region,
+    hospital?.Country,
+  ]
+    .filter(Boolean)
+    .join(', ') || 'No address provided';
+}
+
+function getUserDetails(user) {
+  return Array.isArray(user?.user_details)
+    ? user.user_details[0] || null
+    : user?.user_details || null;
+}
+
+function getUserFullName(user) {
+  const details = getUserDetails(user);
+  return [
+    details?.first_name,
+    details?.middle_name,
+    details?.last_name,
+    details?.suffix,
+  ]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getHospitalApplicantUserId(hospital) {
+  return Number(hospital?.Created_By || 0);
+}
+
+function getHospitalManagerRoleLabel() {
+  return 'H-Representative';
+}
+
 function matchesRegion(regionItem, regionValue) {
   const target = normalizeText(regionValue);
   if (!target) return false;
@@ -251,40 +257,16 @@ function cardClass() {
   return 'rounded-xl border border-gray-200 bg-white p-4 md:p-5';
 }
 
-function getHStaffDisplayName(user) {
-  if (!user) return 'Unknown user';
-
-  const details = Array.isArray(user.user_details)
-    ? user.user_details[0]
-    : user.user_details;
-
-  const fullName = [details?.first_name, details?.middle_name, details?.last_name, details?.suffix]
-    .filter(Boolean)
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (fullName && user.email) {
-    return `${fullName} (${user.email})`;
-  }
-
-  return fullName || user.email || `User #${user.user_id || 'N/A'}`;
-}
-
 export default function ManageHospitalAccountsPage() {
   const { theme } = useTheme();
   const tableHeaderTextColor = theme?.primaryTextColor || '#111827';
-  const primaryTextColor = theme?.primaryTextColor || '#111827';
-  const secondaryTextColor = theme?.secondaryTextColor || '#6b7280';
-  const headingFont = theme?.secondaryFontFamily || theme?.fontFamily || 'Poppins';
-  const bodyFont = theme?.fontFamily || 'Poppins';
 
   const [activeTab, setActiveTab] = useState('manage');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [detailsHospitalId, setDetailsHospitalId] = useState(null);
+  const [applicationInfoHospitalId, setApplicationInfoHospitalId] = useState(null);
   const [hospitals, setHospitals] = useState([]);
-  const [hospitalStaffLinks, setHospitalStaffLinks] = useState([]);
-  const [hStaffUsers, setHStaffUsers] = useState([]);
+  const [applicantUsersById, setApplicantUsersById] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
   const [applicationSearchTerm, setApplicationSearchTerm] = useState('');
   const [applicationStatusFilter, setApplicationStatusFilter] = useState('pending');
@@ -305,25 +287,15 @@ export default function ManageHospitalAccountsPage() {
   const [cityCode, setCityCode] = useState('');
 
   const [isLoadingHospitals, setIsLoadingHospitals] = useState(true);
-  const [isLoadingAssignments, setIsLoadingAssignments] = useState(false);
   const [isLoadingRegions, setIsLoadingRegions] = useState(false);
   const [isLoadingRegionData, setIsLoadingRegionData] = useState(false);
   const [isLoadingBarangays, setIsLoadingBarangays] = useState(false);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [isSavingAssignment, setIsSavingAssignment] = useState(false);
-  const [isReassigning, setIsReassigning] = useState(false);
   const [applicationActionHospitalId, setApplicationActionHospitalId] = useState(null);
-  const [adminUserId, setAdminUserId] = useState(null);
+  const [applicationActionType, setApplicationActionType] = useState('');
+  const [accessActionHospitalId, setAccessActionHospitalId] = useState(null);
   const [deletingHospitalId, setDeletingHospitalId] = useState(null);
-  const [removingLinkId, setRemovingLinkId] = useState(null);
-
-  const [assignmentHospitalId, setAssignmentHospitalId] = useState('');
-  const [assignmentUserId, setAssignmentUserId] = useState('');
-  const [panelAssignUserId, setPanelAssignUserId] = useState('');
-  const [isReassignModalOpen, setIsReassignModalOpen] = useState(false);
-  const [reassignHospitalId, setReassignHospitalId] = useState('');
-  const [reassigningLink, setReassigningLink] = useState(null);
 
   // Modal state for approve/reject decision flow
   const [decisionTarget, setDecisionTarget] = useState(null); // { hospital, nextStatus }
@@ -395,6 +367,7 @@ export default function ManageHospitalAccountsPage() {
     if (!query) return approvedOnly;
 
     return approvedOnly.filter((hospital) => {
+      const applicantUser = applicantUsersById[getHospitalApplicantUserId(hospital)] || null;
       const values = [
         hospital.Hospital_Name,
         hospital.Contact_Number,
@@ -402,13 +375,15 @@ export default function ManageHospitalAccountsPage() {
         hospital.City,
         hospital.Barangay,
         hospital.Street,
+        applicantUser?.email,
+        getUserFullName(applicantUser),
       ]
         .map((item) => normalizeText(item))
         .filter(Boolean);
 
       return values.some((value) => value.includes(query));
     });
-  }, [hospitals, searchTerm]);
+  }, [applicantUsersById, hospitals, searchTerm]);
 
   const filteredHospitalApplications = useMemo(() => {
     const query = normalizeText(applicationSearchTerm);
@@ -422,6 +397,7 @@ export default function ManageHospitalAccountsPage() {
 
         if (!query) return true;
 
+        const applicantUser = applicantUsersById[getHospitalApplicantUserId(hospital)] || null;
         const searchable = [
           hospital.Hospital_Name,
           hospital.Hospital_Head_Name,
@@ -432,7 +408,8 @@ export default function ManageHospitalAccountsPage() {
           hospital.City,
           hospital.Barangay,
           hospital.Street,
-          hospital.Review_Notes,
+          applicantUser?.email,
+          getUserFullName(applicantUser),
         ]
           .map((item) => normalizeText(item))
           .filter(Boolean);
@@ -444,7 +421,7 @@ export default function ManageHospitalAccountsPage() {
         const bTime = new Date(b?.Created_At || b?.Updated_At || 0).getTime();
         return bTime - aTime;
       });
-  }, [hospitals, applicationSearchTerm, applicationStatusFilter]);
+  }, [applicantUsersById, hospitals, applicationSearchTerm, applicationStatusFilter]);
 
   const hospitalsById = useMemo(() => {
     const map = new Map();
@@ -454,50 +431,19 @@ export default function ManageHospitalAccountsPage() {
     return map;
   }, [hospitals]);
 
-  const hStaffUsersById = useMemo(() => {
-    const map = new Map();
-    hStaffUsers.forEach((user) => {
-      map.set(Number(user.user_id), user);
-    });
-    return map;
-  }, [hStaffUsers]);
-
-  const assignedHospitalByUserId = useMemo(() => {
-    const map = new Map();
-    hospitalStaffLinks.forEach((link) => {
-      map.set(Number(link.User_ID), Number(link.Hospital_ID));
-    });
-    return map;
-  }, [hospitalStaffLinks]);
-
-  const unassignedHStaffUsers = useMemo(
-    () => hStaffUsers.filter((user) => !assignedHospitalByUserId.has(Number(user.user_id))),
-    [hStaffUsers, assignedHospitalByUserId],
-  );
-
-  const assignedHStaffCount = useMemo(
-    () => hStaffUsers.filter((user) => assignedHospitalByUserId.has(Number(user.user_id))).length,
-    [hStaffUsers, assignedHospitalByUserId],
-  );
-
   const detailsHospital = useMemo(
     () => (detailsHospitalId ? hospitalsById.get(Number(detailsHospitalId)) || null : null),
     [detailsHospitalId, hospitalsById],
   );
 
-  const detailsHospitalStaffLinks = useMemo(
-    () => hospitalStaffLinks.filter((link) => Number(link.Hospital_ID) === Number(detailsHospitalId)),
-    [hospitalStaffLinks, detailsHospitalId],
+  const applicationInfoHospital = useMemo(
+    () => (applicationInfoHospitalId ? hospitalsById.get(Number(applicationInfoHospitalId)) || null : null),
+    [applicationInfoHospitalId, hospitalsById],
   );
 
-  const availableReassignHospitals = useMemo(() => {
-    if (!reassigningLink) {
-      return hospitals;
-    }
-
-    const currentHospitalId = Number(reassigningLink.Hospital_ID);
-    return hospitals.filter((hospital) => Number(hospital.Hospital_ID) !== currentHospitalId);
-  }, [hospitals, reassigningLink]);
+  const getApplicantUserForHospital = useCallback((hospital) => (
+    applicantUsersById[getHospitalApplicantUserId(hospital)] || null
+  ), [applicantUsersById]);
 
   const visibleCities = useMemo(() => {
     if (!provinceCode) {
@@ -592,68 +538,58 @@ export default function ManageHospitalAccountsPage() {
 
       if (error) throw error;
 
-      setHospitals(data || []);
-    } catch (error) {
-      setErrorMessage(error.message || 'Unable to load hospitals.');
-    } finally {
-      setIsLoadingHospitals(false);
-    }
-  }, []);
+      const hospitalRows = data || [];
+      setHospitals(hospitalRows);
 
-  const fetchHStaffUsers = useCallback(async () => {
-    if (!isSupabaseConfigured || !supabase) {
-      setHStaffUsers([]);
-      return;
-    }
+      const applicantIds = [...new Set(
+        hospitalRows
+          .map((hospital) => getHospitalApplicantUserId(hospital))
+          .filter((userId) => userId > 0),
+      )];
 
-    try {
-      const { data, error } = await supabase
+      if (applicantIds.length === 0) {
+        setApplicantUsersById({});
+        return;
+      }
+
+      const applicantResult = await supabase
         .from(USERS_TABLE)
         .select(`
           user_id,
           email,
+          auth_user_id,
           role,
           is_active,
           user_details:user_details (
             first_name,
             middle_name,
             last_name,
-            suffix
+            suffix,
+            birthdate,
+            gender,
+            street,
+            barangay,
+            city,
+            province,
+            region,
+            country,
+            contact_number,
+            joined_date
           )
         `)
-        .order('email', { ascending: true });
+        .in('user_id', applicantIds);
 
-      if (error) throw error;
+      if (applicantResult.error) throw applicantResult.error;
 
-      const hStaffList = (data || [])
-        .filter((user) => isHStaffRole(user?.role))
-        .sort((a, b) => getHStaffDisplayName(a).localeCompare(getHStaffDisplayName(b), 'en', { sensitivity: 'base' }));
-
-      setHStaffUsers(hStaffList);
+      const nextApplicantsById = {};
+      (applicantResult.data || []).forEach((user) => {
+        nextApplicantsById[Number(user.user_id)] = user;
+      });
+      setApplicantUsersById(nextApplicantsById);
     } catch (error) {
-      setErrorMessage(error.message || 'Unable to load available H-Representative users.');
-    }
-  }, []);
-
-  const fetchHospitalStaffLinks = useCallback(async () => {
-    if (!isSupabaseConfigured || !supabase) {
-      setHospitalStaffLinks([]);
-      return;
-    }
-
-    try {
-      setIsLoadingAssignments(true);
-      const { data, error } = await supabase
-        .from(HOSPITAL_STAFF_TABLE)
-        .select('*')
-        .order('Assigned_Date', { ascending: false });
-
-      if (error) throw error;
-      setHospitalStaffLinks(data || []);
-    } catch (error) {
-      setErrorMessage(error.message || 'Unable to load hospital staff assignments.');
+      setErrorMessage(error.message || 'Unable to load hospitals.');
     } finally {
-      setIsLoadingAssignments(false);
+      setIsLoadingHospitals(false);
     }
   }, []);
 
@@ -674,339 +610,107 @@ export default function ManageHospitalAccountsPage() {
 
   useEffect(() => {
     fetchHospitals();
-    fetchHStaffUsers();
-    fetchHospitalStaffLinks();
     loadRegions();
-  }, [fetchHospitals, fetchHStaffUsers, fetchHospitalStaffLinks, loadRegions]);
+  }, [fetchHospitals, loadRegions]);
 
   const openHospitalDetails = (hospital) => {
     setDetailsHospitalId(Number(hospital.Hospital_ID));
-    setPanelAssignUserId('');
   };
 
   const closeHospitalDetails = () => {
     setDetailsHospitalId(null);
-    setPanelAssignUserId('');
   };
 
-  const refreshAssignmentData = async () => {
-    await Promise.all([fetchHospitals(), fetchHStaffUsers(), fetchHospitalStaffLinks()]);
-  };
-
-  const resolveAdminUserId = useCallback(async () => {
-    if (adminUserId) {
-      return adminUserId;
-    }
-
-    if (!supabase) {
-      return null;
-    }
-
-    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !sessionData?.session?.user?.id) {
-      return null;
-    }
-
-    const authUserId = sessionData.session.user.id;
-    const profileResult = await supabase
-      .from(USERS_TABLE)
-      .select('user_id')
-      .eq('auth_user_id', authUserId)
-      .maybeSingle();
-
-    const resolvedUserId = profileResult?.data?.user_id || null;
-    if (resolvedUserId) {
-      setAdminUserId(resolvedUserId);
-    }
-    return resolvedUserId;
-  }, [adminUserId]);
-
-  const ensureHospitalRepresentativeAssignment = useCallback(async (hospitalId, userId, assignedAt) => {
-    const targetHospitalId = Number(hospitalId || 0);
-    const targetUserId = Number(userId || 0);
-    if (!targetHospitalId || !targetUserId) {
-      throw new Error('Unable to assign H-Representative: missing Hospital_ID or User_ID.');
-    }
-
-    const existingLinkResult = await supabase
-      .from(HOSPITAL_STAFF_TABLE)
-      .select('Link_ID,Hospital_ID,User_ID')
-      .eq('User_ID', targetUserId)
-      .maybeSingle();
-
-    if (existingLinkResult.error) {
-      throw new Error(mapHospitalStaffError(existingLinkResult.error.message));
-    }
-
-    const existingLink = existingLinkResult.data || null;
-
-    if (!existingLink?.Link_ID) {
-      const insertResult = await supabase
-        .from(HOSPITAL_STAFF_TABLE)
-        .insert({
-          Hospital_ID: targetHospitalId,
-          User_ID: targetUserId,
-          Assigned_Date: assignedAt,
-        });
-      if (insertResult.error) {
-        throw new Error(mapHospitalStaffError(insertResult.error.message));
-      }
+  const openApplicationInfoModal = (hospital) => {
+    const hospitalId = Number(hospital?.Hospital_ID || 0);
+    if (!hospitalId) {
+      setErrorMessage('Invalid hospital application selected.');
       return;
     }
 
-    if (Number(existingLink.Hospital_ID || 0) === targetHospitalId) {
-      return;
+    setApplicationInfoHospitalId(hospitalId);
+  };
+
+  const closeApplicationInfoModal = () => {
+    if (applicationActionHospitalId) return;
+    setApplicationInfoHospitalId(null);
+  };
+
+  const getHospitalActionResultRow = (resultData) => {
+    const row = Array.isArray(resultData) ? resultData[0] : resultData;
+    if (!row?.hospital_id) {
+      throw new Error('Database update did not return the updated hospital row.');
+    }
+    return row;
+  };
+
+  const applyHospitalActionResult = (actionRow, fallbackHospital) => {
+    const hospitalId = Number(actionRow.hospital_id || fallbackHospital?.Hospital_ID || 0);
+    if (!hospitalId) {
+      throw new Error('Database update returned an invalid hospital row.');
     }
 
-    const updateResult = await supabase
-      .from(HOSPITAL_STAFF_TABLE)
-      .update({
-        Hospital_ID: targetHospitalId,
-        Assigned_Date: assignedAt,
-      })
-      .eq('Link_ID', existingLink.Link_ID);
-
-    if (updateResult.error) {
-      throw new Error(mapHospitalStaffError(updateResult.error.message));
-    }
-  }, []);
-
-const sendHospitalRepresentativeInvite = useCallback(async ({
-    hospital,
-    applicantUser,
-    reviewedAt,
-  }) => {
-    const adminInviteClient = createHospitalInviteAdminClient();
-    if (!adminInviteClient) {
-      throw new Error(mapHospitalInviteError('missing-service-role'));
-    }
-
-    const email = String(applicantUser?.email || hospital?.Hospital_Head_Email || '').trim().toLowerCase();
-    if (!email) {
-      throw new Error('H-Representative email is missing. Please ensure applicant email exists before approval.');
-    }
-
-    const details = Array.isArray(applicantUser?.user_details)
-      ? applicantUser.user_details[0]
-      : applicantUser?.user_details || null;
-    const fullName = [
-      details?.first_name,
-      details?.middle_name,
-      details?.last_name,
-      details?.suffix,
-    ].map((part) => String(part || '').trim()).filter(Boolean).join(' ') || String(hospital?.Hospital_Head_Name || '').trim();
-
-    const temporaryPassword = buildTemporaryPassword();
-    const accountLabel = 'Hospital';
-    const accountValue = String(hospital?.Hospital_Name || `Hospital #${hospital?.Hospital_ID || 'N/A'}`).trim();
-    const metadata = {
-      account_type: 'partner_hospital',
-      decision: 'approved',
-      role_label: 'H-Representative',
-      account_label: accountLabel,
-      account_value: accountValue,
-      recipient_email: email,
-      recipient_name: fullName || '',
-      review_notes: '',
-      has_access_window: false,
-      access_window: '',
-      temporary_password: temporaryPassword,
-      display_name: fullName || '',
-      full_name: fullName || '',
-      name: fullName || '',
-      hospital_id: Number(hospital?.Hospital_ID || 0) || null,
-      hospital_name: String(hospital?.Hospital_Name || '').trim(),
-      approved_at: reviewedAt,
+    const hospitalPatch = {
+      Hospital_ID: hospitalId,
+      Approval_Status: actionRow.approval_status,
+      Is_Approved: Boolean(actionRow.is_approved),
+      Review_Notes: actionRow.review_notes || null,
+      Approved_At: actionRow.approved_at || null,
+      Approved_By: actionRow.approved_by || null,
+      Updated_At: actionRow.updated_at || fallbackHospital?.Updated_At || null,
     };
 
-    let authUserId = String(applicantUser?.auth_user_id || '').trim() || null;
-    if (authUserId) {
-      const updateAuthResult = await adminInviteClient.auth.admin.updateUserById(authUserId, {
-        email_confirm: true,
-        password: temporaryPassword,
-        user_metadata: {
-          role: 'h_representative',
-          hospital_id: Number(hospital?.Hospital_ID || 0) || null,
-          account_type: 'partner_hospital',
+    setHospitals((currentRows) => currentRows.map((row) => (
+      Number(row.Hospital_ID) === hospitalId
+        ? { ...row, ...hospitalPatch }
+        : row
+    )));
+
+    const applicantUserId = Number(actionRow.applicant_user_id || 0);
+    if (applicantUserId) {
+      setApplicantUsersById((currentUsers) => ({
+        ...currentUsers,
+        [applicantUserId]: {
+          ...(currentUsers[applicantUserId] || {}),
+          user_id: applicantUserId,
+          email: actionRow.applicant_user_email || currentUsers[applicantUserId]?.email || '',
+          auth_user_id: actionRow.applicant_auth_user_id || currentUsers[applicantUserId]?.auth_user_id || null,
+          role: actionRow.applicant_user_role || currentUsers[applicantUserId]?.role || 'h_representative',
+          is_active: Boolean(actionRow.applicant_user_is_active),
         },
-      });
-
-      if (updateAuthResult.error) {
-        throw new Error(mapHospitalInviteError(updateAuthResult.error.message));
-      }
+      }));
     }
 
-    const invitePayload = {
-      redirectTo: `${window.location.origin}/complete-account`,
-      data: metadata,
-    };
+    return hospitalPatch;
+  };
 
-    const isAlreadyRegisteredError = (errorMessage = '') => {
-      const lower = String(errorMessage || '').toLowerCase();
-      return lower.includes('already registered')
-        || lower.includes('already been registered')
-        || lower.includes('user already exists');
-    };
-
-    const findAuthUserIdByEmail = async (targetEmail) => {
-      let page = 1;
-      const perPage = 200;
-      while (page <= 50) {
-        const listResult = await adminInviteClient.auth.admin.listUsers({ page, perPage });
-        if (listResult.error) {
-          throw new Error(mapHospitalInviteError(listResult.error.message));
-        }
-
-        const users = Array.isArray(listResult.data?.users) ? listResult.data.users : [];
-        if (users.length === 0) break;
-
-        const match = users.find((item) => String(item?.email || '').trim().toLowerCase() === targetEmail);
-        if (match?.id) {
-          return String(match.id).trim();
-        }
-
-        if (users.length < perPage) break;
-        page += 1;
-      }
-      return null;
-    };
-
-    let inviteResult = await adminInviteClient.auth.admin.inviteUserByEmail(email, invitePayload);
-    if (inviteResult.error && isAlreadyRegisteredError(inviteResult.error.message)) {
-      const existingAuthUserId = authUserId || await findAuthUserIdByEmail(email);
-      if (existingAuthUserId) {
-        const deleteResult = await adminInviteClient.auth.admin.deleteUser(existingAuthUserId);
-        if (deleteResult.error) {
-          throw new Error(mapHospitalInviteError(deleteResult.error.message));
-        }
-      }
-      authUserId = null;
-      inviteResult = await adminInviteClient.auth.admin.inviteUserByEmail(email, invitePayload);
-    }
-
-    if (inviteResult.error) {
-      throw new Error(mapHospitalInviteError(inviteResult.error.message));
-    }
-
-    const invitedAuthUserId = String(inviteResult.data?.user?.id || '').trim() || null;
-    if (invitedAuthUserId) {
-      authUserId = invitedAuthUserId;
-    }
-
+  const updateHospitalManagerAuthPassword = async (hospital, tempPassword) => {
+    const applicantUser = getApplicantUserForHospital(hospital);
+    const authUserId = String(applicantUser?.auth_user_id || '').trim();
     if (!authUserId) {
-      throw new Error('Invite email was sent but auth user id could not be resolved.');
+      throw new Error('The manager Auth account is missing. The applicant must verify email before approval can send login credentials.');
     }
 
-    const updateAuthResult = await adminInviteClient.auth.admin.updateUserById(authUserId, {
+    const adminClient = createHospitalActionAdminClient();
+    if (!adminClient) {
+      throw new Error(mapHospitalEmailError('missing-service-role'));
+    }
+
+    const updateResult = await adminClient.auth.admin.updateUserById(authUserId, {
       email_confirm: true,
-      password: temporaryPassword,
+      password: tempPassword,
       user_metadata: {
-        role: 'h_representative',
-        hospital_id: Number(hospital?.Hospital_ID || 0) || null,
         account_type: 'partner_hospital',
+        role: 'h_representative',
+        hospital_id: Number(hospital?.Hospital_ID || 0),
+        updated_at: getPhilippineTimestamp(),
       },
     });
 
-    if (updateAuthResult.error) {
-      throw new Error(mapHospitalInviteError(updateAuthResult.error.message));
+    if (updateResult.error) {
+      throw new Error(mapHospitalEmailError(updateResult.error.message));
     }
-
-    return {
-      authUserId,
-      inviteMode: 'invite',
-    };
-  }, []);
-
-  const provisionApprovedHospitalAccount = useCallback(async (hospital, reviewedAt) => {
-    const hospitalId = Number(hospital?.Hospital_ID || 0);
-    if (!hospitalId) {
-      throw new Error('Hospital approval provisioning failed: missing Hospital_ID.');
-    }
-
-    const applicantUserId = Number(hospital?.Created_By || 0);
-    if (!applicantUserId) {
-      throw new Error('Hospital approval provisioning failed: Created_By is missing.');
-    }
-
-    const applicantUserResult = await supabase
-      .from(USERS_TABLE)
-      .select(`
-        user_id,
-        email,
-        auth_user_id,
-        role,
-        is_active,
-        user_details:user_details (
-          first_name,
-          middle_name,
-          last_name,
-          suffix
-        )
-      `)
-      .eq('user_id', applicantUserId)
-      .maybeSingle();
-
-    if (applicantUserResult.error) {
-      throw new Error(applicantUserResult.error.message || 'Unable to resolve H-Representative applicant user.');
-    }
-
-    const applicantUser = applicantUserResult.data || null;
-    if (!applicantUser?.user_id) {
-      throw new Error('Hospital approval provisioning failed: applicant user record was not found.');
-    }
-
-    await ensureHospitalRepresentativeAssignment(hospitalId, applicantUser.user_id, reviewedAt);
-
-    const currentRoleKey = normalizeRoleSlug(applicantUser.role);
-    const shouldSetRepresentativeRole = [
-      '',
-      'user',
-      'partner',
-      'hospital',
-      'hstaff',
-      'hrepresentative',
-      'hospitalrepresentative',
-    ].includes(currentRoleKey);
-
-    const userUpdatePayload = {
-      is_active: true,
-      updated_at: reviewedAt,
-    };
-    if (shouldSetRepresentativeRole && currentRoleKey !== 'hrepresentative') {
-      userUpdatePayload.role = 'h_representative';
-    }
-
-    const baseUserUpdateResult = await supabase
-      .from(USERS_TABLE)
-      .update(userUpdatePayload)
-      .eq('user_id', applicantUser.user_id);
-
-    if (baseUserUpdateResult.error) {
-      throw new Error(baseUserUpdateResult.error.message || 'Unable to activate approved H-Representative account.');
-    }
-
-    const inviteOutcome = await sendHospitalRepresentativeInvite({
-      hospital,
-      applicantUser,
-      reviewedAt,
-    });
-
-    if (!applicantUser.auth_user_id && inviteOutcome?.authUserId) {
-      const authLinkUpdateResult = await supabase
-        .from(USERS_TABLE)
-        .update({
-          auth_user_id: inviteOutcome.authUserId,
-          updated_at: reviewedAt,
-        })
-        .eq('user_id', applicantUser.user_id);
-
-      if (authLinkUpdateResult.error) {
-        throw new Error(authLinkUpdateResult.error.message || 'Unable to link auth_user_id after invite.');
-      }
-    }
-
-    return inviteOutcome;
-  }, [ensureHospitalRepresentativeAssignment, sendHospitalRepresentativeInvite]);
+  };
 
   const handleHospitalApplicationDecision = (hospital, nextStatus) => {
     if (!['Approved', 'Rejected'].includes(nextStatus)) {
@@ -1020,7 +724,7 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
       return;
     }
 
-    setDecisionReviewNotes(nextStatus === 'Rejected' ? String(hospital?.Review_Notes || '').trim() : '');
+    setDecisionReviewNotes('');
     setDecisionTarget({ hospital, nextStatus });
   };
 
@@ -1045,209 +749,85 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
     }
 
     const statusVerb = nextStatus.toLowerCase();
-    let reviewNotes = null;
-    if (nextStatus === 'Rejected') {
-      reviewNotes = String(decisionReviewNotes || '').trim();
-      if (!reviewNotes) {
-        setErrorMessage('Rejection reason is required.');
-        return;
-      }
-    }
-
-    if (nextStatus === 'Approved' && !createHospitalInviteAdminClient()) {
-      setErrorMessage(mapHospitalInviteError('missing-service-role'));
-      return;
-    }
+    const reviewNotes = String(decisionReviewNotes || '').trim() || null;
+    const tempPassword = nextStatus === 'Approved' ? buildTemporaryPassword() : '';
 
     try {
       setApplicationActionHospitalId(hospitalId);
-      const reviewerUserId = await resolveAdminUserId();
-      const reviewedAt = getPhilippineTimestamp();
+      setApplicationActionType(nextStatus);
 
-      const updatePayload = {
-        Approval_Status: nextStatus,
-        Is_Approved: nextStatus === 'Approved',
-        Review_Notes: nextStatus === 'Rejected' ? reviewNotes : null,
-        Approved_At: reviewedAt,
-        Approved_By: reviewerUserId,
-        Updated_At: reviewedAt,
-      };
+      if (nextStatus === 'Approved') {
+        await updateHospitalManagerAuthPassword(hospital, tempPassword);
+      }
 
-      const result = await supabase
-        .from(HOSPITALS_TABLE)
-        .update(updatePayload)
-        .eq('Hospital_ID', hospitalId)
-        .select('*')
-        .single();
+      const result = await supabase.rpc('admin_update_hospital_application', {
+        p_hospital_id: hospitalId,
+        p_action: nextStatus === 'Approved' ? 'approve' : 'reject',
+        p_review_notes: reviewNotes,
+        p_temporary_password: tempPassword || null,
+        p_login_url: `${window.location.origin}/login`,
+      });
 
       if (result.error) throw result.error;
 
-      const updatedHospital = result.data;
-      setHospitals((currentRows) => currentRows.map((row) => (
-        Number(row.Hospital_ID) === hospitalId ? updatedHospital : row
-      )));
+      const actionRow = getHospitalActionResultRow(result.data);
+      applyHospitalActionResult(actionRow, hospital);
 
-      let inviteNote = '';
-      if (nextStatus === 'Approved') {
-        await provisionApprovedHospitalAccount(updatedHospital, reviewedAt);
-        await Promise.all([fetchHospitalStaffLinks(), fetchHStaffUsers()]);
-        inviteNote = ' H-Representative was assigned and invite email with credentials was sent.';
-      }
-
-      setSuccessMessage(`Hospital application ${statusVerb} successfully.${inviteNote}`);
+      setSuccessMessage(`Hospital application ${statusVerb} successfully.`);
       setDecisionTarget(null);
+      setApplicationInfoHospitalId(null);
       setDecisionReviewNotes('');
+
+      const smtpKickResult = await triggerSmtpNow(`partner_hospital_${statusVerb}`);
+      if (!smtpKickResult.ok) {
+        console.warn('[SMTP] Trigger after hospital application decision failed:', smtpKickResult.message || smtpKickResult);
+      }
     } catch (error) {
       setErrorMessage(error.message || `Unable to ${statusVerb} hospital application.`);
     } finally {
       setApplicationActionHospitalId(null);
+      setApplicationActionType('');
     }
   };
 
-  const assignHStaffToHospital = async (hospitalIdValue, userIdValue) => {
+  const toggleHospitalAccess = async (hospital, nextAccessValue) => {
     if (!isSupabaseConfigured || !supabase) {
       setErrorMessage('Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.');
       return;
     }
 
-    const hospitalId = Number(hospitalIdValue);
-    const userId = Number(userIdValue);
-
-    if (!hospitalId || !userId) {
-      setErrorMessage('Please select both a hospital and an H-Representative user.');
+    const hospitalId = Number(hospital?.Hospital_ID || 0);
+    if (!hospitalId) {
+      setErrorMessage('Invalid hospital selected.');
       return;
     }
 
-    const existingUserLink = hospitalStaffLinks.find((link) => Number(link.User_ID) === userId);
-    if (existingUserLink) {
-      const linkedHospital = hospitalsById.get(Number(existingUserLink.Hospital_ID));
-      if (Number(existingUserLink.Hospital_ID) === hospitalId) {
-        setErrorMessage('This H-Representative is already assigned to the selected hospital.');
-      } else {
-        setErrorMessage(`This H-Representative is already assigned to ${linkedHospital?.Hospital_Name || 'another hospital'}.`);
+    try {
+      setAccessActionHospitalId(hospitalId);
+
+      const hospitalUpdateResult = await supabase.rpc('admin_update_hospital_application', {
+        p_hospital_id: hospitalId,
+        p_action: nextAccessValue ? 'turn_on_access' : 'turn_off_access',
+        p_review_notes: null,
+        p_temporary_password: null,
+        p_login_url: `${window.location.origin}/login`,
+      });
+
+      if (hospitalUpdateResult.error) throw hospitalUpdateResult.error;
+
+      const actionRow = getHospitalActionResultRow(hospitalUpdateResult.data);
+      applyHospitalActionResult(actionRow, hospital);
+
+      setSuccessMessage(nextAccessValue ? 'Hospital account access turned on.' : 'Hospital account access turned off.');
+
+      const smtpKickResult = await triggerSmtpNow(nextAccessValue ? 'partner_hospital_access_on' : 'partner_hospital_access_off');
+      if (!smtpKickResult.ok) {
+        console.warn('[SMTP] Trigger after hospital access update failed:', smtpKickResult.message || smtpKickResult);
       }
-      return;
-    }
-
-    try {
-      setIsSavingAssignment(true);
-      const { error } = await supabase
-        .from(HOSPITAL_STAFF_TABLE)
-        .insert({
-          Hospital_ID: hospitalId,
-          User_ID: userId,
-        });
-
-      if (error) throw error;
-
-      setSuccessMessage('H-Representative assigned to hospital successfully.');
-      setAssignmentUserId('');
-      setPanelAssignUserId('');
-      await fetchHospitalStaffLinks();
     } catch (error) {
-      setErrorMessage(mapHospitalStaffError(error.message));
+      setErrorMessage(error.message || 'Unable to update hospital account access.');
     } finally {
-      setIsSavingAssignment(false);
-    }
-  };
-
-  const removeHospitalStaffLink = async (link) => {
-    if (!isSupabaseConfigured || !supabase) {
-      setErrorMessage('Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.');
-      return;
-    }
-
-    const linkId = Number(link?.Link_ID);
-    if (!linkId) {
-      setErrorMessage('Invalid assignment link selected.');
-      return;
-    }
-
-    try {
-      setRemovingLinkId(linkId);
-      const { error } = await supabase
-        .from(HOSPITAL_STAFF_TABLE)
-        .delete()
-        .eq('Link_ID', linkId);
-
-      if (error) throw error;
-
-      setSuccessMessage('H-Representative assignment removed successfully.');
-      await fetchHospitalStaffLinks();
-    } catch (error) {
-      setErrorMessage(mapHospitalStaffError(error.message));
-    } finally {
-      setRemovingLinkId(null);
-    }
-  };
-
-  const openReassignModal = (link) => {
-    if (!link?.Link_ID) {
-      setErrorMessage('Invalid assignment link selected.');
-      return;
-    }
-
-    setReassigningLink(link);
-    setReassignHospitalId('');
-    setIsReassignModalOpen(true);
-  };
-
-  const closeReassignModal = () => {
-    if (isReassigning) {
-      return;
-    }
-
-    setIsReassignModalOpen(false);
-    setReassignHospitalId('');
-    setReassigningLink(null);
-  };
-
-  const handleReassignStaff = async () => {
-    if (!isSupabaseConfigured || !supabase) {
-      setErrorMessage('Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.');
-      return;
-    }
-
-    const linkId = Number(reassigningLink?.Link_ID);
-    const currentHospitalId = Number(reassigningLink?.Hospital_ID);
-    const nextHospitalId = Number(reassignHospitalId);
-
-    if (!linkId) {
-      setErrorMessage('Invalid assignment link selected.');
-      return;
-    }
-
-    if (!nextHospitalId) {
-      setErrorMessage('Please choose a hospital for reassignment.');
-      return;
-    }
-
-    if (currentHospitalId === nextHospitalId) {
-      setErrorMessage('Please choose a different hospital for reassignment.');
-      return;
-    }
-
-    try {
-      setIsReassigning(true);
-      const { error } = await supabase
-        .from(HOSPITAL_STAFF_TABLE)
-        .update({
-          Hospital_ID: nextHospitalId,
-          Assigned_Date: new Date().toISOString(),
-        })
-        .eq('Link_ID', linkId);
-
-      if (error) throw error;
-
-      setSuccessMessage('H-Representative reassigned successfully.');
-      setIsReassignModalOpen(false);
-      setReassignHospitalId('');
-      setReassigningLink(null);
-      await fetchHospitalStaffLinks();
-    } catch (error) {
-      setErrorMessage(mapHospitalStaffError(error.message));
-    } finally {
-      setIsReassigning(false);
+      setAccessActionHospitalId(null);
     }
   };
 
@@ -1733,7 +1313,6 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
       setSuccessMessage('H-Representative deleted successfully.');
       setErrorMessage('');
       await fetchHospitals();
-      await fetchHospitalStaffLinks();
 
       if (editingHospitalId === hospital.Hospital_ID) {
         resetForm(true);
@@ -1844,6 +1423,7 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
                     <th className="px-4 py-3 text-center font-semibold">H-Representative</th>
                     <th className="px-4 py-3 text-center font-semibold">Contact</th>
                     <th className="px-4 py-3 text-center font-semibold">Address</th>
+                    <th className="px-4 py-3 text-center font-semibold">Access</th>
                     <th className="px-4 py-3 text-center font-semibold">Updated</th>
                     <th className="px-4 py-3 text-center font-semibold">Actions</th>
                   </tr>
@@ -1876,6 +1456,13 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
                           .filter(Boolean)
                           .join(', ') || 'N/A'}
                       </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                          hospital.Is_Approved ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
+                        }`}>
+                          {hospital.Is_Approved ? 'On' : 'Off'}
+                        </span>
+                      </td>
                       <td className="px-4 py-3 text-gray-700 text-center">{formatDateTime(hospital.Updated_At || hospital.Created_At)}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-center gap-2">
@@ -1885,7 +1472,7 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
                             className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-gray-50 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100"
                             title="View hospital details"
                           >
-                            <Info size={13} /> Info
+                            <Info size={13} /> View Information
                           </button>
 
                           <button
@@ -1955,7 +1542,7 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
               <input
                 value={applicationSearchTerm}
                 onChange={(event) => setApplicationSearchTerm(event.target.value)}
-                placeholder="Search by hospital, head/owner, email, contact, location, or notes"
+                placeholder="Search by hospital, head/owner, manager, email, contact, or location"
                 className="w-full rounded-lg border border-gray-300 pl-9 pr-3 py-2 text-sm bg-white focus:ring-2 outline-none"
                 style={{ '--tw-ring-color': theme.primaryColor }}
               />
@@ -1993,7 +1580,6 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
                     <th className="px-4 py-3 text-left font-semibold">Contact</th>
                     <th className="px-4 py-3 text-left font-semibold">Submitted</th>
                     <th className="px-4 py-3 text-left font-semibold">Status</th>
-                    <th className="px-4 py-3 text-left font-semibold">Review Notes</th>
                     <th className="px-4 py-3 text-center font-semibold">Decision</th>
                   </tr>
                 </thead>
@@ -2004,6 +1590,8 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
                     const isApproved = statusKey === 'approved';
                     const isRejected = statusKey === 'rejected';
                     const isProcessing = applicationActionHospitalId === hospital.Hospital_ID;
+                    const isApprovingRow = isProcessing && applicationActionType === 'Approved';
+                    const isRejectingRow = isProcessing && applicationActionType === 'Rejected';
 
                     return (
                       <tr key={hospital.Hospital_ID} className="border-t border-gray-200 align-top">
@@ -2011,9 +1599,7 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
                           <p className="font-semibold text-gray-900">{hospital.Hospital_Name || 'N/A'}</p>
                           <p className="mt-1 text-xs text-gray-500">ID: {hospital.Hospital_ID}</p>
                           <p className="mt-2 text-xs text-gray-600">
-                            {[hospital.Street, hospital.Barangay, hospital.City, hospital.Province, hospital.Region, hospital.Country]
-                              .filter(Boolean)
-                              .join(', ') || 'No address provided'}
+                            {formatHospitalAddress(hospital)}
                           </p>
                         </td>
                         <td className="px-4 py-3 text-gray-700">
@@ -2043,20 +1629,24 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
                           </span>
                           <p className="mt-2 text-xs text-gray-500">Reviewed: {formatDateTime(hospital.Approved_At)}</p>
                         </td>
-                        <td className="px-4 py-3 text-gray-700">
-                          <p className="text-xs leading-relaxed text-gray-600">
-                            {hospital.Review_Notes || 'No review notes yet.'}
-                          </p>
-                        </td>
                         <td className="px-4 py-3">
-                          <div className="flex items-center justify-center gap-2">
+                          <div className="flex flex-wrap items-center justify-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openApplicationInfoModal(hospital)}
+                              className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                            >
+                              <Info size={13} />
+                              View Information
+                            </button>
+
                             <button
                               type="button"
                               onClick={() => handleHospitalApplicationDecision(hospital, 'Approved')}
                               disabled={isProcessing || isApproved}
                               className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
                             >
-                              {isProcessing ? <Loader2 className="animate-spin" size={13} /> : <CheckCircle2 size={13} />}
+                              {isApprovingRow ? <Loader2 className="animate-spin" size={13} /> : <CheckCircle2 size={13} />}
                               Approve
                             </button>
 
@@ -2066,7 +1656,7 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
                               disabled={isProcessing || isRejected}
                               className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
                             >
-                              {isProcessing ? <Loader2 className="animate-spin" size={13} /> : <X size={13} />}
+                              {isRejectingRow ? <Loader2 className="animate-spin" size={13} /> : <X size={13} />}
                               Reject
                             </button>
                           </div>
@@ -2081,237 +1671,189 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
         </section>
       )}
 
-      {activeTab === 'assign' && (
-        <section className={cardClass()}>
-          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">Assign H-Representative To H-Representative</h3>
-              <p className="text-xs text-gray-500 mt-1">
-                Source: public.users with linked public.user_details. Role accepted: H-Representative or hospital.
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                Available: {unassignedHStaffUsers.length} | Assigned: {assignedHStaffCount} | Total H-Representative: {hStaffUsers.length}
-              </p>
+      {applicationInfoHospital && typeof document !== 'undefined' && createPortal(
+        (() => {
+          const statusKey = getHospitalApprovalStatus(applicationInfoHospital);
+          const statusLabel = getHospitalApprovalStatusLabel(statusKey);
+          const isApproved = statusKey === 'approved';
+          const isRejected = statusKey === 'rejected';
+          const isProcessing = Number(applicationActionHospitalId) === Number(applicationInfoHospital.Hospital_ID);
+          const isApprovingApplication = isProcessing && applicationActionType === 'Approved';
+          const isRejectingApplication = isProcessing && applicationActionType === 'Rejected';
+          const logoUrl = resolveHospitalLogoUrl(applicationInfoHospital.Hospital_Logo);
+          const applicantUser = getApplicantUserForHospital(applicationInfoHospital);
+          const applicantDetails = getUserDetails(applicantUser);
+          const applicantAddress = [
+            applicantDetails?.street,
+            applicantDetails?.barangay,
+            applicantDetails?.city,
+            applicantDetails?.province,
+            applicantDetails?.region,
+            applicantDetails?.country,
+          ].filter(Boolean).join(', ');
+          const coordinates = applicationInfoHospital.Latitude && applicationInfoHospital.Longitude
+            ? `${applicationInfoHospital.Latitude}, ${applicationInfoHospital.Longitude}`
+            : 'No coordinates provided';
+          const mapUrl = applicationInfoHospital.Latitude && applicationInfoHospital.Longitude
+            ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${applicationInfoHospital.Latitude},${applicationInfoHospital.Longitude}`)}`
+            : '';
+          const InfoField = ({ label, value, full = false }) => (
+            <div className={full ? 'md:col-span-2' : ''}>
+              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+              <p className="mt-1 break-words text-sm font-medium leading-relaxed text-slate-900">{value || 'N/A'}</p>
             </div>
+          );
 
-            <button
-              type="button"
-              onClick={refreshAssignmentData}
-              disabled={isLoadingHospitals || isLoadingAssignments || isSavingAssignment}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold disabled:opacity-60"
-              style={{
-                borderColor: `${theme.primaryColor}33`,
-                backgroundColor: `${theme.primaryColor}12`,
-                color: theme.primaryColor,
-              }}
-            >
-              <RefreshCw size={14} /> Refresh H-Representative Data
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">H-Representative</label>
-              <select
-                value={assignmentHospitalId}
-                onChange={(event) => setAssignmentHospitalId(event.target.value)}
-                disabled={hospitals.length === 0}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 bg-white focus:ring-2 outline-none"
-                style={{ '--tw-ring-color': theme.primaryColor }}
-              >
-                <option value="">{hospitals.length === 0 ? 'No hospitals available' : 'Select hospital'}</option>
-                {hospitals.map((hospital) => (
-                  <option key={hospital.Hospital_ID} value={hospital.Hospital_ID}>
-                    {hospital.Hospital_Name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">H-Representative</label>
-              <select
-                value={assignmentUserId}
-                onChange={(event) => setAssignmentUserId(event.target.value)}
-                disabled={unassignedHStaffUsers.length === 0}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 bg-white focus:ring-2 outline-none"
-                style={{ '--tw-ring-color': theme.primaryColor }}
-              >
-                <option value="">
-                  {hStaffUsers.length === 0
-                    ? 'No H-Representative users found in users/user_details'
-                    : unassignedHStaffUsers.length === 0
-                      ? 'All H-Representative users are already assigned'
-                      : 'Select H-Representative'}
-                </option>
-                {unassignedHStaffUsers.map((user) => (
-                  <option key={user.user_id} value={user.user_id}>
-                    {getHStaffDisplayName(user)}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-end">
+          return (
+            <div className="fixed inset-0 z-[115] flex items-center justify-center p-4">
               <button
                 type="button"
-                onClick={() => assignHStaffToHospital(assignmentHospitalId, assignmentUserId)}
-                disabled={
-                  isSavingAssignment
-                  || !assignmentHospitalId
-                  || !assignmentUserId
-                  || hospitals.length === 0
-                  || unassignedHStaffUsers.length === 0
-                }
-                className="w-full rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                {isSavingAssignment ? 'Assigning...' : 'Assign H-Representative'}
-              </button>
-            </div>
-          </div>
+                aria-label="Close application information"
+                onClick={closeApplicationInfoModal}
+                className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+              />
 
-          {hStaffUsers.length === 0 && (
-            <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              No H-Representative users were found. Check public.users.role values and ensure matching records exist in public.user_details.
-            </div>
-          )}
+              <div className="relative flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Hospital Application</p>
+                    <h3 className="mt-1 break-words text-xl font-bold text-slate-900">
+                      {applicationInfoHospital.Hospital_Name || `Hospital #${applicationInfoHospital.Hospital_ID}`}
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600">Application ID: {applicationInfoHospital.Hospital_ID}</p>
+                  </div>
 
-          {isLoadingAssignments ? (
-            <div className="py-10 text-gray-700 flex items-center justify-center gap-2">
-              <Loader2 className="animate-spin" size={18} /> Loading assignments...
-            </div>
-          ) : hospitalStaffLinks.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-gray-300 px-4 py-8 text-center text-sm text-gray-500">
-              No H-Representative assignments yet.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="text-sm" style={{ backgroundColor: `${theme.primaryColor}20`, color: tableHeaderTextColor }}>
-                  <tr>
-                    <th className="px-4 py-3 text-left font-semibold">H-Representative</th>
-                    <th className="px-4 py-3 text-left font-semibold">H-Representative</th>
-                    <th className="px-4 py-3 text-left font-semibold">Assigned Date</th>
-                    <th className="px-4 py-3 text-center font-semibold">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {hospitalStaffLinks.map((link) => {
-                    const linkedHospital = hospitalsById.get(Number(link.Hospital_ID));
-                    const linkedUser = hStaffUsersById.get(Number(link.User_ID));
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold ${
+                        isApproved
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : isRejected
+                            ? 'bg-red-100 text-red-700'
+                            : 'bg-amber-100 text-amber-700'
+                      }`}
+                    >
+                      {statusLabel}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={closeApplicationInfoModal}
+                      disabled={isProcessing}
+                      className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:opacity-60"
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                </div>
 
-                    return (
-                      <tr key={link.Link_ID} className="border-t border-gray-200">
-                        <td className="px-4 py-3 text-gray-800">{linkedHospital?.Hospital_Name || `H-Representative #${link.Hospital_ID}`}</td>
-                        <td className="px-4 py-3 text-gray-700">{getHStaffDisplayName(linkedUser)}</td>
-                        <td className="px-4 py-3 text-gray-700">{formatDateTime(link.Assigned_Date)}</td>
-                        <td className="px-4 py-3 text-center">
-                          <div className="inline-flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => openReassignModal(link)}
-                              disabled={isReassigning || hospitals.length < 2}
-                              className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
-                            >
-                              <ArrowRightLeft size={12} />
-                              Reassign
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => removeHospitalStaffLink(link)}
-                              disabled={removingLinkId === link.Link_ID}
-                              className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
-                            >
-                              {removingLinkId === link.Link_ID ? <Loader2 className="animate-spin" size={12} /> : <Trash2 size={12} />}
-                              Unassign
-                            </button>
+                <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+                  <div className="grid grid-cols-1 gap-5 lg:grid-cols-[280px,minmax(0,1fr)]">
+                    <aside className="space-y-4">
+                      <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                        {logoUrl ? (
+                          <img
+                            src={logoUrl}
+                            alt={`${applicationInfoHospital.Hospital_Name || 'Hospital'} logo`}
+                            className="h-56 w-full bg-white object-contain"
+                          />
+                        ) : (
+                          <div className="flex h-56 items-center justify-center bg-white text-slate-400">
+                            <Building2 size={42} />
                           </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      )}
+                        )}
+                      </div>
 
-      {isReassignModalOpen && reassigningLink && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 z-[110] bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-xl bg-white shadow-2xl border border-gray-200">
-            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
-              <div>
-                <h3 className="text-base font-semibold text-gray-900">Reassign H-Representative</h3>
-                <p className="mt-1 text-xs text-gray-500">Move this staff member to a different hospital.</p>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Review Summary</p>
+                        <div className="mt-3 space-y-2 text-sm text-slate-700">
+                          <p><span className="font-semibold text-slate-900">Submitted:</span> {formatDateTime(applicationInfoHospital.Created_At)}</p>
+                          <p><span className="font-semibold text-slate-900">Updated:</span> {formatDateTime(applicationInfoHospital.Updated_At)}</p>
+                          <p><span className="font-semibold text-slate-900">Reviewed:</span> {formatDateTime(applicationInfoHospital.Approved_At)}</p>
+                        </div>
+                      </div>
+                    </aside>
+
+                    <div className="space-y-4">
+                      <section className="rounded-xl border border-slate-200 p-4">
+                        <h4 className="text-sm font-bold text-slate-900">Hospital Profile</h4>
+                        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <InfoField label="Hospital Name" value={applicationInfoHospital.Hospital_Name} />
+                          <InfoField label="Hospital Contact" value={applicationInfoHospital.Contact_Number} />
+                          <InfoField label="Full Address" value={formatHospitalAddress(applicationInfoHospital)} full />
+                          <InfoField label="Coordinates" value={coordinates} />
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Map</p>
+                            {mapUrl ? (
+                              <a
+                                href={mapUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="mt-1 inline-flex text-sm font-semibold text-blue-700 underline"
+                              >
+                                Open pinned location
+                              </a>
+                            ) : (
+                              <p className="mt-1 text-sm font-medium text-slate-900">N/A</p>
+                            )}
+                          </div>
+                        </div>
+                      </section>
+
+                      <section className="rounded-xl border border-slate-200 p-4">
+                        <h4 className="text-sm font-bold text-slate-900">Head / Owner</h4>
+                        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <InfoField label="Name" value={applicationInfoHospital.Hospital_Head_Name} />
+                          <InfoField label="Position" value={applicationInfoHospital.Hospital_Head_Title} />
+                          <InfoField label="Email" value={applicationInfoHospital.Hospital_Head_Email} />
+                          <InfoField label="Contact Number" value={applicationInfoHospital.Hospital_Head_Contact_Number} />
+                        </div>
+                      </section>
+
+                      <section className="rounded-xl border border-slate-200 p-4">
+                        <h4 className="text-sm font-bold text-slate-900">Managing Account</h4>
+                        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <InfoField label="Manager Name" value={getUserFullName(applicantUser) || applicationInfoHospital.Hospital_Head_Name} />
+                          <InfoField label="Account Email" value={applicantUser?.email || applicationInfoHospital.Hospital_Head_Email} />
+                          <InfoField label="Role" value={getHospitalManagerRoleLabel(applicantUser)} />
+                          <InfoField label="Contact Number" value={applicantDetails?.contact_number || applicationInfoHospital.Hospital_Head_Contact_Number} />
+                          <InfoField label="Birthdate" value={applicantDetails?.birthdate} />
+                          <InfoField label="Gender" value={applicantDetails?.gender} />
+                          <InfoField label="Address" value={applicantAddress || 'N/A'} full />
+                        </div>
+                      </section>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-200 bg-slate-50 px-5 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-sm text-slate-600">Decision</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleHospitalApplicationDecision(applicationInfoHospital, 'Approved')}
+                        disabled={isProcessing || isApproved}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                      >
+                        {isApprovingApplication ? <Loader2 className="animate-spin" size={14} /> : <CheckCircle2 size={14} />}
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleHospitalApplicationDecision(applicationInfoHospital, 'Rejected')}
+                        disabled={isProcessing || isRejected}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
+                      >
+                        {isRejectingApplication ? <Loader2 className="animate-spin" size={14} /> : <X size={14} />}
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={closeReassignModal}
-                disabled={isReassigning}
-                className="text-gray-400 hover:text-red-500 disabled:opacity-60"
-              >
-                <X size={20} />
-              </button>
             </div>
-
-            <div className="space-y-3 px-5 py-4">
-              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                <p className="font-medium text-gray-900">{getHStaffDisplayName(hStaffUsersById.get(Number(reassigningLink.User_ID)))}</p>
-                <p className="mt-1 text-xs text-gray-500">
-                  Current hospital: {hospitalsById.get(Number(reassigningLink.Hospital_ID))?.Hospital_Name || `H-Representative #${reassigningLink.Hospital_ID}`}
-                </p>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-gray-700">New hospital</label>
-                <select
-                  value={reassignHospitalId}
-                  onChange={(event) => setReassignHospitalId(event.target.value)}
-                  disabled={availableReassignHospitals.length === 0 || isReassigning}
-                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 focus:ring-2 outline-none disabled:bg-gray-50 disabled:text-gray-500"
-                  style={{ '--tw-ring-color': theme.primaryColor }}
-                >
-                  <option value="">
-                    {availableReassignHospitals.length === 0 ? 'No other hospital available' : 'Select target hospital'}
-                  </option>
-                  {availableReassignHospitals.map((hospital) => (
-                    <option key={hospital.Hospital_ID} value={hospital.Hospital_ID}>
-                      {hospital.Hospital_Name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-4">
-              <button
-                type="button"
-                onClick={closeReassignModal}
-                disabled={isReassigning}
-                className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleReassignStaff}
-                disabled={
-                  isReassigning
-                  || !reassignHospitalId
-                  || availableReassignHospitals.length === 0
-                }
-                className="inline-flex items-center gap-1 rounded-md px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                {isReassigning ? <Loader2 className="animate-spin" size={14} /> : <ArrowRightLeft size={14} />}
-                {isReassigning ? 'Reassigning...' : 'Confirm Reassign'}
-              </button>
-            </div>
-          </div>
-        </div>,
+          );
+        })(),
         document.body,
       )}
 
@@ -2363,28 +1905,26 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
                     {isApproving ? <CheckCircle2 size={16} className="mt-0.5 flex-none" /> : <AlertTriangle size={16} className="mt-0.5 flex-none" />}
                     <span>
                       {isApproving
-                        ? 'Approving will activate this hospital and allow assignment of an H-Representative.'
+                        ? 'Approving will activate this hospital and prepare the applicant account for H-Representative access.'
                         : 'Rejecting will mark this application as rejected. The applicant can submit a new application if needed.'}
                     </span>
                   </div>
 
-                  {!isApproving && (
-                    <label className="flex flex-col gap-1.5">
-                      <span className="text-[11px] font-bold uppercase tracking-wide text-slate-600">
-                        Rejection Reason <span className="text-rose-600">*</span>
-                      </span>
-                      <textarea
-                        value={decisionReviewNotes}
-                        onChange={(event) => setDecisionReviewNotes(event.target.value)}
-                        rows={4}
-                        disabled={isSubmitting}
-                        placeholder="Explain why this application cannot be approved. The applicant will see this reason."
-                        className="w-full resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-relaxed text-slate-900 outline-none transition focus:border-rose-400 focus:ring-2 focus:ring-rose-100 disabled:bg-slate-50"
-                        autoFocus
-                      />
-                      <span className="text-[11px] text-slate-500">Required. Be specific so the applicant understands what to address.</span>
-                    </label>
-                  )}
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-bold uppercase tracking-wide text-slate-600">
+                      Review Notes <span className="font-medium normal-case tracking-normal text-slate-400">(optional)</span>
+                    </span>
+                    <textarea
+                      value={decisionReviewNotes}
+                      onChange={(event) => setDecisionReviewNotes(event.target.value)}
+                      rows={4}
+                      disabled={isSubmitting}
+                      placeholder={isApproving ? 'Optional note for this approval.' : 'Optional reason or note for this rejection.'}
+                      className="w-full resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-relaxed text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100 disabled:bg-slate-50"
+                      autoFocus
+                    />
+                    <span className="text-[11px] text-slate-500">Leave blank to save no review note.</span>
+                  </label>
                 </div>
 
                 <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3">
@@ -2399,7 +1939,7 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
                   <button
                     type="button"
                     onClick={confirmHospitalApplicationDecision}
-                    disabled={isSubmitting || (!isApproving && !decisionReviewNotes.trim())}
+                    disabled={isSubmitting}
                     className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-60"
                     style={{ backgroundColor: accentColor }}
                   >
@@ -2484,174 +2024,151 @@ const sendHospitalRepresentativeInvite = useCallback(async ({
         document.body,
       )}
 
-      {detailsHospital && typeof document !== 'undefined'
-        ? createPortal(
-            <div className="fixed inset-0 z-[95]">
+      {detailsHospital && typeof document !== 'undefined' && createPortal(
+        (() => {
+          const managerUser = getApplicantUserForHospital(detailsHospital);
+          const managerDetails = getUserDetails(managerUser);
+          const logoUrl = resolveHospitalLogoUrl(detailsHospital.Hospital_Logo);
+          const coordinates = detailsHospital.Latitude && detailsHospital.Longitude
+            ? `${detailsHospital.Latitude}, ${detailsHospital.Longitude}`
+            : 'N/A';
+          const mapUrl = detailsHospital.Latitude && detailsHospital.Longitude
+            ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${detailsHospital.Latitude},${detailsHospital.Longitude}`)}`
+            : '';
+          const isAccessUpdating = Number(accessActionHospitalId) === Number(detailsHospital.Hospital_ID);
+          const InfoField = ({ label, value, full = false }) => (
+            <div className={full ? 'md:col-span-2' : ''}>
+              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+              <p className="mt-1 break-words text-sm font-medium leading-relaxed text-slate-900">{value || 'N/A'}</p>
+            </div>
+          );
+
+          return (
+            <div className="fixed inset-0 z-[115] flex items-center justify-center p-4">
               <button
                 type="button"
-                aria-label="Close hospital details panel"
-                className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+                aria-label="Close hospital information"
                 onClick={closeHospitalDetails}
+                className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
               />
 
-              <aside
-                className="absolute right-0 top-0 h-full w-full max-w-md overflow-y-auto border-l bg-white shadow-2xl"
-                style={{
-                  animation: 'manageHospitalInfoSlideIn 0.25s ease-out',
-                  borderColor: `${theme.secondaryColor}35`,
-                  backgroundColor: '#ffffff',
-                  opacity: 1,
-                  backdropFilter: 'none',
-                  color: primaryTextColor,
-                  fontFamily: `${bodyFont}, sans-serif`,
-                }}
-              >
-                <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-gray-200 bg-white px-5 py-4">
-                  <div>
-                    <h3 className="text-lg font-semibold" style={{ color: primaryTextColor, fontFamily: `${headingFont}, sans-serif` }}>
-                      H-Representative Details
+              <div className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">H-Representative Account</p>
+                    <h3 className="mt-1 break-words text-xl font-bold text-slate-900">
+                      {detailsHospital.Hospital_Name || `Hospital #${detailsHospital.Hospital_ID}`}
                     </h3>
-                    <p className="mt-0.5 text-xs" style={{ color: secondaryTextColor }}>
-                      View and manage assigned H-Representative.
-                    </p>
+                    <p className="mt-1 text-sm text-slate-600">Hospital ID: {detailsHospital.Hospital_ID}</p>
                   </div>
 
                   <button
                     type="button"
                     onClick={closeHospitalDetails}
-                    aria-label="Close hospital details panel"
-                    className="rounded-md border p-1"
-                    style={{ borderColor: `${theme.secondaryColor}44`, color: secondaryTextColor }}
+                    disabled={isAccessUpdating}
+                    className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:opacity-60"
                   >
-                    <X size={16} />
+                    <X size={18} />
                   </button>
                 </div>
 
-                <div className="space-y-4 p-5">
-                  <div className="rounded-xl border bg-slate-50 p-4" style={{ borderColor: `${theme.secondaryColor}30` }}>
-            <div className="flex items-start gap-3">
-              {resolveHospitalLogoUrl(detailsHospital.Hospital_Logo) ? (
-                <img
-                  src={resolveHospitalLogoUrl(detailsHospital.Hospital_Logo)}
-                  alt="H-Representative logo"
-                  className="h-14 w-14 rounded-lg border object-cover bg-white"
-                  style={{ borderColor: `${theme.secondaryColor}30` }}
-                />
-              ) : (
-                <div className="h-14 w-14 rounded-lg border bg-white flex items-center justify-center" style={{ borderColor: `${theme.secondaryColor}30`, color: secondaryTextColor }}>
-                  <Building2 size={20} />
-                </div>
-              )}
+                <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+                  <div className="grid grid-cols-1 gap-5 lg:grid-cols-[280px,minmax(0,1fr)]">
+                    <aside className="space-y-4">
+                      <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                        {logoUrl ? (
+                          <img
+                            src={logoUrl}
+                            alt={`${detailsHospital.Hospital_Name || 'Hospital'} logo`}
+                            className="h-56 w-full bg-white object-contain"
+                          />
+                        ) : (
+                          <div className="flex h-56 items-center justify-center bg-white text-slate-400">
+                            <Building2 size={42} />
+                          </div>
+                        )}
+                      </div>
 
-              <div className="min-w-0">
-                <p className="text-sm font-semibold break-words" style={{ color: primaryTextColor }}>{detailsHospital.Hospital_Name || 'N/A'}</p>
-                <p className="mt-1 text-xs" style={{ color: secondaryTextColor }}>H-Representative ID: {detailsHospital.Hospital_ID}</p>
-                <p className="mt-2 text-xs" style={{ color: secondaryTextColor }}>Contact: {detailsHospital.Contact_Number || 'N/A'}</p>
-              </div>
-            </div>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Record Summary</p>
+                        <div className="mt-3 space-y-2">
+                          <p><span className="font-semibold text-slate-900">Submitted:</span> {formatDateTime(detailsHospital.Created_At)}</p>
+                          <p><span className="font-semibold text-slate-900">Updated:</span> {formatDateTime(detailsHospital.Updated_At)}</p>
+                        </div>
+                      </div>
+                    </aside>
 
-            <p className="mt-3 text-xs leading-relaxed" style={{ color: secondaryTextColor }}>
-              {[detailsHospital.Street, detailsHospital.Barangay, detailsHospital.City, detailsHospital.Region, detailsHospital.Country]
-                .filter(Boolean)
-                .join(', ') || 'No address on record.'}
-            </p>
-                  </div>
+                    <div className="space-y-4">
+                      <section className="rounded-xl border border-slate-200 p-4">
+                        <h4 className="text-sm font-bold text-slate-900">Hospital Information</h4>
+                        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <InfoField label="Hospital Name" value={detailsHospital.Hospital_Name} />
+                          <InfoField label="Hospital Contact" value={detailsHospital.Contact_Number} />
+                          <InfoField label="Head / Owner" value={detailsHospital.Hospital_Head_Name} />
+                          <InfoField label="Head Position" value={detailsHospital.Hospital_Head_Title} />
+                          <InfoField label="Head Email" value={detailsHospital.Hospital_Head_Email} />
+                          <InfoField label="Head Contact" value={detailsHospital.Hospital_Head_Contact_Number} />
+                          <InfoField label="Full Address" value={formatHospitalAddress(detailsHospital)} full />
+                          <InfoField label="Coordinates" value={coordinates} />
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Map</p>
+                            {mapUrl ? (
+                              <a
+                                href={mapUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="mt-1 inline-flex text-sm font-semibold text-blue-700 underline"
+                              >
+                                Open pinned location
+                              </a>
+                            ) : (
+                              <p className="mt-1 text-sm font-medium text-slate-900">N/A</p>
+                            )}
+                          </div>
+                        </div>
+                      </section>
 
-                  <div className="rounded-xl border p-4" style={{ borderColor: `${theme.secondaryColor}30` }}>
-            <p className="mb-3 text-sm font-semibold" style={{ color: primaryTextColor }}>Quick Assign H-Representative</p>
-            <div className="space-y-2">
-              <select
-                value={panelAssignUserId}
-                onChange={(event) => setPanelAssignUserId(event.target.value)}
-                disabled={unassignedHStaffUsers.length === 0}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 bg-white text-sm focus:ring-2 outline-none"
-                style={{ '--tw-ring-color': theme.primaryColor, color: primaryTextColor }}
-              >
-                <option value="">
-                  {hStaffUsers.length === 0
-                    ? 'No H-Representative users found in users/user_details'
-                    : unassignedHStaffUsers.length === 0
-                      ? 'All H-Representative users are already assigned'
-                      : 'Select unassigned H-Representative'}
-                </option>
-                {unassignedHStaffUsers.map((user) => (
-                  <option key={user.user_id} value={user.user_id}>
-                    {getHStaffDisplayName(user)}
-                  </option>
-                ))}
-              </select>
-
-              <button
-                type="button"
-                onClick={() => assignHStaffToHospital(detailsHospital.Hospital_ID, panelAssignUserId)}
-                disabled={isSavingAssignment || !panelAssignUserId || unassignedHStaffUsers.length === 0}
-                className="w-full rounded-lg px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                {isSavingAssignment ? 'Assigning...' : 'Assign To This H-Representative'}
-              </button>
-            </div>
-                  </div>
-
-                  <div className="rounded-xl border p-4" style={{ borderColor: `${theme.secondaryColor}30` }}>
-            <p className="mb-3 text-sm font-semibold" style={{ color: primaryTextColor }}>Assigned H-Representative</p>
-
-            {detailsHospitalStaffLinks.length === 0 ? (
-              <p className="text-sm" style={{ color: secondaryTextColor }}>No H-Representative assigned yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {detailsHospitalStaffLinks.map((link) => {
-                  const linkedUser = hStaffUsersById.get(Number(link.User_ID));
-
-                  return (
-                    <div key={link.Link_ID} className="rounded-lg border bg-gray-50 px-3 py-2" style={{ borderColor: `${theme.secondaryColor}30` }}>
-                      <p className="text-sm font-medium break-words" style={{ color: primaryTextColor }}>
-                        {getHStaffDisplayName(linkedUser)}
-                      </p>
-                      <p className="mt-1 text-xs" style={{ color: secondaryTextColor }}>Assigned: {formatDateTime(link.Assigned_Date)}</p>
-
-                      <button
-                        type="button"
-                        onClick={() => removeHospitalStaffLink(link)}
-                        disabled={removingLinkId === link.Link_ID}
-                        className="mt-2 inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
-                      >
-                        {removingLinkId === link.Link_ID ? <Loader2 className="animate-spin" size={11} /> : <Trash2 size={11} />}
-                        Unassign
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => openReassignModal(link)}
-                        disabled={isReassigning || hospitals.length < 2}
-                        className="mt-2 ml-2 inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
-                      >
-                        <ArrowRightLeft size={11} />
-                        Reassign
-                      </button>
+                      <section className="rounded-xl border border-slate-200 p-4">
+                        <h4 className="text-sm font-bold text-slate-900">Managing Account</h4>
+                        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <InfoField label="Manager Name" value={getUserFullName(managerUser) || detailsHospital.Hospital_Head_Name} />
+                          <InfoField label="Account Email" value={managerUser?.email || detailsHospital.Hospital_Head_Email} />
+                          <InfoField label="Role" value={getHospitalManagerRoleLabel(managerUser)} />
+                          <InfoField label="Contact Number" value={managerDetails?.contact_number || detailsHospital.Hospital_Head_Contact_Number} />
+                          <InfoField label="Birthdate" value={managerDetails?.birthdate} />
+                          <InfoField label="Gender" value={managerDetails?.gender} />
+                        </div>
+                      </section>
                     </div>
-                  );
-                })}
-              </div>
-            )}
                   </div>
                 </div>
-              </aside>
 
-              <style>{`
-                @keyframes manageHospitalInfoSlideIn {
-                  from {
-                    transform: translateX(100%);
-                  }
-                  to {
-                    transform: translateX(0);
-                  }
-                }
-              `}</style>
-            </div>,
-            document.body,
-          )
-        : null}
+                <div className="border-t border-slate-200 bg-slate-50 px-5 py-4">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleHospitalAccess(detailsHospital, !detailsHospital.Is_Approved)}
+                      disabled={isAccessUpdating}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60 ${
+                        detailsHospital.Is_Approved
+                          ? 'border border-red-200 bg-red-50 text-red-700 hover:bg-red-100'
+                          : 'border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                      }`}
+                    >
+                      {isAccessUpdating
+                        ? 'Updating access...'
+                        : detailsHospital.Is_Approved
+                          ? 'Turn Off Access'
+                          : 'Turn On Access'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })(),
+        document.body,
+      )}
 
       {isModalOpen && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[90] backdrop-blur-sm p-4">
