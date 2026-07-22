@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronLeft, ChevronRight, Loader2, MailCheck, Search, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, CalendarDays, Camera, CheckCircle2, ChevronLeft, ChevronRight, Loader2, MailCheck, Search, ShieldCheck, Upload, X } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import maplibregl from 'maplibre-gl';
 import { isSupabaseConfigured, supabase } from '../../lib/supabaseClient';
@@ -67,9 +67,7 @@ const MAP_STREET_STYLE = {
 
 const CONTACT_METHOD_OPTIONS = [
   { value: 'email', label: 'Email' },
-  { value: 'phone_call', label: 'Phone Call' },
-  { value: 'sms', label: 'SMS' },
-  { value: 'messenger', label: 'Messenger' },
+  { value: 'phone', label: 'Phone' },
 ];
 const PH_VALID_ID_OPTIONS = [
   { value: 'philsys', label: 'PhilSys National ID' },
@@ -86,7 +84,7 @@ const PH_VALID_ID_OPTIONS = [
 const GENDER_OPTIONS = ['Male', 'Female', 'Non-binary', 'Prefer not to say'];
 const FORM_STEPS = [
   { id: 1, title: 'Applicant Details' },
-  { id: 2, title: 'Event + Venue' },
+  { id: 2, title: 'Program + Venue' },
   { id: 3, title: 'Full Confirmation' },
   { id: 4, title: 'Verify Email' },
 ];
@@ -94,6 +92,8 @@ const TERMS_AND_AGREEMENT_PDF_PATH = '/legal/donivra-terms-and-agreement.pdf';
 
 const INITIAL_FORM = {
   applicantValidIdType: 'philsys',
+  applicantIdDocumentNumber: '',
+  applicantIdAddress: '',
   applicantFirstName: '',
   applicantMiddleName: '',
   applicantLastName: '',
@@ -101,7 +101,6 @@ const INITIAL_FORM = {
   applicantGender: '',
   applicantContactNumber: '',
   preferredContactMethod: 'email',
-  preferredContactDetail: '',
   eventVisibility: 'Public',
   eventName: '',
   venueName: '',
@@ -109,6 +108,9 @@ const INITIAL_FORM = {
   eventOverview: '',
   proposedStartAt: '',
   proposedEndAt: '',
+  proposedDate: '',
+  proposedStartTime: '',
+  proposedEndTime: '',
   street: '',
   barangay: '',
   city: '',
@@ -170,17 +172,143 @@ function toUtc8ShiftedDate(date = new Date()) {
   return new Date(utcMilliseconds + (UTC8_OFFSET_MINUTES * 60 * 1000));
 }
 
-function toUtc8DateTimeLocalValue(date = new Date()) {
+function getMinimumProposedStartLocalValue() {
   const pad = (value) => String(value).padStart(2, '0');
-  const utc8 = toUtc8ShiftedDate(date);
-  return `${utc8.getUTCFullYear()}-${pad(utc8.getUTCMonth() + 1)}-${pad(utc8.getUTCDate())}T${pad(utc8.getUTCHours())}:${pad(utc8.getUTCMinutes())}`;
+  const utc8Now = toUtc8ShiftedDate(new Date());
+  utc8Now.setUTCHours(0, 0, 0, 0);
+  utc8Now.setUTCDate(utc8Now.getUTCDate() + 7);
+  return `${utc8Now.getUTCFullYear()}-${pad(utc8Now.getUTCMonth() + 1)}-${pad(utc8Now.getUTCDate())}T00:00`;
 }
 
-function getMinimumProposedStartLocalValue() {
-  const utc8Now = toUtc8ShiftedDate(new Date());
-  utc8Now.setUTCSeconds(0, 0);
-  utc8Now.setUTCDate(utc8Now.getUTCDate() + 7);
-  return toUtc8DateTimeLocalValue(utc8Now);
+function combineProgramDateAndTime(date, time) {
+  const dateValue = String(date || '').trim();
+  const timeValue = String(time || '').trim();
+  return dateValue && timeValue ? `${dateValue}T${timeValue}` : '';
+}
+
+function formatProgramDateLabel(value) {
+  if (!value) return '';
+  const date = new Date(`${value}T00:00:00Z`);
+  if (!Number.isFinite(date.getTime())) return '';
+  return date.toLocaleDateString('en-PH', {
+    timeZone: 'UTC',
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function ProgramDateCalendar({ value, minimumDateKey, blockedDates, onChange, buttonRef, hasError, primaryColor }) {
+  const calendarRef = useRef(null);
+  const initialMonthKey = `${String(value || minimumDateKey).slice(0, 7)}-01`;
+  const [isOpen, setIsOpen] = useState(false);
+  const [visibleMonthKey, setVisibleMonthKey] = useState(initialMonthKey);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (!calendarRef.current?.contains(event.target)) setIsOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (value) setVisibleMonthKey(`${value.slice(0, 7)}-01`);
+  }, [value]);
+
+  const visibleMonth = useMemo(() => new Date(`${visibleMonthKey}T00:00:00Z`), [visibleMonthKey]);
+  const calendarDays = useMemo(() => {
+    if (!Number.isFinite(visibleMonth.getTime())) return [];
+    const year = visibleMonth.getUTCFullYear();
+    const month = visibleMonth.getUTCMonth();
+    const firstWeekday = new Date(Date.UTC(year, month, 1)).getUTCDay();
+    const dayCount = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    return [
+      ...Array.from({ length: firstWeekday }, () => null),
+      ...Array.from({ length: dayCount }, (_, index) => {
+        const date = new Date(Date.UTC(year, month, index + 1));
+        return date.toISOString().slice(0, 10);
+      }),
+    ];
+  }, [visibleMonth]);
+
+  const minimumMonthKey = `${String(minimumDateKey || '').slice(0, 7)}-01`;
+  const moveMonth = (offset) => {
+    const next = new Date(visibleMonth.getTime());
+    next.setUTCMonth(next.getUTCMonth() + offset, 1);
+    setVisibleMonthKey(next.toISOString().slice(0, 10));
+  };
+
+  return (
+    <div ref={calendarRef} className="relative">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setIsOpen((previous) => !previous)}
+        className={`flex w-full items-center justify-between rounded-lg border bg-white px-3 py-2.5 text-left text-sm outline-none focus:ring-2 ${hasError ? 'border-rose-500 ring-2 ring-rose-200' : 'border-slate-300'}`}
+        style={{ '--tw-ring-color': primaryColor }}
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+      >
+        <span className={value ? 'text-slate-900' : 'text-slate-400'}>
+          {formatProgramDateLabel(value) || 'Choose an available date'}
+        </span>
+        <CalendarDays size={17} className="shrink-0 text-slate-500" />
+      </button>
+
+      {isOpen && (
+        <div role="dialog" aria-label="Choose program date" className="absolute right-0 z-50 mt-2 w-[min(22rem,calc(100vw-3rem))] rounded-xl border border-slate-200 bg-white p-3 shadow-2xl">
+          <div className="mb-3 flex items-center justify-between">
+            <button type="button" onClick={() => moveMonth(-1)} disabled={visibleMonthKey <= minimumMonthKey} className="rounded-lg border border-slate-200 p-2 text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-30" aria-label="Previous month">
+              <ChevronLeft size={17} />
+            </button>
+            <p className="text-sm font-semibold text-slate-800">
+              {visibleMonth.toLocaleDateString('en-PH', { timeZone: 'UTC', month: 'long', year: 'numeric' })}
+            </p>
+            <button type="button" onClick={() => moveMonth(1)} className="rounded-lg border border-slate-200 p-2 text-slate-600 hover:bg-slate-50" aria-label="Next month">
+              <ChevronRight size={17} />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-7 gap-1 text-center">
+            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+              <span key={day} className="py-1 text-[10px] font-bold uppercase text-slate-400">{day}</span>
+            ))}
+            {calendarDays.map((dateKey, index) => {
+              if (!dateKey) return <span key={`blank-${index}`} />;
+              const isReserved = blockedDates.has(dateKey);
+              const isTooEarly = dateKey < minimumDateKey;
+              const isDisabled = isReserved || isTooEarly;
+              const isSelected = dateKey === value;
+              return (
+                <button
+                  key={dateKey}
+                  type="button"
+                  disabled={isDisabled}
+                  onClick={() => {
+                    onChange(dateKey);
+                    setIsOpen(false);
+                  }}
+                  title={isReserved ? 'Reserved—available only if staff rejects the existing application' : isTooEarly ? 'The date must be at least 7 days from today' : formatProgramDateLabel(dateKey)}
+                  className={`aspect-square rounded-lg text-sm font-medium transition ${isSelected ? 'text-white shadow-sm' : isReserved ? 'cursor-not-allowed bg-rose-50 text-rose-400 line-through' : isTooEarly ? 'cursor-not-allowed text-slate-300' : 'text-slate-700 hover:bg-slate-100'}`}
+                  style={isSelected ? { backgroundColor: primaryColor } : undefined}
+                >
+                  {Number(dateKey.slice(-2))}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-3 border-t border-slate-100 pt-2 text-[11px] text-slate-500">
+            <span><span className="mr-1 inline-block h-2.5 w-2.5 rounded-sm bg-rose-100" />Reserved</span>
+            <span><span className="mr-1 inline-block h-2.5 w-2.5 rounded-sm bg-slate-200" />Inside 7-day notice</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function parseUtc8DateTime(value) {
@@ -232,7 +360,7 @@ function mapStorageUploadError(rawMessage) {
   const lower = message.toLowerCase();
 
   if (lower.includes('bucket') && lower.includes('not found')) {
-    return 'Event application upload bucket is missing. Run migration 068_refactor_event_application_form_schema.sql.';
+    return 'Program application upload bucket is missing. Run migration 068_refactor_event_application_form_schema.sql.';
   }
 
   if (lower.includes('row-level security')) {
@@ -254,14 +382,45 @@ function mapEventApplicationSubmitError(rawMessage) {
     return 'Submit blocked by database policy. Please retry, or ask admin to re-apply the Event_Applications RLS policies.';
   }
 
-  return message || 'Unable to submit event application.';
+  if (
+    lower.includes('event_applications_one_active_program_per_date')
+    || lower.includes('conflicting key value violates exclusion constraint')
+    || lower.includes('selected program date is already reserved')
+  ) {
+    return 'One or more selected program dates were just reserved by another application. Please choose another date.';
+  }
+
+  if (lower.includes('didit verification')) {
+    return message.replace(/didit/gi, 'ID');
+  }
+
+  return message || 'Unable to submit program application.';
+}
+
+async function readEdgeFunctionError(error, fallbackMessage) {
+  const response = error?.context;
+
+  if (response && typeof response.clone === 'function') {
+    try {
+      const payload = await response.clone().json();
+      const serverMessage = payload?.error || payload?.detail || payload?.message;
+      if (serverMessage) return String(serverMessage);
+    } catch {
+      try {
+        const responseText = await response.clone().text();
+        if (responseText.trim()) return responseText.trim();
+      } catch {
+        // Fall through to the client-side error message.
+      }
+    }
+  }
+
+  return String(error?.message || fallbackMessage);
 }
 
 function normalizePreferredContactLabel(value) {
   const key = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
-  if (key === 'phonecall' || key === 'phone' || key === 'call') return 'Phone Call';
-  if (key === 'messenger') return 'Messenger';
-  if (key === 'sms') return 'SMS';
+  if (key === 'phonecall' || key === 'phone' || key === 'call' || key === 'sms') return 'Phone';
   return 'Email';
 }
 
@@ -305,8 +464,48 @@ function toStoredPhoneNumber(value = '') {
 }
 
 function isPhoneContactMethod(value = '') {
-  const method = normalizePreferredContactLabel(value);
-  return method === 'SMS' || method === 'Phone Call';
+  return normalizePreferredContactLabel(value) === 'Phone';
+}
+
+function mapDiditDocumentType(document = {}) {
+  const value = `${document?.document_type || ''} ${document?.document_subtype || ''}`.toLowerCase();
+  if (value.includes('passport')) return 'passport';
+  if (value.includes('driver')) return 'drivers_license';
+  if (value.includes('philsys') || value.includes('national id')) return 'philsys';
+  if (value.includes('umid') || value.includes('unified multi-purpose')) return 'umid';
+  if (value.includes('professional regulation') || value.includes('prc')) return 'prc';
+  if (value.includes('postal')) return 'postal';
+  if (value.includes('voter')) return 'voters';
+  if (value.includes('senior')) return 'senior_citizen';
+  return 'other_government';
+}
+
+function mapDiditGender(value) {
+  const key = String(value || '').trim().toLowerCase();
+  if (key === 'm' || key === 'male') return 'Male';
+  if (key === 'f' || key === 'female') return 'Female';
+  return value ? String(value) : '';
+}
+
+function toProgramDateKey(value) {
+  const match = String(value || '').match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : '';
+}
+
+function enumerateProgramDates(startValue, endValue) {
+  const startKey = toProgramDateKey(startValue);
+  const endKey = toProgramDateKey(endValue || startValue);
+  if (!startKey || !endKey) return [];
+
+  const start = new Date(`${startKey}T00:00:00Z`);
+  const end = new Date(`${endKey}T00:00:00Z`);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end < start) return [];
+
+  const dates = [];
+  for (let cursor = start; cursor <= end; cursor = new Date(cursor.getTime() + (24 * 60 * 60 * 1000))) {
+    dates.push(cursor.toISOString().slice(0, 10));
+  }
+  return dates;
 }
 
 
@@ -563,7 +762,7 @@ function LocationPinPicker({ latitude, longitude, onChange }) {
                 runLocationSearch();
               }
             }}
-            placeholder="Search address, barangay, city, or event location"
+            placeholder="Search address, barangay, city, or program location"
             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
           />
           <button
@@ -594,7 +793,7 @@ function LocationPinPicker({ latitude, longitude, onChange }) {
       </div>
 
       <div ref={mapContainerRef} className="h-72 w-full rounded-lg border border-slate-200" />
-      <p className="text-xs text-slate-500">Click map to pin exact event location.</p>
+      <p className="text-xs text-slate-500">Click map to pin the exact program location.</p>
     </div>
   );
 }
@@ -604,12 +803,19 @@ export default function EventApplicationPage() {
   const primaryColor = theme?.primaryColor || '#0f766e';
 
   const [form, setForm] = useState(INITIAL_FORM);
-  const [validIdFile, setValidIdFile] = useState(null);
   const [eventPlacePhotoFile, setEventPlacePhotoFile] = useState(null);
   const [eventPosterPhotoFile, setEventPosterPhotoFile] = useState(null);
-  const [validIdPreviewUrl, setValidIdPreviewUrl] = useState('');
   const [eventPlacePhotoPreviewUrl, setEventPlacePhotoPreviewUrl] = useState('');
   const [eventPosterPhotoPreviewUrl, setEventPosterPhotoPreviewUrl] = useState('');
+  const [diditSession, setDiditSession] = useState(null);
+  const [diditStatus, setDiditStatus] = useState('Not Started');
+  const [diditWarnings, setDiditWarnings] = useState([]);
+  const [diditNotice, setDiditNotice] = useState('');
+  const [isCreatingDiditSession, setIsCreatingDiditSession] = useState(false);
+  const [isCheckingDiditStatus, setIsCheckingDiditStatus] = useState(false);
+  const [isDiditModalOpen, setIsDiditModalOpen] = useState(false);
+  const [unavailableProgramDates, setUnavailableProgramDates] = useState([]);
+  const [isLoadingProgramDates, setIsLoadingProgramDates] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
   const [hasConfirmedTerms, setHasConfirmedTerms] = useState(false);
@@ -690,29 +896,20 @@ export default function EventApplicationPage() {
 
   const markFieldError = useCallback((fieldKey, message) => {
     if (fieldKey) {
-      setFieldErrors({ [fieldKey]: true });
+      setFieldErrors({ [fieldKey]: message || 'Please review this field.' });
+      setErrorMessage('');
       focusField(fieldKey);
     } else {
       setFieldErrors({});
+      setErrorMessage(message || 'Please review the required fields.');
     }
-    setErrorMessage(message || 'Please review the required fields.');
   }, [focusField]);
 
-  useEffect(() => {
-    if (!validIdFile) {
-      setValidIdPreviewUrl('');
-      return undefined;
-    }
-
-    if (!String(validIdFile.type || '').toLowerCase().startsWith('image/')) {
-      setValidIdPreviewUrl('');
-      return undefined;
-    }
-
-    const objectUrl = URL.createObjectURL(validIdFile);
-    setValidIdPreviewUrl(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [validIdFile]);
+  const fieldError = useCallback((fieldKey) => (
+    fieldErrors[fieldKey]
+      ? <span className="text-xs font-medium text-rose-600">{fieldErrors[fieldKey]}</span>
+      : null
+  ), [fieldErrors]);
 
   useEffect(() => {
     if (!eventPlacePhotoFile) {
@@ -784,36 +981,37 @@ export default function EventApplicationPage() {
 
   const minimumProposedStartLocalValue = useMemo(() => getMinimumProposedStartLocalValue(), []);
   const normalizedEmail = useMemo(() => String(form.applicantEmail || '').trim().toLowerCase(), [form.applicantEmail]);
+  const isDiditVerified = useMemo(
+    () => String(diditStatus || '').toLowerCase() === 'approved' && Boolean(diditSession?.sessionId),
+    [diditSession, diditStatus],
+  );
+  const unavailableProgramDateSet = useMemo(
+    () => new Set(unavailableProgramDates),
+    [unavailableProgramDates],
+  );
 
-  const preferredContactDetailPlaceholder = useMemo(() => {
-    const method = normalizePreferredContactLabel(form.preferredContactMethod);
-    if (method === 'Messenger') return 'Enter Messenger profile link or name';
-    if (method === 'SMS' || method === 'Phone Call') return '+63 912 345 6789';
-    return 'Enter active email address';
-  }, [form.preferredContactMethod]);
+  const minimumProgramDateKey = useMemo(
+    () => toProgramDateKey(minimumProposedStartLocalValue),
+    [minimumProposedStartLocalValue],
+  );
 
   const preferredContactMethodLabel = useMemo(
     () => normalizePreferredContactLabel(form.preferredContactMethod),
     [form.preferredContactMethod],
   );
 
-  const isPreferredContactAutoLinked = useMemo(
-    () => ['Email', 'SMS', 'Phone Call'].includes(preferredContactMethodLabel),
-    [preferredContactMethodLabel],
-  );
-
   const preferredContactAutoHelper = useMemo(() => {
     if (preferredContactMethodLabel === 'Email') {
       return form.applicantEmail.trim()
-        ? 'Auto-using Email field above.'
-        : 'Will auto-use Email field above. Enter email first.';
+        ? 'Your email is the primary contact; your phone remains the secondary option.'
+        : 'Enter your email. Your phone will remain the secondary option.';
     }
-    if (preferredContactMethodLabel === 'SMS' || preferredContactMethodLabel === 'Phone Call') {
+    if (preferredContactMethodLabel === 'Phone') {
       return form.applicantContactNumber.trim()
-        ? 'Auto-using Contact Number field above.'
-        : 'Will auto-use Contact Number field above. Enter contact number first.';
+        ? 'Your phone is the primary contact; your email remains the secondary option.'
+        : 'Enter your phone number. Your email will remain the secondary option.';
     }
-    return 'For Messenger, enter your profile link or name.';
+    return '';
   }, [preferredContactMethodLabel, form.applicantEmail, form.applicantContactNumber]);
 
   const canSubmit = useMemo(() => {
@@ -825,11 +1023,8 @@ export default function EventApplicationPage() {
       && form.applicantGender.trim()
       && isValidPhilippineMobile(form.applicantContactNumber)
       && form.preferredContactMethod.trim()
-      && (
-        isPhoneContactMethod(form.preferredContactMethod)
-          ? isValidPhilippineMobile(form.preferredContactDetail)
-          : form.preferredContactDetail.trim()
-      )
+      && form.applicantIdDocumentNumber.trim()
+      && form.applicantIdAddress.trim()
       && form.eventVisibility.trim()
       && form.eventName.trim()
       && form.venueName.trim()
@@ -838,6 +1033,7 @@ export default function EventApplicationPage() {
       && Number(form.expectedAttendees) > 0
       && form.proposedStartAt.trim()
       && form.proposedEndAt.trim()
+      && eventPlacePhotoFile
       && form.street.trim()
       && form.barangay.trim()
       && form.city.trim()
@@ -845,9 +1041,9 @@ export default function EventApplicationPage() {
       && form.region.trim()
       && form.latitude.trim()
       && form.longitude.trim()
-      && validIdFile,
+      && isDiditVerified,
     );
-  }, [form, validIdFile]);
+  }, [form, isDiditVerified, eventPlacePhotoFile]);
 
   useEffect(() => {
     if (!verifiedEmail) return;
@@ -866,31 +1062,31 @@ export default function EventApplicationPage() {
     const issue = (field, message) => ({ field, message });
 
     if (stepNumber === 1) {
-      if (!form.applicantValidIdType.trim()) return issue('applicantValidIdType', 'Please select your ID type.');
-      if (!validIdFile) return issue('validIdFile', 'Upload your valid ID before continuing.');
+      if (!isDiditVerified) return issue('diditVerification', 'Complete and pass Didit ID verification before continuing.');
+      if (!form.applicantValidIdType.trim()) return issue('applicantValidIdType', 'Valid ID type is required.');
       if (!form.applicantFirstName.trim()) return issue('applicantFirstName', 'First name is required.');
       if (!form.applicantLastName.trim()) return issue('applicantLastName', 'Last name is required.');
+      if (!form.applicantGender.trim()) return issue('applicantGender', 'Gender is required.');
+      if (!form.applicantIdDocumentNumber.trim()) return issue('applicantIdDocumentNumber', 'ID number is required. Correct it if the scan is inaccurate.');
+      if (!form.applicantIdAddress.trim()) return issue('applicantIdAddress', 'Address on the ID is required. Correct it if the scan is inaccurate.');
       if (!form.applicantEmail.trim()) return issue('applicantEmail', 'Email is required.');
       if (!isValidEmail(form.applicantEmail)) return issue('applicantEmail', 'Please enter a valid email address.');
-      if (!form.applicantGender.trim()) return issue('applicantGender', 'Gender is required.');
       if (!form.applicantContactNumber.trim()) return issue('applicantContactNumber', 'Contact number is required.');
       if (!isValidPhilippineMobile(form.applicantContactNumber)) return issue('applicantContactNumber', 'Contact number must be in +63 912 345 6789 format.');
       if (!form.preferredContactMethod.trim()) return issue('preferredContactMethod', 'Preferred contact method is required.');
-      if (!form.preferredContactDetail.trim()) return issue('preferredContactDetail', 'Preferred contact detail is required.');
-      if (isPhoneContactMethod(form.preferredContactMethod) && !isValidPhilippineMobile(form.preferredContactDetail)) {
-        return issue('preferredContactDetail', 'Preferred contact detail must be a valid +63 mobile number for SMS/Phone Call.');
-      }
       return null;
     }
 
     if (stepNumber === 2) {
-      if (!form.eventVisibility.trim()) return issue('eventVisibility', 'Event type is required.');
-      if (!form.eventName.trim()) return issue('eventName', 'Event name is required.');
+      if (!form.eventVisibility.trim()) return issue('eventVisibility', 'Program type is required.');
+      if (!form.eventName.trim()) return issue('eventName', 'Program name is required.');
       if (!form.venueName.trim()) return issue('venueName', 'Venue name is required.');
-      if (!form.eventOverview.trim()) return issue('eventOverview', 'Event overview is required.');
+      if (!form.eventOverview.trim()) return issue('eventOverview', 'Program overview is required.');
       if (!form.expectedAttendees || Number(form.expectedAttendees) <= 0) return issue('expectedAttendees', 'Expected attendees must be greater than zero.');
-      if (!form.proposedStartAt.trim()) return issue('proposedStartAt', 'Proposed start is required.');
-      if (!form.proposedEndAt.trim()) return issue('proposedEndAt', 'Proposed end is required.');
+      if (!form.proposedDate.trim()) return issue('proposedDate', 'Choose an available program date.');
+      if (!form.proposedStartTime.trim()) return issue('proposedStartTime', 'Start time is required.');
+      if (!form.proposedEndTime.trim()) return issue('proposedEndTime', 'End time is required.');
+      if (!eventPlacePhotoFile) return issue('eventPlacePhoto', 'One program place photo is required.');
       if (!form.street.trim()) return issue('street', 'Street is required.');
       if (!form.barangay.trim()) return issue('barangay', 'Barangay is required.');
       if (!form.city.trim()) return issue('city', 'City/Municipality is required.');
@@ -902,9 +1098,13 @@ export default function EventApplicationPage() {
       const proposedStart = parseUtc8DateTime(form.proposedStartAt);
       const proposedEnd = parseUtc8DateTime(form.proposedEndAt);
 
-      if (!proposedStart || !proposedEnd) return issue('proposedStartAt', 'Proposed start and end are required.');
-      if (minimumStart && proposedStart < minimumStart) return issue('proposedStartAt', 'Proposed start must be at least 7 days from today.');
-      if (proposedEnd < proposedStart) return issue('proposedEndAt', 'Proposed end cannot be earlier than proposed start.');
+      if (!proposedStart || !proposedEnd) return issue('proposedStartTime', 'Start and end times are required.');
+      if (minimumStart && proposedStart < minimumStart) return issue('proposedDate', 'Program date must be at least 7 days from today.');
+      if (toProgramDateKey(form.proposedStartAt) !== toProgramDateKey(form.proposedEndAt)) return issue('proposedEndTime', 'The program must start and end on the same date.');
+      if (proposedEnd <= proposedStart) return issue('proposedEndTime', 'End time must be later than start time.');
+      const blockedDate = enumerateProgramDates(form.proposedStartAt, form.proposedEndAt)
+        .find((date) => unavailableProgramDateSet.has(date));
+      if (blockedDate) return issue('proposedDate', `${blockedDate} is already reserved by another program application.`);
 
       return null;
     }
@@ -915,7 +1115,7 @@ export default function EventApplicationPage() {
     }
 
     return null;
-  }, [form, validIdFile, minimumProposedStartLocalValue, canSubmit]);
+  }, [form, isDiditVerified, minimumProposedStartLocalValue, canSubmit, unavailableProgramDateSet, eventPlacePhotoFile]);
 
   const goNextStep = useCallback(() => {
     const validationIssue = getStepValidationIssue(currentStep);
@@ -954,21 +1154,162 @@ export default function EventApplicationPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [hasConfirmedTerms]);
 
-  const handleValidIdFileChange = (event) => {
-    const file = event.target.files?.[0] || null;
+  const loadUnavailableProgramDates = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    setIsLoadingProgramDates(true);
+    try {
+      const { data, error } = await supabase.rpc('get_unavailable_program_dates', {
+        p_from_date: toProgramDateKey(minimumProposedStartLocalValue),
+      });
+      if (error) throw error;
+      setUnavailableProgramDates((Array.isArray(data) ? data : [])
+        .map((row) => toProgramDateKey(row?.program_date))
+        .filter(Boolean));
+    } catch (availabilityError) {
+      console.warn('[Program dates] Unable to load unavailable dates:', availabilityError);
+    } finally {
+      setIsLoadingProgramDates(false);
+    }
+  }, [minimumProposedStartLocalValue]);
+
+  useEffect(() => {
+    if (!hasAcceptedTerms) return;
+    loadUnavailableProgramDates();
+  }, [hasAcceptedTerms, loadUnavailableProgramDates]);
+
+  const applyDiditDocument = useCallback((document) => {
+    if (!document || typeof document !== 'object') return;
+    const middleName = String(document.middle_name || '').trim();
+
+    setForm((previous) => ({
+      ...previous,
+      applicantValidIdType: mapDiditDocumentType(document),
+      applicantFirstName: String(document.first_name || previous.applicantFirstName || '').trim(),
+      applicantMiddleName: middleName || previous.applicantMiddleName,
+      applicantLastName: String(document.last_name || previous.applicantLastName || '').trim(),
+      applicantGender: mapDiditGender(document.gender) || previous.applicantGender,
+      applicantIdDocumentNumber: String(document.document_number || previous.applicantIdDocumentNumber || '').trim(),
+      applicantIdAddress: String(document.formatted_address || document.address || previous.applicantIdAddress || '').trim(),
+    }));
     setFieldErrors((previous) => {
-      if (!previous.validIdFile) return previous;
       const next = { ...previous };
-      delete next.validIdFile;
+      delete next.diditVerification;
+      delete next.applicantValidIdType;
+      delete next.applicantFirstName;
+      delete next.applicantMiddleName;
+      delete next.applicantLastName;
+      delete next.applicantGender;
+      delete next.applicantIdDocumentNumber;
+      delete next.applicantIdAddress;
       return next;
     });
-    setErrorMessage('');
-    setValidIdFile(file);
-  };
+  }, []);
+
+  const checkDiditStatus = useCallback(async (sessionOverride = null) => {
+    const session = sessionOverride || diditSession;
+    if (!session?.sessionId || !session?.clientToken) {
+      setDiditNotice('Start an ID verification first.');
+      return;
+    }
+
+    setIsCheckingDiditStatus(true);
+    setDiditNotice('Checking the identity verification result...');
+    try {
+      const { data, error } = await supabase.functions.invoke('didit-verification', {
+        body: {
+          action: 'status',
+          sessionId: session.sessionId,
+          clientToken: session.clientToken,
+        },
+      });
+      if (error) throw new Error(await readEdgeFunctionError(error, 'Unable to check ID verification.'));
+      if (data?.error) throw new Error(data.error);
+
+      setDiditStatus(String(data?.status || 'Unknown'));
+      setDiditWarnings(Array.isArray(data?.warnings) ? data.warnings : []);
+      if (data?.verified && data?.document) {
+        applyDiditDocument(data.document);
+        setDiditNotice('ID verified. Name, ID number, gender, and address were filled when detected. You may correct any scan error.');
+        setIsDiditModalOpen(false);
+      } else if (String(data?.status || '').toLowerCase() === 'in review') {
+        setDiditNotice('The ID is still being reviewed. Check the verification status again shortly.');
+        setIsDiditModalOpen(false);
+      } else if (String(data?.status || '').toLowerCase() === 'declined') {
+        setDiditNotice('The ID could not be verified. Review the verification instructions and try another scan if needed.');
+        setIsDiditModalOpen(false);
+      } else {
+        setDiditNotice(`Verification status: ${String(data?.status || 'Not completed')}. Finish the verification steps, then check again.`);
+      }
+    } catch (verificationError) {
+      setDiditNotice(String(verificationError?.message || 'Unable to check ID verification.'));
+    } finally {
+      setIsCheckingDiditStatus(false);
+    }
+  }, [applyDiditDocument, diditSession]);
+
+  const startDiditVerification = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      setDiditNotice('Identity verification is not configured.');
+      return;
+    }
+
+    setIsCreatingDiditSession(true);
+    setDiditNotice('Creating a secure identity verification session...');
+    setDiditStatus('Not Started');
+    setDiditWarnings([]);
+    try {
+      const { data, error } = await supabase.functions.invoke('didit-verification', {
+        body: { action: 'create' },
+      });
+      if (error) throw new Error(await readEdgeFunctionError(error, 'Unable to start ID verification.'));
+      if (data?.error) throw new Error(data.error);
+      if (!data?.sessionId || !data?.clientToken || !data?.verificationUrl) {
+        throw new Error('The verification service returned an incomplete session.');
+      }
+
+      const session = {
+        sessionId: data.sessionId,
+        clientToken: data.clientToken,
+        verificationUrl: data.verificationUrl,
+      };
+      setDiditSession(session);
+      setDiditNotice('Follow the secure instructions to photograph or upload your Philippine ID.');
+      setIsDiditModalOpen(true);
+    } catch (verificationError) {
+      setDiditNotice(String(verificationError?.message || 'Unable to start ID verification.'));
+    } finally {
+      setIsCreatingDiditSession(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleDiditMessage = (event) => {
+      if (event.origin !== 'https://verify.didit.me') return;
+      if (event.data?.type !== 'didit:completed') return;
+      checkDiditStatus();
+    };
+    window.addEventListener('message', handleDiditMessage);
+    return () => window.removeEventListener('message', handleDiditMessage);
+  }, [checkDiditStatus]);
 
   const handleEventPlacePhotoFileChange = (event) => {
     const file = event.target.files?.[0] || null;
     setErrorMessage('');
+    if (file && !String(file.type || '').toLowerCase().startsWith('image/')) {
+      markFieldError('eventPlacePhoto', 'Program place photo must be an image file.');
+      event.target.value = '';
+      return;
+    }
+    if (file && file.size > MAX_UPLOAD_FILE_SIZE_BYTES) {
+      markFieldError('eventPlacePhoto', 'Program place photo must be 8 MB or smaller.');
+      event.target.value = '';
+      return;
+    }
+    setFieldErrors((previous) => {
+      const next = { ...previous };
+      delete next.eventPlacePhoto;
+      return next;
+    });
     setEventPlacePhotoFile(file);
   };
 
@@ -1138,7 +1479,7 @@ export default function EventApplicationPage() {
 
       setIsEmailOtpVerified(true);
       setVerifiedEmail(normalizedEmail);
-      setOtpNotice({ type: 'success', message: 'Email verified successfully. You can now submit your event application.' });
+      setOtpNotice({ type: 'success', message: 'Email verified successfully. You can now submit your program application.' });
       setFieldErrors((previous) => {
         if (!previous.otpCode) return previous;
         const next = { ...previous };
@@ -1165,29 +1506,16 @@ export default function EventApplicationPage() {
       nextValue = formatPhilippineMobileInput(nextValue);
     }
 
-    if (key === 'preferredContactDetail' && isPhoneContactMethod(form.preferredContactMethod)) {
-      nextValue = formatPhilippineMobileInput(nextValue);
-    }
-
     if (key === 'preferredContactMethod') {
       nextValue = String(nextValue || '');
-      const methodLabel = normalizePreferredContactLabel(nextValue);
-      const autoDetail = methodLabel === 'Email'
-        ? String(form.applicantEmail || '').trim()
-        : (methodLabel === 'SMS' || methodLabel === 'Phone Call'
-          ? formatPhilippineMobileInput(form.applicantContactNumber)
-          : form.preferredContactDetail);
-
       setForm((previous) => ({
         ...previous,
         preferredContactMethod: nextValue,
-        preferredContactDetail: autoDetail,
       }));
       setFieldErrors((previous) => {
-        if (!previous.preferredContactMethod && !previous.preferredContactDetail) return previous;
+        if (!previous.preferredContactMethod) return previous;
         const next = { ...previous };
         delete next.preferredContactMethod;
-        delete next.preferredContactDetail;
         return next;
       });
       return;
@@ -1209,20 +1537,35 @@ export default function EventApplicationPage() {
       return next;
     });
 
+    setForm((previous) => ({ ...previous, [key]: nextValue }));
+  };
+
+  const updateScheduleField = (key) => (eventOrValue) => {
+    const nextValue = typeof eventOrValue === 'string' ? eventOrValue : eventOrValue.target.value;
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    if (key === 'proposedDate' && nextValue && unavailableProgramDateSet.has(nextValue)) {
+      markFieldError('proposedDate', `${nextValue} is reserved and cannot be selected unless staff rejects the existing application.`);
+      return;
+    }
+
+    setFieldErrors((previous) => {
+      const next = { ...previous };
+      delete next[key];
+      if (key === 'proposedDate') delete next.proposedDate;
+      if (key === 'proposedStartTime') delete next.proposedStartTime;
+      if (key === 'proposedEndTime') delete next.proposedEndTime;
+      return next;
+    });
+
     setForm((previous) => {
-      const nextForm = {
-        ...previous,
-        [key]: nextValue,
-      };
-
-      const methodLabel = normalizePreferredContactLabel(nextForm.preferredContactMethod);
-      if (key === 'applicantEmail' && methodLabel === 'Email') {
-        nextForm.preferredContactDetail = String(nextValue || '').trim();
+      const nextForm = { ...previous, [key]: nextValue };
+      if (key === 'proposedStartTime' && nextForm.proposedEndTime && nextForm.proposedEndTime <= nextValue) {
+        nextForm.proposedEndTime = '';
       }
-      if (key === 'applicantContactNumber' && (methodLabel === 'SMS' || methodLabel === 'Phone Call')) {
-        nextForm.preferredContactDetail = formatPhilippineMobileInput(nextValue);
-      }
-
+      nextForm.proposedStartAt = combineProgramDateAndTime(nextForm.proposedDate, nextForm.proposedStartTime);
+      nextForm.proposedEndAt = combineProgramDateAndTime(nextForm.proposedDate, nextForm.proposedEndTime);
       return nextForm;
     });
   };
@@ -1348,12 +1691,22 @@ export default function EventApplicationPage() {
       return 'Proposed start must be at least 7 days from today.';
     }
 
-    if (proposedEnd < proposedStart) {
-      return 'Proposed end cannot be earlier than proposed start.';
+    if (toProgramDateKey(form.proposedStartAt) !== toProgramDateKey(form.proposedEndAt)) {
+      return 'The program must start and end on the same date.';
+    }
+
+    if (proposedEnd <= proposedStart) {
+      return 'End time must be later than start time.';
+    }
+
+    const blockedDate = enumerateProgramDates(form.proposedStartAt, form.proposedEndAt)
+      .find((date) => unavailableProgramDateSet.has(date));
+    if (blockedDate) {
+      return `${blockedDate} is already reserved by another program application.`;
     }
 
     return '';
-  }, [form.proposedEndAt, form.proposedStartAt, minimumProposedStartLocalValue]);
+  }, [form.proposedEndAt, form.proposedStartAt, minimumProposedStartLocalValue, unavailableProgramDateSet]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -1379,7 +1732,7 @@ export default function EventApplicationPage() {
 
     if (!canSubmit) {
       setCurrentStep(3);
-      markFieldError('eventName', 'Please fill in all required fields and upload a valid ID before submitting.');
+      markFieldError('eventName', 'Please complete all required fields and pass ID verification before submitting.');
       return;
     }
 
@@ -1391,7 +1744,8 @@ export default function EventApplicationPage() {
 
     const scheduleError = validateSchedule();
     if (scheduleError) {
-      setErrorMessage(scheduleError);
+      setCurrentStep(2);
+      markFieldError('proposedEndTime', scheduleError);
       return;
     }
 
@@ -1400,7 +1754,6 @@ export default function EventApplicationPage() {
     setSuccessMessage('');
 
     try {
-      const validIdUpload = await uploadEventAsset(validIdFile, 'applicant-valid-ids');
       const placePhotoUpload = eventPlacePhotoFile
         ? await uploadEventAsset(eventPlacePhotoFile, 'event-place-photos')
         : { path: null, url: null };
@@ -1419,12 +1772,15 @@ export default function EventApplicationPage() {
         Applicant_Last_Name: form.applicantLastName.trim(),
         Applicant_Email: form.applicantEmail.trim() || null,
         Applicant_Gender: form.applicantGender.trim() || null,
+        Applicant_ID_Document_Number: form.applicantIdDocumentNumber.trim() || null,
+        Applicant_ID_Address: form.applicantIdAddress.trim() || null,
         Applicant_Contact_Number: toStoredPhoneNumber(form.applicantContactNumber) || null,
         Applicant_Valid_ID_Type: form.applicantValidIdType.trim() || null,
+        Didit_Session_ID: diditSession.sessionId,
         Preferred_Contact_Method: form.preferredContactMethod.trim(),
         Preferred_Contact_Detail: isPhoneContactMethod(form.preferredContactMethod)
-          ? (toStoredPhoneNumber(form.preferredContactDetail) || null)
-          : form.preferredContactDetail.trim(),
+          ? (toStoredPhoneNumber(form.applicantContactNumber) || null)
+          : form.applicantEmail.trim(),
         Event_Visibility: normalizeEventVisibility(form.eventVisibility),
         Event_Name: form.eventName.trim(),
         Event_Overview: form.eventOverview.trim() || null,
@@ -1440,8 +1796,8 @@ export default function EventApplicationPage() {
         Expected_Attendees: form.expectedAttendees ? Number(form.expectedAttendees) : null,
         Latitude: form.latitude ? Number(form.latitude) : null,
         Longitude: form.longitude ? Number(form.longitude) : null,
-        Applicant_Valid_ID_Path: validIdUpload.path,
-        Applicant_Valid_ID_URL: validIdUpload.url,
+        Applicant_Valid_ID_Path: null,
+        Applicant_Valid_ID_URL: null,
         Event_Place_Photo_Path: placePhotoUpload.path,
         Event_Place_Photo_URL: placePhotoUpload.url,
         Event_Poster_Photo_Path: posterPhotoUpload.path,
@@ -1475,6 +1831,7 @@ export default function EventApplicationPage() {
       window.location.assign('/apply-event/success');
     } catch (submitError) {
       setErrorMessage(mapEventApplicationSubmitError(submitError?.message || submitError));
+      loadUnavailableProgramDates();
     } finally {
       setIsSubmitting(false);
     }
@@ -1496,7 +1853,7 @@ export default function EventApplicationPage() {
 
             <h1 className="text-2xl font-bold text-slate-900 md:text-3xl">Terms and Conditions</h1>
             <p className="mt-2 text-sm text-slate-600">
-              Review and accept the Donivra Terms and Agreement before starting the event application.
+              Review and accept the Donivra Terms and Agreement before starting the program application.
             </p>
 
             <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
@@ -1576,9 +1933,9 @@ export default function EventApplicationPage() {
           Back
         </button>
 
-        <h1 className="text-2xl font-bold text-slate-900 md:text-3xl">Event Application Form</h1>
+        <h1 className="text-2xl font-bold text-slate-900 md:text-3xl">Program Application Form</h1>
         <p className="mt-2 text-sm text-slate-600">
-          Any user can submit event details. Staff will review and contact you through your selected method.
+          Submit your program details for staff review. Your preferred contact is used first, and your other contact detail is the secondary option.
         </p>
 
         {errorMessage && (
@@ -1612,44 +1969,75 @@ export default function EventApplicationPage() {
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {currentStep === 1 && (
             <>
-              <label className="flex flex-col gap-1 md:col-span-2">
-                <span className="text-sm font-medium text-slate-700">Valid ID Type (PH) *</span>
-                <select
-                  ref={setFieldRef('applicantValidIdType')}
-                  value={form.applicantValidIdType}
-                  onChange={updateField('applicantValidIdType')}
-                  className={getFieldInputClassName('applicantValidIdType')}
-                  style={{ '--tw-ring-color': primaryColor }}
-                >
-                  {PH_VALID_ID_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-                <span className="text-xs text-slate-500">Select the Philippine ID type you are submitting.</span>
-              </label>
-
-              <label className="flex flex-col gap-1 md:col-span-2">
-                <span className="text-sm font-medium text-slate-700">Applicant Valid ID *</span>
-                <input
-                  ref={setFieldRef('validIdFile')}
-                  type="file"
-                  accept="image/*,.pdf"
-                  onChange={handleValidIdFileChange}
-                  className={getFieldInputClassName('validIdFile', 'py-2')}
-                />
-                <span className="text-xs text-slate-500">Required proof of legitimacy.</span>
-              </label>
-
-              {validIdPreviewUrl && (
-                <div className="md:col-span-2 rounded-xl border border-slate-200 bg-white p-3">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">ID Preview</p>
-                  <img src={validIdPreviewUrl} alt="Valid ID preview" className="max-h-72 w-full rounded border border-slate-200 object-contain" />
+              <div
+                ref={setFieldRef('diditVerification')}
+                className={`md:col-span-2 rounded-xl border p-4 ${fieldErrors.diditVerification ? 'border-rose-500 bg-rose-50' : isDiditVerified ? 'border-emerald-300 bg-emerald-50' : 'border-slate-300 bg-slate-50'}`}
+              >
+                <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      {isDiditVerified ? <CheckCircle2 size={18} className="text-emerald-600" /> : <ShieldCheck size={18} className="text-slate-600" />}
+                      <h2 className="text-sm font-semibold text-slate-800">Verify a Philippine Government ID *</h2>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-600">
+                      The secure verification checks the ID and fills only the name, ID number, gender, and address when available.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={startDiditVerification}
+                    disabled={isCreatingDiditSession || isCheckingDiditStatus}
+                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    style={{ backgroundColor: primaryColor }}
+                  >
+                    {isCreatingDiditSession ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
+                    {isCreatingDiditSession ? 'Starting...' : isDiditVerified ? 'Verify Another ID' : 'Start ID Verification'}
+                  </button>
                 </div>
+
+                {diditSession && !isDiditVerified && (
+                  <button
+                    type="button"
+                    onClick={() => checkDiditStatus()}
+                    disabled={isCheckingDiditStatus}
+                    className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
+                  >
+                    {isCheckingDiditStatus && <Loader2 size={14} className="animate-spin" />}
+                    Check verification status
+                  </button>
+                )}
+
+                {diditNotice && <p className={`mt-3 text-xs ${isDiditVerified ? 'text-emerald-700' : 'text-slate-600'}`}>{diditNotice}</p>}
+                {fieldError('diditVerification')}
+                {diditWarnings.length > 0 && (
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-amber-700">
+                    {diditWarnings.slice(0, 4).map((warning, index) => (
+                      <li key={`${warning?.risk || 'warning'}-${index}`}>{warning?.short_description || warning?.risk || 'Verification warning'}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {isDiditVerified && (
+                <label className="flex flex-col gap-1 md:col-span-2">
+                  <span className="text-sm font-medium text-slate-700">Verified ID Type (Philippines) *</span>
+                  <input
+                    ref={setFieldRef('applicantValidIdType')}
+                    type="text"
+                    value={PH_VALID_ID_OPTIONS.find((option) => option.value === form.applicantValidIdType)?.label || 'Government ID'}
+                    readOnly
+                    aria-readonly="true"
+                    className="rounded-lg border border-slate-300 bg-slate-100 px-3 py-2.5 text-sm text-slate-700 outline-none"
+                  />
+                  {fieldError('applicantValidIdType')}
+                  <span className="text-xs text-slate-500">Detected automatically from the verified document.</span>
+                </label>
               )}
 
               <label className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-slate-700">First Name *</span>
                 <input ref={setFieldRef('applicantFirstName')} type="text" value={form.applicantFirstName} onChange={updateField('applicantFirstName')} className={getFieldInputClassName('applicantFirstName')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('applicantFirstName')}
               </label>
 
               <label className="flex flex-col gap-1">
@@ -1660,6 +2048,7 @@ export default function EventApplicationPage() {
               <label className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-slate-700">Last Name *</span>
                 <input ref={setFieldRef('applicantLastName')} type="text" value={form.applicantLastName} onChange={updateField('applicantLastName')} className={getFieldInputClassName('applicantLastName')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('applicantLastName')}
               </label>
 
               <label className="flex flex-col gap-1">
@@ -1668,16 +2057,31 @@ export default function EventApplicationPage() {
                   <option value="">Select gender</option>
                   {GENDER_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
                 </select>
+                {fieldError('applicantGender')}
+              </label>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-slate-700">ID Number *</span>
+                <input ref={setFieldRef('applicantIdDocumentNumber')} type="text" value={form.applicantIdDocumentNumber} onChange={updateField('applicantIdDocumentNumber')} className={getFieldInputClassName('applicantIdDocumentNumber')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('applicantIdDocumentNumber')}
+              </label>
+
+              <label className="flex flex-col gap-1 md:col-span-2">
+                <span className="text-sm font-medium text-slate-700">Address on ID *</span>
+                <textarea ref={setFieldRef('applicantIdAddress')} value={form.applicantIdAddress} onChange={updateField('applicantIdAddress')} rows={2} className={getFieldInputClassName('applicantIdAddress')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('applicantIdAddress')}
               </label>
 
               <label className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-slate-700">Email *</span>
                 <input ref={setFieldRef('applicantEmail')} type="email" value={form.applicantEmail} onChange={updateField('applicantEmail')} className={getFieldInputClassName('applicantEmail')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('applicantEmail')}
               </label>
 
               <label className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-slate-700">Contact Number *</span>
                 <input ref={setFieldRef('applicantContactNumber')} type="text" value={form.applicantContactNumber} onChange={updateField('applicantContactNumber')} placeholder="+63 912 345 6789" className={getFieldInputClassName('applicantContactNumber')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('applicantContactNumber')}
               </label>
 
               <label className="flex flex-col gap-1">
@@ -1685,29 +2089,20 @@ export default function EventApplicationPage() {
                 <select ref={setFieldRef('preferredContactMethod')} value={form.preferredContactMethod} onChange={updateField('preferredContactMethod')} className={getFieldInputClassName('preferredContactMethod')} style={{ '--tw-ring-color': primaryColor }}>
                   {CONTACT_METHOD_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
-              </label>
-
-              <label className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-slate-700">Preferred Contact Detail *</span>
-                <input
-                  ref={setFieldRef('preferredContactDetail')}
-                  type="text"
-                  value={form.preferredContactDetail}
-                  onChange={updateField('preferredContactDetail')}
-                  placeholder={preferredContactDetailPlaceholder}
-                  className={getFieldInputClassName('preferredContactDetail')}
-                  style={{ '--tw-ring-color': primaryColor }}
-                  readOnly={isPreferredContactAutoLinked}
-                />
+                {fieldError('preferredContactMethod')}
                 <span className="text-xs text-slate-500">{preferredContactAutoHelper}</span>
               </label>
+
+              <p className="md:col-span-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+                Your preferred contact method is our first option. The contact method you did not choose will automatically be used as the second option.
+              </p>
 
               <div className="flex flex-col gap-2 md:col-span-2">
                 <div>
                   <p className="text-sm font-medium text-slate-700">
                     Are you a member of an organization or more? Please input your social media below.
                   </p>
-                  <p className="text-xs text-slate-500">Optional — used as the partner credit when admin publishes your event.</p>
+                  <p className="text-xs text-slate-500">Optional — used as the partner credit when admin publishes your program.</p>
                 </div>
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   <label className="flex flex-col gap-1">
@@ -1740,38 +2135,88 @@ export default function EventApplicationPage() {
           {currentStep === 2 && (
             <>
               <label className="flex flex-col gap-1 md:col-span-2">
-                <span className="text-sm font-medium text-slate-700">Event Type *</span>
+                <span className="text-sm font-medium text-slate-700">Program Type *</span>
                 <select ref={setFieldRef('eventVisibility')} value={form.eventVisibility} onChange={updateField('eventVisibility')} className={getFieldInputClassName('eventVisibility')} style={{ '--tw-ring-color': primaryColor }}>
-                  <option value="Public">Public Event</option>
-                  <option value="Private">Private Event</option>
+                  <option value="Public">Public Program</option>
+                  <option value="Private">Private Program</option>
                 </select>
-                <span className="text-xs text-slate-500">Private events receive a private access code after admin approval.</span>
+                {fieldError('eventVisibility')}
+                <span className="text-xs text-slate-500">Private programs receive a private access code after admin approval.</span>
               </label>
 
               <label className="flex flex-col gap-1 md:col-span-2">
-                <span className="text-sm font-medium text-slate-700">Event Name *</span>
+                <span className="text-sm font-medium text-slate-700">Program Name *</span>
                 <input ref={setFieldRef('eventName')} type="text" value={form.eventName} onChange={updateField('eventName')} className={getFieldInputClassName('eventName')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('eventName')}
               </label>
+
+              <label className="flex flex-col gap-1 md:col-span-2">
+                <span className="text-sm font-medium text-slate-700">Program Poster Photo (optional)</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleEventPosterPhotoFileChange}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+                <span className="text-xs text-slate-500">Main program image used for the poster and publicity design.</span>
+              </label>
+
+              {eventPosterPhotoPreviewUrl && (
+                <div className="md:col-span-2 rounded-lg border border-slate-200 bg-white p-3">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Program Poster Preview</p>
+                  <img src={eventPosterPhotoPreviewUrl} alt="Program poster preview" className="max-h-72 w-full rounded border border-slate-200 object-contain" />
+                </div>
+              )}
 
               <label className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-slate-700">Expected Attendees *</span>
                 <input ref={setFieldRef('expectedAttendees')} type="number" min="1" value={form.expectedAttendees} onChange={updateField('expectedAttendees')} className={getFieldInputClassName('expectedAttendees')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('expectedAttendees')}
               </label>
 
               <label className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-slate-700">Proposed Start (UTC+8) *</span>
-                <input ref={setFieldRef('proposedStartAt')} type="datetime-local" value={form.proposedStartAt} onChange={updateField('proposedStartAt')} min={minimumProposedStartLocalValue} className={getFieldInputClassName('proposedStartAt')} style={{ '--tw-ring-color': primaryColor }} />
-                <span className="text-xs text-slate-500">Minimum start: 7 days from today (UTC+8).</span>
+                <span className="text-sm font-medium text-slate-700">Program Date (UTC+8) *</span>
+                <ProgramDateCalendar
+                  value={form.proposedDate}
+                  minimumDateKey={minimumProgramDateKey}
+                  blockedDates={unavailableProgramDateSet}
+                  onChange={updateScheduleField('proposedDate')}
+                  buttonRef={setFieldRef('proposedDate')}
+                  hasError={Boolean(fieldErrors.proposedDate)}
+                  primaryColor={primaryColor}
+                />
+                {fieldError('proposedDate')}
+                <span className="text-xs text-slate-500">Choose from the calendar. Reserved dates and dates inside the 7-day notice are disabled.</span>
               </label>
 
               <label className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-slate-700">Proposed End (UTC+8) *</span>
-                <input ref={setFieldRef('proposedEndAt')} type="datetime-local" value={form.proposedEndAt} onChange={updateField('proposedEndAt')} min={form.proposedStartAt || minimumProposedStartLocalValue} className={getFieldInputClassName('proposedEndAt')} style={{ '--tw-ring-color': primaryColor }} />
+                <span className="text-sm font-medium text-slate-700">Start Time *</span>
+                <input ref={setFieldRef('proposedStartTime')} type="time" value={form.proposedStartTime} onChange={updateScheduleField('proposedStartTime')} disabled={!form.proposedDate} className={getFieldInputClassName('proposedStartTime', 'disabled:cursor-not-allowed disabled:bg-slate-100')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('proposedStartTime')}
               </label>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-slate-700">End Time *</span>
+                <input ref={setFieldRef('proposedEndTime')} type="time" value={form.proposedEndTime} onChange={updateScheduleField('proposedEndTime')} min={form.proposedStartTime || undefined} disabled={!form.proposedDate || !form.proposedStartTime} className={getFieldInputClassName('proposedEndTime', 'disabled:cursor-not-allowed disabled:bg-slate-100')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('proposedEndTime')}
+                <span className="text-xs text-slate-500">The program must end later on the same date.</span>
+              </label>
+
+              <div className="md:col-span-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <span className="font-semibold">One application per date:</span>{' '}
+                pending and approved program dates are reserved for everyone. A date reopens only after staff rejects its application.
+                {isLoadingProgramDates && <span> Checking dates...</span>}
+                {!isLoadingProgramDates && unavailableProgramDates.length > 0 && (
+                  <span className="block pt-1 text-amber-700">
+                    Currently reserved: {unavailableProgramDates.slice(0, 12).join(', ')}{unavailableProgramDates.length > 12 ? ` and ${unavailableProgramDates.length - 12} more` : ''}
+                  </span>
+                )}
+              </div>
 
               <label className="flex flex-col gap-1 md:col-span-2">
-                <span className="text-sm font-medium text-slate-700">Event Overview *</span>
+                <span className="text-sm font-medium text-slate-700">Program Overview *</span>
                 <textarea ref={setFieldRef('eventOverview')} value={form.eventOverview} onChange={updateField('eventOverview')} rows={4} className={getFieldInputClassName('eventOverview')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('eventOverview')}
               </label>
 
               <div className="md:col-span-2 rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -1782,23 +2227,30 @@ export default function EventApplicationPage() {
                   <label className="flex flex-col gap-1 md:col-span-2">
                     <span className="text-sm font-medium text-slate-700">Venue Name *</span>
                     <input ref={setFieldRef('venueName')} type="text" value={form.venueName} onChange={updateField('venueName')} className={getFieldInputClassName('venueName')} style={{ '--tw-ring-color': primaryColor }} />
+                    {fieldError('venueName')}
                   </label>
 
-                  <label className="flex flex-col gap-1 md:col-span-2">
-                    <span className="text-sm font-medium text-slate-700">Event Place Photo (optional)</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleEventPlacePhotoFileChange}
-                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                    />
-                    <span className="text-xs text-slate-500">Optional proof photo of the actual event venue/place.</span>
-                  </label>
+                  <div ref={setFieldRef('eventPlacePhoto')} className={`flex flex-col gap-2 rounded-lg border p-3 md:col-span-2 ${fieldErrors.eventPlacePhoto ? 'border-rose-500 bg-rose-50' : 'border-slate-300 bg-white'}`}>
+                    <span className="text-sm font-medium text-slate-700">Program Place Photo *</span>
+                    <div className="flex flex-wrap gap-2">
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white" style={{ backgroundColor: primaryColor }}>
+                        <Camera size={16} /> Take Photo
+                        <input type="file" accept="image/*" capture="environment" onChange={handleEventPlacePhotoFileChange} className="sr-only" />
+                      </label>
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+                        <Upload size={16} /> Upload Photo
+                        <input type="file" accept="image/*" onChange={handleEventPlacePhotoFileChange} className="sr-only" />
+                      </label>
+                    </div>
+                    {eventPlacePhotoFile && <span className="text-xs text-emerald-700">Selected: {eventPlacePhotoFile.name}</span>}
+                    {fieldError('eventPlacePhoto')}
+                    <span className="text-xs text-slate-500">Exactly one venue/place image is required. Choosing another image replaces the current one.</span>
+                  </div>
 
                   {eventPlacePhotoPreviewUrl && (
                     <div className="md:col-span-2 rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Event Place Photo Preview</p>
-                      <img src={eventPlacePhotoPreviewUrl} alt="Event place preview" className="max-h-72 w-full rounded border border-slate-200 object-contain" />
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Program Place Photo Preview</p>
+                      <img src={eventPlacePhotoPreviewUrl} alt="Program place preview" className="max-h-72 w-full rounded border border-slate-200 object-contain" />
                     </div>
                   )}
 
@@ -1808,6 +2260,7 @@ export default function EventApplicationPage() {
                       <option value="">Select region</option>
                       {regionOptions.map((region) => <option key={region.name} value={region.name}>{region.name}</option>)}
                     </select>
+                    {fieldError('region')}
                   </label>
 
                   <label className="flex flex-col gap-1">
@@ -1816,6 +2269,7 @@ export default function EventApplicationPage() {
                       <option value="">Select province</option>
                       {provinceOptions.map((province) => <option key={province.name} value={province.name}>{province.name}</option>)}
                     </select>
+                    {fieldError('province')}
                   </label>
 
                   <label className="flex flex-col gap-1">
@@ -1824,6 +2278,7 @@ export default function EventApplicationPage() {
                       <option value="">Select city/municipality</option>
                       {cityOptions.map((city) => <option key={city.name} value={city.name}>{city.name}</option>)}
                     </select>
+                    {fieldError('city')}
                   </label>
 
                   <label className="flex flex-col gap-1">
@@ -1832,11 +2287,13 @@ export default function EventApplicationPage() {
                       <option value="">Select barangay</option>
                       {barangayOptions.map((barangay) => <option key={barangay} value={barangay}>{barangay}</option>)}
                     </select>
+                    {fieldError('barangay')}
                   </label>
 
                   <label className="flex flex-col gap-1 md:col-span-2">
                     <span className="text-sm font-medium text-slate-700">Street *</span>
                     <input ref={setFieldRef('street')} type="text" value={form.street} onChange={updateField('street')} className={getFieldInputClassName('street')} style={{ '--tw-ring-color': primaryColor }} />
+                    {fieldError('street')}
                   </label>
 
                   <label className="flex flex-col gap-1">
@@ -1847,6 +2304,7 @@ export default function EventApplicationPage() {
                   <label className="flex flex-col gap-1">
                     <span className="text-sm font-medium text-slate-700">Map Coordinates</span>
                     <input ref={setFieldRef('locationPin')} type="text" value={form.latitude && form.longitude ? `${form.latitude}, ${form.longitude}` : ''} onChange={() => {}} readOnly placeholder="Set by map pin" className={`rounded-lg border bg-slate-100 px-3 py-2.5 text-sm text-slate-600 ${fieldErrors.locationPin ? 'border-rose-500 ring-2 ring-rose-200' : 'border-slate-300'}`} />
+                    {fieldError('locationPin')}
                   </label>
                 </div>
 
@@ -1869,23 +2327,6 @@ export default function EventApplicationPage() {
                 </div>
               </div>
 
-              <label className="flex flex-col gap-1 md:col-span-2">
-                <span className="text-sm font-medium text-slate-700">Event Poster Photo (optional)</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleEventPosterPhotoFileChange}
-                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                />
-                <span className="text-xs text-slate-500">Optional image to use for event poster/publicity design.</span>
-              </label>
-
-              {eventPosterPhotoPreviewUrl && (
-                <div className="md:col-span-2 rounded-lg border border-slate-200 bg-white p-3">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Event Poster Photo Preview</p>
-                  <img src={eventPosterPhotoPreviewUrl} alt="Event poster preview" className="max-h-72 w-full rounded border border-slate-200 object-contain" />
-                </div>
-              )}
             </>
           )}
 
@@ -1902,6 +2343,9 @@ export default function EventApplicationPage() {
                         ['Name', [form.applicantFirstName, form.applicantMiddleName, form.applicantLastName].filter(Boolean).join(' ') || 'N/A'],
                         ['Gender', form.applicantGender || 'N/A'],
                         ['ID Type', PH_VALID_ID_OPTIONS.find((option) => option.value === form.applicantValidIdType)?.label || 'N/A'],
+                        ['ID Verification', isDiditVerified ? 'Approved' : diditStatus],
+                        ['ID Number', form.applicantIdDocumentNumber || 'N/A'],
+                        ['Address on ID', form.applicantIdAddress || 'N/A'],
                         ['Email', form.applicantEmail || 'N/A'],
                         ['Contact Number', form.applicantContactNumber || 'N/A'],
                       ].map(([label, value]) => (
@@ -1919,16 +2363,20 @@ export default function EventApplicationPage() {
                         <span className="font-semibold">Preferred Contact Method:</span> {normalizePreferredContactLabel(form.preferredContactMethod)}
                       </div>
                       <div>
-                        <span className="font-semibold">Preferred Contact Detail:</span> {form.preferredContactDetail || 'N/A'}
+                        <span className="font-semibold">Primary:</span>{' '}
+                        {isPhoneContactMethod(form.preferredContactMethod) ? form.applicantContactNumber : form.applicantEmail}
+                      </div>
+                      <div className="md:col-span-2 text-xs text-slate-500">
+                        Secondary: {isPhoneContactMethod(form.preferredContactMethod) ? form.applicantEmail : form.applicantContactNumber}
                       </div>
                     </div>
                   </div>
 
                   <div className="rounded-lg border border-slate-200 bg-white p-3">
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Event & Schedule</p>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Program & Schedule</p>
                     <div className="grid grid-cols-1 gap-2 text-sm text-slate-700 md:grid-cols-2">
-                      <div className="md:col-span-2"><span className="font-semibold">Event Name:</span> {form.eventName || 'N/A'}</div>
-                      <div><span className="font-semibold">Event Type:</span> {normalizeEventVisibility(form.eventVisibility)}</div>
+                      <div className="md:col-span-2"><span className="font-semibold">Program Name:</span> {form.eventName || 'N/A'}</div>
+                      <div><span className="font-semibold">Program Type:</span> {normalizeEventVisibility(form.eventVisibility)}</div>
                       <div><span className="font-semibold">Expected Attendees:</span> {form.expectedAttendees || 'N/A'}</div>
                       <div className="md:col-span-2"><span className="font-semibold">Venue Name:</span> {form.venueName || 'N/A'}</div>
                       <div className="md:col-span-2">
@@ -1966,24 +2414,18 @@ export default function EventApplicationPage() {
                 </div>
               </div>
 
-              {(validIdPreviewUrl || eventPlacePhotoPreviewUrl || eventPosterPhotoPreviewUrl) && (
+              {(eventPlacePhotoPreviewUrl || eventPosterPhotoPreviewUrl) && (
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                  {validIdPreviewUrl && (
-                    <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">ID Preview</p>
-                      <img src={validIdPreviewUrl} alt="Valid ID preview" className="max-h-52 w-auto rounded border border-slate-200 object-contain" />
-                    </div>
-                  )}
                   {eventPlacePhotoPreviewUrl && (
                     <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Event Place Photo Preview</p>
-                      <img src={eventPlacePhotoPreviewUrl} alt="Event place preview" className="max-h-52 w-auto rounded border border-slate-200 object-contain" />
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Program Place Photo Preview</p>
+                      <img src={eventPlacePhotoPreviewUrl} alt="Program place preview" className="max-h-52 w-auto rounded border border-slate-200 object-contain" />
                     </div>
                   )}
                   {eventPosterPhotoPreviewUrl && (
                     <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Event Poster Photo Preview</p>
-                      <img src={eventPosterPhotoPreviewUrl} alt="Event poster preview" className="max-h-52 w-auto rounded border border-slate-200 object-contain" />
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Program Poster Photo Preview</p>
+                      <img src={eventPosterPhotoPreviewUrl} alt="Program poster preview" className="max-h-52 w-auto rounded border border-slate-200 object-contain" />
                     </div>
                   )}
                 </div>
@@ -2031,6 +2473,7 @@ export default function EventApplicationPage() {
                   className={getFieldInputClassName('otpCode')}
                   style={{ '--tw-ring-color': primaryColor }}
                 />
+                {fieldError('otpCode')}
                 <button
                   type="button"
                   onClick={verifyEmailOtpCode}
@@ -2101,13 +2544,51 @@ export default function EventApplicationPage() {
                   style={{ backgroundColor: primaryColor }}
                 >
                   {isSubmitting && <Loader2 size={16} className="animate-spin" />}
-                  {isSubmitting ? 'Submitting...' : 'Submit Event Application'}
+                  {isSubmitting ? 'Submitting...' : 'Submit Program Application'}
                 </button>
               )}
             </div>
           </div>
         </form>
       </div>
+      {isDiditModalOpen && diditSession?.verificationUrl && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-2 md:p-5">
+          <div className="flex h-[96vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900">Philippine ID Verification</h2>
+                <p className="text-xs text-slate-500">Complete the secure verification steps below.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDiditModalOpen(false)}
+                className="rounded-lg border border-slate-300 p-2 text-slate-600 hover:bg-slate-100"
+                aria-label="Close ID verification"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <iframe
+              title="Identity verification"
+              src={diditSession.verificationUrl}
+              allow="camera; microphone; fullscreen; autoplay; encrypted-media"
+              className="min-h-0 flex-1 border-0 bg-white"
+            />
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-xs text-slate-600">Finished but the window did not close automatically?</p>
+              <button
+                type="button"
+                onClick={() => checkDiditStatus()}
+                disabled={isCheckingDiditStatus}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
+              >
+                {isCheckingDiditStatus && <Loader2 size={14} className="animate-spin" />}
+                Check verification status
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
     </Wrapper>
   );

@@ -4,8 +4,10 @@ import {
   AlertTriangle,
   Calendar,
   CheckCircle2,
+  Clock3,
   ExternalLink,
   FileText,
+  Globe2,
   Image as ImageIcon,
   Inbox,
   Info,
@@ -19,6 +21,7 @@ import {
   Send,
   ShieldAlert,
   User,
+  Users,
   X,
   XCircle,
 } from 'lucide-react';
@@ -29,6 +32,7 @@ import { triggerSmtpNow } from '../../../lib/smtpTriggerClient';
 const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const USERS_TABLE = 'users';
+const PRIVATE_ID_BUCKET = 'event_application_private_ids';
 
 function normalizeStatus(value) {
   return String(value || '')
@@ -80,6 +84,36 @@ function normalizeEventVisibility(value) {
     .replace(/[\s_-]+/g, '');
   if (key === 'private') return 'Private';
   return 'Public';
+}
+
+function preferredContactMethodLabel(value) {
+  const key = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  return ['phone', 'call', 'phonecall', 'sms'].includes(key) ? 'Phone' : 'Email';
+}
+
+function validIdTypeLabel(value) {
+  const key = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  const labels = {
+    philsys: 'PhilSys National ID',
+    driverslicense: "Driver's License",
+    passport: 'Philippine Passport',
+    umid: 'UMID',
+    prc: 'PRC ID',
+    postal: 'Postal ID',
+    voters: "Voter's ID",
+    seniorcitizen: 'Senior Citizen ID',
+    othergovernment: 'Other Government ID',
+  };
+  return labels[key] || value || 'N/A';
+}
+
+function ContactLink({ type, value }) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return <span className="text-slate-500">Not provided</span>;
+  const href = type === 'Phone'
+    ? `tel:${normalized.replace(/[^+\d]/g, '')}`
+    : `mailto:${normalized}`;
+  return <a href={href} className="font-semibold text-teal-700 hover:underline">{normalized}</a>;
 }
 
 function applicantFullName(row) {
@@ -256,7 +290,14 @@ function MapPreview({ latitude, longitude, label }) {
   const [mapType, setMapType] = useState('m');
   const lat = Number(latitude);
   const lng = Number(longitude);
-  const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
+  const hasCoords = latitude !== null
+    && latitude !== undefined
+    && longitude !== null
+    && longitude !== undefined
+    && String(latitude).trim() !== ''
+    && String(longitude).trim() !== ''
+    && Number.isFinite(lat)
+    && Number.isFinite(lng);
 
   if (!hasCoords) {
     return (
@@ -392,6 +433,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
   const [rows, setRows] = useState([]);
   const [eventRequestsById, setEventRequestsById] = useState({});
   const [selectedId, setSelectedId] = useState(null);
+  const [privateIdUrl, setPrivateIdUrl] = useState('');
   const [staffUserId, setStaffUserId] = useState(userProfile?.user_id || null);
   const [staffNotes, setStaffNotes] = useState('');
   const [contactNotes, setContactNotes] = useState('');
@@ -468,7 +510,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
       }
     } catch (error) {
       if (!silent) setRows([]);
-      setNotice({ kind: 'error', text: error.message || 'Unable to load event applications.' });
+      setNotice({ kind: 'error', text: error.message || 'Unable to load program applications.' });
     } finally {
       setIsLoading(false);
     }
@@ -541,6 +583,19 @@ export default function EventApplicationIntakePage({ userProfile }) {
   const selectedRow = useMemo(() => {
     return rows.find((row) => Number(row.Event_Application_ID || 0) === Number(selectedId || 0)) || null;
   }, [rows, selectedId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPrivateIdUrl('');
+    const path = String(selectedRow?.Applicant_Valid_ID_Path || '').trim();
+    if (!path || !supabase) return undefined;
+
+    supabase.storage.from(PRIVATE_ID_BUCKET).createSignedUrl(path, 10 * 60)
+      .then(({ data, error }) => {
+        if (!cancelled && !error) setPrivateIdUrl(data?.signedUrl || '');
+      });
+    return () => { cancelled = true; };
+  }, [selectedRow?.Applicant_Valid_ID_Path]);
 
   const selectedLinkedRequest = useMemo(() => {
     const requestId = Number(selectedRow?.Linked_Event_Request_ID || 0);
@@ -681,7 +736,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
     if (!selectedRow) return;
     const linkedRequestId = Number(selectedRow.Linked_Event_Request_ID || 0);
     if (linkedRequestId > 0 && !canAppealRejectedRequest) {
-      setNotice({ kind: 'success', text: `Request to admin already submitted (ER-${selectedRow.Linked_Event_Request_ID}).` });
+      setNotice({ kind: 'success', text: 'This application was already submitted to admin.' });
       setShowSubmitModal(false);
       return;
     }
@@ -717,7 +772,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
     };
 
     if (!payload.Event_Name) {
-      setNotice({ kind: 'error', text: 'Event name is required before forwarding to admin.' });
+      setNotice({ kind: 'error', text: 'Program name is required before forwarding to admin.' });
       return;
     }
     if (!payload.Start_Date || !payload.End_Date) {
@@ -725,7 +780,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
       return;
     }
     if (!payload.Event_Photo_URL) {
-      setNotice({ kind: 'error', text: 'Event poster photo URL is required before forwarding to admin.' });
+      setNotice({ kind: 'error', text: 'Program poster photo is required before forwarding to admin.' });
       return;
     }
 
@@ -783,7 +838,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
         if (!smtpKickResult.ok) {
           console.warn('[SMTP] Trigger after staff appeal submit failed:', smtpKickResult.message || smtpKickResult);
         }
-        setNotice({ kind: 'success', text: `Appeal submitted. Request ER-${linkedRequestId} is now marked as Appealed for admin re-decision.` });
+        setNotice({ kind: 'success', text: 'Appeal submitted for a new admin decision.' });
       } else {
         const insertResult = await supabase
           .from(EVENT_REQUESTS_TABLE)
@@ -798,12 +853,9 @@ export default function EventApplicationIntakePage({ userProfile }) {
         if (!smtpKickResult.ok) {
           console.warn('[SMTP] Trigger after staff request submit failed:', smtpKickResult.message || smtpKickResult);
         }
-        const createdRequestId = Number(insertResult.data?.Event_Request_ID || 0);
         setNotice({
           kind: 'success',
-          text: createdRequestId > 0
-            ? `Request submitted to admin (ER-${createdRequestId}).`
-            : 'Request submitted to admin.',
+          text: 'Request submitted to admin successfully.',
         });
       }
       setShowSubmitModal(false);
@@ -812,10 +864,10 @@ export default function EventApplicationIntakePage({ userProfile }) {
       if (raw.toLowerCase().includes('new row violates row-level security policy for table "event_requests"')) {
         setNotice({
           kind: 'error',
-          text: 'Event request submit is blocked by database RLS. Apply the latest Supabase migrations, then retry.',
+          text: 'Program request submission is blocked by database RLS. Apply the latest Supabase migrations, then retry.',
         });
       } else {
-        setNotice({ kind: 'error', text: raw || 'Unable to create event request.' });
+        setNotice({ kind: 'error', text: raw || 'Unable to create program request.' });
       }
     } finally {
       setIsSaving(false);
@@ -852,85 +904,132 @@ export default function EventApplicationIntakePage({ userProfile }) {
   const fieldLabel = 'flex flex-col gap-1.5';
   const fieldLabelText = 'text-[11px] font-bold uppercase tracking-wide text-slate-600';
 
-  const renderApplicationDetails = () => (
-    <div className="space-y-5 rounded-xl border border-slate-200 bg-white p-5">
-      <div>
-        <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Applicant</p>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Applicant Profile</p>
-            <div className="grid grid-cols-1 gap-3">
-              <InfoItem icon={User} label="Full Name">{applicantFullName(selectedRow)}</InfoItem>
-              <InfoItem icon={User} label="Gender">{selectedRow.Applicant_Gender || 'N/A'}</InfoItem>
-              <InfoItem icon={FileText} label="Valid ID Type">{selectedRow.Applicant_Valid_ID_Type || 'N/A'}</InfoItem>
+  const renderApplicationDetails = () => {
+    const preferredMethod = preferredContactMethodLabel(selectedRow.Preferred_Contact_Method);
+    const secondaryMethod = preferredMethod === 'Email' ? 'Phone' : 'Email';
+    const email = String(selectedRow.Applicant_Email || '').trim();
+    const phone = String(selectedRow.Applicant_Contact_Number || '').trim();
+    const preferredFallback = String(selectedRow.Preferred_Contact_Detail || '').trim();
+    const primaryContact = preferredMethod === 'Email' ? (email || preferredFallback) : (phone || preferredFallback);
+    const secondaryContact = secondaryMethod === 'Email' ? email : phone;
+    const venueAddress = [selectedRow.Street, selectedRow.Barangay, selectedRow.City, selectedRow.Province, selectedRow.Region, selectedRow.Country]
+      .map((part) => String(part || '').trim())
+      .filter(Boolean)
+      .join(', ');
+    const socialUrl = String(selectedRow.Social_Page_URL || '').trim();
+    const safeSocialUrl = socialUrl && /^https?:\/\//i.test(socialUrl) ? socialUrl : socialUrl ? `https://${socialUrl}` : '';
+
+    return (
+      <div className="space-y-5">
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Applicant & Identity</p>
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.8fr)]">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_250px]">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <InfoItem icon={User} label="Full Name" span={2}>{applicantFullName(selectedRow)}</InfoItem>
+                  <InfoItem icon={User} label="Gender">{selectedRow.Applicant_Gender || 'Not provided'}</InfoItem>
+                  <InfoItem icon={FileText} label="Verified ID Type">{validIdTypeLabel(selectedRow.Applicant_Valid_ID_Type)}</InfoItem>
+                  <InfoItem icon={CheckCircle2} label="ID Verification">{selectedRow.Didit_Verification_Status || 'Legacy application'}</InfoItem>
+                  <InfoItem icon={FileText} label="ID Number">{selectedRow.Applicant_ID_Document_Number || 'Not provided'}</InfoItem>
+                  <InfoItem icon={MapPin} label="Address on ID" span={2}>{selectedRow.Applicant_ID_Address || 'Not provided'}</InfoItem>
+                </div>
+                <AttachmentTile url={privateIdUrl || selectedRow.Applicant_Valid_ID_URL} label="Verified ID Front" />
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+              <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Contact Priority</p>
+              <div className="grid grid-cols-1 gap-4">
+                <InfoItem icon={CheckCircle2} label="Preferred Method">{preferredMethod}</InfoItem>
+                <InfoItem icon={preferredMethod === 'Email' ? Mail : Phone} label={`Primary · ${preferredMethod}`}>
+                  <ContactLink type={preferredMethod} value={primaryContact} />
+                </InfoItem>
+                <InfoItem icon={secondaryMethod === 'Email' ? Mail : Phone} label={`Secondary · ${secondaryMethod}`}>
+                  <ContactLink type={secondaryMethod} value={secondaryContact} />
+                </InfoItem>
+                <p className="rounded-md border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-700">
+                  Contact the primary option first. Use the secondary option if the applicant cannot be reached.
+                </p>
+              </div>
             </div>
           </div>
+        </section>
 
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Preferred Contact</p>
-            <div className="grid grid-cols-1 gap-3">
-              <InfoItem icon={Phone} label="Contact Method">
-                <span className="capitalize">{selectedRow.Preferred_Contact_Method || 'N/A'}</span>
-              </InfoItem>
-              <InfoItem icon={Mail} label="Contact Email">
-                {selectedRow.Applicant_Email ? (
-                  <a href={`mailto:${selectedRow.Applicant_Email}`} className="text-teal-700 hover:underline">
-                    {selectedRow.Applicant_Email}
-                  </a>
-                ) : 'N/A'}
-              </InfoItem>
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Program Details</p>
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <InfoItem icon={FileText} label="Program Name" span={2}>{selectedRow.Event_Name || 'Untitled program'}</InfoItem>
+                <InfoItem icon={Info} label="Program Type">{normalizeEventVisibility(selectedRow.Event_Visibility)}</InfoItem>
+                <InfoItem icon={Users} label="Expected Attendees">
+                  {String(selectedRow.Expected_Attendees ?? '').trim()
+                    ? Number(selectedRow.Expected_Attendees).toLocaleString('en-PH')
+                    : 'Not provided'}
+                </InfoItem>
+                <InfoItem icon={FileText} label="Program Overview" span={2}>{selectedRow.Event_Overview || 'Not provided'}</InfoItem>
+                <InfoItem icon={Globe2} label="Organization / Social Page">{selectedRow.Social_Page_Name || 'Not provided'}</InfoItem>
+                <InfoItem icon={ExternalLink} label="Social Page Link">
+                  {safeSocialUrl ? (
+                    <a href={safeSocialUrl} target="_blank" rel="noreferrer" className="font-semibold text-teal-700 hover:underline">Open social page</a>
+                  ) : 'Not provided'}
+                </InfoItem>
+              </div>
             </div>
+            <AttachmentTile url={selectedRow.Event_Poster_Photo_URL} label="Program Poster" />
           </div>
-        </div>
-      </div>
+        </section>
 
-      <div className="border-t border-slate-100 pt-4">
-        <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Event Schedule & Venue</p>
-        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
-          <InfoItem icon={Calendar} label="Proposed Start">{formatDateTime(selectedRow.Proposed_Start_At)}</InfoItem>
-          <InfoItem icon={Calendar} label="Proposed End">{formatDateTime(selectedRow.Proposed_End_At)}</InfoItem>
-          <InfoItem icon={Info} label="Event Type">{normalizeEventVisibility(selectedRow.Event_Visibility)}</InfoItem>
-          <InfoItem icon={MapPin} label="Venue" span={2}>{extractVenueName(selectedRow.Venue_Address)}</InfoItem>
-          <InfoItem icon={MapPin} label="Address" span={2}>
-            {[selectedRow.Street, selectedRow.Barangay, selectedRow.City, selectedRow.Province, selectedRow.Region, selectedRow.Country]
-              .filter(Boolean)
-              .join(', ') || 'N/A'}
-          </InfoItem>
-          {selectedRow.Event_Overview && (
-            <InfoItem icon={FileText} label="Overview" span={2}>{selectedRow.Event_Overview}</InfoItem>
-          )}
-        </div>
-      </div>
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Schedule & Venue</p>
+          <div className="mb-4 grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2">
+            <InfoItem icon={Calendar} label="Proposed Start">{formatDateTime(selectedRow.Proposed_Start_At)}</InfoItem>
+            <InfoItem icon={Calendar} label="Proposed End">{formatDateTime(selectedRow.Proposed_End_At)}</InfoItem>
+          </div>
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <InfoItem icon={MapPin} label="Venue Name" span={2}>{extractVenueName(selectedRow.Venue_Address)}</InfoItem>
+                <InfoItem icon={MapPin} label="Street">{selectedRow.Street || 'Not provided'}</InfoItem>
+                <InfoItem icon={MapPin} label="Barangay">{selectedRow.Barangay || 'Not provided'}</InfoItem>
+                <InfoItem icon={MapPin} label="City / Municipality">{selectedRow.City || 'Not provided'}</InfoItem>
+                <InfoItem icon={MapPin} label="Province">{selectedRow.Province || 'Not provided'}</InfoItem>
+                <InfoItem icon={MapPin} label="Region">{selectedRow.Region || 'Not provided'}</InfoItem>
+                <InfoItem icon={MapPin} label="Country">{selectedRow.Country || 'Philippines'}</InfoItem>
+                <InfoItem icon={MapPin} label="Complete Address" span={2}>{venueAddress || selectedRow.Venue_Address || 'Not provided'}</InfoItem>
+              </div>
+            </div>
+            <AttachmentTile url={selectedRow.Event_Place_Photo_URL} label="Program Place" />
+          </div>
+          <div className="mt-4">
+            <MapPreview latitude={selectedRow.Latitude} longitude={selectedRow.Longitude} label={`${selectedRow.Event_Name || 'Program'} venue`} />
+          </div>
+        </section>
 
-      <div className="border-t border-slate-100 pt-4">
-        <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Attachments</p>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <AttachmentTile url={selectedRow.Applicant_Valid_ID_URL} label="Valid ID" />
-          <AttachmentTile url={selectedRow.Event_Place_Photo_URL} label="Event Place" />
-          <AttachmentTile url={selectedRow.Event_Poster_Photo_URL} label="Event Poster" />
-        </div>
-      </div>
-
-      {(isLinkedToAdmin || canAppealRejectedRequest) && (
-        <div className="border-t border-slate-100 pt-4">
-          <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Linked Admin Request</p>
-          <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
-            <InfoItem icon={Send} label="Event Request">
-              ER-{selectedRow.Linked_Event_Request_ID}
-              {selectedLinkedRequest?.Status && (
-                <span className="text-slate-500"> · {statusLabel(selectedLinkedRequest.Status)}</span>
-              )}
-            </InfoItem>
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Application Progress</p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <InfoItem icon={Info} label="Application Status">{statusLabel(selectedRow.Status)}</InfoItem>
+            <InfoItem icon={Clock3} label="Submitted">{formatDateTime(selectedRow.Created_At)}</InfoItem>
+            <InfoItem icon={Clock3} label="Last Updated">{formatDateTime(selectedRow.Updated_At)}</InfoItem>
+            <InfoItem icon={FileText} label="Resubmissions">{Number(selectedRow.Resubmission_Count || 0)}</InfoItem>
+            <InfoItem icon={Phone} label="Staff Contacted">{formatDateTime(selectedRow.Staff_Contacted_At)}</InfoItem>
+            <InfoItem icon={CheckCircle2} label="Staff Reviewed">{formatDateTime(selectedRow.Staff_Reviewed_At)}</InfoItem>
+            <InfoItem icon={Send} label="Admin Review">{isLinkedToAdmin ? statusLabel(selectedLinkedRequest?.Status || 'Pending Admin Approval') : 'Not submitted yet'}</InfoItem>
+            {selectedRow.Staff_Rejection_Reason && (
+              <InfoItem icon={ShieldAlert} label="Staff Rejection Reason" span={2}>{selectedRow.Staff_Rejection_Reason}</InfoItem>
+            )}
             {canAppealRejectedRequest && (
               <InfoItem icon={ShieldAlert} label="Admin Rejection Reason" span={2}>
                 {selectedLinkedRequest?.Admin_Decision_Reason || 'No reason provided by admin.'}
               </InfoItem>
             )}
           </div>
-        </div>
-      )}
-    </div>
-  );
+        </section>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -956,7 +1055,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
             <Inbox size={20} />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Manage Event Application</h1>
+            <h1 className="text-2xl font-bold text-slate-900">Manage Program Applications</h1>
             <p className="text-sm text-slate-600">Review submissions, contact requestors, then forward to admin or reject.</p>
           </div>
         </div>
@@ -975,7 +1074,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
         <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Workflow</p>
         <div className="grid grid-cols-1 gap-y-3 sm:grid-cols-3 sm:gap-y-0">
           {[
-            { step: 1, title: 'Review Intake', body: 'Check applicant details, files, and proposed event.' },
+            { step: 1, title: 'Review Intake', body: 'Check applicant details, files, and proposed program.' },
             { step: 2, title: 'Contact + Notes', body: 'Contact requestor using preferred method and save notes.' },
             { step: 3, title: 'Decision', body: 'Reject by staff or submit to admin for approval.' },
           ].map((stepRow, index) => (
@@ -1036,7 +1135,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
                 type="search"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search name, event, EA-ID..."
+                placeholder="Search applicant, program, or contact..."
                 className="w-full rounded-lg border border-slate-300 bg-white py-1.5 pl-8 pr-8 text-sm placeholder:text-slate-400 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
               />
               {searchTerm && (
@@ -1130,13 +1229,10 @@ export default function EventApplicationIntakePage({ userProfile }) {
                           {applicantInitials(row)}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
                             <p className="truncate text-sm font-semibold text-slate-900">
-                              {row.Event_Name || 'Untitled Event'}
+                              {row.Event_Name || 'Untitled Program'}
                             </p>
-                            <span className="flex-none text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                              EA-{row.Event_Application_ID}
-                            </span>
                           </div>
                           <p className="mt-0.5 truncate text-xs text-slate-600">{applicantFullName(row)}</p>
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -1163,7 +1259,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-400">
                 <Inbox size={26} />
               </div>
-              <h2 className="mt-4 text-base font-bold text-slate-800">Select an event application</h2>
+              <h2 className="mt-4 text-base font-bold text-slate-800">Select a program application</h2>
               <p className="mt-1 max-w-sm text-sm text-slate-500">
                 Choose a submission from the queue on the left to review applicant details.
               </p>
@@ -1182,8 +1278,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
                       {applicantInitials(selectedRow)}
                     </div>
                     <div>
-                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">EA-{selectedRow.Event_Application_ID}</p>
-                      <h2 className="mt-0.5 text-xl font-bold text-slate-900">{selectedRow.Event_Name || 'Untitled Event'}</h2>
+                      <h2 className="mt-0.5 text-xl font-bold text-slate-900">{selectedRow.Event_Name || 'Untitled Program'}</h2>
                       <p className="text-sm text-slate-600">by {applicantFullName(selectedRow)}</p>
                     </div>
                   </div>
@@ -1203,7 +1298,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
                 <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-800">
                   <CheckCircle2 size={20} className="mt-0.5 flex-none" />
                   <div>
-                    <p className="font-bold">Already submitted to admin (ER-{selectedRow.Linked_Event_Request_ID})</p>
+                    <p className="font-bold">Already submitted to admin</p>
                     <p className="mt-1">No further action is needed unless admin rejects the request. This application is now locked from further staff edits.</p>
                   </div>
                 </div>
@@ -1212,7 +1307,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
                 <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
                   <AlertTriangle size={20} className="mt-0.5 flex-none" />
                   <div>
-                    <p className="font-bold">Admin rejected ER-{selectedRow.Linked_Event_Request_ID}</p>
+                    <p className="font-bold">Admin rejected this request</p>
                     <p className="mt-1">Review the admin&apos;s feedback below, update the details, then submit appeal.</p>
                   </div>
                 </div>
@@ -1323,7 +1418,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
       <Modal
         open={showRejectModal}
         onClose={() => !isSaving && setShowRejectModal(false)}
-        title="Reject Event Application"
+        title="Reject Program Application"
         description="The applicant will be notified by email of this decision."
         icon={ShieldAlert}
         accentColor="#e11d48"
@@ -1381,7 +1476,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
       {/* Submit to Admin Modal (4-step wizard) */}
       {(() => {
         const STEPS = [
-          { id: 1, label: 'Event Details' },
+          { id: 1, label: 'Program Details' },
           { id: 2, label: 'Location & Map' },
           { id: 3, label: 'Media & Partners' },
           { id: 4, label: 'Review & Confirm' },

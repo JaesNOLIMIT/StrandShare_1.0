@@ -51,7 +51,7 @@ const applicationChecklist = [
     'Complete Address (Street, Barangay, City, Province, Region)',
   ]},
   { group: 'Event Planning Requirements', items: [
-    'Event Title and Overview',
+    'Program Title and Overview',
     'Proposed Event Schedule Window',
     'Venue and Location Information',
     'Expected Attendee Volume',
@@ -467,7 +467,7 @@ export default function LandingPage() {
     },
     {
       title: 'Event-Driven Process',
-      body: 'Event applications are validated by staff, then elevated to admin decision in a structured queue.',
+      body: 'Program applications are validated by staff, then elevated to admin decision in a structured queue.',
       icon: 'EP',
     },
     {
@@ -600,7 +600,7 @@ export default function LandingPage() {
 
         <div className={`nav-actions${heroVis ? ' vis' : ''}`}>
           <button type="button" className="nav-login" onClick={() => handleNavigate('/login')}>Login</button>
-          <button type="button" className="nav-cta event-apply-cta" onClick={() => handleNavigate('/apply-event')}>Apply for Event</button>
+          <button type="button" className="nav-cta event-apply-cta" onClick={() => handleNavigate('/apply-event')}>Apply for Program</button>
         </div>
       </nav>
 
@@ -661,7 +661,7 @@ export default function LandingPage() {
               Apply as Partner Hospital <ArrowRight size={15} />
             </button>
             <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-event')}>
-              Apply for Event <ArrowRight size={15} />
+              Apply for Program <ArrowRight size={15} />
             </button>
           </div>
         </motion.div>
@@ -874,7 +874,7 @@ export default function LandingPage() {
               Open Partner Hospital Application Form <ArrowRight size={15} />
             </button>
             <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-event')}>
-              Apply for Event <ArrowRight size={15} />
+              Apply for Program <ArrowRight size={15} />
             </button>
           </div>
         </div>

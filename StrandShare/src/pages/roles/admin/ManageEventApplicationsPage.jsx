@@ -7,16 +7,21 @@ import {
   Clock3,
   ExternalLink,
   FileText,
+  Globe2,
+  Image as ImageIcon,
   Inbox,
+  Info,
   Loader2,
   Mail,
   MapPin,
   Phone,
   RefreshCw,
+  Satellite,
   Search,
   Send,
   User,
   UserCheck,
+  Users,
   X,
   XCircle,
 } from 'lucide-react';
@@ -28,6 +33,7 @@ const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
 const USERS_TABLE = 'users';
 const SMTP_OUTBOX_TABLE = 'SMTP_Email_Outbox';
+const PRIVATE_ID_BUCKET = 'event_application_private_ids';
 
 function normalizeStatus(value) {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -77,6 +83,27 @@ function eventVisibilityLabel(value) {
   return 'Public';
 }
 
+function preferredContactMethodLabel(value) {
+  const key = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  return ['phone', 'call', 'phonecall', 'sms'].includes(key) ? 'Phone' : 'Email';
+}
+
+function validIdTypeLabel(value) {
+  const key = String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  const labels = {
+    philsys: 'PhilSys National ID',
+    driverslicense: "Driver's License",
+    passport: 'Philippine Passport',
+    umid: 'UMID',
+    prc: 'PRC ID',
+    postal: 'Postal ID',
+    voters: "Voter's ID",
+    seniorcitizen: 'Senior Citizen ID',
+    othergovernment: 'Other Government ID',
+  };
+  return labels[key] || value || 'N/A';
+}
+
 function applicantFullName(applicationRow) {
   return [
     applicationRow?.Applicant_First_Name,
@@ -106,8 +133,211 @@ function applicantInitials(applicationRow) {
 
 function staffLabel(staff) {
   const email = String(staff?.email || '').trim();
-  if (email) return `${email} (ID: ${staff.user_id})`;
-  return `Staff ID: ${staff.user_id}`;
+  if (email) return email;
+  return 'Staff member';
+}
+
+function InfoItem({ icon: Icon, label, children, span }) {
+  return (
+    <div className={`flex items-start gap-2.5 ${span === 2 ? 'sm:col-span-2' : ''}`}>
+      <div className="mt-0.5 flex h-7 w-7 flex-none items-center justify-center rounded-md bg-slate-100 text-slate-500">
+        <Icon size={13} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+        <div className="break-words text-sm text-slate-800">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function ContactLink({ type, value }) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return <span className="text-slate-500">Not provided</span>;
+  const href = type === 'Phone' ? `tel:${normalized.replace(/[^+\d]/g, '')}` : `mailto:${normalized}`;
+  return <a href={href} className="font-semibold text-teal-700 hover:underline">{normalized}</a>;
+}
+
+function AttachmentTile({ url, label }) {
+  if (!url) {
+    return (
+      <div className="flex min-h-40 flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-5 text-center">
+        <ImageIcon size={20} className="text-slate-400" />
+        <p className="mt-1.5 text-xs font-semibold text-slate-600">{label}</p>
+        <p className="text-[11px] text-slate-400">Not provided</p>
+      </div>
+    );
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="group block overflow-hidden rounded-lg border border-slate-200 bg-slate-50 transition hover:border-slate-400 hover:shadow-md">
+      <div className="aspect-[4/3] w-full overflow-hidden bg-slate-100">
+        <img src={url} alt={label} className="h-full w-full object-cover transition group-hover:scale-[1.02]" onError={(event) => { event.currentTarget.style.display = 'none'; }} />
+      </div>
+      <div className="flex items-center justify-between gap-2 border-t border-slate-200 bg-white px-3 py-1.5">
+        <span className="text-xs font-semibold text-slate-700">{label}</span>
+        <ExternalLink size={12} className="text-slate-400 group-hover:text-slate-700" />
+      </div>
+    </a>
+  );
+}
+
+function MapPreview({ latitude, longitude, label }) {
+  const [mapType, setMapType] = useState('m');
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  const hasCoords = latitude !== null && latitude !== undefined
+    && longitude !== null && longitude !== undefined
+    && String(latitude).trim() !== '' && String(longitude).trim() !== ''
+    && Number.isFinite(lat) && Number.isFinite(lng);
+
+  if (!hasCoords) {
+    return (
+      <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center">
+        <MapPin size={20} className="text-slate-400" />
+        <p className="mt-1.5 text-sm font-semibold text-slate-700">Pin location unavailable</p>
+        <p className="text-xs text-slate-500">No map coordinates were provided.</p>
+      </div>
+    );
+  }
+
+  const embedSrc = `https://maps.google.com/maps?q=${lat},${lng}&z=17&t=${mapType}&output=embed&hl=en`;
+  const openMapUrl = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+  return (
+    <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+      <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <div className="inline-flex rounded-md border border-slate-200 bg-white p-0.5">
+          <button type="button" onClick={() => setMapType('m')} className={`inline-flex items-center gap-1 rounded px-2.5 py-1 text-[11px] font-semibold ${mapType === 'm' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}><MapPin size={11} /> Map</button>
+          <button type="button" onClick={() => setMapType('k')} className={`inline-flex items-center gap-1 rounded px-2.5 py-1 text-[11px] font-semibold ${mapType === 'k' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}><Satellite size={11} /> Satellite</button>
+        </div>
+        <a href={openMapUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-teal-700 hover:underline">Open map <ExternalLink size={11} /></a>
+      </div>
+      <iframe title={label || 'Program venue map'} src={embedSrc} className="block h-72 w-full border-0" loading="lazy" referrerPolicy="no-referrer-when-downgrade" allowFullScreen />
+      <div className="border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] text-slate-500">Pin: {lat.toFixed(6)}, {lng.toFixed(6)}</div>
+    </div>
+  );
+}
+
+function AdminRequestDetails({ row, privateIdUrl, assignedStaffLabel }) {
+  const application = row?.Application || {};
+  const preferredMethod = preferredContactMethodLabel(application.Preferred_Contact_Method);
+  const secondaryMethod = preferredMethod === 'Email' ? 'Phone' : 'Email';
+  const email = String(application.Applicant_Email || '').trim();
+  const phone = String(application.Applicant_Contact_Number || '').trim();
+  const preferredFallback = String(application.Preferred_Contact_Detail || '').trim();
+  const primaryContact = preferredMethod === 'Email' ? (email || preferredFallback) : (phone || preferredFallback);
+  const secondaryContact = secondaryMethod === 'Email' ? email : phone;
+  const completeAddress = [row.Street, row.Barangay, row.City_Municipality, row.Province, row.Region, row.Country]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(', ');
+  const socialName = row.Partnered_With || application.Social_Page_Name || '';
+  const socialUrl = String(row.Partner_Social_Media_Link || application.Social_Page_URL || '').trim();
+  const safeSocialUrl = socialUrl && /^https?:\/\//i.test(socialUrl) ? socialUrl : socialUrl ? `https://${socialUrl}` : '';
+  const posterUrl = row.Event_Photo_URL || application.Event_Poster_Photo_URL || '';
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Applicant & Identity</p>
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.8fr)]">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_250px]">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <InfoItem icon={User} label="Full Name" span={2}>{applicantFullName(application)}</InfoItem>
+                <InfoItem icon={User} label="Gender">{application.Applicant_Gender || 'Not provided'}</InfoItem>
+                <InfoItem icon={FileText} label="Verified ID Type">{validIdTypeLabel(application.Applicant_Valid_ID_Type)}</InfoItem>
+                <InfoItem icon={CheckCircle2} label="ID Verification">{application.Didit_Verification_Status || 'Legacy application'}</InfoItem>
+                <InfoItem icon={FileText} label="ID Number">{application.Applicant_ID_Document_Number || 'Not provided'}</InfoItem>
+                <InfoItem icon={MapPin} label="Address on ID" span={2}>{application.Applicant_ID_Address || 'Not provided'}</InfoItem>
+              </div>
+              <AttachmentTile url={privateIdUrl || application.Applicant_Valid_ID_URL} label="Verified ID Front" />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Contact Priority</p>
+            <div className="grid grid-cols-1 gap-4">
+              <InfoItem icon={CheckCircle2} label="Preferred Method">{preferredMethod}</InfoItem>
+              <InfoItem icon={preferredMethod === 'Email' ? Mail : Phone} label={`Primary · ${preferredMethod}`}><ContactLink type={preferredMethod} value={primaryContact} /></InfoItem>
+              <InfoItem icon={secondaryMethod === 'Email' ? Mail : Phone} label={`Secondary · ${secondaryMethod}`}><ContactLink type={secondaryMethod} value={secondaryContact} /></InfoItem>
+              <p className="rounded-md border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-700">Use the primary contact first and the secondary option as backup.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Program Details</p>
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <InfoItem icon={FileText} label="Program Name" span={2}>{row.Event_Name || application.Event_Name || 'Untitled program'}</InfoItem>
+              <InfoItem icon={Info} label="Program Type">{eventVisibilityLabel(row.Event_Visibility || application.Event_Visibility)}</InfoItem>
+              <InfoItem icon={Users} label="Expected Attendees">
+                {String(application.Expected_Attendees ?? '').trim() ? Number(application.Expected_Attendees).toLocaleString('en-PH') : 'Not provided'}
+              </InfoItem>
+              <InfoItem icon={User} label="Program Organizer">{row.Event_By || applicantFullName(application)}</InfoItem>
+              <InfoItem icon={FileText} label="Program Overview" span={2}>{application.Event_Overview || 'Not provided'}</InfoItem>
+              <InfoItem icon={Globe2} label="Organization / Social Page">{socialName || 'Not provided'}</InfoItem>
+              <InfoItem icon={ExternalLink} label="Social Page Link">
+                {safeSocialUrl ? <a href={safeSocialUrl} target="_blank" rel="noreferrer" className="font-semibold text-teal-700 hover:underline">Open social page</a> : 'Not provided'}
+              </InfoItem>
+            </div>
+          </div>
+          <AttachmentTile url={posterUrl} label="Program Poster" />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Schedule & Venue</p>
+        <div className="mb-4 grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2">
+          <InfoItem icon={Calendar} label="Program Start">{formatDateTime(row.Start_Date)}</InfoItem>
+          <InfoItem icon={Calendar} label="Program End">{formatDateTime(row.End_Date)}</InfoItem>
+        </div>
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <InfoItem icon={MapPin} label="Venue Name" span={2}>{extractVenueName(row.Venue_Name || application.Venue_Address)}</InfoItem>
+              <InfoItem icon={MapPin} label="Street">{row.Street || 'Not provided'}</InfoItem>
+              <InfoItem icon={MapPin} label="Barangay">{row.Barangay || 'Not provided'}</InfoItem>
+              <InfoItem icon={MapPin} label="City / Municipality">{row.City_Municipality || 'Not provided'}</InfoItem>
+              <InfoItem icon={MapPin} label="Province">{row.Province || 'Not provided'}</InfoItem>
+              <InfoItem icon={MapPin} label="Region">{row.Region || 'Not provided'}</InfoItem>
+              <InfoItem icon={MapPin} label="Country">{row.Country || 'Philippines'}</InfoItem>
+              <InfoItem icon={MapPin} label="Complete Address" span={2}>{completeAddress || 'Not provided'}</InfoItem>
+            </div>
+          </div>
+          <AttachmentTile url={application.Event_Place_Photo_URL} label="Program Place" />
+        </div>
+        <div className="mt-4"><MapPreview latitude={row.Latitude} longitude={row.Longitude} label={`${row.Event_Name || 'Program'} venue`} /></div>
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Staff Review & Admin Progress</p>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <InfoItem icon={Info} label="Request Status">{statusLabel(row.Status)}</InfoItem>
+          <InfoItem icon={Clock3} label="Application Submitted">{formatDateTime(application.Created_At)}</InfoItem>
+          <InfoItem icon={Clock3} label="Staff Prepared">{formatDateTime(row.Staff_Prepared_At)}</InfoItem>
+          <InfoItem icon={UserCheck} label="Assigned Staff">{assignedStaffLabel}</InfoItem>
+          <InfoItem icon={Clock3} label="Admin Reviewed">{formatDateTime(row.Admin_Reviewed_At)}</InfoItem>
+          <InfoItem icon={FileText} label="Application Resubmissions">{Number(application.Resubmission_Count || 0)}</InfoItem>
+          <InfoItem icon={Users} label="Hair Collected">{Number(row.Hair_Collected_Count || 0).toLocaleString('en-PH')}</InfoItem>
+          {row.Private_Event_Code && <InfoItem icon={FileText} label="Private Program Code">{row.Private_Event_Code}</InfoItem>}
+          {row.Admin_Decision_Reason && <InfoItem icon={AlertTriangle} label="Admin Decision Reason" span={2}>{row.Admin_Decision_Reason}</InfoItem>}
+        </div>
+        <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Staff Contact Notes</p>
+            <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800">{row.Staff_Contact_Notes || application.Staff_Contact_Notes || 'Not provided'}</p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Staff Review Notes</p>
+            <p className="mt-1 whitespace-pre-wrap text-sm text-slate-800">{application.Staff_Review_Notes || 'Not provided'}</p>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function PortalModal({ open, children }) {
@@ -132,6 +362,7 @@ export default function ManageEventRequestsPage() {
   const [rows, setRows] = useState([]);
   const [staffOptions, setStaffOptions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
+  const [privateIdUrl, setPrivateIdUrl] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -276,6 +507,19 @@ export default function ManageEventRequestsPage() {
     rows.find((row) => Number(row.Event_Request_ID || 0) === Number(selectedId || 0)) || null
   ), [rows, selectedId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setPrivateIdUrl('');
+    const path = String(selectedRow?.Application?.Applicant_Valid_ID_Path || '').trim();
+    if (!path || !supabase) return undefined;
+
+    supabase.storage.from(PRIVATE_ID_BUCKET).createSignedUrl(path, 10 * 60)
+      .then(({ data, error }) => {
+        if (!cancelled && !error) setPrivateIdUrl(data?.signedUrl || '');
+      });
+    return () => { cancelled = true; };
+  }, [selectedRow?.Application?.Applicant_Valid_ID_Path]);
+
   const selectedStatusKey = useMemo(() => normalizeStatus(selectedRow?.Status), [selectedRow]);
   const canDecide = selectedStatusKey === 'pendingadminapproval' || selectedStatusKey === 'appealed';
 
@@ -283,7 +527,7 @@ export default function ManageEventRequestsPage() {
     const id = Number(selectedRow?.Assigned_Staff_User_ID || 0);
     if (id <= 0) return 'Not assigned';
     const row = staffOptions.find((staff) => Number(staff.user_id || 0) === id);
-    return row ? staffLabel(row) : `Staff ID: ${id}`;
+    return row ? staffLabel(row) : 'Assigned staff account';
   }, [selectedRow, staffOptions]);
 
   const nextActionCard = useMemo(() => {
@@ -291,8 +535,8 @@ export default function ManageEventRequestsPage() {
       return {
         icon: Clock3,
         tone: 'border-slate-200 bg-slate-50 text-slate-700',
-        title: 'Select a request',
-        body: 'Choose an event request from the queue to review and decide.',
+        title: 'Select an application',
+        body: 'Choose a staff-endorsed program application to review and decide.',
       };
     }
     if (selectedStatusKey === 'pendingadminapproval' || selectedStatusKey === 'appealed') {
@@ -450,9 +694,9 @@ export default function ManageEventRequestsPage() {
       }
       const emailStatus = await checkLatestEmailQueue(updated.Event_Request_ID, 'admin_approved');
       setResultModalData({
-        title: `ER-${updated.Event_Request_ID} Approved`,
+        title: 'Program Approved',
         lines: [
-          `Assigned Staff: ${staffOptions.find((staff) => Number(staff.user_id || 0) === staffIdNumber) ? staffLabel(staffOptions.find((staff) => Number(staff.user_id || 0) === staffIdNumber)) : `Staff ID: ${staffIdNumber}`}`,
+          `Assigned Staff: ${staffOptions.find((staff) => Number(staff.user_id || 0) === staffIdNumber) ? staffLabel(staffOptions.find((staff) => Number(staff.user_id || 0) === staffIdNumber)) : 'Assigned staff account'}`,
           emailStatus.text,
         ],
       });
@@ -511,7 +755,7 @@ export default function ManageEventRequestsPage() {
       }
       const emailStatus = await checkLatestEmailQueue(updated.Event_Request_ID, 'admin_rejected');
       setResultModalData({
-        title: `ER-${updated.Event_Request_ID} Rejected`,
+        title: 'Program Rejected',
         lines: [
           `Reason: ${rejectReason.trim()}`,
           emailStatus.text,
@@ -537,8 +781,8 @@ export default function ManageEventRequestsPage() {
             <Inbox size={20} />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Manage Event Requests</h1>
-            <p className="text-sm text-slate-600">Review staff-endorsed requests, assign one staff, then finalize admin decision.</p>
+            <h1 className="text-2xl font-bold text-slate-900">Manage Program Applications</h1>
+            <p className="text-sm text-slate-600">Review complete staff-endorsed applications, assign one staff member, and finalize the admin decision.</p>
           </div>
         </div>
         <button
@@ -593,7 +837,7 @@ export default function ManageEventRequestsPage() {
             <div className="flex items-center justify-between">
               <h2 className="flex items-center gap-2 text-sm font-bold text-slate-800">
                 <Inbox size={14} />
-                Requests Queue
+                Admin Review Queue
               </h2>
               <div className="flex items-center gap-1.5">
                 <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-700">{visibleRows.length}</span>
@@ -607,7 +851,7 @@ export default function ManageEventRequestsPage() {
                 type="search"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search request, event, requester..."
+                placeholder="Search applicant, program, or venue..."
                 className="w-full rounded-lg border border-slate-300 bg-white py-1.5 pl-8 pr-8 text-sm placeholder:text-slate-400 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
               />
               {searchTerm && (
@@ -661,7 +905,7 @@ export default function ManageEventRequestsPage() {
                   <Inbox size={20} />
                 </div>
                 <p className="mt-2.5 text-sm font-semibold text-slate-700">
-                  {queueRows.length === 0 ? 'No event requests' : 'No matches'}
+                  {queueRows.length === 0 ? 'No program applications' : 'No matches'}
                 </p>
                 <p className="text-xs text-slate-500">
                   {queueRows.length === 0 ? 'Staff-submitted requests will appear here.' : 'Try another filter or clear your search.'}
@@ -686,9 +930,8 @@ export default function ManageEventRequestsPage() {
                           {applicantInitials(row.Application)}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="truncate text-sm font-semibold text-slate-900">{row.Event_Name || 'Untitled Event'}</p>
-                            <span className="flex-none text-[10px] font-bold uppercase tracking-wider text-slate-400">ER-{row.Event_Request_ID}</span>
+                          <div className="flex items-center gap-2">
+                            <p className="truncate text-sm font-semibold text-slate-900">{row.Event_Name || 'Untitled Program'}</p>
                           </div>
                           <p className="mt-0.5 truncate text-xs text-slate-600">{applicantFullName(row.Application)}</p>
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -715,7 +958,7 @@ export default function ManageEventRequestsPage() {
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-400">
                 <Inbox size={26} />
               </div>
-              <h2 className="mt-4 text-base font-bold text-slate-800">Select an event request</h2>
+              <h2 className="mt-4 text-base font-bold text-slate-800">Select a program application</h2>
               <p className="mt-1 max-w-sm text-sm text-slate-500">
                 Choose a request from the queue on the left to review details and decide.
               </p>
@@ -733,8 +976,7 @@ export default function ManageEventRequestsPage() {
                       {applicantInitials(selectedRow.Application)}
                     </div>
                     <div>
-                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">ER-{selectedRow.Event_Request_ID}</p>
-                      <h2 className="mt-0.5 text-xl font-bold text-slate-900">{selectedRow.Event_Name || 'Untitled Event'}</h2>
+                      <h2 className="mt-0.5 text-xl font-bold text-slate-900">{selectedRow.Event_Name || 'Untitled Program'}</h2>
                       <p className="text-sm text-slate-600">by {applicantFullName(selectedRow.Application)}</p>
                     </div>
                   </div>
@@ -757,189 +999,7 @@ export default function ManageEventRequestsPage() {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h3 className="text-sm font-bold text-slate-800">Request Details</h3>
-                <div className="mt-3 space-y-7 text-sm">
-                  <div>
-                    <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Applicant</p>
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                        <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Applicant Profile</p>
-                        <div className="grid grid-cols-1 gap-3">
-                          <div className="flex items-start gap-2.5">
-                            <User size={14} className="mt-0.5 text-slate-400" />
-                            <div>
-                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Full Name</p>
-                              <p className="text-lg font-semibold text-slate-700">{applicantFullName(selectedRow.Application)}</p>
-                            </div>
-                          </div>
-                          <div className="flex items-start gap-2.5">
-                            <User size={14} className="mt-0.5 text-slate-400" />
-                            <div>
-                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Gender</p>
-                              <p className="text-lg font-semibold text-slate-700">{selectedRow.Application?.Applicant_Gender || 'N/A'}</p>
-                            </div>
-                          </div>
-                          <div className="flex items-start gap-2.5">
-                            <FileText size={14} className="mt-0.5 text-slate-400" />
-                            <div>
-                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Valid ID Type</p>
-                              <p className="text-lg font-semibold text-slate-700">{selectedRow.Application?.Applicant_Valid_ID_Type || 'N/A'}</p>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                        <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Preferred Contact</p>
-                        <div className="grid grid-cols-1 gap-3">
-                          <div className="flex items-start gap-2.5">
-                            <Phone size={14} className="mt-0.5 text-slate-400" />
-                            <div>
-                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Contact Method</p>
-                              <p className="text-lg font-semibold text-slate-700">{selectedRow.Application?.Preferred_Contact_Method || 'N/A'}</p>
-                            </div>
-                          </div>
-                          <div className="flex items-start gap-2.5">
-                            <Mail size={14} className="mt-0.5 text-slate-400" />
-                            <div>
-                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Contact Email</p>
-                              <p className="text-lg font-semibold text-teal-700">{selectedRow.Application?.Applicant_Email || 'N/A'}</p>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Event Schedule & Venue</p>
-                    <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
-                      <div className="flex items-start gap-2.5">
-                        <Calendar size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Proposed Start</p>
-                          <p className="text-lg font-semibold text-slate-700">{formatDateTime(selectedRow.Start_Date)}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2.5">
-                        <Calendar size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Proposed End</p>
-                          <p className="text-lg font-semibold text-slate-700">{formatDateTime(selectedRow.End_Date)}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2.5">
-                        <FileText size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Event Type</p>
-                          <p className="text-lg font-semibold text-slate-700">{eventVisibilityLabel(selectedRow.Event_Visibility)}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-2.5">
-                        <FileText size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Assigned Staff</p>
-                          <p className="text-lg font-semibold text-slate-700">{assignedStaffLabel}</p>
-                        </div>
-                      </div>
-                      <div className="md:col-span-2 flex items-start gap-2.5">
-                        <MapPin size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Venue</p>
-                          <p className="text-lg font-semibold text-slate-700">{extractVenueName(selectedRow.Venue_Name)}</p>
-                        </div>
-                      </div>
-                      <div className="md:col-span-2 flex items-start gap-2.5">
-                        <MapPin size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Address</p>
-                          <p className="text-lg font-semibold text-slate-700">
-                            {[selectedRow.Street, selectedRow.Barangay, selectedRow.City_Municipality, selectedRow.Province, selectedRow.Region, selectedRow.Country].filter(Boolean).join(', ') || 'N/A'}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="md:col-span-2 flex items-start gap-2.5">
-                        <FileText size={14} className="mt-0.5 text-slate-400" />
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Overview</p>
-                          <p className="text-lg font-semibold text-slate-700">{selectedRow.Application?.Event_Overview || 'N/A'}</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="mb-3 flex items-center justify-between gap-2">
-                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Attachments</p>
-                      {Number.isFinite(Number(selectedRow.Latitude)) && Number.isFinite(Number(selectedRow.Longitude)) && (
-                        <a
-                          href={`https://maps.google.com/?q=${encodeURIComponent(`${selectedRow.Latitude},${selectedRow.Longitude}`)}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-sky-700 underline"
-                        >
-                          Open map <ExternalLink size={12} />
-                        </a>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                      <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                        <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Valid ID</p>
-                          {selectedRow.Application?.Applicant_Valid_ID_URL && (
-                            <a href={selectedRow.Application.Applicant_Valid_ID_URL} target="_blank" rel="noreferrer" className="text-xs text-sky-700 underline">Open</a>
-                          )}
-                        </div>
-                        {selectedRow.Application?.Applicant_Valid_ID_URL ? (
-                          <a href={selectedRow.Application.Applicant_Valid_ID_URL} target="_blank" rel="noreferrer" className="block">
-                            <img src={selectedRow.Application.Applicant_Valid_ID_URL} alt="Applicant valid ID" className="h-48 w-full object-cover" />
-                          </a>
-                        ) : (
-                          <div className="flex h-48 items-center justify-center text-xs text-slate-500">No valid ID uploaded.</div>
-                        )}
-                      </div>
-
-                      <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                        <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Place Photo</p>
-                          {selectedRow.Application?.Event_Place_Photo_URL && (
-                            <a href={selectedRow.Application.Event_Place_Photo_URL} target="_blank" rel="noreferrer" className="text-xs text-sky-700 underline">Open</a>
-                          )}
-                        </div>
-                        {selectedRow.Application?.Event_Place_Photo_URL ? (
-                          <a href={selectedRow.Application.Event_Place_Photo_URL} target="_blank" rel="noreferrer" className="block">
-                            <img src={selectedRow.Application.Event_Place_Photo_URL} alt="Event place" className="h-48 w-full object-cover" />
-                          </a>
-                        ) : (
-                          <div className="flex h-48 items-center justify-center text-xs text-slate-500">No place photo uploaded.</div>
-                        )}
-                      </div>
-
-                      <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                        <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Poster</p>
-                          {selectedRow.Event_Photo_URL && (
-                            <a href={selectedRow.Event_Photo_URL} target="_blank" rel="noreferrer" className="text-xs text-sky-700 underline">Open</a>
-                          )}
-                        </div>
-                        {selectedRow.Event_Photo_URL ? (
-                          <a href={selectedRow.Event_Photo_URL} target="_blank" rel="noreferrer" className="block">
-                            <img src={selectedRow.Event_Photo_URL} alt="Event poster" className="h-48 w-full object-cover" />
-                          </a>
-                        ) : (
-                          <div className="flex h-48 items-center justify-center text-xs text-slate-500">No poster uploaded.</div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Staff Contact Notes</p>
-                    <p className="mt-1 whitespace-pre-wrap text-sm font-semibold text-slate-800">{selectedRow.Staff_Contact_Notes || 'N/A'}</p>
-                  </div>
-                </div>
-              </div>
+              <AdminRequestDetails row={selectedRow} privateIdUrl={privateIdUrl} assignedStaffLabel={assignedStaffLabel} />
 
               <div className="flex flex-wrap items-center justify-end gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <button
@@ -970,13 +1030,13 @@ export default function ManageEventRequestsPage() {
       <PortalModal open={isApproveModalOpen}>
           <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 opacity-100 shadow-2xl">
             <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-900">Approve Event Request</h3>
+              <h3 className="text-lg font-semibold text-slate-900">Approve Program</h3>
               <button type="button" onClick={closeAllModals} className="rounded-md p-1 text-slate-500 hover:bg-slate-100">
                 <X size={18} />
               </button>
             </div>
             <p className="text-sm text-slate-600">
-              ER-{selectedRow?.Event_Request_ID}: assign one staff member before approval.
+              Assign one staff member before approving this program.
             </p>
 
             <label className="mt-4 flex flex-col gap-1">
@@ -1014,13 +1074,13 @@ export default function ManageEventRequestsPage() {
       <PortalModal open={isRejectModalOpen}>
           <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 opacity-100 shadow-2xl">
             <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-slate-900">Reject Event Request</h3>
+              <h3 className="text-lg font-semibold text-slate-900">Reject Program</h3>
               <button type="button" onClick={closeAllModals} className="rounded-md p-1 text-slate-500 hover:bg-slate-100">
                 <X size={18} />
               </button>
             </div>
             <p className="text-sm text-slate-600">
-              ER-{selectedRow?.Event_Request_ID}: provide clear reason for staff revision or final rejection.
+              Provide a clear reason for staff revision or final rejection.
             </p>
 
             <label className="mt-4 flex flex-col gap-1">

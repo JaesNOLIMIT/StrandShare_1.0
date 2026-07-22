@@ -22,12 +22,12 @@ export default function EventApplicationSuccessPage() {
           </div>
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Submission Complete</p>
-            <h1 className="mt-1 text-2xl font-bold text-slate-900 md:text-3xl">Event application submitted successfully</h1>
+            <h1 className="mt-1 text-2xl font-bold text-slate-900 md:text-3xl">Program application submitted successfully</h1>
           </div>
         </div>
 
         <div className="mt-4 space-y-1 text-sm text-slate-600">
-          <p>Staff will contact you using your selected contact method.</p>
+          <p>Staff will use your preferred contact first and your other contact detail as the secondary option.</p>
           <p>
             A confirmation email should be sent to{' '}
             <span className="font-semibold text-slate-800">{submittedEmail || 'your submitted email address'}</span>.
