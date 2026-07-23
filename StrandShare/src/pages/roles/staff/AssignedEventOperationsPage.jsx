@@ -20,6 +20,10 @@ import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabaseClient';
 import { useTheme } from '../../../context/ThemeContext';
+import ProgramScheduleCalendarModal, {
+  formatScheduleDateLabel,
+  toScheduleDateKey,
+} from '../../../components/events/ProgramScheduleCalendarModal';
 
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
@@ -224,6 +228,8 @@ export default function AssignedEventOperationsPage({ userProfile }) {
 
   const [events, setEvents] = useState([]);
   const [eventTimeFilter, setEventTimeFilter] = useState('this_week');
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState('');
+  const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [selectedRequestId, setSelectedRequestId] = useState(null);
   const [attendees, setAttendees] = useState([]);
   const [attendeeSearch, setAttendeeSearch] = useState('');
@@ -393,6 +399,12 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   }, [loadEvents]);
 
   const filteredEvents = useMemo(() => {
+    if (selectedCalendarDate) {
+      return events.filter((row) => (
+        toScheduleDateKey(row.Start_Date) === selectedCalendarDate
+      ));
+    }
+
     const todayStart = toManilaDayStartMs(new Date());
     const weekEnd = todayStart + (6 * DAY_IN_MS);
 
@@ -409,7 +421,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       }
       return true;
     });
-  }, [events, eventTimeFilter]);
+  }, [events, eventTimeFilter, selectedCalendarDate]);
 
   const selectedEvent = useMemo(() => (
     events.find((row) => Number(row.Event_Request_ID || 0) === Number(selectedRequestId || 0)) || null
@@ -1380,9 +1392,23 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 <Inbox size={14} />
                 Assigned Events
               </h2>
-              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-700">
-                {filteredEvents.length}{filteredEvents.length !== events.length ? ` / ${events.length}` : ''}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowCalendarModal(true)}
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
+                    selectedCalendarDate
+                      ? 'border-sky-200 bg-sky-50 text-sky-700'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Calendar size={12} />
+                  {selectedCalendarDate ? formatScheduleDateLabel(selectedCalendarDate, true) : 'Calendar'}
+                </button>
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-700">
+                  {filteredEvents.length}{filteredEvents.length !== events.length ? ` / ${events.length}` : ''}
+                </span>
+              </div>
             </div>
             <div className="mt-3 grid grid-cols-3 gap-1">
               {EVENT_FILTERS.map((filterItem) => {
@@ -1403,6 +1429,24 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 );
               })}
             </div>
+            {selectedCalendarDate && (
+              <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-sky-600">Calendar date</p>
+                  <p className="truncate text-xs font-semibold text-sky-800">
+                    {formatScheduleDateLabel(selectedCalendarDate)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedCalendarDate('')}
+                  className="rounded-md p-1 text-sky-600 hover:bg-sky-100"
+                  aria-label="Clear selected date"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
           </div>
           <div className="max-h-[640px] overflow-auto">
             {isLoadingEvents && filteredEvents.length === 0 ? (
@@ -1415,7 +1459,11 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                   <Inbox size={20} />
                 </div>
                 <p className="mt-2.5 text-sm font-semibold text-slate-700">No events in this filter</p>
-                <p className="text-xs text-slate-500">Try another filter (Today, This Week, Upcoming).</p>
+                <p className="text-xs text-slate-500">
+                  {selectedCalendarDate
+                    ? 'No assigned events are scheduled on the selected date.'
+                    : 'Try another filter (Today, This Week, Upcoming).'}
+                </p>
               </div>
             ) : (
               <ul className="divide-y divide-slate-100">
@@ -1962,6 +2010,30 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           )}
         </section>
       </div>
+
+      <ProgramScheduleCalendarModal
+        open={showCalendarModal}
+        onClose={() => setShowCalendarModal(false)}
+        records={events}
+        selectedDate={selectedCalendarDate}
+        onSelectDate={setSelectedCalendarDate}
+        primaryColor={primaryColor}
+        title="Assigned Event Calendar"
+        description="Choose a date to view the events assigned to you."
+        recordNoun="event"
+        resultCount={filteredEvents.length}
+        getStartDate={(row) => row.Start_Date}
+        getEndDate={(row) => row.Start_Date}
+        getStatus={(row) => row.Status}
+        statusItems={[
+          { key: 'pendingadminapproval', label: 'Pending', dotClass: 'bg-amber-500', reserved: true },
+          { key: 'appealed', label: 'Appealed', dotClass: 'bg-violet-500', reserved: true },
+          { key: 'approved', label: 'Assigned / Approved', dotClass: 'bg-emerald-500', reserved: true },
+          { key: 'rejected', label: 'Rejected', dotClass: 'bg-rose-500', reserved: false },
+          { key: 'cancelled', label: 'Cancelled', dotClass: 'bg-slate-400', reserved: false },
+        ]}
+        showOpenDates={false}
+      />
 
       {showHowToModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4">

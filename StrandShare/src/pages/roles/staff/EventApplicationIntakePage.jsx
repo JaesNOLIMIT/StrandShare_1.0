@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   Calendar,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   ExternalLink,
   FileText,
@@ -166,6 +168,253 @@ function getUtc8SqlNow() {
   const utcMilliseconds = now.getTime() + (now.getTimezoneOffset() * 60 * 1000);
   const utc8 = new Date(utcMilliseconds + (8 * 60 * 60 * 1000));
   return utc8.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function normalizeNote(value) {
+  return String(value || '').trim();
+}
+
+function toProgramDateKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const sqlDateMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s]|$)/);
+  if (sqlDateMatch && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)) {
+    return `${sqlDateMatch[1]}-${sqlDateMatch[2]}-${sqlDateMatch[3]}`;
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(parsed);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function dateKeyFromDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function todayProgramDateKey() {
+  return toProgramDateKey(new Date().toISOString());
+}
+
+function formatProgramDateLabel(dateKey, options = {}) {
+  if (!dateKey) return 'No date selected';
+  const parsed = new Date(`${dateKey}T00:00:00+08:00`);
+  if (Number.isNaN(parsed.getTime())) return dateKey;
+  return parsed.toLocaleDateString('en-PH', {
+    timeZone: 'Asia/Manila',
+    month: options.short ? 'short' : 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function applicationProgramDateKeys(row) {
+  const startKey = toProgramDateKey(row?.Proposed_Start_At);
+  const endKey = toProgramDateKey(row?.Proposed_End_At) || startKey;
+  if (!startKey) return [];
+  if (!endKey || endKey < startKey) return [startKey];
+
+  const keys = [];
+  const cursor = new Date(`${startKey}T00:00:00Z`);
+  const end = new Date(`${endKey}T00:00:00Z`);
+  while (cursor <= end && keys.length < 370) {
+    keys.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return keys;
+}
+
+function calendarStatusDotClass(status) {
+  const key = normalizeStatus(status);
+  if (key === 'pendingstaffreview') return 'bg-amber-500';
+  if (key === 'pendingadmindecision') return 'bg-sky-500';
+  if (key === 'approved') return 'bg-emerald-500';
+  if (key === 'rejected') return 'bg-rose-500';
+  if (key === 'appealed') return 'bg-violet-500';
+  return 'bg-slate-400';
+}
+
+function ApplicationQueueCalendar({
+  month,
+  selectedDate,
+  applicationsByDate,
+  onMonthChange,
+  onSelectDate,
+  primaryColor,
+}) {
+  const todayKey = todayProgramDateKey();
+  const year = month.getFullYear();
+  const monthIndex = month.getMonth();
+  const calendarDays = useMemo(() => {
+    const firstDay = new Date(year, monthIndex, 1);
+    const gridStart = new Date(year, monthIndex, 1 - firstDay.getDay());
+    return Array.from({ length: 42 }, (_, index) => {
+      const date = new Date(gridStart);
+      date.setDate(gridStart.getDate() + index);
+      return date;
+    });
+  }, [monthIndex, year]);
+
+  const selectedApplications = selectedDate ? (applicationsByDate.get(selectedDate) || []) : [];
+  const selectedHasReservedProgram = selectedApplications.some(
+    (row) => normalizeStatus(row.Status) !== 'rejected',
+  );
+  const selectedIsAvailable = Boolean(
+    selectedDate
+    && selectedDate >= todayKey
+    && !selectedHasReservedProgram,
+  );
+
+  const moveMonth = (amount) => {
+    onMonthChange(new Date(year, monthIndex + amount, 1));
+  };
+
+  const goToToday = () => {
+    const [todayYear, todayMonth] = todayKey.split('-').map(Number);
+    onMonthChange(new Date(todayYear, todayMonth - 1, 1));
+    onSelectDate(todayKey);
+  };
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Calendar size={14} className="text-slate-500" />
+          <p className="text-xs font-bold text-slate-800">
+            {month.toLocaleDateString('en-PH', { month: 'long', year: 'numeric' })}
+          </p>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => moveMonth(-1)}
+            className="rounded-md border border-slate-200 bg-white p-1 text-slate-600 hover:bg-slate-100"
+            aria-label="Previous month"
+          >
+            <ChevronLeft size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={goToToday}
+            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-bold text-slate-600 hover:bg-slate-100"
+          >
+            Today
+          </button>
+          <button
+            type="button"
+            onClick={() => moveMonth(1)}
+            className="rounded-md border border-slate-200 bg-white p-1 text-slate-600 hover:bg-slate-100"
+            aria-label="Next month"
+          >
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-7 text-center text-[9px] font-bold uppercase tracking-wide text-slate-400">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => <span key={day}>{day}</span>)}
+      </div>
+
+      <div className="mt-1 grid grid-cols-7 gap-1">
+        {calendarDays.map((date) => {
+          const dateKey = dateKeyFromDate(date);
+          const dateApplications = applicationsByDate.get(dateKey) || [];
+          const isCurrentMonth = date.getMonth() === monthIndex;
+          const isSelected = selectedDate === dateKey;
+          const isToday = todayKey === dateKey;
+          const hasReservedProgram = dateApplications.some(
+            (row) => normalizeStatus(row.Status) !== 'rejected',
+          );
+          const isAvailable = dateKey >= todayKey && !hasReservedProgram;
+          const statusKeys = [...new Set(dateApplications.map((row) => normalizeStatus(row.Status)))].slice(0, 3);
+          const statusSummary = dateApplications.length > 0
+            ? `${dateApplications.length} application${dateApplications.length === 1 ? '' : 's'}`
+            : (isAvailable ? 'Open date' : 'No applications');
+
+          return (
+            <button
+              key={dateKey}
+              type="button"
+              onClick={() => {
+                onSelectDate(dateKey);
+                if (!isCurrentMonth) onMonthChange(new Date(date.getFullYear(), date.getMonth(), 1));
+              }}
+              className={`relative flex h-10 flex-col items-center justify-center rounded-lg border text-[11px] font-semibold transition ${
+                isSelected
+                  ? 'border-transparent text-white shadow-sm'
+                  : isAvailable
+                    ? 'border-dashed border-slate-300 bg-white text-slate-700 hover:border-slate-500'
+                    : 'border-transparent bg-white text-slate-700 hover:border-slate-300'
+              } ${isCurrentMonth ? '' : 'opacity-40'} ${isToday && !isSelected ? 'ring-1 ring-slate-400' : ''}`}
+              style={isSelected ? { backgroundColor: primaryColor } : undefined}
+              title={`${formatProgramDateLabel(dateKey, { short: true })}: ${statusSummary}`}
+              aria-label={`${formatProgramDateLabel(dateKey)}. ${statusSummary}`}
+            >
+              <span>{date.getDate()}</span>
+              {dateApplications.length > 0 ? (
+                <span className="mt-0.5 flex items-center gap-0.5">
+                  {statusKeys.map((statusKey) => (
+                    <span
+                      key={statusKey}
+                      className={`h-1.5 w-1.5 rounded-full ${calendarStatusDotClass(statusKey)} ${isSelected ? 'ring-1 ring-white/70' : ''}`}
+                    />
+                  ))}
+                </span>
+              ) : isAvailable ? (
+                <span className={`mt-0.5 h-1.5 w-1.5 rounded-full ${isSelected ? 'bg-white' : 'border border-slate-400 bg-white'}`} />
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[9px] font-semibold text-slate-500">
+        {[
+          ['border border-slate-400 bg-white', 'Open date'],
+          ['bg-amber-500', 'Pending Staff'],
+          ['bg-sky-500', 'Pending Admin'],
+          ['bg-emerald-600', 'Approved'],
+          ['bg-rose-500', 'Rejected'],
+          ['bg-violet-500', 'Appealed'],
+        ].map(([dotClass, label]) => (
+          <span key={label} className="inline-flex items-center gap-1">
+            <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
+            {label}
+          </span>
+        ))}
+      </div>
+
+      {selectedDate && (
+        <div className="mt-3 flex items-start justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+          <div>
+            <p className="text-[11px] font-bold text-slate-800">{formatProgramDateLabel(selectedDate)}</p>
+            <p className="text-[10px] text-slate-500">
+              {selectedApplications.length > 0
+                ? `${selectedApplications.length} application${selectedApplications.length === 1 ? '' : 's'} on this date${selectedIsAvailable ? ' — open for a new application' : ''}`
+                : (selectedIsAvailable ? 'Open date — no active program scheduled' : 'No program scheduled')}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onSelectDate('')}
+            className="rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-600 hover:bg-slate-50"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function createRequestDraftFromApplication(row) {
@@ -437,13 +686,22 @@ export default function EventApplicationIntakePage({ userProfile }) {
   const [staffUserId, setStaffUserId] = useState(userProfile?.user_id || null);
   const [staffNotes, setStaffNotes] = useState('');
   const [contactNotes, setContactNotes] = useState('');
+  const [savedStaffNotes, setSavedStaffNotes] = useState('');
+  const [savedContactNotes, setSavedContactNotes] = useState('');
   const [staffRejectionReason, setStaffRejectionReason] = useState('');
   const [requestDraft, setRequestDraft] = useState(createRequestDraftFromApplication(null));
+  const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [submitStep, setSubmitStep] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState('');
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const [year, month] = todayProgramDateKey().split('-').map(Number);
+    return new Date(year, month - 1, 1);
+  });
+  const initializedApplicationIdRef = useRef(null);
 
   const resolveStaffUserId = useCallback(async () => {
     if (staffUserId) return staffUserId;
@@ -471,8 +729,10 @@ export default function EventApplicationIntakePage({ userProfile }) {
       return;
     }
 
-    if (!silent) setIsLoading(true);
-    setNotice({ kind: '', text: '' });
+    if (!silent) {
+      setIsLoading(true);
+      setNotice({ kind: '', text: '' });
+    }
 
     try {
       const result = await supabase
@@ -550,7 +810,9 @@ export default function EventApplicationIntakePage({ userProfile }) {
           }
         },
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') loadRows({ silent: true });
+      });
 
     const requestsChannel = supabase
       .channel('event-requests-intake-realtime')
@@ -572,13 +834,33 @@ export default function EventApplicationIntakePage({ userProfile }) {
           }
         },
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') loadRows({ silent: true });
+      });
 
     return () => {
       supabase.removeChannel(applicationsChannel);
       supabase.removeChannel(requestsChannel);
     };
-  }, []);
+  }, [loadRows]);
+
+  useEffect(() => {
+    const syncVisiblePage = () => {
+      if (document.visibilityState === 'visible') {
+        loadRows({ silent: true });
+      }
+    };
+
+    const intervalId = window.setInterval(syncVisiblePage, 4000);
+    window.addEventListener('focus', syncVisiblePage);
+    document.addEventListener('visibilitychange', syncVisiblePage);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', syncVisiblePage);
+      document.removeEventListener('visibilitychange', syncVisiblePage);
+    };
+  }, [loadRows]);
 
   const selectedRow = useMemo(() => {
     return rows.find((row) => Number(row.Event_Application_ID || 0) === Number(selectedId || 0)) || null;
@@ -608,27 +890,49 @@ export default function EventApplicationIntakePage({ userProfile }) {
     [selectedLinkedRequest],
   );
 
-  const canAppealRejectedRequest = Boolean(
-    selectedRow?.Linked_Event_Request_ID
-    && linkedRequestStatusKey === 'rejected',
-  );
-
   const isLinkedToAdmin = Boolean(selectedRow?.Linked_Event_Request_ID);
-  const isLockedFromActions = isLinkedToAdmin && !canAppealRejectedRequest;
+  const applicationStatusKey = normalizeStatus(selectedRow?.Status);
+  const isStaffRejectedApplication = applicationStatusKey === 'rejected'
+    && Number(selectedRow?.Staff_Rejected_By_User_ID || 0) > 0;
+  const canAppealRejectedRequest = Boolean(
+    isLinkedToAdmin
+    && linkedRequestStatusKey === 'rejected'
+    && !isStaffRejectedApplication,
+  );
+  const canRejectByStaff = (
+    applicationStatusKey === 'pendingstaffreview'
+    && !isLinkedToAdmin
+  ) || canAppealRejectedRequest;
+  const isLockedFromActions = isStaffRejectedApplication
+    || (isLinkedToAdmin && !canAppealRejectedRequest);
+  const notesHaveUnsavedChanges = normalizeNote(staffNotes) !== normalizeNote(savedStaffNotes)
+    || normalizeNote(contactNotes) !== normalizeNote(savedContactNotes);
 
   useEffect(() => {
+    const nextApplicationId = selectedRow?.Event_Application_ID || null;
+    if (initializedApplicationIdRef.current === nextApplicationId) return;
+    initializedApplicationIdRef.current = nextApplicationId;
+
     if (!selectedRow) {
       setStaffNotes('');
       setContactNotes('');
+      setSavedStaffNotes('');
+      setSavedContactNotes('');
       setStaffRejectionReason('');
       setRequestDraft(createRequestDraftFromApplication(null));
       return;
     }
 
-    setStaffNotes(selectedRow.Staff_Review_Notes || '');
-    setContactNotes(selectedRow.Staff_Contact_Notes || '');
+    const nextStaffNotes = selectedRow.Staff_Review_Notes || '';
+    const nextContactNotes = selectedRow.Staff_Contact_Notes || '';
+    setStaffNotes(nextStaffNotes);
+    setContactNotes(nextContactNotes);
+    setSavedStaffNotes(nextStaffNotes);
+    setSavedContactNotes(nextContactNotes);
     setStaffRejectionReason(selectedRow.Staff_Rejection_Reason || '');
     setRequestDraft(createRequestDraftFromApplication(selectedRow));
+    // Realtime/polling refreshes replace the row object, but the ID guard above
+    // prevents them from erasing text currently being typed into staff forms.
   }, [selectedRow]);
 
   useEffect(() => {
@@ -648,12 +952,30 @@ export default function EventApplicationIntakePage({ userProfile }) {
       });
   }, [rows]);
 
-  // Auto-select first row when nothing is selected yet (oldest first)
+  // Keep selection valid as realtime inserts/deletes change the queue.
   useEffect(() => {
-    if (selectedId == null && queueRows.length > 0) {
-      setSelectedId(queueRows[0].Event_Application_ID);
+    const selectionCandidates = selectedCalendarDate
+      ? queueRows.filter((row) => applicationProgramDateKeys(row).includes(selectedCalendarDate))
+      : queueRows;
+    const selectionStillExists = selectionCandidates.some(
+      (row) => Number(row.Event_Application_ID) === Number(selectedId),
+    );
+    if (!selectionStillExists) {
+      setSelectedId(selectionCandidates[0]?.Event_Application_ID || null);
     }
-  }, [queueRows, selectedId]);
+  }, [queueRows, selectedCalendarDate, selectedId]);
+
+  const applicationsByDate = useMemo(() => {
+    const byDate = new Map();
+    queueRows.forEach((row) => {
+      applicationProgramDateKeys(row).forEach((dateKey) => {
+        const dateRows = byDate.get(dateKey) || [];
+        dateRows.push(row);
+        byDate.set(dateKey, dateRows);
+      });
+    });
+    return byDate;
+  }, [queueRows]);
 
   const statusCounts = useMemo(() => {
     const counts = { all: queueRows.length };
@@ -668,6 +990,10 @@ export default function EventApplicationIntakePage({ userProfile }) {
     const term = searchTerm.trim().toLowerCase();
     return queueRows.filter((row) => {
       if (statusFilter !== 'all' && normalizeStatus(row.Status) !== statusFilter) return false;
+      if (
+        selectedCalendarDate
+        && !applicationProgramDateKeys(row).includes(selectedCalendarDate)
+      ) return false;
       if (!term) return true;
       const haystack = [
         `ea-${row.Event_Application_ID}`,
@@ -684,56 +1010,93 @@ export default function EventApplicationIntakePage({ userProfile }) {
         .toLowerCase();
       return haystack.includes(term);
     });
-  }, [queueRows, searchTerm, statusFilter]);
+  }, [queueRows, searchTerm, selectedCalendarDate, statusFilter]);
 
-  const updateSelected = async (nextValues) => {
-    if (!selectedRow?.Event_Application_ID) return { ok: false };
+  const handleSaveNotes = async () => {
+    if (!selectedRow) return { ok: false };
 
+    const nextContactNotes = normalizeNote(contactNotes);
+    const nextStaffNotes = normalizeNote(staffNotes);
     setIsSaving(true);
     setNotice({ kind: '', text: '' });
 
     try {
-      const result = await supabase
-        .from(EVENT_APPLICATIONS_TABLE)
-        .update(nextValues)
-        .eq('Event_Application_ID', selectedRow.Event_Application_ID)
-        .select('*')
+      let updated = null;
+      const rpcResult = await supabase
+        .rpc('save_event_application_staff_notes', {
+          p_event_application_id: Number(selectedRow.Event_Application_ID),
+          p_contact_notes: nextContactNotes || null,
+          p_review_notes: nextStaffNotes || null,
+        })
         .maybeSingle();
 
-      if (result.error) throw result.error;
+      const rpcUnavailable = rpcResult.error
+        && (
+          rpcResult.error.code === 'PGRST202'
+          || String(rpcResult.error.message || '').toLowerCase().includes('save_event_application_staff_notes')
+        );
 
-      const updated = result.data || {
-        ...selectedRow,
-        ...nextValues,
-      };
+      if (rpcUnavailable) {
+        const resolvedStaffId = await resolveStaffUserId();
+        const fallbackResult = await supabase
+          .from(EVENT_APPLICATIONS_TABLE)
+          .update({
+            Staff_Contact_Notes: nextContactNotes || null,
+            Staff_Review_Notes: nextStaffNotes || null,
+            Staff_Contacted_At: nextContactNotes ? getUtc8SqlNow() : selectedRow.Staff_Contacted_At,
+            Staff_Reviewer_User_ID: resolvedStaffId || selectedRow.Staff_Reviewer_User_ID || null,
+          })
+          .eq('Event_Application_ID', selectedRow.Event_Application_ID)
+          .select('*')
+          .maybeSingle();
+
+        if (fallbackResult.error) throw fallbackResult.error;
+        if (!fallbackResult.data) {
+          throw new Error('The database did not save the notes. Apply the latest Supabase migration, then retry.');
+        }
+        updated = fallbackResult.data;
+      } else {
+        if (rpcResult.error) throw rpcResult.error;
+        if (!rpcResult.data) throw new Error('The database did not return the saved notes.');
+        updated = {
+          ...selectedRow,
+          Staff_Contact_Notes: rpcResult.data.staff_contact_notes,
+          Staff_Review_Notes: rpcResult.data.staff_review_notes,
+          Staff_Contacted_At: rpcResult.data.staff_contacted_at,
+          Staff_Reviewer_User_ID: rpcResult.data.staff_reviewer_user_id,
+          Updated_At: rpcResult.data.updated_at,
+        };
+      }
+
       setRows((current) => current.map((row) => (
-        Number(row.Event_Application_ID || 0) === Number(updated.Event_Application_ID || 0)
+        Number(row.Event_Application_ID) === Number(selectedRow.Event_Application_ID)
           ? updated
           : row
       )));
-      setNotice({ kind: 'success', text: 'Application updated.' });
+      setContactNotes(updated.Staff_Contact_Notes || '');
+      setStaffNotes(updated.Staff_Review_Notes || '');
+      setSavedContactNotes(updated.Staff_Contact_Notes || '');
+      setSavedStaffNotes(updated.Staff_Review_Notes || '');
+      setNotice({ kind: 'success', text: 'Staff contact summary and review notes saved.' });
       return { ok: true };
     } catch (error) {
-      setNotice({ kind: 'error', text: error.message || 'Unable to update application.' });
+      setNotice({ kind: 'error', text: error.message || 'Unable to save staff notes.' });
       return { ok: false };
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleSaveNotes = async () => {
-    if (!selectedRow) return;
-
-    await updateSelected({
-      Staff_Contact_Notes: contactNotes.trim() || null,
-      Staff_Review_Notes: staffNotes.trim() || null,
-      Staff_Contacted_At: contactNotes.trim() ? getUtc8SqlNow() : selectedRow.Staff_Contacted_At,
-      Staff_Reviewer_User_ID: staffUserId || selectedRow.Staff_Reviewer_User_ID || null,
-    });
-  };
-
   const handleConfirmSubmitToAdmin = async () => {
     if (!selectedRow) return;
+    if (notesHaveUnsavedChanges) {
+      setSubmitStep(4);
+      setNotice({
+        kind: 'error',
+        text: 'Save your staff notes before submitting so they are included in the record.',
+      });
+      return;
+    }
     const linkedRequestId = Number(selectedRow.Linked_Event_Request_ID || 0);
     if (linkedRequestId > 0 && !canAppealRejectedRequest) {
       setNotice({ kind: 'success', text: 'This application was already submitted to admin.' });
@@ -796,42 +1159,63 @@ export default function EventApplicationIntakePage({ userProfile }) {
           Admin_Reviewed_At: null,
         };
 
-        const updateRequestResult = await supabase
-          .from(EVENT_REQUESTS_TABLE)
-          .update({
-            ...baseAppealPayload,
-            Status: 'Appealed',
+        const appealRpcResult = await supabase
+          .rpc('staff_resubmit_event_request', {
+            p_event_request_id: linkedRequestId,
+            p_event_application_id: Number(selectedRow.Event_Application_ID),
+            p_request_data: baseAppealPayload,
+            p_contact_notes: normalizeNote(contactNotes) || null,
+            p_review_notes: normalizeNote(staffNotes) || null,
           })
-          .eq('Event_Request_ID', linkedRequestId);
-        if (updateRequestResult.error) {
-          const appealErrorText = String(updateRequestResult.error?.message || '').toLowerCase();
-          const blockedRejectedToAppealed = appealErrorText.includes('staff cannot change event request status from rejected to appealed');
-          if (!blockedRejectedToAppealed) throw updateRequestResult.error;
+          .maybeSingle();
 
-          // Backward compatibility for DBs still running older trigger logic:
-          // allow resubmission using Pending Admin Approval.
-          const retryResult = await supabase
+        const appealRpcUnavailable = appealRpcResult.error
+          && (
+            appealRpcResult.error.code === 'PGRST202'
+            || String(appealRpcResult.error.message || '').toLowerCase().includes('staff_resubmit_event_request')
+          );
+
+        if (appealRpcUnavailable) {
+          const updateRequestResult = await supabase
             .from(EVENT_REQUESTS_TABLE)
             .update({
               ...baseAppealPayload,
-              Status: 'Pending Admin Approval',
+              Status: 'Appealed',
             })
             .eq('Event_Request_ID', linkedRequestId);
+          if (updateRequestResult.error) {
+            const retryResult = await supabase
+              .from(EVENT_REQUESTS_TABLE)
+              .update({
+                ...baseAppealPayload,
+                Status: 'Pending Admin Approval',
+              })
+              .eq('Event_Request_ID', linkedRequestId);
 
-          if (retryResult.error) throw retryResult.error;
+            if (retryResult.error) throw retryResult.error;
+          }
+
+          const updateApplicationResult = await supabase
+            .from(EVENT_APPLICATIONS_TABLE)
+            .update({
+              Status: 'Appealed',
+              Staff_Contact_Notes: normalizeNote(contactNotes) || null,
+              Staff_Review_Notes: normalizeNote(staffNotes) || null,
+              Staff_Contacted_At: normalizeNote(contactNotes) ? getUtc8SqlNow() : selectedRow.Staff_Contacted_At,
+              Resubmission_Count: Number(selectedRow.Resubmission_Count || 0) + 1,
+            })
+            .eq('Event_Application_ID', selectedRow.Event_Application_ID)
+            .select('Event_Application_ID')
+            .maybeSingle();
+
+          if (updateApplicationResult.error) throw updateApplicationResult.error;
+          if (!updateApplicationResult.data) {
+            throw new Error('The appeal was not recorded on the application. Apply the latest Supabase migration, then retry.');
+          }
+        } else {
+          if (appealRpcResult.error) throw appealRpcResult.error;
+          if (!appealRpcResult.data) throw new Error('The database did not return the resubmitted request.');
         }
-
-        const updateApplicationResult = await supabase
-          .from(EVENT_APPLICATIONS_TABLE)
-          .update({
-            Status: 'Appealed',
-            Staff_Contact_Notes: contactNotes.trim() || null,
-            Staff_Review_Notes: staffNotes.trim() || null,
-            Staff_Contacted_At: contactNotes.trim() ? getUtc8SqlNow() : selectedRow.Staff_Contacted_At,
-          })
-          .eq('Event_Application_ID', selectedRow.Event_Application_ID);
-
-        if (updateApplicationResult.error) throw updateApplicationResult.error;
 
         await loadRows();
         const smtpKickResult = await triggerSmtpNow('staff_resubmitted_event_request');
@@ -876,23 +1260,69 @@ export default function EventApplicationIntakePage({ userProfile }) {
 
   const handleConfirmReject = async () => {
     if (!selectedRow) return;
-    if (!staffRejectionReason.trim()) {
+    if (!canRejectByStaff) {
+      setShowRejectModal(false);
+      setNotice({
+        kind: 'error',
+        text: 'This application is no longer available for a staff rejection or appeal rejection.',
+      });
+      return;
+    }
+
+    const isRejectingAppeal = canAppealRejectedRequest;
+    const rejectionReason = normalizeNote(staffRejectionReason);
+    if (!rejectionReason) {
       setNotice({ kind: 'error', text: 'Staff rejection reason is required.' });
       return;
     }
-    const result = await updateSelected({
-      Status: 'Rejected',
-      Staff_Rejection_Reason: staffRejectionReason.trim(),
-      Staff_Contact_Notes: contactNotes.trim() || null,
-      Staff_Review_Notes: staffNotes.trim() || null,
-      Staff_Contacted_At: contactNotes.trim() ? getUtc8SqlNow() : selectedRow.Staff_Contacted_At,
-    });
-    if (result?.ok) {
+
+    setIsSaving(true);
+    setNotice({ kind: '', text: '' });
+
+    try {
+      const result = await supabase
+        .rpc('staff_reject_event_application', {
+          p_event_application_id: Number(selectedRow.Event_Application_ID),
+          p_rejection_reason: rejectionReason,
+          p_contact_notes: normalizeNote(contactNotes) || null,
+          p_review_notes: normalizeNote(staffNotes) || null,
+        })
+        .maybeSingle();
+
+      if (result.error) throw result.error;
+      if (!result.data) {
+        throw new Error('The database did not return the rejected application.');
+      }
+
+      const updated = result.data;
+      setRows((current) => current.map((row) => (
+        Number(row.Event_Application_ID) === Number(updated.Event_Application_ID)
+          ? updated
+          : row
+      )));
+      setContactNotes(updated.Staff_Contact_Notes || '');
+      setStaffNotes(updated.Staff_Review_Notes || '');
+      setSavedContactNotes(updated.Staff_Contact_Notes || '');
+      setSavedStaffNotes(updated.Staff_Review_Notes || '');
+      setNotice({
+        kind: 'success',
+        text: isRejectingAppeal
+          ? 'Appeal rejected permanently. The applicant will be notified by email.'
+          : 'Application rejected permanently. The applicant will be notified by email.',
+      });
+
       const smtpKickResult = await triggerSmtpNow('staff_rejected_event_application');
       if (!smtpKickResult.ok) {
         console.warn('[SMTP] Trigger after staff rejection failed:', smtpKickResult.message || smtpKickResult);
       }
       setShowRejectModal(false);
+    } catch (error) {
+      setNotice({
+        kind: 'error',
+        text: error.message || 'Unable to reject this application.',
+      });
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -1098,17 +1528,35 @@ export default function EventApplicationIntakePage({ userProfile }) {
         </div>
       </div>
 
-      {notice.text && (
-        <div className={`flex items-start gap-2.5 rounded-lg border px-4 py-3 text-sm shadow-sm ${
-          notice.kind === 'error'
-            ? 'border-rose-200 bg-rose-50 text-rose-700'
-            : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-        }`}>
+      {notice.text && createPortal(
+        <div
+          className={`fixed bottom-4 right-4 z-[10000] flex w-[calc(100vw-2rem)] max-w-md items-start gap-3 rounded-xl border px-4 py-3.5 text-sm shadow-2xl intake-fade-up ${
+            notice.kind === 'error'
+              ? 'border-rose-300 bg-rose-50 text-rose-800'
+              : 'border-emerald-300 bg-emerald-50 text-emerald-800'
+          }`}
+          role={notice.kind === 'error' ? 'alert' : 'status'}
+          aria-live={notice.kind === 'error' ? 'assertive' : 'polite'}
+        >
           {notice.kind === 'error'
-            ? <AlertTriangle size={16} className="mt-0.5 flex-none" />
-            : <CheckCircle2 size={16} className="mt-0.5 flex-none" />}
-          <span>{notice.text}</span>
-        </div>
+            ? <AlertTriangle size={19} className="mt-0.5 flex-none" />
+            : <CheckCircle2 size={19} className="mt-0.5 flex-none" />}
+          <div className="min-w-0 flex-1">
+            <p className="font-bold">
+              {notice.kind === 'error' ? 'Action not completed' : 'Success'}
+            </p>
+            <p className="mt-0.5 leading-relaxed">{notice.text}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setNotice({ kind: '', text: '' })}
+            className="-mr-1 -mt-1 rounded-md p-1 opacity-70 transition hover:bg-black/5 hover:opacity-100"
+            aria-label="Dismiss notification"
+          >
+            <X size={16} />
+          </button>
+        </div>,
+        document.body,
       )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[360px,1fr]">
@@ -1120,11 +1568,20 @@ export default function EventApplicationIntakePage({ userProfile }) {
                 Applications Queue
               </h2>
               <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowCalendarModal(true)}
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
+                    selectedCalendarDate
+                      ? 'border-sky-200 bg-sky-50 text-sky-700'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Calendar size={12} />
+                  {selectedCalendarDate ? formatProgramDateLabel(selectedCalendarDate, { short: true }) : 'Calendar'}
+                </button>
                 <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-700">
                   {visibleRows.length}
-                </span>
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                  Oldest first
                 </span>
               </div>
             </div>
@@ -1181,6 +1638,25 @@ export default function EventApplicationIntakePage({ userProfile }) {
                 );
               })}
             </div>
+
+            {selectedCalendarDate && (
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-sky-600">Date filter</p>
+                  <p className="truncate text-xs font-semibold text-sky-800">
+                    {formatProgramDateLabel(selectedCalendarDate)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedCalendarDate('')}
+                  className="rounded-md p-1 text-sky-600 hover:bg-sky-100"
+                  aria-label="Clear selected date"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
           </div>
           <div className="max-h-[640px] overflow-auto">
             {isLoading && visibleRows.length === 0 ? (
@@ -1196,12 +1672,18 @@ export default function EventApplicationIntakePage({ userProfile }) {
                 <p className="text-xs text-slate-500">
                   {queueRows.length === 0
                     ? 'New submissions will appear here.'
-                    : 'Try a different filter or clear the search.'}
+                    : selectedCalendarDate
+                      ? 'No applications match the selected date and filters.'
+                      : 'Try a different filter or clear the search.'}
                 </p>
                 {queueRows.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => { setSearchTerm(''); setStatusFilter('all'); }}
+                    onClick={() => {
+                      setSearchTerm('');
+                      setStatusFilter('all');
+                      setSelectedCalendarDate('');
+                    }}
                     className="mt-3 rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
                   >
                     Clear filters
@@ -1235,6 +1717,10 @@ export default function EventApplicationIntakePage({ userProfile }) {
                             </p>
                           </div>
                           <p className="mt-0.5 truncate text-xs text-slate-600">{applicantFullName(row)}</p>
+                          <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500">
+                            <Calendar size={11} />
+                            {formatProgramDateLabel(toProgramDateKey(row.Proposed_Start_At), { short: true })}
+                          </p>
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
                             <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusPillClass(row.Status)}`}>
                               {statusLabel(row.Status)}
@@ -1294,7 +1780,19 @@ export default function EventApplicationIntakePage({ userProfile }) {
               </div>
 
               {/* Status banner */}
-              {isLockedFromActions && (
+              {isStaffRejectedApplication && (
+                <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-800">
+                  <XCircle size={20} className="mt-0.5 flex-none" />
+                  <div>
+                    <p className="font-bold">Application rejected by staff</p>
+                    <p className="mt-1">
+                      This application is permanently closed and cannot be edited, reopened, or submitted to admin.
+                      The applicant was emailed the reason and may submit a new corrected application.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {isLockedFromActions && !isStaffRejectedApplication && (
                 <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-800">
                   <CheckCircle2 size={20} className="mt-0.5 flex-none" />
                   <div>
@@ -1317,15 +1815,35 @@ export default function EventApplicationIntakePage({ userProfile }) {
 
               {/* Staff Notes — editable when not locked, read-only otherwise */}
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-center gap-2">
-                  <FileText size={15} className="text-slate-500" />
-                  <h3 className="text-sm font-bold text-slate-800">Staff Notes</h3>
-                  {isLockedFromActions && (
-                    <span className="ml-1 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">
-                      Read-only
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <FileText size={15} className="text-slate-500" />
+                    <h3 className="text-sm font-bold text-slate-800">Staff Notes</h3>
+                    {isLockedFromActions && (
+                      <span className="ml-1 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                        Read-only
+                      </span>
+                    )}
+                  </div>
+                  {!isLockedFromActions && (
+                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${
+                      notesHaveUnsavedChanges
+                        ? 'border-amber-200 bg-amber-50 text-amber-700'
+                        : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    }`}>
+                      {notesHaveUnsavedChanges ? 'Unsaved changes' : 'Notes saved'}
                     </span>
                   )}
                 </div>
+                {!isLockedFromActions && (
+                  <div className="mt-3 flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+                    <Info size={14} className="mt-0.5 flex-none" />
+                    <p>
+                      Enter the contact summary and review notes, then click <strong>Save Notes</strong>.
+                      Changes are only recorded after the save succeeds.
+                    </p>
+                  </div>
+                )}
                 <div className="mt-4 grid grid-cols-1 gap-4">
                   {isLockedFromActions ? (
                     <>
@@ -1381,18 +1899,20 @@ export default function EventApplicationIntakePage({ userProfile }) {
                     {isSaving ? <Loader2 size={15} className="animate-spin" /> : <FileText size={15} />}
                     Save Notes
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setStaffRejectionReason(selectedRow.Staff_Rejection_Reason || '');
-                      setShowRejectModal(true);
-                    }}
-                    disabled={isSaving}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
-                  >
-                    <XCircle size={15} />
-                    Reject Application
-                  </button>
+                  {canRejectByStaff && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStaffRejectionReason(selectedRow.Staff_Rejection_Reason || '');
+                        setShowRejectModal(true);
+                      }}
+                      disabled={isSaving}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
+                    >
+                      <XCircle size={15} />
+                      {canAppealRejectedRequest ? 'Reject Appeal' : 'Reject Application'}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -1414,12 +1934,62 @@ export default function EventApplicationIntakePage({ userProfile }) {
         </section>
       </div>
 
+      {/* Program Calendar Modal */}
+      <Modal
+        open={showCalendarModal}
+        onClose={() => setShowCalendarModal(false)}
+        title="Program Schedule Calendar"
+        description="Choose a date to filter the applications queue."
+        icon={Calendar}
+        accentColor={primaryColor}
+        maxWidth="xl"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setSelectedCalendarDate('')}
+              disabled={!selectedCalendarDate}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Clear Date Filter
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCalendarModal(false)}
+              className="rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:brightness-110"
+              style={{ backgroundColor: primaryColor }}
+            >
+              {selectedCalendarDate
+                ? `Show ${visibleRows.length} Application${visibleRows.length === 1 ? '' : 's'}`
+                : 'Close Calendar'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-relaxed text-slate-600">
+            <strong className="text-slate-800">Open dates</strong> use a neutral dashed border and have no active program.
+            <strong className="ml-1 text-emerald-700">Approved programs</strong> use a solid green status dot.
+          </div>
+          <ApplicationQueueCalendar
+            month={calendarMonth}
+            selectedDate={selectedCalendarDate}
+            applicationsByDate={applicationsByDate}
+            onMonthChange={setCalendarMonth}
+            onSelectDate={setSelectedCalendarDate}
+            primaryColor={primaryColor}
+          />
+        </div>
+      </Modal>
+
       {/* Reject Modal */}
       <Modal
         open={showRejectModal}
         onClose={() => !isSaving && setShowRejectModal(false)}
-        title="Reject Program Application"
-        description="The applicant will be notified by email of this decision."
+        title={canAppealRejectedRequest ? 'Reject Appeal Permanently' : 'Reject Program Application'}
+        description={canAppealRejectedRequest
+          ? 'This closes the appeal permanently and notifies the applicant by email.'
+          : 'The applicant will be notified by email of this decision.'}
         icon={ShieldAlert}
         accentColor="#e11d48"
         maxWidth="lg"
@@ -1440,7 +2010,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
               className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:opacity-60"
             >
               {isSaving ? <Loader2 size={15} className="animate-spin" /> : <XCircle size={15} />}
-              Confirm Rejection
+              {canAppealRejectedRequest ? 'Confirm Appeal Rejection' : 'Confirm Rejection'}
             </button>
           </>
         }
@@ -1448,10 +2018,11 @@ export default function EventApplicationIntakePage({ userProfile }) {
         <div className="space-y-4">
           <div className="flex items-start gap-2.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-800">
             <AlertTriangle size={16} className="mt-0.5 flex-none" />
-            <span>
-              <strong>This action cannot be undone.</strong> Once rejected, the applicant will receive
-              an email with your reason and the application will be closed.
-            </span>
+             <span>
+               <strong>This action cannot be undone.</strong> Once rejected, the applicant will receive
+               an email with your reason, this application will be permanently closed, and the applicant
+               may submit a new corrected application.
+             </span>
           </div>
           <label className={fieldLabel}>
             <span className={fieldLabelText}>
@@ -1466,9 +2037,9 @@ export default function EventApplicationIntakePage({ userProfile }) {
               placeholder="Explain why this application cannot proceed. This message will be sent to the applicant."
               autoFocus
             />
-            <span className="text-[11px] font-normal normal-case text-slate-500">
-              Be specific so the applicant understands what to fix if they resubmit.
-            </span>
+             <span className="text-[11px] font-normal normal-case text-slate-500">
+               This exact reason is sent by email. Include every issue and correction the applicant needs before submitting a new application.
+             </span>
           </label>
         </div>
       </Modal>
@@ -1536,16 +2107,17 @@ export default function EventApplicationIntakePage({ userProfile }) {
                       Next Step
                     </button>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={handleConfirmSubmitToAdmin}
-                      disabled={isSaving}
-                      className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-60"
-                      style={{ backgroundColor: primaryColor }}
-                    >
-                      {isSaving ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-                      Confirm & Submit to Admin
-                    </button>
+                     <button
+                       type="button"
+                       onClick={handleConfirmSubmitToAdmin}
+                       disabled={isSaving || notesHaveUnsavedChanges}
+                       title={notesHaveUnsavedChanges ? 'Save staff notes before submitting.' : undefined}
+                       className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-60"
+                       style={{ backgroundColor: primaryColor }}
+                     >
+                       {isSaving ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                       {notesHaveUnsavedChanges ? 'Save Notes Before Submitting' : 'Confirm & Submit to Admin'}
+                     </button>
                   )}
                 </div>
               </div>
@@ -1724,14 +2296,72 @@ export default function EventApplicationIntakePage({ userProfile }) {
 
               {submitStep === 4 && (
                 <div className="intake-fade-in space-y-4">
-                  <div className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
-                    <AlertTriangle size={16} className="mt-0.5 flex-none" />
-                    <span>
-                      <strong>Final review.</strong> Once submitted, this application is locked and cannot be rejected by staff.
-                    </span>
-                  </div>
+                   <div className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
+                     <AlertTriangle size={16} className="mt-0.5 flex-none" />
+                     <span>
+                       <strong>Final review.</strong> Once submitted, this application is locked and cannot be rejected by staff.
+                     </span>
+                   </div>
 
-                  <div className="overflow-hidden rounded-lg border border-slate-200">
+                   <div className={`overflow-hidden rounded-lg border ${
+                     notesHaveUnsavedChanges ? 'border-amber-300' : 'border-emerald-200'
+                   }`}>
+                     <div className={`flex flex-wrap items-center justify-between gap-2 border-b px-4 py-2 ${
+                       notesHaveUnsavedChanges
+                         ? 'border-amber-200 bg-amber-50'
+                         : 'border-emerald-200 bg-emerald-50'
+                     }`}>
+                       <div>
+                         <p className="text-[11px] font-bold uppercase tracking-wide text-slate-700">Staff Notes</p>
+                         <p className={`mt-0.5 text-[11px] ${
+                           notesHaveUnsavedChanges ? 'text-amber-800' : 'text-emerald-700'
+                         }`}>
+                           {notesHaveUnsavedChanges
+                             ? 'These changes are not recorded yet. Click Save Notes before submitting.'
+                             : 'The contact summary and review notes are saved in the application record.'}
+                         </p>
+                       </div>
+                       {notesHaveUnsavedChanges && (
+                         <button
+                           type="button"
+                           onClick={handleSaveNotes}
+                           disabled={isSaving}
+                           className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-800 transition hover:bg-amber-100 disabled:opacity-60"
+                         >
+                           {isSaving ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />}
+                           Save Notes
+                         </button>
+                       )}
+                     </div>
+                     <div className="grid grid-cols-1 gap-3 px-4 py-3 text-sm md:grid-cols-2">
+                       <label className={fieldLabel}>
+                         <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                           Staff Contact Summary
+                         </span>
+                         <textarea
+                           value={contactNotes}
+                           onChange={(event) => setContactNotes(event.target.value)}
+                           rows={3}
+                           className={`${inputClass} resize-y leading-relaxed`}
+                           placeholder="How you contacted the requestor and what was discussed"
+                         />
+                       </label>
+                       <label className={fieldLabel}>
+                         <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                           Staff Review Notes
+                         </span>
+                         <textarea
+                           value={staffNotes}
+                           onChange={(event) => setStaffNotes(event.target.value)}
+                           rows={3}
+                           className={`${inputClass} resize-y leading-relaxed`}
+                           placeholder="Recommended logistics, schedule, and internal remarks"
+                         />
+                       </label>
+                     </div>
+                   </div>
+
+                   <div className="overflow-hidden rounded-lg border border-slate-200">
                     <div className="border-b border-slate-200 bg-slate-50 px-4 py-2">
                       <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600">Event Details</p>
                     </div>

@@ -240,7 +240,15 @@ function buildTemplateContext(row, payload) {
 function buildEmailContent(row) {
   const payload = row?.Payload && typeof row.Payload === 'object' ? row.Payload : {};
   const notificationKey = normalizeKey(row?.Notification_Type);
-  const subject = String(row?.Subject || '').trim() || 'Event Application Update';
+  const visibilityKey = normalizeKey(payload.event_visibility || '');
+  const isPrivateApprovedProgram = notificationKey === 'adminapproved' && visibilityKey === 'private';
+  const subject = notificationKey === 'adminapproved'
+    ? (
+      isPrivateApprovedProgram
+        ? 'Private Program Approved and Published - Ready to Join'
+        : 'Program Approved and Published - Ready to Join'
+    )
+    : (String(row?.Subject || '').trim() || 'Event Application Update');
 
   const templateHtml = getTemplateHtml(row?.Template_Key);
   if (templateHtml) {
@@ -266,7 +274,9 @@ function buildEmailContent(row) {
     ];
   } else if (notificationKey === 'staffrejected') {
     lines = [
-      'Your event application was not approved by staff.',
+      payload.rejected_after_admin_decision
+        ? 'Your event appeal was rejected permanently by staff.'
+        : 'Your event application was not approved by staff.',
       '',
       `Event: ${payload.event_name || 'N/A'}`,
       `Proposed Start: ${formatDate(payload.proposed_start_at)}`,
@@ -275,7 +285,9 @@ function buildEmailContent(row) {
       `Venue: ${payload.venue_address || toJoinedAddress(payload)}`,
       `Reason: ${payload.staff_rejection_reason || 'No reason provided'}`,
       '',
-      'You may submit again with updated details.',
+      'This application is permanently closed and cannot be reopened or appealed.',
+      'Correct the issues described above, then submit a new program application. You may use the same email address.',
+      'Reply to this email first if you need the staff to clarify what must be corrected.',
     ];
   } else if (notificationKey === 'staffendorsedpendingadmin') {
     lines = [
@@ -291,10 +303,9 @@ function buildEmailContent(row) {
       String(payload.message || 'Our staff will contact you through your selected contact method.'),
     ];
   } else if (notificationKey === 'adminapproved') {
-    const visibilityKey = normalizeKey(payload.event_visibility || '');
     const isPrivate = visibilityKey === 'private';
     lines = [
-      'Your event request has been approved by admin.',
+      'Your program has been approved by admin and is now live.',
       '',
       `Event: ${payload.event_name || 'N/A'}`,
       `Event Type: ${isPrivate ? 'Private' : 'Public'}`,
@@ -306,7 +317,9 @@ function buildEmailContent(row) {
       `Partnered With: ${payload.partnered_with || 'N/A'}`,
       `Partner Social: ${payload.partner_social_media_link || 'N/A'}`,
       '',
-      String(payload.message || 'Our team will contact you with final publication details.'),
+      'The program was automatically published in Donivra after approval.',
+      'Participants can now access the program and join it.',
+      'Our team may still contact you for operational coordination before the event date.',
     ];
     if (isPrivate) {
       lines.push(`Private Event Code: ${payload.private_event_code || 'N/A'}`);
@@ -319,7 +332,9 @@ function buildEmailContent(row) {
       `Event: ${payload.event_name || 'N/A'}`,
       `Reason: ${payload.admin_decision_reason || 'No reason provided'}`,
       '',
-      String(payload.message || 'You may coordinate with staff for possible adjustments.'),
+      String(payload.message || 'Your event request was not approved at this time.'),
+      'Please wait for our staff to contact you about the next steps for an appeal.',
+      'You may also email us directly at donivraproject@gmail.com if you need assistance.',
     ];
   } else {
     lines = [

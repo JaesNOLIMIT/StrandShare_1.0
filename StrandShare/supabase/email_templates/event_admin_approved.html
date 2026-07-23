@@ -1,7 +1,7 @@
 <!--
   Template:  event_admin_approved
-  Subject:   Event Request Approved by Admin and Ready for Publishing
-             (or "Private Event Request Approved by Admin" when private)
+  Subject:   Program Approved and Published - Ready to Join
+             (or "Private Program Approved and Published - Ready to Join")
   Trigger:   AFTER UPDATE on public."Event_Requests" when Status transitions
              'pendingadminapproval' -> 'approved'.
   SQL:       076_remove_admin_fields_from_event_applications_and_use_utc8_timestamps.sql
@@ -19,7 +19,7 @@
   </head>
   <body style="margin:0;padding:0;background-color:#111111;">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
-      Your event request has been approved by admin.
+      Your program has been approved, automatically published, and is ready for participants to join.
     </div>
 
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#111111;padding:28px 12px;">
@@ -50,10 +50,11 @@
                   Request ER-{{event_request_id}} &middot; {{event_visibility}} Event
                 </p>
                 <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.25;color:#ffffff;font-weight:800;">
-                  Your event request has been approved
+                  Your program is approved and now live
                 </h1>
                 <p style="margin:0 0 16px 0;font-size:14px;line-height:1.7;color:#c9c9c9;">
-                  {{message}}
+                  Admin approved your program and it was automatically published in Donivra.
+                  Participants can now access the program and join it.
                 </p>
 
                 {{#private_event_code}}
@@ -95,7 +96,8 @@
                 </table>
 
                 <p style="margin:0 0 6px 0;font-size:12px;line-height:1.7;color:#9ca3af;">
-                  Our team will follow up using your selected contact method for any final coordination needed before the event date.
+                  Our team may still contact you using your selected contact method for operational coordination before the event date.
+                  This does not affect the program&apos;s published status.
                 </p>
               </td>
             </tr>

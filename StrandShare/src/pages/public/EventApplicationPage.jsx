@@ -83,10 +83,9 @@ const PH_VALID_ID_OPTIONS = [
 
 const GENDER_OPTIONS = ['Male', 'Female', 'Non-binary', 'Prefer not to say'];
 const FORM_STEPS = [
-  { id: 1, title: 'Applicant Details' },
+  { id: 1, title: 'Applicant Details + Email' },
   { id: 2, title: 'Program + Venue' },
-  { id: 3, title: 'Full Confirmation' },
-  { id: 4, title: 'Verify Email' },
+  { id: 3, title: 'Review + Submit' },
 ];
 const TERMS_AND_AGREEMENT_PDF_PATH = '/legal/donivra-terms-and-agreement.pdf';
 
@@ -122,6 +121,25 @@ const INITIAL_FORM = {
   socialPageName: '',
   socialPageUrl: '',
 };
+
+function ConfirmationItem({ label, value, wide = false }) {
+  const displayValue = value === null || value === undefined || value === '' ? 'N/A' : value;
+  return (
+    <div className={wide ? 'md:col-span-2' : ''}>
+      <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">{label}</p>
+      <div className="mt-0.5 break-words text-sm leading-relaxed text-slate-800">{displayValue}</div>
+    </div>
+  );
+}
+
+function ConfirmationSection({ title, children }) {
+  return (
+    <section className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <h3 className="mb-3 text-xs font-bold uppercase tracking-[0.14em] text-slate-700">{title}</h3>
+      <div className="grid grid-cols-1 gap-x-5 gap-y-3 md:grid-cols-2">{children}</div>
+    </section>
+  );
+}
 
 const PHILIPPINE_ADDRESS_TREE = philippineAddressOptions && typeof philippineAddressOptions === 'object'
   ? philippineAddressOptions
@@ -390,6 +408,13 @@ function mapEventApplicationSubmitError(rawMessage) {
     return 'One or more selected program dates were just reserved by another application. Please choose another date.';
   }
 
+  if (
+    lower.includes('active program application already exists for this email')
+    || lower.includes('trg_one_active_event_application_per_email')
+  ) {
+    return 'This email already has an active program application. You can submit another application after the current one is approved or rejected.';
+  }
+
   if (lower.includes('didit verification')) {
     return message.replace(/didit/gi, 'ID');
   }
@@ -584,6 +609,30 @@ async function insertEventApplicationIntake(payload) {
   if (fallbackInsert.error) {
     throw fallbackInsert.error;
   }
+}
+
+async function assertEventApplicationEmailAvailable(email) {
+  const otpClient = createIsolatedAuthClient();
+  const result = await otpClient.rpc('assert_event_application_email_available', {
+    p_email: String(email || '').trim().toLowerCase(),
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+}
+
+async function checkEventApplicationEmailActive(email) {
+  const checkClient = createIsolatedAuthClient();
+  const result = await checkClient.rpc('check_event_application_email_active', {
+    p_email: String(email || '').trim().toLowerCase(),
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  return Boolean(result.data);
 }
 
 function LocationPinPicker({ latitude, longitude, onChange }) {
@@ -819,6 +868,7 @@ export default function EventApplicationPage() {
   const [currentStep, setCurrentStep] = useState(1);
   const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
   const [hasConfirmedTerms, setHasConfirmedTerms] = useState(false);
+  const [isSubmitConfirmationOpen, setIsSubmitConfirmationOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -830,6 +880,7 @@ export default function EventApplicationPage() {
   const [isEmailOtpVerified, setIsEmailOtpVerified] = useState(false);
   const [verifiedEmail, setVerifiedEmail] = useState('');
   const [otpNotice, setOtpNotice] = useState({ type: '', message: '' });
+  const [emailAvailability, setEmailAvailability] = useState({ status: 'idle', message: '' });
   const [fieldErrors, setFieldErrors] = useState({});
   const fieldRefs = useRef({});
 
@@ -1041,9 +1092,59 @@ export default function EventApplicationPage() {
       && form.region.trim()
       && form.latitude.trim()
       && form.longitude.trim()
-      && isDiditVerified,
+      && isDiditVerified
+      && emailAvailability.status === 'available'
+      && isEmailOtpVerified
+      && normalizedEmail === verifiedEmail,
     );
-  }, [form, isDiditVerified, eventPlacePhotoFile]);
+  }, [
+    form,
+    isDiditVerified,
+    eventPlacePhotoFile,
+    emailAvailability.status,
+    isEmailOtpVerified,
+    normalizedEmail,
+    verifiedEmail,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timerId = null;
+
+    if (!isValidEmail(normalizedEmail)) {
+      setEmailAvailability({ status: 'idle', message: '' });
+      return undefined;
+    }
+
+    setEmailAvailability({ status: 'checking', message: 'Checking whether this email already has an active application...' });
+    timerId = window.setTimeout(async () => {
+      try {
+        const hasActiveApplication = await checkEventApplicationEmailActive(normalizedEmail);
+        if (cancelled) return;
+
+        setEmailAvailability(hasActiveApplication
+          ? {
+            status: 'blocked',
+            message: 'This email already has an active application. Wait until it is approved or rejected before applying again.',
+          }
+          : {
+            status: 'available',
+            message: 'No active application was found for this email.',
+          });
+      } catch (error) {
+        if (cancelled) return;
+        setEmailAvailability({
+          status: 'error',
+          message: error?.message || 'Unable to check this email right now. Please try again.',
+        });
+      }
+    }, 450);
+
+    return () => {
+      cancelled = true;
+      if (timerId) window.clearTimeout(timerId);
+    };
+  }, [normalizedEmail]);
 
   useEffect(() => {
     if (!verifiedEmail) return;
@@ -1062,6 +1163,15 @@ export default function EventApplicationPage() {
     const issue = (field, message) => ({ field, message });
 
     if (stepNumber === 1) {
+      if (!form.applicantEmail.trim()) return issue('applicantEmail', 'Email is required.');
+      if (!isValidEmail(form.applicantEmail)) return issue('applicantEmail', 'Please enter a valid email address.');
+      if (emailAvailability.status === 'checking') return issue('applicantEmail', 'Wait for the active-application email check to finish.');
+      if (emailAvailability.status === 'blocked') return issue('applicantEmail', emailAvailability.message);
+      if (emailAvailability.status === 'error') return issue('applicantEmail', emailAvailability.message);
+      if (emailAvailability.status !== 'available') return issue('applicantEmail', 'Check this email before continuing.');
+      if (!isEmailOtpVerified || normalizedEmail !== verifiedEmail) {
+        return issue('otpCode', 'Verify the email address so application updates are sent to the correct inbox.');
+      }
       if (!isDiditVerified) return issue('diditVerification', 'Complete and pass Didit ID verification before continuing.');
       if (!form.applicantValidIdType.trim()) return issue('applicantValidIdType', 'Valid ID type is required.');
       if (!form.applicantFirstName.trim()) return issue('applicantFirstName', 'First name is required.');
@@ -1069,8 +1179,6 @@ export default function EventApplicationPage() {
       if (!form.applicantGender.trim()) return issue('applicantGender', 'Gender is required.');
       if (!form.applicantIdDocumentNumber.trim()) return issue('applicantIdDocumentNumber', 'ID number is required. Correct it if the scan is inaccurate.');
       if (!form.applicantIdAddress.trim()) return issue('applicantIdAddress', 'Address on the ID is required. Correct it if the scan is inaccurate.');
-      if (!form.applicantEmail.trim()) return issue('applicantEmail', 'Email is required.');
-      if (!isValidEmail(form.applicantEmail)) return issue('applicantEmail', 'Please enter a valid email address.');
       if (!form.applicantContactNumber.trim()) return issue('applicantContactNumber', 'Contact number is required.');
       if (!isValidPhilippineMobile(form.applicantContactNumber)) return issue('applicantContactNumber', 'Contact number must be in +63 912 345 6789 format.');
       if (!form.preferredContactMethod.trim()) return issue('preferredContactMethod', 'Preferred contact method is required.');
@@ -1115,7 +1223,18 @@ export default function EventApplicationPage() {
     }
 
     return null;
-  }, [form, isDiditVerified, minimumProposedStartLocalValue, canSubmit, unavailableProgramDateSet, eventPlacePhotoFile]);
+  }, [
+    form,
+    isDiditVerified,
+    minimumProposedStartLocalValue,
+    canSubmit,
+    unavailableProgramDateSet,
+    eventPlacePhotoFile,
+    emailAvailability,
+    isEmailOtpVerified,
+    normalizedEmail,
+    verifiedEmail,
+  ]);
 
   const goNextStep = useCallback(() => {
     const validationIssue = getStepValidationIssue(currentStep);
@@ -1479,7 +1598,7 @@ export default function EventApplicationPage() {
 
       setIsEmailOtpVerified(true);
       setVerifiedEmail(normalizedEmail);
-      setOtpNotice({ type: 'success', message: 'Email verified successfully. You can now submit your program application.' });
+      setOtpNotice({ type: 'success', message: 'Email verified successfully. You can now continue to your application.' });
       setFieldErrors((previous) => {
         if (!previous.otpCode) return previous;
         const next = { ...previous };
@@ -1708,8 +1827,8 @@ export default function EventApplicationPage() {
     return '';
   }, [form.proposedEndAt, form.proposedStartAt, minimumProposedStartLocalValue, unavailableProgramDateSet]);
 
-  const handleSubmit = async (event) => {
-    event.preventDefault();
+  const handleSubmit = async (event, isConfirmed = false) => {
+    event?.preventDefault();
 
     if (!isSupabaseConfigured || !supabase) {
       setErrorMessage('Supabase is not configured. Please set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.');
@@ -1737,7 +1856,7 @@ export default function EventApplicationPage() {
     }
 
     if (!isEmailOtpVerified || normalizedEmail !== verifiedEmail) {
-      setCurrentStep(4);
+      setCurrentStep(1);
       markFieldError('otpCode', 'Please verify your email with the 6-digit OTP before submitting.');
       return;
     }
@@ -1749,11 +1868,21 @@ export default function EventApplicationPage() {
       return;
     }
 
+    if (!isConfirmed) {
+      setIsSubmitConfirmationOpen(true);
+      return;
+    }
+
+    setIsSubmitConfirmationOpen(false);
     setIsSubmitting(true);
     setErrorMessage('');
     setSuccessMessage('');
 
     try {
+      // Check before uploading assets. The database insert trigger performs the
+      // same check atomically to protect against simultaneous submissions.
+      await assertEventApplicationEmailAvailable(normalizedEmail);
+
       const placePhotoUpload = eventPlacePhotoFile
         ? await uploadEventAsset(eventPlacePhotoFile, 'event-place-photos')
         : { path: null, url: null };
@@ -1952,7 +2081,7 @@ export default function EventApplicationPage() {
         )}
         <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
           <div className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Application Steps</div>
-          <div className="flex gap-2 overflow-x-auto pb-1 md:grid md:grid-cols-4 md:overflow-visible">
+          <div className="flex gap-2 overflow-x-auto pb-1 md:grid md:grid-cols-3 md:overflow-visible">
             {FORM_STEPS.map((step) => (
               <div
                 key={step.id}
@@ -1965,10 +2094,121 @@ export default function EventApplicationPage() {
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-6">
+        <form onSubmit={(event) => event.preventDefault()} className="mt-6">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {currentStep === 1 && (
             <>
+              <div className="md:col-span-2 rounded-xl border border-slate-300 bg-slate-50 p-4">
+                <label className="flex flex-col gap-1">
+                  <span className="text-sm font-semibold text-slate-800">Applicant Email *</span>
+                  <input
+                    ref={setFieldRef('applicantEmail')}
+                    type="email"
+                    value={form.applicantEmail}
+                    onChange={updateField('applicantEmail')}
+                    placeholder="name@example.com"
+                    className={getFieldInputClassName('applicantEmail')}
+                    style={{ '--tw-ring-color': primaryColor }}
+                    autoComplete="email"
+                  />
+                  {fieldError('applicantEmail')}
+                </label>
+
+                {emailAvailability.message && (
+                  <p className={`mt-2 rounded-lg border px-3 py-2 text-xs ${
+                    emailAvailability.status === 'blocked' || emailAvailability.status === 'error'
+                      ? 'border-rose-200 bg-rose-50 text-rose-800'
+                      : emailAvailability.status === 'available'
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                        : 'border-sky-200 bg-sky-50 text-sky-800'
+                  }`}>
+                    {emailAvailability.status === 'checking' && <Loader2 size={13} className="mr-1.5 inline animate-spin" />}
+                    {emailAvailability.message}
+                  </p>
+                )}
+
+                {emailAvailability.status === 'available' && (
+                  <div className="mt-3 border-t border-slate-200 pt-3">
+                    <div className="flex items-start gap-2 text-xs text-slate-600">
+                      <MailCheck size={15} className="mt-0.5 flex-none text-slate-500" />
+                      <p>
+                        Email verification confirms that the address was entered correctly and can receive application updates.
+                        It does not create another contact record.
+                      </p>
+                    </div>
+
+                    {!isEmailOtpVerified && (
+                      <>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={sendEmailOtpCode}
+                            disabled={isSendingOtp || otpCooldownSeconds > 0 || !isValidEmail(normalizedEmail)}
+                            className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                            style={{ backgroundColor: primaryColor }}
+                          >
+                            {isSendingOtp ? <Loader2 size={14} className="animate-spin" /> : <MailCheck size={14} />}
+                            {isSendingOtp ? 'Sending...' : otpCooldownSeconds > 0 ? `Resend in ${otpCooldownSeconds}s` : 'Send 6-digit Code'}
+                          </button>
+                        </div>
+
+                        <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                          <div>
+                            <input
+                              ref={setFieldRef('otpCode')}
+                              value={otpCode}
+                              onChange={(event) => {
+                                setOtpCode(String(event.target.value || '').replace(/\D/g, '').slice(0, 6));
+                                setFieldErrors((previous) => {
+                                  if (!previous.otpCode) return previous;
+                                  const next = { ...previous };
+                                  delete next.otpCode;
+                                  return next;
+                                });
+                              }}
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              maxLength={6}
+                              placeholder="Enter 6-digit code"
+                              className={getFieldInputClassName('otpCode')}
+                              style={{ '--tw-ring-color': primaryColor }}
+                            />
+                            {fieldError('otpCode')}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={verifyEmailOtpCode}
+                            disabled={isVerifyingOtp || otpCode.length !== 6 || !isValidEmail(normalizedEmail)}
+                            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isVerifyingOtp ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
+                            {isVerifyingOtp ? 'Verifying...' : 'Verify Code'}
+                          </button>
+                        </div>
+                      </>
+                    )}
+
+                    {otpNotice.message && !isEmailOtpVerified && (
+                      <p className={`mt-3 rounded-lg px-3 py-2 text-xs ${
+                        otpNotice.type === 'error'
+                          ? 'border border-rose-200 bg-rose-50 text-rose-800'
+                          : otpNotice.type === 'success'
+                            ? 'border border-emerald-200 bg-emerald-50 text-emerald-800'
+                            : 'border border-slate-200 bg-white text-slate-700'
+                      }`}>
+                        {otpNotice.message}
+                      </p>
+                    )}
+
+                    {isEmailOtpVerified && normalizedEmail === verifiedEmail && (
+                      <p className="mt-3 inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+                        <ShieldCheck size={14} /> Email verified successfully. You can now continue to your application.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div
                 ref={setFieldRef('diditVerification')}
                 className={`md:col-span-2 rounded-xl border p-4 ${fieldErrors.diditVerification ? 'border-rose-500 bg-rose-50' : isDiditVerified ? 'border-emerald-300 bg-emerald-50' : 'border-slate-300 bg-slate-50'}`}
@@ -2070,12 +2310,6 @@ export default function EventApplicationPage() {
                 <span className="text-sm font-medium text-slate-700">Address on ID *</span>
                 <textarea ref={setFieldRef('applicantIdAddress')} value={form.applicantIdAddress} onChange={updateField('applicantIdAddress')} rows={2} className={getFieldInputClassName('applicantIdAddress')} style={{ '--tw-ring-color': primaryColor }} />
                 {fieldError('applicantIdAddress')}
-              </label>
-
-              <label className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-slate-700">Email *</span>
-                <input ref={setFieldRef('applicantEmail')} type="email" value={form.applicantEmail} onChange={updateField('applicantEmail')} className={getFieldInputClassName('applicantEmail')} style={{ '--tw-ring-color': primaryColor }} />
-                {fieldError('applicantEmail')}
               </label>
 
               <label className="flex flex-col gap-1">
@@ -2334,7 +2568,7 @@ export default function EventApplicationPage() {
             <div className="md:col-span-2 space-y-4">
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-700">Final Confirmation</h2>
-                <p className="mt-1 text-xs text-slate-500">Review all values before proceeding to email verification.</p>
+                <p className="mt-1 text-xs text-slate-500">Review all values before submitting your program application.</p>
                 <div className="mt-4 space-y-4">
                   <div className="rounded-lg border border-slate-200 bg-white p-3">
                     <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Applicant</p>
@@ -2433,84 +2667,6 @@ export default function EventApplicationPage() {
             </div>
           )}
 
-          {currentStep === 4 && (
-            <div className="md:col-span-2 rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-700">Verify Applicant Email</h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Verify <span className="font-semibold">{normalizedEmail || 'your email'}</span> using a 6-digit OTP before final submission.
-              </p>
-
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={sendEmailOtpCode}
-                  disabled={isSendingOtp || otpCooldownSeconds > 0 || !isValidEmail(normalizedEmail)}
-                  className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-                  style={{ backgroundColor: primaryColor }}
-                >
-                  {isSendingOtp ? <Loader2 size={14} className="animate-spin" /> : <MailCheck size={14} />}
-                  {isSendingOtp ? 'Sending...' : otpCooldownSeconds > 0 ? `Resend in ${otpCooldownSeconds}s` : 'Send 6-digit Code'}
-                </button>
-              </div>
-
-              <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-                <input
-                  ref={setFieldRef('otpCode')}
-                  value={otpCode}
-                  onChange={(event) => {
-                    setOtpCode(String(event.target.value || '').replace(/\D/g, '').slice(0, 6));
-                    setFieldErrors((previous) => {
-                      if (!previous.otpCode) return previous;
-                      const next = { ...previous };
-                      delete next.otpCode;
-                      return next;
-                    });
-                  }}
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  maxLength={6}
-                  placeholder="Enter 6-digit code"
-                  className={getFieldInputClassName('otpCode')}
-                  style={{ '--tw-ring-color': primaryColor }}
-                />
-                {fieldError('otpCode')}
-                <button
-                  type="button"
-                  onClick={verifyEmailOtpCode}
-                  disabled={isVerifyingOtp || otpCode.length !== 6 || !isValidEmail(normalizedEmail)}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isVerifyingOtp ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
-                  {isVerifyingOtp ? 'Verifying...' : 'Verify Code'}
-                </button>
-              </div>
-
-              {otpNotice.message ? (
-                <p
-                  className={`mt-3 rounded-lg px-3 py-2 text-xs ${
-                    otpNotice.type === 'error'
-                      ? 'border border-rose-200 bg-rose-50 text-rose-800'
-                      : otpNotice.type === 'success'
-                        ? 'border border-emerald-200 bg-emerald-50 text-emerald-800'
-                        : 'border border-slate-200 bg-white text-slate-700'
-                  }`}
-                >
-                  {otpNotice.message}
-                </p>
-              ) : null}
-
-              {isEmailOtpVerified && normalizedEmail === verifiedEmail ? (
-                <p className="mt-3 inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
-                  <ShieldCheck size={14} /> Email verified. Submission is now enabled.
-                </p>
-              ) : (
-                <p className="mt-3 inline-flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
-                  <ShieldCheck size={14} /> Verify email first to unlock final submit.
-                </p>
-              )}
-            </div>
-          )}
-
           </div>
 
           <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
@@ -2527,18 +2683,32 @@ export default function EventApplicationPage() {
                 </button>
               )}
               {currentStep < FORM_STEPS.length ? (
-                <button
-                  type="button"
-                  onClick={goNextStep}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white sm:w-auto"
-                  style={{ backgroundColor: primaryColor }}
-                >
+                 <button
+                   type="button"
+                   onClick={goNextStep}
+                   disabled={
+                     currentStep === 1
+                     && (
+                       emailAvailability.status !== 'available'
+                       || !isEmailOtpVerified
+                       || normalizedEmail !== verifiedEmail
+                     )
+                   }
+                   title={
+                     currentStep === 1 && (!isEmailOtpVerified || normalizedEmail !== verifiedEmail)
+                       ? 'Verify the applicant email before continuing.'
+                       : undefined
+                   }
+                   className="inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                   style={{ backgroundColor: primaryColor }}
+                 >
                   Next
                   <ChevronRight size={15} />
                 </button>
               ) : (
                 <button
-                  type="submit"
+                  type="button"
+                  onClick={() => handleSubmit(null, false)}
                   disabled={isSubmitting || !canSubmit || !isEmailOtpVerified || normalizedEmail !== verifiedEmail}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60 sm:w-auto"
                   style={{ backgroundColor: primaryColor }}
@@ -2551,6 +2721,181 @@ export default function EventApplicationPage() {
           </div>
         </form>
       </div>
+
+      {isSubmitConfirmationOpen && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !isSubmitting) {
+              setIsSubmitConfirmationOpen(false);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="submit-confirmation-title"
+            className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          >
+            <div className="flex flex-none items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+              <div className="flex items-start gap-3">
+                <div
+                  className="flex h-10 w-10 flex-none items-center justify-center rounded-xl text-white"
+                  style={{ backgroundColor: primaryColor }}
+                >
+                  <CheckCircle2 size={19} />
+                </div>
+                <div>
+                  <h2 id="submit-confirmation-title" className="text-lg font-bold text-slate-900">
+                    Confirm program application
+                  </h2>
+                  <p className="mt-0.5 text-sm text-slate-600">
+                    Verify every submitted detail before creating your application.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSubmitConfirmationOpen(false)}
+                disabled={isSubmitting}
+                className="rounded-lg border border-slate-300 p-2 text-slate-600 hover:bg-slate-100 disabled:opacity-60"
+                aria-label="Close confirmation"
+              >
+                <X size={17} />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+              <ConfirmationSection title="Applicant and verification">
+                <ConfirmationItem
+                  label="Full name"
+                  value={[form.applicantFirstName, form.applicantMiddleName, form.applicantLastName].filter(Boolean).join(' ')}
+                />
+                <ConfirmationItem label="Gender" value={form.applicantGender} />
+                <ConfirmationItem
+                  label="Government ID type"
+                  value={PH_VALID_ID_OPTIONS.find((option) => option.value === form.applicantValidIdType)?.label}
+                />
+                <ConfirmationItem label="ID verification" value={isDiditVerified ? 'Approved' : diditStatus} />
+                <ConfirmationItem label="ID number" value={form.applicantIdDocumentNumber} />
+                <ConfirmationItem label="Address on ID" value={form.applicantIdAddress} />
+                <ConfirmationItem label="Verified email" value={verifiedEmail} />
+                <ConfirmationItem label="Email verification" value={isEmailOtpVerified ? 'Verified' : 'Not verified'} />
+              </ConfirmationSection>
+
+              <ConfirmationSection title="Contact and organization">
+                <ConfirmationItem label="Contact number" value={form.applicantContactNumber} />
+                <ConfirmationItem
+                  label="Preferred contact method"
+                  value={normalizePreferredContactLabel(form.preferredContactMethod)}
+                />
+                <ConfirmationItem
+                  label="Primary contact"
+                  value={isPhoneContactMethod(form.preferredContactMethod) ? form.applicantContactNumber : form.applicantEmail}
+                />
+                <ConfirmationItem
+                  label="Secondary contact"
+                  value={isPhoneContactMethod(form.preferredContactMethod) ? form.applicantEmail : form.applicantContactNumber}
+                />
+                <ConfirmationItem label="Social media name" value={form.socialPageName || 'Not provided'} />
+                <ConfirmationItem label="Social media page link" value={form.socialPageUrl || 'Not provided'} />
+              </ConfirmationSection>
+
+              <ConfirmationSection title="Program details">
+                <ConfirmationItem label="Program name" value={form.eventName} />
+                <ConfirmationItem label="Program type" value={normalizeEventVisibility(form.eventVisibility)} />
+                <ConfirmationItem label="Expected attendees" value={form.expectedAttendees} />
+                <ConfirmationItem label="Program date" value={form.proposedDate} />
+                <ConfirmationItem label="Start" value={formatUtc8DateTimeDisplay(form.proposedStartAt)} />
+                <ConfirmationItem label="End" value={formatUtc8DateTimeDisplay(form.proposedEndAt)} />
+                <ConfirmationItem
+                  label="Program overview"
+                  value={<span className="whitespace-pre-wrap">{form.eventOverview}</span>}
+                  wide
+                />
+              </ConfirmationSection>
+
+              <ConfirmationSection title="Venue and location">
+                <ConfirmationItem label="Venue name" value={form.venueName} />
+                <ConfirmationItem label="Country" value={form.country} />
+                <ConfirmationItem label="Region" value={form.region} />
+                <ConfirmationItem label="Province" value={form.province} />
+                <ConfirmationItem label="City or municipality" value={form.city} />
+                <ConfirmationItem label="Barangay" value={form.barangay} />
+                <ConfirmationItem label="Street" value={form.street} wide />
+                <ConfirmationItem
+                  label="Complete venue address"
+                  value={[form.venueName, form.street, form.barangay, form.city, form.province, form.region, form.country].filter(Boolean).join(', ')}
+                  wide
+                />
+                <ConfirmationItem
+                  label="Pinned map coordinates"
+                  value={form.latitude && form.longitude ? `${form.latitude}, ${form.longitude}` : 'N/A'}
+                  wide
+                />
+              </ConfirmationSection>
+
+              <ConfirmationSection title="Submitted images">
+                <ConfirmationItem
+                  label="Program place photo"
+                  value={eventPlacePhotoFile?.name || 'Selected place photo'}
+                />
+                <ConfirmationItem
+                  label="Program poster photo"
+                  value={eventPosterPhotoFile?.name || 'Not provided'}
+                />
+                {eventPlacePhotoPreviewUrl && (
+                  <div>
+                    <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Place photo preview</p>
+                    <img
+                      src={eventPlacePhotoPreviewUrl}
+                      alt="Submitted program place"
+                      className="h-40 w-full rounded-lg border border-slate-200 bg-white object-contain"
+                    />
+                  </div>
+                )}
+                {eventPosterPhotoPreviewUrl && (
+                  <div>
+                    <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Poster photo preview</p>
+                    <img
+                      src={eventPosterPhotoPreviewUrl}
+                      alt="Submitted program poster"
+                      className="h-40 w-full rounded-lg border border-slate-200 bg-white object-contain"
+                    />
+                  </div>
+                )}
+              </ConfirmationSection>
+
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-900">
+                No application has been created yet. Click <strong>Confirm &amp; Submit Program Application</strong> below only after checking every detail.
+              </div>
+            </div>
+
+            <div className="flex flex-none flex-col-reverse gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setIsSubmitConfirmationOpen(false)}
+                disabled={isSubmitting}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              >
+                Go Back
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSubmit(null, true)}
+                disabled={isSubmitting}
+                className="inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                style={{ backgroundColor: primaryColor }}
+              >
+                {isSubmitting && <Loader2 size={15} className="animate-spin" />}
+                {isSubmitting ? 'Submitting...' : 'Confirm & Submit Program Application'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isDiditModalOpen && diditSession?.verificationUrl && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-2 md:p-5">
           <div className="flex h-[96vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">

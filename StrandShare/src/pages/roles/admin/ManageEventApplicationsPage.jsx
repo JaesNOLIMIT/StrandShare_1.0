@@ -28,6 +28,10 @@ import {
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { triggerSmtpNow } from '../../../lib/smtpTriggerClient';
+import ProgramScheduleCalendarModal, {
+  formatScheduleDateLabel,
+  toScheduleDateKey,
+} from '../../../components/events/ProgramScheduleCalendarModal';
 
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
@@ -365,6 +369,8 @@ export default function ManageEventRequestsPage() {
   const [privateIdUrl, setPrivateIdUrl] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState('');
+  const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
 
   const [isApproveModalOpen, setIsApproveModalOpen] = useState(false);
   const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
@@ -373,15 +379,17 @@ export default function ManageEventRequestsPage() {
   const [rejectReason, setRejectReason] = useState('');
   const [resultModalData, setResultModalData] = useState({ title: '', lines: [] });
 
-  const loadRows = useCallback(async () => {
+  const loadRows = useCallback(async ({ silent = false } = {}) => {
     if (!isSupabaseConfigured || !supabase) {
       setNotice({ kind: 'error', text: 'Supabase is not configured.' });
       setRows([]);
       return;
     }
 
-    setIsLoading(true);
-    setNotice({ kind: '', text: '' });
+    if (!silent) {
+      setIsLoading(true);
+      setNotice({ kind: '', text: '' });
+    }
 
     try {
       const requestsResult = await supabase
@@ -415,16 +423,20 @@ export default function ManageEventRequestsPage() {
       }));
 
       setRows(mergedRows);
-      if (!selectedId && mergedRows.length > 0) {
-        setSelectedId(mergedRows[0].Event_Request_ID);
-      }
+      setSelectedId((current) => (
+        mergedRows.some((row) => Number(row.Event_Request_ID) === Number(current))
+          ? current
+          : (mergedRows[0]?.Event_Request_ID || null)
+      ));
     } catch (error) {
-      setRows([]);
-      setNotice({ kind: 'error', text: error.message || 'Unable to load event requests.' });
+      if (!silent) {
+        setRows([]);
+        setNotice({ kind: 'error', text: error.message || 'Unable to load event requests.' });
+      }
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
-  }, [selectedId]);
+  }, []);
 
   const loadStaffOptions = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -456,6 +468,65 @@ export default function ManageEventRequestsPage() {
     loadStaffOptions();
   }, [loadRows, loadStaffOptions]);
 
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return undefined;
+
+    let refreshTimer = null;
+    const scheduleRealtimeRefresh = () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        loadRows({ silent: true });
+        refreshTimer = null;
+      }, 120);
+    };
+
+    const requestsChannel = supabase
+      .channel('admin-event-requests-management-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: EVENT_REQUESTS_TABLE },
+        scheduleRealtimeRefresh,
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') loadRows({ silent: true });
+      });
+
+    const applicationsChannel = supabase
+      .channel('admin-event-applications-management-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: EVENT_APPLICATIONS_TABLE },
+        scheduleRealtimeRefresh,
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') loadRows({ silent: true });
+      });
+
+    return () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      supabase.removeChannel(requestsChannel);
+      supabase.removeChannel(applicationsChannel);
+    };
+  }, [loadRows]);
+
+  useEffect(() => {
+    const syncVisiblePage = () => {
+      if (document.visibilityState === 'visible') {
+        loadRows({ silent: true });
+      }
+    };
+
+    const intervalId = window.setInterval(syncVisiblePage, 4000);
+    window.addEventListener('focus', syncVisiblePage);
+    document.addEventListener('visibilitychange', syncVisiblePage);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', syncVisiblePage);
+      document.removeEventListener('visibilitychange', syncVisiblePage);
+    };
+  }, [loadRows]);
+
   const queueRows = useMemo(() => {
     return rows.filter((row) => {
       const key = normalizeStatus(row.Status);
@@ -470,8 +541,13 @@ export default function ManageEventRequestsPage() {
 
   const visibleRows = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
-    if (!query) return queueRows;
-    return queueRows.filter((row) => {
+    const dateFilteredRows = selectedCalendarDate
+      ? queueRows.filter((row) => (
+        toScheduleDateKey(row.Start_Date) === selectedCalendarDate
+      ))
+      : queueRows;
+    if (!query) return dateFilteredRows;
+    return dateFilteredRows.filter((row) => {
       const requestId = String(row.Event_Request_ID || '').toLowerCase();
       const eventName = String(row.Event_Name || '').toLowerCase();
       const applicantName = applicantFullName(row.Application).toLowerCase();
@@ -481,7 +557,7 @@ export default function ManageEventRequestsPage() {
         || applicantName.includes(query)
         || venue.includes(query);
     });
-  }, [queueRows, searchTerm]);
+  }, [queueRows, searchTerm, selectedCalendarDate]);
 
   const statusCounts = useMemo(() => {
     return rows.reduce((acc, row) => {
@@ -506,6 +582,15 @@ export default function ManageEventRequestsPage() {
   const selectedRow = useMemo(() => (
     rows.find((row) => Number(row.Event_Request_ID || 0) === Number(selectedId || 0)) || null
   ), [rows, selectedId]);
+
+  useEffect(() => {
+    const selectedIsVisible = visibleRows.some(
+      (row) => Number(row.Event_Request_ID || 0) === Number(selectedId || 0),
+    );
+    if (!selectedIsVisible) {
+      setSelectedId(visibleRows[0]?.Event_Request_ID || null);
+    }
+  }, [selectedId, visibleRows]);
 
   useEffect(() => {
     let cancelled = false;
@@ -560,7 +645,7 @@ export default function ManageEventRequestsPage() {
         icon: XCircle,
         tone: 'border-rose-200 bg-rose-50 text-rose-700',
         title: 'Request rejected',
-        body: 'Staff can revise and resubmit this request as an appeal.',
+        body: 'The applicant was advised to wait for staff contact or email Donivra directly. Staff can revise and resubmit this request as an appeal.',
       };
     }
     return {
@@ -687,6 +772,7 @@ export default function ManageEventRequestsPage() {
           ? { ...updated, Application: row.Application || null }
           : row
       )));
+      await loadRows({ silent: true });
 
       const smtpKickResult = await triggerSmtpNow('admin_approved_event_request');
       if (!smtpKickResult.ok) {
@@ -748,6 +834,7 @@ export default function ManageEventRequestsPage() {
           ? { ...updated, Application: row.Application || null }
           : row
       )));
+      await loadRows({ silent: true });
 
       const smtpKickResult = await triggerSmtpNow('admin_rejected_event_request');
       if (!smtpKickResult.ok) {
@@ -840,8 +927,19 @@ export default function ManageEventRequestsPage() {
                 Admin Review Queue
               </h2>
               <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setIsCalendarModalOpen(true)}
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-bold transition ${
+                    selectedCalendarDate
+                      ? 'border-sky-200 bg-sky-50 text-sky-700'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Calendar size={12} />
+                  {selectedCalendarDate ? formatScheduleDateLabel(selectedCalendarDate, true) : 'Calendar'}
+                </button>
                 <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-700">{visibleRows.length}</span>
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Oldest first</span>
               </div>
             </div>
 
@@ -895,6 +993,25 @@ export default function ManageEventRequestsPage() {
                 );
               })}
             </div>
+
+            {selectedCalendarDate && (
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-sky-600">Date filter</p>
+                  <p className="truncate text-xs font-semibold text-sky-800">
+                    {formatScheduleDateLabel(selectedCalendarDate)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedCalendarDate('')}
+                  className="rounded-md p-1 text-sky-600 hover:bg-sky-100"
+                  aria-label="Clear selected date"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
           </div>
           <div className="max-h-[640px] overflow-auto">
             {isLoading && visibleRows.length === 0 ? (
@@ -934,6 +1051,10 @@ export default function ManageEventRequestsPage() {
                             <p className="truncate text-sm font-semibold text-slate-900">{row.Event_Name || 'Untitled Program'}</p>
                           </div>
                           <p className="mt-0.5 truncate text-xs text-slate-600">{applicantFullName(row.Application)}</p>
+                          <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500">
+                            <Calendar size={11} />
+                            {formatScheduleDateLabel(toScheduleDateKey(row.Start_Date), true)}
+                          </p>
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
                             <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusPillClass(row.Status)}`}>
                               {statusLabel(row.Status)}
@@ -1026,6 +1147,30 @@ export default function ManageEventRequestsPage() {
           )}
         </section>
       </div>
+
+      <ProgramScheduleCalendarModal
+        open={isCalendarModalOpen}
+        onClose={() => setIsCalendarModalOpen(false)}
+        records={rows}
+        selectedDate={selectedCalendarDate}
+        onSelectDate={setSelectedCalendarDate}
+        primaryColor={primaryColor}
+        title="Admin Program Calendar"
+        description="Review program dates and filter the admin applications queue."
+        recordNoun="application"
+        resultCount={visibleRows.length}
+        getStartDate={(row) => row.Start_Date}
+        getEndDate={(row) => row.Start_Date}
+        getStatus={(row) => row.Status}
+        statusItems={[
+          { key: 'pendingadminapproval', label: 'Pending Admin', dotClass: 'bg-amber-500', reserved: true },
+          { key: 'appealed', label: 'Appealed', dotClass: 'bg-violet-500', reserved: true },
+          { key: 'approved', label: 'Approved', dotClass: 'bg-emerald-500', reserved: true },
+          { key: 'rejected', label: 'Rejected', dotClass: 'bg-rose-500', reserved: false },
+          { key: 'cancelled', label: 'Cancelled', dotClass: 'bg-slate-400', reserved: false },
+        ]}
+        showOpenDates
+      />
 
       <PortalModal open={isApproveModalOpen}>
           <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 opacity-100 shadow-2xl">
