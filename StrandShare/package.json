@@ -34,6 +34,8 @@
   "scripts": {
     "start": "node scripts/devWithSmtp.mjs",
     "start:web": "craco start",
+    "ai:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File ai-server/setup-local-ai.ps1",
+    "ai:start": "powershell -NoProfile -ExecutionPolicy Bypass -File ai-server/start-local-ai.ps1",
     "build": "craco build",
     "test": "craco test",
     "eject": "react-scripts eject",

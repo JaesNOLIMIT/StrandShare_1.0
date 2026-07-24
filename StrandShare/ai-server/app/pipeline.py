@@ -1,19 +1,12 @@
-"""Wig AI Studio pipeline -- 2D layered output.
+"""Wig Catalog Studio pipeline -- high-quality transparent PNG output.
 
-We no longer generate a 3D mesh. Instead, from the uploaded reference photo(s)
-plus the wig specs, we produce 5 PNG layers that the editor composites on top
-of the user's webcam feed:
+The local model performs one core job: isolate the wig from its background.
+The resulting full-resolution transparent PNG is used both by inventory and
+by the browser-side photo try-on. No color tint or generative restyling is
+applied.
 
-    full_wig     -- entire wig with background removed
-    back_hair    -- back / nape hair (from the back photo when supplied,
-                    otherwise the lower portion of the front photo)
-    front_bangs  -- bangs / forehead region (upper portion of full_wig)
-    hair_mask    -- white-on-black silhouette of the hair area
-    face_mask    -- a face oval used for occlusion (so back_hair sits behind
-                    the user's face in the final composite)
-
-Models used: rembg / U2Net for background removal. Everything else is plain
-numpy + Pillow. This runs comfortably on a 4 GB GPU or even CPU.
+Model: rembg with BiRefNet General. Mannequin face/stand cleanup is a local
+post-processing step and never changes the wig's color or style.
 """
 
 from __future__ import annotations
@@ -30,7 +23,7 @@ from .config import settings
 
 log = logging.getLogger(__name__)
 
-AI_MODEL_VERSION = "rembg-layered-1.4-mannequin-color-pass"
+AI_MODEL_VERSION = "birefnet-general-wig-cutout-2.0"
 
 # Reasonable output size for the layers. Bigger = sharper but heavier to
 # stream to mobile. 1024 is a good sweet spot.
@@ -42,8 +35,8 @@ SIDE_BLEND_STRENGTH = 0.62       # contribution of side photo into full_wig
 HAIR_MASK_BLUR_RADIUS = 6
 TIGHT_CROP_PADDING = 12          # px of transparent padding kept around the wig
 ALPHA_THRESHOLD = 24             # anything below this alpha is treated as empty
-HARD_ALPHA_KEEP = 178            # final hard cutoff -- ghost pixels below this go to 0
-HARD_ALPHA_FULL = 224            # anything above becomes fully opaque
+HARD_ALPHA_KEEP = 8              # discard only near-invisible alpha noise
+HARD_ALPHA_FULL = 248            # preserve soft strand edges below this
 MANNEQUIN_LUM_MIN = 142          # pixels brighter than this in central band are candidates
 MANNEQUIN_CHROMA_MAX = 42        # AND closer to neutral than this (grey/beige plastic is low chroma)
 
@@ -76,7 +69,7 @@ class WigSpec:
 @dataclass
 class PipelineInputs:
     front_path: Path
-    side_path: Path
+    side_path: Optional[Path] = None
     top_path: Optional[Path] = None
     back_path: Optional[Path] = None
     spec: WigSpec = field(default_factory=WigSpec)
@@ -319,12 +312,11 @@ def _remove_mannequin_skin(rgba: Image.Image) -> Image.Image:
 
 
 def _hard_threshold_alpha(rgba: Image.Image) -> Image.Image:
-    """Drop ghost / semi-transparent pixels.
+    """Remove near-invisible alpha noise while keeping fine hair strands.
 
-    Anything below HARD_ALPHA_KEEP becomes fully transparent; anything above
-    HARD_ALPHA_FULL becomes fully opaque; the band between is rescaled. This
-    removes the dark halos that appear in the center of the face when rembg
-    leaves low-opacity wig pixels covering skin.
+    BiRefNet's soft alpha edge contains useful flyaway hair detail. The older
+    pipeline used a high cutoff that removed those strands, so the cleanup is
+    intentionally conservative.
     """
     arr = np.array(rgba, dtype=np.uint8)
     alpha = arr[..., 3].astype(np.float32)
@@ -479,7 +471,6 @@ def run_pipeline(inputs: PipelineInputs, work_dir: Path) -> PipelineOutputs:
     front_rgba = _remove_mannequin_face(front_rgba)
     front_rgba = _remove_mannequin_skin(front_rgba)
     front_rgba = _hard_threshold_alpha(front_rgba)
-    front_rgba = _tint_by_color_name(front_rgba, inputs.spec.hair_color)
     full_wig = _downscale_max(_tight_crop_rgba(front_rgba))
 
     # NOTE: side-photo volume injection was removed -- it composited the side
@@ -487,46 +478,11 @@ def run_pipeline(inputs: PipelineInputs, work_dir: Path) -> PipelineOutputs:
     # which showed up as a grey halo around the wig. We now keep only the
     # cleanly-extracted front wig.
 
-    log.info("[pipeline] cutting front_bangs from upper portion")
-    front_bangs = _tight_crop_rgba(
-        _crop_horizontal_band(full_wig, 0.0, BANGS_TOP_FRACTION)
-    )
-
-    log.info("[pipeline] preparing back_hair")
-    if inputs.back_path and inputs.back_path.exists():
-        back_raw = Image.open(inputs.back_path).convert("RGBA")
-        back_rgba = _remove_background(back_raw)
-        back_rgba = _remove_mannequin_face(back_rgba)
-        back_rgba = _remove_mannequin_skin(back_rgba)
-        back_rgba = _hard_threshold_alpha(back_rgba)
-        back_rgba = _tint_by_color_name(back_rgba, inputs.spec.hair_color)
-        back_hair = _downscale_max(_tight_crop_rgba(back_rgba))
-    else:
-        # Use the lower portion of the front wig WITHOUT a horizontal flip --
-        # the mirror flip looked wrong when the user turned sideways because
-        # the runtime renderer already mirrors the camera feed; flipping the
-        # source on top of that double-mirrored the layer.
-        back_hair = _tight_crop_rgba(
-            _crop_horizontal_band(full_wig, 1.0 - BACK_HAIR_FRACTION, 1.0)
-        )
-
-    log.info("[pipeline] building hair_mask + face_mask")
-    hair_mask = _alpha_to_mask_png(full_wig)
-    face_mask = _generic_face_mask()
-
-    log.info("[pipeline] writing PNGs")
+    log.info("[pipeline] writing transparent PNG")
     layer_files = {
-        "full_wig":    work_dir / "full_wig.png",
-        "back_hair":   work_dir / "back_hair.png",
-        "front_bangs": work_dir / "front_bangs.png",
-        "hair_mask":   work_dir / "hair_mask.png",
-        "face_mask":   work_dir / "face_mask.png",
+        "full_wig": work_dir / "full_wig.png",
     }
-    full_wig.save(layer_files["full_wig"],       "PNG", optimize=True)
-    back_hair.save(layer_files["back_hair"],     "PNG", optimize=True)
-    front_bangs.save(layer_files["front_bangs"], "PNG", optimize=True)
-    hair_mask.save(layer_files["hair_mask"],     "PNG", optimize=True)
-    face_mask.save(layer_files["face_mask"],     "PNG", optimize=True)
+    full_wig.save(layer_files["full_wig"], "PNG", optimize=True)
 
     return PipelineOutputs(layers=layer_files)
 

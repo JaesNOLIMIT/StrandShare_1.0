@@ -56,6 +56,9 @@ class Settings:
     filters_bucket: str
 
     rembg_model: str
+    clip_model: str
+    local_models_only: bool
+    max_upload_mb: int
 
     triposr_mc_resolution: int
     triposr_foreground_ratio: float
@@ -71,11 +74,13 @@ def load_settings() -> Settings:
         supabase_service_role_key=_required("SUPABASE_SERVICE_ROLE_KEY"),
         sources_bucket=os.environ.get("WIG_AI_SOURCES_BUCKET", "wig_ai_sources"),
         filters_bucket=os.environ.get("WIG_AI_FILTERS_BUCKET", "wig_ai_filters"),
-        # birefnet-portrait gives noticeably cleaner hair/face separation than
-        # the default u2net. First run downloads ~700 MB into the rembg cache.
-        # Override via REMBG_MODEL=u2net if you'd rather stay with the small
-        # model.
-        rembg_model=os.environ.get("REMBG_MODEL", "birefnet-portrait"),
+        # BiRefNet General keeps fine hair strands while working well for both
+        # mannequin and flat-lay product photos. It runs through ONNX locally.
+        rembg_model=os.environ.get("REMBG_MODEL", "birefnet-general"),
+        clip_model=os.environ.get("CLIP_MODEL", "openai/clip-vit-base-patch32"),
+        # Set to 1 only after the model files have been downloaded once.
+        local_models_only=_bool("LOCAL_MODELS_ONLY", False),
+        max_upload_mb=_int("MAX_UPLOAD_MB", 15),
         triposr_mc_resolution=_int("TRIPOSR_MC_RESOLUTION", 192),
         triposr_foreground_ratio=_float("TRIPOSR_FOREGROUND_RATIO", 0.85),
         triposr_render_resolution=_int("TRIPOSR_RENDER_RESOLUTION", 512),

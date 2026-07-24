@@ -11,7 +11,7 @@ import RoleDashboardShell from '../../shared/RoleDashboardShell';
 import DashboardPage from './DashboardPage';
 import QualityCheckPage from './QualityCheckPage';
 import BundlingPage from './BundlingPage';
-import WigAiStudioPage from './WigAiStudioPage';
+import WigCatalogStudioPage from './WigCatalogStudioPage';
 import GenerateReportsPage from './GenerateReportsPage';
 import SettingsPage from './SettingsPage';
 
@@ -19,7 +19,7 @@ const specialistNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'quality-check', label: 'Quality Check', icon: ScanLine },
   { id: 'bundling', label: 'Bundling', icon: Package },
-  { id: 'wig-ai-studio', label: 'Wig AI Studio', icon: Wand2 },
+  { id: 'wig-ai-studio', label: 'Wig Catalog Studio', icon: Wand2 },
   { id: 'reports', label: 'Reports', icon: FileBarChart2 },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
@@ -28,7 +28,7 @@ const specialistPageComponents = {
   dashboard: DashboardPage,
   'quality-check': QualityCheckPage,
   bundling: BundlingPage,
-  'wig-ai-studio': WigAiStudioPage,
+  'wig-ai-studio': WigCatalogStudioPage,
   reports: GenerateReportsPage,
   settings: SettingsPage,
 };

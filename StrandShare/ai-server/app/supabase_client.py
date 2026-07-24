@@ -82,11 +82,14 @@ class SupabaseGateway:
         layer_paths: dict[str, str],
         thumbnail_path: str | None,
         ai_model_version: str,
+        ai_suggestions: dict[str, Any] | None = None,
+        duplicate_matches: list[dict[str, Any]] | None = None,
+        visual_embedding: list[float] | None = None,
     ) -> None:
         """Persist generated layer paths and flip the row to pending_review.
 
-        layer_paths keys must match the LAYER_DEFS in WigAiStudioPage.jsx:
-            full_wig, back_hair, front_bangs, hair_mask, face_mask
+        Current local catalog jobs write `full_wig`. Legacy layer keys remain
+        accepted so existing mobile filter records stay compatible.
         """
         column_for = {
             "full_wig":    "Layer_Full_Wig_Path",
@@ -105,6 +108,12 @@ class SupabaseGateway:
             payload[column] = layer_paths.get(layer_key)
         if thumbnail_path is not None:
             payload["Thumbnail_Path"] = thumbnail_path
+        if ai_suggestions is not None:
+            payload["AI_Suggestions"] = ai_suggestions
+        if duplicate_matches is not None:
+            payload["Duplicate_Matches"] = duplicate_matches
+        if visual_embedding is not None:
+            payload["Visual_Embedding"] = visual_embedding
         self._client.table(WIG_AI_FILTERS_TABLE).update(payload).eq(
             "Filter_ID", filter_id
         ).execute()

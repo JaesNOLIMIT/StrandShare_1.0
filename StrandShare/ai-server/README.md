@@ -1,123 +1,136 @@
-# Wig AI Studio - AI Server
+# Wig Catalog Studio - Local AI
 
-Local Python service that converts a wig reference photo into a 3D `.glb`
-filter for AR try-on. Triggered by the Specialist's Wig AI Studio page; the
-React Native mobile app never talks to it directly -- it only reads the final
-`.glb` from Supabase Storage.
+This service runs the Specialist Wig Catalog Studio AI on the workstation at
+`127.0.0.1:8000`. It does not call a paid or hosted inference API.
 
-## Stack
+## What runs locally
 
-- **FastAPI** for the HTTP layer
-- **rembg / U2Net** for background removal
-- **TripoSR** (Stability AI, MIT licensed) for image-to-3D
-- **trimesh** for mesh export and thumbnail render
-- **Supabase service-role client** for storage I/O and row updates
-- **CUDA 11.8 + PyTorch 2.4.1** for GPU inference
+- **BiRefNet General through rembg** removes the wig background and preserves
+  fine hair edges.
+- **OpenAI CLIP ViT-B/32** suggests only high-confidence visible attributes and
+  creates a 512-value visual fingerprint.
+- The fingerprint plus the specialist's entered attributes finds similar
+  inventory items.
+- **MediaPipe Face Landmarker** runs in the browser for portrait try-on
+  placement. The portrait is never uploaded.
 
-Tuned to run on an **NVIDIA RTX 3050 Laptop (4 GB VRAM)**: fp16, attention
-chunking, 512 px input, marching-cubes resolution 192. Per-wig inference is
-roughly 30-90 s. On a beefier Hostinger GPU VPS you can raise
-`TRIPOSR_MC_RESOLUTION` and `TRIPOSR_RENDER_RESOLUTION` in `.env` for nicer
-meshes without code changes.
+The raw wig photograph is sent only from the browser to this local service.
+The service deletes its temporary copy after processing. The transparent PNG
+is staged in the `wig_ai_filters` bucket so the specialist can review it, and
+it becomes the catalog image only after final confirmation.
 
-## Local run
+## Machine profile
 
-```bash
-cd ai-server
-cp .env.example .env
-# fill in SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
-docker compose up --build
+The implementation is tuned for the development laptop:
+
+- NVIDIA GeForce RTX 3050 Laptop GPU, 4 GB VRAM
+- Python 3.10
+- CUDA-enabled PyTorch 2.4.1
+
+CLIP uses the GPU. BiRefNet uses local ONNX inference and remains usable when
+the ONNX GPU provider is unavailable.
+
+## Windows setup
+
+From the project root:
+
+```powershell
+npm run ai:setup
 ```
 
-The first build downloads CUDA + Python deps (~5 GB) and the first request
-downloads model weights (~1.5 GB) into the `models` volume. After that,
-restarts are fast.
+The setup script:
+
+1. Creates `ai-server\.venv` if needed.
+2. Installs the CUDA 11.8 PyTorch build and local image dependencies.
+3. Downloads BiRefNet and CLIP model weights once.
+
+Fill in `ai-server\.env`:
+
+```dotenv
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-server-only-key
+WIG_AI_FILTERS_BUCKET=wig_ai_filters
+REMBG_MODEL=birefnet-general
+CLIP_MODEL=openai/clip-vit-base-patch32
+LOCAL_MODELS_ONLY=0
+MAX_UPLOAD_MB=15
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+```
+
+After the model files are cached, `LOCAL_MODELS_ONLY=1` prevents accidental
+model downloads and makes offline model loading explicit.
+
+## Run
+
+The normal development command starts the web app, SMTP helper, and local AI:
+
+```powershell
+npm start
+```
+
+Run only the AI service:
+
+```powershell
+npm run ai:start
+```
 
 Verify:
 
-```bash
-curl http://127.0.0.1:8000/health
-# {"status":"ok"}
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-Windows note:
-
-- If `python` shows "Python was not found...", use `py -3` commands instead.
-- Example: `py -3 -m compileall ai-server/app`
-
-## Frontend env
-
-In your React app's `.env.local`:
-
-```
-REACT_APP_AI_SERVER_URL=http://127.0.0.1:8000
-```
-
-## Deploying to Hostinger
-
-1. Provision a GPU VPS (any tier with an RTX/A-series card with >=4 GB VRAM).
-2. Install Docker + the NVIDIA Container Toolkit.
-3. `git pull` the repo, `cd Donivra/ai-server`, populate `.env`.
-4. `docker compose up -d`.
-5. Point `REACT_APP_AI_SERVER_URL` at `https://<your-host>:8000` (put it
-   behind your existing reverse proxy / TLS).
-
-No code change between local and Hostinger -- only `.env` and
-`ALLOWED_ORIGINS`.
-
-## API
-
-### `POST /generate-filter`
-
-Request body:
+Expected response includes:
 
 ```json
 {
-  "filter_id": 12,
-  "auth_user_id": "a1b2c3d4-...",
-  "source_front_path": "a1b2c3d4-.../wig-ai-sources/draft-ab12cd/front.png",
-  "source_side_path":  "a1b2c3d4-.../wig-ai-sources/draft-ab12cd/side.png",
-  "source_top_path":   null,
-  "source_back_path":  null,
-  "version": 1
+  "status": "ok",
+  "mode": "local-only",
+  "background_model": "birefnet-general",
+  "analysis_model": "openai/clip-vit-base-patch32"
 }
 ```
 
-Response (immediate):
+## API
 
-```json
-{ "filter_id": 12, "status": "processing", "message": "Pipeline queued..." }
-```
+### `POST /analyze-wig`
+
+Multipart form fields:
+
+- `wig_photo`: the raw photo (maximum 15 MB)
+- `filter_id`: staging row ID
+- `auth_user_id`: specialist `auth.uid()`
+- `version`: filter version
+- `inventory_json`: existing inventory images, fingerprints, and attributes
+- `attributes_json`: current editable form values
+
+The endpoint returns immediately and processes in the FastAPI background task.
+The UI polls the corresponding `Wig_AI_Filters` row until it becomes
+`pending_review` or `failed`.
 
 ### `GET /status/{filter_id}`
 
-Mirrors the matching row in `Wig_AI_Filters`. Frontend can equivalently
-subscribe via Supabase Realtime; this endpoint is a fallback / debug aid.
+Returns processing state, transparent image paths, suggestions, and duplicate
+matches.
 
 ### `GET /health`
 
-Liveness probe used by `docker-compose` healthcheck.
+Reports local service and configured model names.
 
-## Project layout
+## Quality rules
 
-```
-ai-server/
-  Dockerfile
-  docker-compose.yml
-  requirements.txt
-  .env.example
-  app/
-    __init__.py
-    main.py               # FastAPI app, /generate-filter, /status, /health
-    pipeline.py           # rembg layered pipeline -> 5 PNG layers
-    supabase_client.py    # storage download/upload + Wig_AI_Filters updates
-    config.py             # env-loaded settings
-```
+- AI suggestions never overwrite a specialist-entered value.
+- Cap size is not inferred from a photograph because there is no reliable
+  physical scale.
+- Hair length is only an approximate visual suggestion and must be verified.
+- Duplicate detection is a warning. A likely match requires explicit
+  specialist confirmation but does not block a genuinely distinct item.
+- Try-on is a fast landmark-based placement of the real transparent wig, not a
+  diffusion-generated portrait. This fits 4 GB VRAM, preserves the user's face,
+  and supports manual size, position, rotation, and opacity adjustment.
 
-## Failure handling
+## Optional Docker run
 
-Any exception inside the background pipeline is caught in
-`main._run_job_safely`. The corresponding `Wig_AI_Filters` row is updated to
-`Status = 'failed'` with a truncated error message, which the Specialist UI
-surfaces as **"Please try again."** with a Retry button.
-
+Docker is not installed on the current workstation, so the PowerShell workflow
+above is the primary path. The included Dockerfile and compose file remain
+available for another CUDA-capable machine.

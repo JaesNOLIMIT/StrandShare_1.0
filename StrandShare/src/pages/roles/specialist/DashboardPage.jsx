@@ -723,7 +723,7 @@ export default function DashboardPage({ onNavigate }) {
           {[
             { id: 'quality-check', label: 'Quality Check', icon: ScanLine, accent: primaryColor, hint: `${stats.pendingQa + stats.awaitingIntake} in queue` },
             { id: 'bundling', label: 'Bundling', icon: Package, accent: primaryColor, hint: `${stats.draftBundles} drafts, ${stats.inProductionBundles} in production` },
-            { id: 'wig-ai-studio', label: 'Wig AI Studio', icon: PackagePlus, accent: tertiaryColor, hint: `${stats.availableWigs} ready` },
+            { id: 'wig-ai-studio', label: 'Wig Catalog Studio', icon: PackagePlus, accent: tertiaryColor, hint: `${stats.availableWigs} ready` },
             { id: 'reports', label: 'Reports', icon: CheckCircle2, accent: primaryColor, hint: 'Generate QA reports' },
           ].map(({ id, label, icon: Icon, accent, hint }) => (
             <button

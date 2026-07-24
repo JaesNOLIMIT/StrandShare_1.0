@@ -30,6 +30,7 @@ import {
   buildBundleWaybillQrPayload,
   deleteBundleDraft,
 } from '../../../lib/hairSubmissionWorkflow';
+import WigSpecificationPicker from './wigCatalog/WigSpecificationPicker';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
@@ -193,7 +194,7 @@ export default function BundlingPage() {
       if (specWigIds.length) {
         const wigResult = await supabase
           .from(WIGS_TABLE)
-          .select('Wig_ID, Wig_Name, Wig_Code')
+          .select('Wig_ID, Wig_Name, Wig_Code, Catalog_Family_Number, Catalog_Image_Path, Stock_Count, Low_Stock_Threshold')
           .in('Wig_ID', specWigIds);
         if (wigResult.error) throw wigResult.error;
         wigNamesById = (wigResult.data || []).reduce((acc, row) => {
@@ -213,6 +214,18 @@ export default function BundlingPage() {
         ].map((value) => String(value || '').trim()).filter(Boolean);
         return {
           ...row,
+          wigName: wig.Wig_Name || `Wig #${row.Wig_ID}`,
+          wigCode: wig.Wig_Code || '',
+          familyNumber: wig.Catalog_Family_Number ?? null,
+          catalogImagePath: wig.Catalog_Image_Path || '',
+          stockCount: Math.max(0, Number(wig.Stock_Count || 0)),
+          lowStockThreshold: Math.max(0, Number(wig.Low_Stock_Threshold ?? 2)),
+          hairLength: row.Hair_Length ?? '',
+          hairColor: row.Hair_Color || '',
+          hairTexture: row.Hair_Texture || '',
+          hairDensity: row.Hair_Density || '',
+          capSize: row.Cap_Size || '',
+          style: row.Style || '',
           label: labelParts.join(' | '),
         };
       }));
@@ -1204,26 +1217,18 @@ export default function BundlingPage() {
                   <h3 className="text-sm font-bold text-slate-800">Create a Bundle</h3>
                 </div>
                 <p className="mt-1 text-xs" style={{ color: tertiaryTextColor }}>
-                  Pick the target wig specification, then open a draft to start scanning.
+                  Find the wig style, choose its exact cap size, then open a draft to start scanning.
                 </p>
               </div>
               <div className="space-y-4 px-5 py-4">
-                <div>
-                  <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>Target Wig Specification</label>
-                  <select
-                    value={scannerSpecId}
-                    onChange={(event) => setScannerSpecId(event.target.value)}
-                    className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
-                    style={{ color: primaryTextColor }}
-                  >
-                    <option value="">Select specification</option>
-                    {wigSpecOptions.map((spec) => (
-                      <option key={spec.Wig_Specification_ID} value={spec.Wig_Specification_ID}>
-                        {spec.label || `Spec #${spec.Wig_Specification_ID}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <WigSpecificationPicker
+                  options={wigSpecOptions}
+                  value={scannerSpecId}
+                  onChange={setScannerSpecId}
+                  primaryColor={primaryColor}
+                  primaryTextColor={primaryTextColor}
+                  secondaryTextColor={secondaryTextColor}
+                />
 
                 <div>
                   <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>Bundle Notes (optional)</label>
@@ -1241,7 +1246,7 @@ export default function BundlingPage() {
                   <button
                     type="button"
                     onClick={handleOpenDraftBundle}
-                    disabled={isOpeningScannerBundle || draftCount >= 3}
+                    disabled={isOpeningScannerBundle || draftCount >= 3 || !scannerSpecId}
                     className="inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                     style={{ backgroundColor: primaryColor }}
                   >
