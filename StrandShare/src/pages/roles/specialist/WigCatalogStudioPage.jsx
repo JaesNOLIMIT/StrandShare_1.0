@@ -117,18 +117,6 @@ function StockAdjustmentModal({ state, setState, onClose, onSubmit }) {
         </div>
 
         <label className="block">
-          <span className="text-xs font-semibold text-slate-700">Low-stock alert threshold</span>
-          <input
-            type="number"
-            min="0"
-            step="1"
-            value={state.threshold}
-            onChange={(event) => setState((previous) => ({ ...previous, threshold: event.target.value, error: '' }))}
-            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm"
-          />
-        </label>
-
-        <label className="block">
           <span className="text-xs font-semibold text-slate-700">Reason</span>
           <input
             type="text"
@@ -234,7 +222,6 @@ export default function WigCatalogStudioPage({ userProfile }) {
     row: null,
     operation: 'add',
     quantity: '1',
-    threshold: '2',
     reason: '',
     saving: false,
     error: '',
@@ -317,7 +304,6 @@ export default function WigCatalogStudioPage({ userProfile }) {
       row,
       operation: 'add',
       quantity: '1',
-      threshold: String(row.lowStockThreshold ?? 2),
       reason: '',
       saving: false,
       error: '',
@@ -332,9 +318,8 @@ export default function WigCatalogStudioPage({ userProfile }) {
   const submitStockAdjustment = async () => {
     if (!supabase || !stockModal.row) return;
     const quantity = Number.parseInt(stockModal.quantity, 10);
-    const threshold = Number.parseInt(stockModal.threshold, 10);
-    if (!Number.isFinite(quantity) || quantity < 0 || !Number.isFinite(threshold) || threshold < 0) {
-      setStockModal((previous) => ({ ...previous, error: 'Enter non-negative whole numbers.' }));
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      setStockModal((previous) => ({ ...previous, error: 'Enter a non-negative whole number.' }));
       return;
     }
     const change = stockModal.operation === 'remove' ? -quantity : quantity;
@@ -345,13 +330,6 @@ export default function WigCatalogStudioPage({ userProfile }) {
 
     setStockModal((previous) => ({ ...previous, saving: true, error: '' }));
     try {
-      if (threshold !== Number(stockModal.row.lowStockThreshold)) {
-        const thresholdResult = await supabase
-          .from('Wigs')
-          .update({ Low_Stock_Threshold: threshold })
-          .eq('Wig_ID', stockModal.row.wigId);
-        if (thresholdResult.error) throw thresholdResult.error;
-      }
       if (change !== 0) {
         const stockResult = await supabase.rpc('adjust_wig_catalog_stock', {
           p_wig_id: stockModal.row.wigId,
@@ -362,7 +340,7 @@ export default function WigCatalogStudioPage({ userProfile }) {
       }
       void logAuditAction({
         action: 'wig_catalog_stock_adjusted',
-        description: `wig_id=${stockModal.row.wigId} change=${change} threshold=${threshold}`,
+        description: `wig_id=${stockModal.row.wigId} change=${change}`,
         resource: 'wig_catalog_studio',
         userProfile,
       });

@@ -2,6 +2,8 @@ import { supabase } from '../../../../lib/supabaseClient';
 
 export const FILTERS_BUCKET = 'wig_ai_filters';
 export const DUPLICATE_WARNING_THRESHOLD = 0.78;
+export const LOW_STOCK_ALERT_BELOW = 3;
+export const LOW_STOCK_THRESHOLD = LOW_STOCK_ALERT_BELOW - 1;
 
 export const COLOR_OPTIONS = [
   'Black',
@@ -25,7 +27,6 @@ export const EMPTY_WIG_FORM = Object.freeze({
   capSize: '',
   style: '',
   stockCount: '1',
-  lowStockThreshold: '2',
 });
 
 export function withAlpha(colorValue, alpha, fallback = '#7f1d1d') {
@@ -72,9 +73,8 @@ export function formatWigCodePreview(texture, capSize) {
 
 export function stockState(row) {
   const stock = Math.max(0, Number(row?.stockCount || 0));
-  const threshold = Math.max(0, Number(row?.lowStockThreshold ?? 2));
   if (stock <= 0) return { key: 'out', label: 'Out of Stock', tone: 'slate' };
-  if (stock <= threshold) return { key: 'low', label: 'Low Stock', tone: 'red' };
+  if (stock < LOW_STOCK_ALERT_BELOW) return { key: 'low', label: 'Low Stock', tone: 'red' };
   return { key: 'in', label: 'In Stock', tone: 'green' };
 }
 
@@ -112,7 +112,7 @@ export function normalizeInventory(wigs, specs, filters) {
       wigName: wig.Wig_Name || `Wig #${wigId}`,
       wigCode: wig.Wig_Code || '',
       stockCount: Math.max(0, Number(wig.Stock_Count || 0)),
-      lowStockThreshold: Math.max(0, Number(wig.Low_Stock_Threshold ?? 2)),
+      lowStockThreshold: LOW_STOCK_THRESHOLD,
       status: wig.Wig_Status,
       imagePath: catalogPath,
       imageUrl,

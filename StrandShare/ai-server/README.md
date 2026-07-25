@@ -54,7 +54,7 @@ REMBG_MODEL=birefnet-general
 CLIP_MODEL=openai/clip-vit-base-patch32
 LOCAL_MODELS_ONLY=0
 MAX_UPLOAD_MB=15
-ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,https://donivra.vercel.app
 ```
 
 After the model files are cached, `LOCAL_MODELS_ONLY=1` prevents accidental
@@ -90,6 +90,12 @@ Expected response includes:
   "analysis_model": "openai/clip-vit-base-patch32"
 }
 ```
+
+The deployed site checks this loopback service automatically. A web page
+cannot launch a Windows process, so the AI service must already be running
+(or be configured to start when the specialist signs in to Windows). If the
+page reports that Local AI is offline, start it with `npm run ai:start`; the
+page checks again automatically and also provides a **Check again** button.
 
 ## API
 

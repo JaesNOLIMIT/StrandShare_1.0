@@ -16,6 +16,7 @@ import {
 
 import {
   checkerboardStyle,
+  LOW_STOCK_ALERT_BELOW,
   stockState,
   withAlpha,
 } from './wigCatalogUtils';
@@ -62,7 +63,7 @@ export default function WigInventoryTab({
   const stats = useMemo(() => {
     const totalStock = rows.reduce((sum, row) => sum + Number(row.stockCount || 0), 0);
     const lowStock = rows.filter(
-      (row) => Number(row.stockCount || 0) <= Number(row.lowStockThreshold ?? 2),
+      (row) => stockState(row).key === 'low',
     ).length;
     const styles = new Set(rows.map((row) => String(row.style || '').trim().toLowerCase()).filter(Boolean));
     return { totalStock, lowStock, totalStyles: styles.size };
@@ -272,7 +273,7 @@ export default function WigInventoryTab({
                     </td>
                     <td className="px-4 py-3">
                       <p className="text-sm font-semibold text-slate-900">{row.stockCount}</p>
-                      <p className="text-[10px] text-slate-500">alert at ≤ {row.lowStockThreshold}</p>
+                      <p className="text-[10px] text-slate-500">Low below {LOW_STOCK_ALERT_BELOW}</p>
                     </td>
                     <td className="px-4 py-3"><StatusBadge row={row} /></td>
                     <td className="px-5 py-3">

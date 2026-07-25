@@ -33,6 +33,7 @@ import {
   DUPLICATE_WARNING_THRESHOLD,
   EMPTY_WIG_FORM,
   FILTERS_BUCKET,
+  LOW_STOCK_THRESHOLD,
   TEXTURE_OPTIONS,
   checkerboardStyle,
   codePrefix,
@@ -46,9 +47,16 @@ import {
 } from './wigCatalogUtils';
 
 const FILTERS_TABLE = 'Wig_AI_Filters';
-const AI_SERVER_BASE_URL =
-  process.env.REACT_APP_AI_SERVER_URL || 'http://127.0.0.1:8000';
+const configuredAiServerUrl = String(process.env.REACT_APP_AI_SERVER_URL || '').trim();
+const AI_SERVER_BASE_URL = (
+  configuredAiServerUrl && !configuredAiServerUrl.startsWith('/')
+    ? configuredAiServerUrl
+    : 'http://127.0.0.1:8000'
+).replace(/\/+$/, '');
+const LOCAL_AI_OFFLINE_MESSAGE =
+  'Local AI is offline. Start the Donivra Local AI service on this computer and allow Local Network Access if your browser asks. Then choose Check again. Refreshing this page does not start a local program.';
 const POLL_MS = 1800;
+const OFFLINE_RECHECK_MS = 10000;
 
 function Step({ number, label, active, done }) {
   return (
@@ -103,7 +111,13 @@ function FieldShell({ label, required, suggestion, onApplySuggestion, children, 
 const fieldClass =
   'mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-slate-600 focus:ring-2 focus:ring-slate-100';
 
-function WigDetailsForm({ form, setField, suggestions = {}, primaryColor }) {
+function WigDetailsForm({
+  form,
+  setField,
+  suggestions = {},
+  primaryColor,
+  showWigCode = false,
+}) {
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <FieldShell
@@ -121,22 +135,24 @@ function WigDetailsForm({ form, setField, suggestions = {}, primaryColor }) {
         />
       </FieldShell>
 
-      <FieldShell
-        label="Wig code"
-        required
-        hint="W + curly/straight + cap size + four digits"
-      >
-        <div
-          className="mt-1 flex min-h-[42px] items-center rounded-lg border px-3 font-mono text-sm font-semibold"
-          style={{
-            borderColor: withAlpha(primaryColor, 0.28),
-            backgroundColor: withAlpha(primaryColor, 0.045),
-            color: form.wigCode ? '#0f172a' : '#64748b',
-          }}
+      {showWigCode ? (
+        <FieldShell
+          label="Wig code"
+          required
+          hint="Generated after local AI review"
         >
-          {form.wigCode || formatWigCodePreview(form.hairTexture, form.capSize)}
-        </div>
-      </FieldShell>
+          <div
+            className="mt-1 flex min-h-[42px] items-center rounded-lg border px-3 font-mono text-sm font-semibold"
+            style={{
+              borderColor: withAlpha(primaryColor, 0.28),
+              backgroundColor: withAlpha(primaryColor, 0.045),
+              color: form.wigCode ? '#0f172a' : '#64748b',
+            }}
+          >
+            {form.wigCode || formatWigCodePreview(form.hairTexture, form.capSize)}
+          </div>
+        </FieldShell>
+      ) : null}
 
       <FieldShell
         label="Hair length"
@@ -250,16 +266,6 @@ function WigDetailsForm({ form, setField, suggestions = {}, primaryColor }) {
         />
       </FieldShell>
 
-      <FieldShell label="Low-stock alert at" required>
-        <input
-          type="number"
-          min="0"
-          step="1"
-          value={form.lowStockThreshold}
-          onChange={(event) => setField('lowStockThreshold', event.target.value)}
-          className={fieldClass}
-        />
-      </FieldShell>
     </div>
   );
 }
@@ -269,7 +275,7 @@ function AiStatusPill({ health, onRetry }) {
   return (
     <button
       type="button"
-      onClick={onRetry}
+      onClick={() => onRetry()}
       className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-semibold ${
         online
           ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
@@ -309,6 +315,7 @@ export default function AddWigTab({
   const [portraitReady, setPortraitReady] = useState(false);
   const [detailsConfirmed, setDetailsConfirmed] = useState(false);
   const [duplicateConfirmed, setDuplicateConfirmed] = useState(false);
+  const [reviewComplete, setReviewComplete] = useState(false);
   const [reservedFor, setReservedFor] = useState('');
 
   const wigPhotoUrl = useMemo(
@@ -329,19 +336,25 @@ export default function AddWigTab({
   const isProcessing = status === 'processing';
   const isFailed = status === 'failed';
 
-  const checkHealth = useCallback(async () => {
-    setHealth({ state: 'checking', details: null });
+  const checkHealth = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setHealth({ state: 'checking', details: null });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4500);
     try {
       const response = await fetch(`${AI_SERVER_BASE_URL}/health`, {
         signal: controller.signal,
+        cache: 'no-store',
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
+      if (data?.status !== 'ok' || data?.mode !== 'local-only') {
+        throw new Error('Unexpected health response');
+      }
       setHealth({ state: 'online', details: data });
+      return true;
     } catch {
       setHealth({ state: 'offline', details: null });
+      return false;
     } finally {
       clearTimeout(timeout);
     }
@@ -350,6 +363,14 @@ export default function AddWigTab({
   useEffect(() => {
     void checkHealth();
   }, [checkHealth]);
+
+  useEffect(() => {
+    if (health.state !== 'offline' || currentFilter) return undefined;
+    const timer = setInterval(() => {
+      void checkHealth({ silent: true });
+    }, OFFLINE_RECHECK_MS);
+    return () => clearInterval(timer);
+  }, [checkHealth, currentFilter, health.state]);
 
   const setField = useCallback((field, value) => {
     setForm((previous) => ({ ...previous, [field]: value }));
@@ -453,6 +474,12 @@ export default function AddWigTab({
     setNotice({ kind: '', message: '' });
     let insertedFilter = null;
     try {
+      const aiReady = await checkHealth();
+      if (!aiReady) {
+        setNotice({ kind: 'error', message: LOCAL_AI_OFFLINE_MESSAGE });
+        return;
+      }
+
       const length = String(form.hairLength).trim() ? Number(form.hairLength) : null;
       const insert = await supabase
         .from(FILTERS_TABLE)
@@ -484,7 +511,6 @@ export default function AddWigTab({
       if (insert.error) throw insert.error;
 
       insertedFilter = insert.data;
-      setCurrentFilter(insert.data);
       const payload = new FormData();
       payload.append('wig_photo', wigPhoto);
       payload.append('filter_id', String(insert.data.Filter_ID));
@@ -507,8 +533,16 @@ export default function AddWigTab({
       });
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(text || `Local AI returned HTTP ${response.status}`);
+        let responseMessage = text;
+        try {
+          const parsed = JSON.parse(text);
+          responseMessage = parsed?.detail || parsed?.message || text;
+        } catch {
+          // Keep a plain-text server response.
+        }
+        throw new Error(responseMessage || `Local AI returned HTTP ${response.status}`);
       }
+      setCurrentFilter({ ...insert.data, Status: 'processing' });
       setHealth({ state: 'online', details: health.details });
       void logAuditAction({
         action: 'wig_catalog_local_analysis_started',
@@ -525,21 +559,22 @@ export default function AddWigTab({
             Error_Message: error?.message || 'Could not reach the local AI server.',
           })
           .eq('Filter_ID', insertedFilter.Filter_ID);
-        setCurrentFilter((previous) => previous
-          ? {
-            ...previous,
-            Status: 'failed',
-            Error_Message: error?.message || 'Could not reach the local AI server.',
-          }
-          : previous);
       }
+      const isConnectionError =
+        error?.name === 'AbortError'
+        || error instanceof TypeError
+        || /failed to fetch|networkerror|load failed|router_external_target_connection_error/i.test(
+          String(error?.message || ''),
+        );
       setNotice({
         kind: 'error',
-        message: error?.message?.includes('Failed to fetch')
-          ? 'The local AI server is not running. Run npm run ai:start, then try again.'
+        message: isConnectionError
+          ? LOCAL_AI_OFFLINE_MESSAGE
           : error?.message || 'Could not start local wig analysis.',
       });
-      setHealth((previous) => ({ ...previous, state: 'offline' }));
+      if (isConnectionError) {
+        setHealth((previous) => ({ ...previous, state: 'offline' }));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -555,6 +590,7 @@ export default function AddWigTab({
     setPortraitReady(false);
     setDetailsConfirmed(false);
     setDuplicateConfirmed(false);
+    setReviewComplete(false);
     setReservedFor('');
     setNotice({ kind: '', message: '' });
     appliedSuggestionsRef.current = null;
@@ -593,22 +629,24 @@ export default function AddWigTab({
 
   const missing = requiredDetailsMissing(form);
   const stockCount = Number.parseInt(form.stockCount, 10);
-  const lowStockThreshold = Number.parseInt(form.lowStockThreshold, 10);
-  const stockValid = Number.isFinite(stockCount) && stockCount >= 0
-    && Number.isFinite(lowStockThreshold) && lowStockThreshold >= 0;
+  const stockValid = Number.isFinite(stockCount) && stockCount >= 0;
   const codeMatchesDetails = Boolean(
     codeKey
     && form.wigCode
     && form.wigCode.startsWith(codeKey),
   );
-  const canFinalize =
+  const canCompleteReview =
     isReview
     && missing.length === 0
     && stockValid
     && codeMatchesDetails
+    && (!needsDuplicateConfirmation || duplicateConfirmed);
+  const canFinalize =
+    canCompleteReview
+    && reviewComplete
+    && stockValid
     && portraitReady
     && detailsConfirmed
-    && (!needsDuplicateConfirmation || duplicateConfirmed)
     && !finalizing;
 
   const handleFinalize = async () => {
@@ -627,7 +665,7 @@ export default function AddWigTab({
         p_cap_size: form.capSize,
         p_style: form.style.trim(),
         p_stock_count: stockCount,
-        p_low_stock_threshold: lowStockThreshold,
+        p_low_stock_threshold: LOW_STOCK_THRESHOLD,
         p_fit_settings: fit,
         p_duplicate_confirmed: needsDuplicateConfirmation ? duplicateConfirmed : false,
       });
@@ -665,13 +703,35 @@ export default function AddWigTab({
           <div className="flex min-w-0 items-center gap-3 sm:gap-5">
             <Step number="1" label="Details & photo" active={!currentFilter} done={Boolean(currentFilter)} />
             <ChevronRight size={15} className="shrink-0 text-slate-300" />
-            <Step number="2" label="Local AI review" active={isProcessing || isFailed} done={isReview} />
+            <Step
+              number="2"
+              label="Local AI review"
+              active={isProcessing || isFailed || (isReview && !reviewComplete)}
+              done={isReview && reviewComplete}
+            />
             <ChevronRight size={15} className="shrink-0 text-slate-300" />
-            <Step number="3" label="Try-on & confirm" active={isReview} done={false} />
+            <Step number="3" label="Try-on & confirm" active={isReview && reviewComplete} done={false} />
           </div>
           <AiStatusPill health={health} onRetry={checkHealth} />
         </div>
       </section>
+
+      {health.state === 'offline' && !currentFilter ? (
+        <section className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-red-800 sm:flex-row sm:items-center">
+          <AlertCircle size={19} className="shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold">Start Local AI before continuing</p>
+            <p className="mt-0.5 text-xs leading-relaxed">{LOCAL_AI_OFFLINE_MESSAGE}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => checkHealth()}
+            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100"
+          >
+            <RefreshCw size={13} /> Check again
+          </button>
+        </section>
+      ) : null}
 
       {notice.message ? (
         <div
@@ -796,13 +856,19 @@ export default function AddWigTab({
                 </div>
                 <button
                   type="button"
-                  disabled={!wigPhoto || submitting}
+                  disabled={!wigPhoto || submitting || health.state !== 'online'}
                   onClick={handleAnalyze}
                   className="mt-5 inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-45"
                   style={{ backgroundColor: primaryColor || '#7f1d1d' }}
                 >
-                  {submitting ? <Loader2 size={16} className="animate-spin" /> : <BrainCircuit size={16} />}
-                  Remove background &amp; check inventory
+                  {submitting || health.state === 'checking'
+                    ? <Loader2 size={16} className="animate-spin" />
+                    : <BrainCircuit size={16} />}
+                  {health.state === 'offline'
+                    ? 'Start Local AI to continue'
+                    : health.state === 'checking'
+                      ? 'Checking Local AI...'
+                      : 'Remove background & check inventory'}
                 </button>
               </div>
             </div>
@@ -851,6 +917,8 @@ export default function AddWigTab({
 
       {isReview ? (
         <>
+          {!reviewComplete ? (
+            <>
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
@@ -896,6 +964,7 @@ export default function AddWigTab({
                 setField={setField}
                 suggestions={suggestions}
                 primaryColor={primaryColor}
+                showWigCode
               />
             </div>
           </section>
@@ -976,6 +1045,61 @@ export default function AddWigTab({
             ) : null}
           </section>
 
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Finish the Local AI review</h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  Verify every detail and the generated wig code before continuing to try-on.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReviewComplete(true)}
+                disabled={!canCompleteReview}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2.5 text-xs font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-45"
+                style={{ backgroundColor: primaryColor || '#7f1d1d' }}
+              >
+                Continue to try-on <ChevronRight size={13} />
+              </button>
+            </div>
+            {!canCompleteReview ? (
+              <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-slate-500">
+                {missing.length ? (
+                  <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-700">
+                    Complete: {missing.join(', ')}
+                  </span>
+                ) : null}
+                {!stockValid ? (
+                  <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-700">
+                    Enter a valid starting stock
+                  </span>
+                ) : null}
+                {!codeMatchesDetails ? (
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1">Generating matching wig code</span>
+                ) : null}
+                {needsDuplicateConfirmation && !duplicateConfirmed ? (
+                  <span className="rounded-full bg-amber-100 px-2.5 py-1 text-amber-800">
+                    Confirm similar-wig review
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+            </>
+          ) : (
+            <>
+          <div className="flex justify-start">
+            <button
+              type="button"
+              onClick={() => setReviewComplete(false)}
+              disabled={finalizing}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              Back to Local AI review
+            </button>
+          </div>
+
           <PhotoTryOn
             wigImageUrl={processedImageUrl}
             fit={fit}
@@ -997,10 +1121,10 @@ export default function AddWigTab({
                     Final confirmation
                   </span>
                   <span className="mt-0.5 block max-w-2xl text-[11px] leading-relaxed text-slate-500">
-                    I checked the transparent image, wig details, generated code, stock settings,
-                    duplicate review, and portrait try-on. This creates Small, Medium, and Large
-                    variants with the same four-digit family number; starting stock goes only to
-                    the selected {form.capSize || 'cap size'} variant.
+                    I checked the transparent image, wig details, generated code, stock, duplicate
+                    review, and portrait try-on. Low stock is automatic below 3. This creates Small,
+                    Medium, and Large variants with the same four-digit family number; starting
+                    stock goes only to the selected {form.capSize || 'cap size'} variant.
                   </span>
                 </span>
               </label>
@@ -1051,6 +1175,8 @@ export default function AddWigTab({
               </div>
             ) : null}
           </section>
+            </>
+          )}
 
           <div className="flex items-center justify-center gap-2 text-[10px] text-slate-500">
             <Lock size={11} />

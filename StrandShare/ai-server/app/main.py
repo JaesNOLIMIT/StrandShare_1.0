@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def allow_browser_local_network_access(request: Request, call_next):
+    """Allow an approved HTTPS frontend to call this loopback-only service."""
+    response = await call_next(request)
+    origin = request.headers.get("origin", "")
+    if origin in settings.allowed_origins:
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
 
 
 @app.on_event("startup")
