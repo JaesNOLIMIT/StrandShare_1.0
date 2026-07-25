@@ -100,8 +100,13 @@ function normalizeErrorMessage(error, fallback) {
 
   if (key.includes('already scanned in this bundle')) return 'This waybill is already scanned in the active draft.';
   if (key.includes('already assigned to bundle')) return 'This waybill is already reserved in another bundle.';
+  if (
+    key.includes('was rejected or cancelled')
+    || (key.includes('cannot be bundled while status is') && key.includes('cancelled'))
+  ) return 'This hair was rejected or cancelled and can no longer be scanned into Bundling.';
   if (key.includes('cannot be bundled while status is')) return 'This waybill cannot be bundled because its status is not eligible.';
   if (key.includes('must be in cut status')) return 'This waybill must be in Cut status before bundling.';
+  if (key.includes('must be approved in quality check')) return 'This waybill must be approved in Quality Check before it can be bundled.';
   if (key.includes('bundle already has 10 hairs')) return 'This bundle already has 10 hairs. Close it and open a new draft.';
   if (key.includes('bundle must contain 8-10 hairs')) return 'Bundle must contain 8 to 10 hairs before closing.';
   if (key.includes('no hair submission matched')) return 'No hair submission matched this waybill QR.';

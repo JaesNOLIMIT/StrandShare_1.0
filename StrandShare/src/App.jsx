@@ -38,7 +38,7 @@ function resolveDashboardByRole(roleValue) {
     return SpecialistRole;
   }
 
-  return StaffRole;
+  return null;
 }
 
 export default function App() {
@@ -291,9 +291,19 @@ export default function App() {
   const showEventApplicationPage = !isLoadingAuth && !session && isEventApplicationRoute;
   const showEventApplicationSuccessPage = !isLoadingAuth && !session && isEventApplicationSuccessRoute;
   const showLoginPage = !isLoadingAuth && !session && !isLandingRoute && !isPartnershipApplicationRoute && !isEventApplicationRoute && !isEventApplicationSuccessRoute;
-  const showDashboard = !isLoadingAuth && Boolean(session) && Boolean(activeRole);
+  const showDashboard =
+    !isLoadingAuth &&
+    Boolean(session) &&
+    Boolean(activeRole) &&
+    Boolean(ActiveDashboard);
   const showHydratingScreen =
     !isLoadingAuth && Boolean(session) && !showDashboard && isHydratingProfile;
+  const showUnsupportedRole =
+    !isLoadingAuth &&
+    Boolean(session) &&
+    Boolean(activeRole) &&
+    !ActiveDashboard &&
+    !isHydratingProfile;
 
   return (
     <ThemeProvider>
@@ -346,6 +356,20 @@ export default function App() {
         {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showHydratingScreen && (
           <div className="min-h-screen flex items-center justify-center">
             Finalizing your account access...
+          </div>
+        )}
+
+        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showUnsupportedRole && (
+          <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+              <h1 className="text-xl font-semibold text-slate-900">Management access only</h1>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                This account is not assigned to an authorized management role.
+              </p>
+              <button type="button" onClick={handleSignOut} className="mt-5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
+                Sign out
+              </button>
+            </div>
           </div>
         )}
       </div>

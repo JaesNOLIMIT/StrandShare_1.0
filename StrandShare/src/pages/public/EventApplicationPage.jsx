@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CalendarDays, Camera, CheckCircle2, ChevronLeft, ChevronRight, Loader2, MailCheck, Search, ShieldCheck, Upload, X } from 'lucide-react';
+import { ArrowLeft, CalendarDays, Camera, CheckCircle2, ChevronLeft, ChevronRight, Loader2, MailCheck, Ruler, Search, ShieldCheck, Upload, Users, X } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import maplibregl from 'maplibre-gl';
 import { isSupabaseConfigured, supabase } from '../../lib/supabaseClient';
@@ -10,6 +10,7 @@ import philippineAddressOptions from '../../data/philippineAddressOptions.json';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
+const WIG_REQUIREMENTS_TABLE = 'wig_requirements';
 const EVENT_APPLICATION_ASSETS_BUCKET = 'event_application_assets';
 const MAX_UPLOAD_FILE_SIZE_BYTES = 8 * 1024 * 1024;
 let isolatedAuthClient = null;
@@ -86,6 +87,12 @@ const FORM_STEPS = [
   { id: 1, title: 'Applicant Details + Email' },
   { id: 2, title: 'Program + Venue' },
   { id: 3, title: 'Review + Submit' },
+];
+const HAIR_TREATMENT_REQUIREMENTS = [
+  { key: 'Chemical_Treatment_Status', label: 'Chemically treated hair' },
+  { key: 'Colored_Hair_Status', label: 'Colored hair' },
+  { key: 'Bleached_Hair_Status', label: 'Bleached hair' },
+  { key: 'Rebonded_Hair_Status', label: 'Rebonded hair' },
 ];
 const TERMS_AND_AGREEMENT_PDF_PATH = '/legal/donivra-terms-and-agreement.pdf';
 
@@ -882,6 +889,9 @@ export default function EventApplicationPage() {
   const [otpNotice, setOtpNotice] = useState({ type: '', message: '' });
   const [emailAvailability, setEmailAvailability] = useState({ status: 'idle', message: '' });
   const [fieldErrors, setFieldErrors] = useState({});
+  const [wigRequirements, setWigRequirements] = useState(null);
+  const [isLoadingWigRequirements, setIsLoadingWigRequirements] = useState(true);
+  const [wigRequirementsError, setWigRequirementsError] = useState('');
   const fieldRefs = useRef({});
 
   const incomingTransition = (() => {
@@ -897,6 +907,46 @@ export default function EventApplicationPage() {
       try { sessionStorage.removeItem('Donivra:incoming-transition'); } catch { /* ignore */ }
     }
   }, [incomingTransition]);
+
+  useEffect(() => {
+    let isCurrent = true;
+
+    const loadWigRequirements = async () => {
+      if (!isSupabaseConfigured || !supabase) {
+        if (isCurrent) {
+          setWigRequirementsError('Wig requirements are temporarily unavailable.');
+          setIsLoadingWigRequirements(false);
+        }
+        return;
+      }
+
+      setIsLoadingWigRequirements(true);
+      setWigRequirementsError('');
+
+      const result = await supabase
+        .from(WIG_REQUIREMENTS_TABLE)
+        .select(
+          'Minimum_Number_Donor,Minimum_Hair_Length,Chemical_Treatment_Status,Colored_Hair_Status,Bleached_Hair_Status,Rebonded_Hair_Status,Hair_Texture_Status,Notes,Updated_At',
+        )
+        .order('Wig_Requirement_ID', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (!isCurrent) return;
+      if (result.error || !result.data) {
+        setWigRequirements(null);
+        setWigRequirementsError('Wig requirements are temporarily unavailable. Please contact Donivra before organizing the program.');
+      } else {
+        setWigRequirements(result.data);
+      }
+      setIsLoadingWigRequirements(false);
+    };
+
+    void loadWigRequirements();
+    return () => {
+      isCurrent = false;
+    };
+  }, []);
 
   const Wrapper = incomingTransition === 'apply' ? TransitionFlipEntrance : React.Fragment;
 
@@ -2079,6 +2129,101 @@ export default function EventApplicationPage() {
             {submittedId ? ` Reference ID: EA-${submittedId}` : ''}
           </div>
         )}
+
+        <section className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-start gap-3 border-b border-slate-100 bg-slate-50 px-4 py-4 md:px-5">
+            <span
+              className="inline-flex h-10 w-10 flex-none items-center justify-center rounded-xl text-white"
+              style={{ backgroundColor: primaryColor }}
+            >
+              <ShieldCheck size={19} />
+            </span>
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Wig donation requirements</h2>
+              <p className="mt-0.5 text-xs leading-5 text-slate-600">
+                Review these current hair-donation standards before completing Step 1 and planning your program.
+              </p>
+            </div>
+          </div>
+
+          {isLoadingWigRequirements ? (
+            <div className="flex items-center gap-2 px-5 py-6 text-sm text-slate-600">
+              <Loader2 size={16} className="animate-spin" />
+              Loading current requirements...
+            </div>
+          ) : wigRequirementsError ? (
+            <div className="px-5 py-4 text-sm text-amber-800">
+              {wigRequirementsError}
+            </div>
+          ) : (
+            <div className="space-y-4 p-4 md:p-5">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                    <Users size={13} />
+                    Minimum donors per wig
+                  </p>
+                  <p className="mt-1 text-lg font-bold text-slate-900">
+                    {wigRequirements.Minimum_Number_Donor ?? 'Not specified'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                    <Ruler size={13} />
+                    Minimum hair length
+                  </p>
+                  <p className="mt-1 text-lg font-bold text-slate-900">
+                    {wigRequirements.Minimum_Hair_Length === null
+                      || wigRequirements.Minimum_Hair_Length === undefined
+                      ? 'Not specified'
+                      : `${Number(wigRequirements.Minimum_Hair_Length).toLocaleString()} inches`}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Accepted treatment history</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  {HAIR_TREATMENT_REQUIREMENTS.map((requirement) => {
+                    const isAllowed = Boolean(wigRequirements[requirement.key]);
+                    return (
+                      <div
+                        key={requirement.key}
+                        className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-sm ${
+                          isAllowed
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                            : 'border-slate-200 bg-slate-50 text-slate-700'
+                        }`}
+                      >
+                        <span className="font-medium">{requirement.label}</span>
+                        <span className="inline-flex items-center gap-1 text-xs font-bold">
+                          {isAllowed ? <CheckCircle2 size={13} /> : <X size={13} />}
+                          {isAllowed ? 'Accepted' : 'Not accepted'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-xl border border-slate-200 px-4 py-3">
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Accepted hair textures</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-800">
+                    {wigRequirements.Hair_Texture_Status || 'No texture restriction specified'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-200 px-4 py-3">
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Additional guidance</p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-800">
+                    {wigRequirements.Notes || 'No additional notes provided'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
         <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
           <div className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Application Steps</div>
           <div className="flex gap-2 overflow-x-auto pb-1 md:grid md:grid-cols-3 md:overflow-visible">

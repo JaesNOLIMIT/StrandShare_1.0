@@ -2,13 +2,11 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
-  Boxes,
   CheckCircle2,
   History,
   Loader2,
   PackagePlus,
   PlusCircle,
-  Sparkles,
   X,
 } from 'lucide-react';
 
@@ -18,7 +16,7 @@ import { logAuditAction } from '../../../lib/auditLogger';
 import AddWigTab from './wigCatalog/AddWigTab';
 import BundleCompletionScanner from './wigCatalog/BundleCompletionScanner';
 import WigInventoryTab from './wigCatalog/WigInventoryTab';
-import { normalizeInventory, withAlpha } from './wigCatalog/wigCatalogUtils';
+import { normalizeInventory } from './wigCatalog/wigCatalogUtils';
 
 const TAB_INVENTORY = 'inventory';
 const TAB_ADD = 'add';
@@ -455,45 +453,47 @@ export default function WigCatalogStudioPage({ userProfile }) {
 
   return (
     <div className="space-y-5">
-      <header className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-start gap-3">
-            <span
-              className="rounded-xl p-3"
-              style={{ color: accent, backgroundColor: withAlpha(accent, 0.09) }}
-            >
-              <Sparkles size={23} />
-            </span>
-            <div>
-              <h1 className="text-xl font-semibold text-slate-950">Wig Catalog Studio</h1>
-              <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-500">
-                Add catalog-ready wigs with private local AI, review similar styles,
-                confirm the photo try-on, and monitor inventory from one workspace.
-              </p>
-            </div>
+      <header>
+        <div className="flex flex-col gap-5 pb-7 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-700 sm:text-3xl">
+              Wig Catalog Studio
+            </h1>
+            <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-600">
+              Add catalog-ready wigs with private local AI, review similar styles,
+              confirm photo try-on, and monitor inventory from one workspace.
+            </p>
           </div>
-          <div className="inline-flex self-start rounded-xl border border-slate-200 bg-slate-50 p-1">
-            <button
-              type="button"
-              onClick={() => setTab(TAB_INVENTORY)}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition ${
-                tab === TAB_INVENTORY ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Boxes size={14} /> Inventory
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab(TAB_ADD)}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition ${
-                tab === TAB_ADD ? 'text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'
-              }`}
-              style={tab === TAB_ADD ? { backgroundColor: accent } : undefined}
-            >
-              <PlusCircle size={14} /> Add New Wig
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setTab(TAB_ADD)}
+            className="inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-lg px-5 py-3 text-sm font-semibold text-white shadow-sm"
+            style={{ backgroundColor: accent }}
+          >
+            <PlusCircle size={17} /> Add New Wig
+          </button>
         </div>
+
+        <nav className="flex gap-7 border-b border-slate-300" aria-label="Wig catalog sections">
+          {[
+            [TAB_INVENTORY, 'Wig Inventory'],
+            [TAB_ADD, 'Add Wig'],
+          ].map(([tabKey, label]) => (
+            <button
+              key={tabKey}
+              type="button"
+              onClick={() => setTab(tabKey)}
+              className={`-mb-px border-b-2 px-1 pb-3 text-sm font-semibold transition ${
+                tab === tabKey
+                  ? 'text-slate-950'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+              style={tab === tabKey ? { borderBottomColor: accent } : undefined}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
       </header>
 
       {notice.message ? (
@@ -512,7 +512,7 @@ export default function WigCatalogStudioPage({ userProfile }) {
         </div>
       ) : null}
 
-      {tab === TAB_INVENTORY ? (
+      <div className={tab === TAB_INVENTORY ? 'block' : 'hidden'}>
         <WigInventoryTab
           rows={inventory}
           loading={loading}
@@ -522,13 +522,15 @@ export default function WigCatalogStudioPage({ userProfile }) {
           onOpenBundleScanner={openBundleScanner}
           primaryColor={accent}
         />
-      ) : (
+      </div>
+      <div className={tab === TAB_ADD ? 'block' : 'hidden'}>
         <AddWigTab
           authUserId={authUserId}
           userIdInt={userIdInt}
           userProfile={userProfile}
           inventory={inventory}
           primaryColor={accent}
+          onCancel={() => setTab(TAB_INVENTORY)}
           onCreated={async (created) => {
             await loadInventory();
             setTab(TAB_INVENTORY);
@@ -538,7 +540,7 @@ export default function WigCatalogStudioPage({ userProfile }) {
             });
           }}
         />
-      )}
+      </div>
 
       <StockAdjustmentModal
         state={stockModal}

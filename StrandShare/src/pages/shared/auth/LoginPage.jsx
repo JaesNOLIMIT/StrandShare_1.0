@@ -4,6 +4,7 @@ import { useTheme } from '../../../context/ThemeContext';
 import { ArrowLeft, ArrowRight, Coins, Eye, EyeOff, Heart, Lock, Mail, QrCode, ShieldCheck } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
+import { toCanonicalRole } from '../../../lib/roleUtils';
 
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
@@ -51,10 +52,8 @@ function withAlpha(colorValue, alpha) {
 
 export default function LoginPage({ authNotice, onClearNotice }) {
   const { theme, isThemeReady } = useTheme();
-  const [mode, setMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -192,6 +191,11 @@ export default function LoginPage({ authNotice, onClearNotice }) {
 
     if (!resolvedProfile?.role) {
       throw new Error('Your account does not have a role yet. Please contact an administrator.');
+    }
+
+    const managementRole = toCanonicalRole(resolvedProfile.role);
+    if (!['admin', 'staff', 'specialist', 'h_representative'].includes(managementRole)) {
+      throw new Error('This portal is restricted to authorized management accounts.');
     }
 
     const now = new Date();
@@ -485,76 +489,50 @@ export default function LoginPage({ authNotice, onClearNotice }) {
       return;
     }
 
-    if (mode === 'signup' && password !== confirmPassword) {
-      setErrorMessage('Passwords do not match.');
-      return;
-    }
-
     setIsSubmitting(true);
 
-    if (mode === 'login') {
-      const { data: loginData, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) {
+    const { data: loginData, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+      setErrorMessage(error.message);
+    } else {
+      const authUserId = loginData?.user?.id || loginData?.session?.user?.id;
+
+      if (!authUserId) {
+        await supabase.auth.signOut();
+        setErrorMessage('Could not verify your account profile. Please contact an administrator.');
+        setIsSubmitting(false);
+        return;
+      }
+
+      let enrichedProfile;
+
+      try {
+        enrichedProfile = await getValidatedProfileByAuthUserId(authUserId);
+      } catch (profileValidationError) {
+        await supabase.auth.signOut();
         localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-        setErrorMessage(error.message);
+        setErrorMessage(profileValidationError.message || 'Unable to validate account profile.');
+        setIsSubmitting(false);
+        return;
+      }
+
+      const isMfaEnabled = loginData?.user?.user_metadata?.mfaEnabled !== false;
+
+      if (!isMfaEnabled) {
+        finalizeLoginProfile(enrichedProfile, authUserId, loginData?.user?.email || email);
+        clearMfaState();
+        setSuccessMessage('Login successful. Redirecting to your dashboard...');
       } else {
-        const authUserId = loginData?.user?.id || loginData?.session?.user?.id;
-
-        if (!authUserId) {
-          await supabase.auth.signOut();
-          setErrorMessage('Could not verify your account profile. Please contact an administrator.');
-          setIsSubmitting(false);
-          return;
-        }
-
-        let enrichedProfile;
-
         try {
-          enrichedProfile = await getValidatedProfileByAuthUserId(authUserId);
-        } catch (profileValidationError) {
+          await beginMfaStep(enrichedProfile, authUserId, loginData?.user?.email || email);
+        } catch (mfaError) {
           await supabase.auth.signOut();
           localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-          setErrorMessage(profileValidationError.message || 'Unable to validate account profile.');
+          setErrorMessage(mfaError.message || 'Unable to start MFA verification.');
           setIsSubmitting(false);
           return;
         }
-
-        const isMfaEnabled = loginData?.user?.user_metadata?.mfaEnabled !== false;
-
-        if (!isMfaEnabled) {
-          finalizeLoginProfile(enrichedProfile, authUserId, loginData?.user?.email || email);
-          clearMfaState();
-          setSuccessMessage('Login successful. Redirecting to your dashboard...');
-        } else {
-          try {
-            await beginMfaStep(enrichedProfile, authUserId, loginData?.user?.email || email);
-          } catch (mfaError) {
-            await supabase.auth.signOut();
-            localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-            setErrorMessage(mfaError.message || 'Unable to start MFA verification.');
-            setIsSubmitting(false);
-            return;
-          }
-        }
-      }
-    }
-
-    if (mode === 'signup') {
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo: `${window.location.origin}/complete-account`,
-        },
-      });
-
-      if (error) {
-        setErrorMessage(error.message);
-      } else {
-        setSuccessMessage('Signup successful. Check your inbox to confirm your email, then log in.');
-        setMode('login');
-        setPassword('');
-        setConfirmPassword('');
       }
     }
 
@@ -710,12 +688,10 @@ export default function LoginPage({ authNotice, onClearNotice }) {
 
           {/* Header */}
           <h1 className="text-3xl font-bold text-gray-900 mb-2">
-            {mode === 'login' ? 'Welcome Back' : 'Create Your Account'}
+            Management Portal
           </h1>
           <p className="text-gray-600 mb-8 text-sm">
-            {mode === 'login'
-              ? 'Login to continue supporting our beautiful community and making a difference.'
-              : 'Sign up to start your Donivra journey and access your dashboard.'}
+            Sign in with your authorized organization account.
           </p>
 
           {authNotice && (
@@ -796,29 +772,6 @@ export default function LoginPage({ authNotice, onClearNotice }) {
               </div>
             </div>
 
-            {mode === 'signup' && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Confirm Password
-                </label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-3 text-gray-400" size={20} />
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={confirmPassword}
-                    onChange={(e) => {
-                      clearMessages();
-                      setConfirmPassword(e.target.value);
-                    }}
-                    placeholder="........"
-                    className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-offset-2"
-                    style={{ '--tw-ring-color': theme.primaryColor }}
-                    required
-                  />
-                </div>
-              </div>
-            )}
-
             {/* Remember Me */}
             <div className="flex items-center">
               <input
@@ -845,9 +798,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
             >
               {isSubmitting
                 ? 'Please wait...'
-                : mode === 'login'
-                  ? 'Login to Account'
-                  : 'Create Account'}
+                : 'Login to Account'}
               <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" />
             </button>
           </form>
