@@ -164,6 +164,10 @@ function normalizeFlowStatusKey(value) {
     .replace(/[_\s-]+/g, '');
 }
 
+function normalizeAttendeeType(value) {
+  return normalizeFlowStatusKey(value) === 'voluntary' ? 'Voluntary' : 'Donor';
+}
+
 function isFinalHairDetailStatus(status) {
   const key = normalizeFlowStatusKey(status);
   return key === 'approved' || key === 'rejected' || key === 'rejectedcut';
@@ -331,7 +335,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     try {
       const result = await supabase
         .from(EVENT_ATTENDEES_TABLE)
-        .select('Event_Attendee_ID, User_ID, Registration_Status, Attendance_Status, Waybill_Code, Waybill_Printed_At, Waybill_Printed_By, Notes, Created_At, Updated_At, Event_Request_ID, RSVP_Scanned_At, RSVP_Scanned_By')
+        .select('Event_Attendee_ID, User_ID, Registration_Status, Attendance_Status, Waybill_Code, Waybill_Printed_At, Waybill_Printed_By, Notes, Created_At, Updated_At, Event_Request_ID, RSVP_Scanned_At, RSVP_Scanned_By, Attendee_Type')
         .eq('Event_Request_ID', targetEventRequestId)
         .order('Event_Attendee_ID', { ascending: true });
 
@@ -665,7 +669,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         throw new Error('Selected event has no Event_Request_ID.');
       }
 
-      const scanResult = await supabase.rpc('scan_event_attendee_rsvp', {
+      const scanResult = await supabase.rpc('scan_event_attendee_rsvp_by_type', {
         p_event_request_id: eventRequestId,
         p_qr_payload: String(rawValue || ''),
       });
@@ -679,6 +683,13 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         || payload?.submission?.Status
         || '',
       ).trim();
+      const attendeeType = normalizeAttendeeType(
+        payload?.attendee_type
+        || updated?.Attendee_Type,
+      );
+      const requiresHairReview = payload?.requires_hair_review == null
+        ? attendeeType === 'Donor'
+        : Boolean(payload.requires_hair_review);
       const resolvedWaybillCode = String(
         payload?.waybill_code
         || updated?.Waybill_Code
@@ -703,25 +714,36 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         await loadAttendees(selectedEvent.Event_Request_ID);
       }
 
-      let details = Array.isArray(payload?.details) ? payload.details : [];
-      const submissionId = Number(submission?.Submission_ID || 0);
-      if (!details.length && submissionId > 0) {
-        details = await loadSubmissionDetailsById(submissionId);
+      let details = [];
+      if (requiresHairReview) {
+        details = Array.isArray(payload?.details) ? payload.details : [];
+        const submissionId = Number(submission?.Submission_ID || 0);
+        if (!details.length && submissionId > 0) {
+          details = await loadSubmissionDetailsById(submissionId);
+        }
       }
 
-      setActiveReview({
+      setActiveReview(requiresHairReview ? {
         attendee: updated || null,
         submission: submission || null,
         details,
         waybillCode: resolvedWaybillCode,
-      });
+      } : null);
       setQualityReason('');
       setDetailDraft(createDetailDraft(details?.[0] || null));
 
-      setNotice({ kind: 'success', text: `RSVP marked present for ${updated?.Full_Name || resolvedWaybillCode || 'attendee'}.` });
+      const attendeeLabel = updated?.Full_Name || resolvedWaybillCode || 'attendee';
+      setNotice({
+        kind: 'success',
+        text: requiresHairReview
+          ? `RSVP marked present for donor ${attendeeLabel}. Continue with the hair quality review.`
+          : `RSVP marked present for voluntary attendee ${attendeeLabel}. Check-in is complete.`,
+      });
       setCameraStatus({
         kind: 'success',
-        message: `RSVP success: ${updated?.Full_Name || 'Attendee'} marked Present.${submissionStatus ? ` Hair submission: ${submissionStatus}.` : ''} Review hair quality below.`,
+        message: requiresHairReview
+          ? `RSVP success: ${updated?.Full_Name || 'Donor'} marked Present.${submissionStatus ? ` Hair submission: ${submissionStatus}.` : ''} Review hair quality below.`
+          : `RSVP success: ${updated?.Full_Name || 'Voluntary attendee'} marked Present. No hair-details scan or review is required.`,
       });
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to process RSVP scan.' });
@@ -1642,7 +1664,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                     </div>
 
                     <p className="text-[11px] text-slate-500">
-                      Scanning marks attendee as <strong>Present</strong> and loads hair details below. Final decision options are <strong>Approved</strong>, <strong>Rejected</strong>, or <strong>Rejected Cut</strong>. You cannot scan the next RSVP until a final decision is submitted.
+                      Scanning marks the attendee as <strong>Present</strong>. Donors continue to Hair Quality Review; Voluntary attendees finish after this RSVP scan with no hair-details step.
                     </p>
                   </div>
                 </div>
@@ -1939,6 +1961,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                       <thead className="bg-slate-50">
                         <tr>
                           <th className="px-5 py-3 font-semibold text-slate-700">Attendee</th>
+                          <th className="px-5 py-3 font-semibold text-slate-700">Type</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Waybill</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Attendance</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">RSVP Scanned</th>
@@ -1953,6 +1976,15 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                               <p className="font-semibold text-slate-900">{attendee.Full_Name || 'N/A'}</p>
                               <p className="text-xs text-slate-600">{attendee.Email || 'No email'}</p>
                               <p className="text-xs text-slate-600">{attendee.Contact_Number || 'No contact'}</p>
+                            </td>
+                            <td className="px-5 py-3 align-top">
+                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${
+                                normalizeAttendeeType(attendee.Attendee_Type) === 'Voluntary'
+                                  ? 'border-sky-200 bg-sky-50 text-sky-700'
+                                  : 'border-violet-200 bg-violet-50 text-violet-700'
+                              }`}>
+                                {normalizeAttendeeType(attendee.Attendee_Type)}
+                              </span>
                             </td>
                             <td className="px-5 py-3 align-top font-mono text-xs text-slate-700">{attendee.Waybill_Code || 'Pending code'}</td>
                             <td className="px-5 py-3 align-top">
@@ -2058,8 +2090,8 @@ export default function AssignedEventOperationsPage({ userProfile }) {
               <div className="mt-3 space-y-2 text-slate-700">
                 <p>1. Pick an event using the left panel filters: <strong>Today</strong>, <strong>This Week</strong>, or <strong>Upcoming</strong>.</p>
                 <p>2. Click <strong>Print All Waybills</strong> to print every attendee waybill with QR before event deployment.</p>
-                <p>3. At the event, use <strong>Start Camera</strong> to scan RSVP QR or waybill and load donor hair details.</p>
-                <p>4. Save hair detail edits if needed, then submit one final decision: <strong>Approve</strong>, <strong>Reject</strong>, or <strong>Rejected Cut</strong>.</p>
+                <p>3. At the event, use <strong>Start Camera</strong> to scan the attendee RSVP QR or waybill.</p>
+                <p>4. A <strong>Voluntary</strong> attendee is finished after the RSVP scan. For a <strong>Donor</strong>, review the loaded hair details and submit one final decision: <strong>Approve</strong>, <strong>Reject</strong>, or <strong>Rejected Cut</strong>.</p>
                 <p>5. Use <strong>Refresh</strong> anytime if you want an immediate sync; live updates are already active.</p>
               </div>
             </div>
