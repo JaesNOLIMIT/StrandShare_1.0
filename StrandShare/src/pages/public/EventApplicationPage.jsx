@@ -1091,6 +1091,17 @@ export default function EventApplicationPage() {
     [unavailableProgramDates],
   );
 
+  const minimumDonorsPerWig = useMemo(() => {
+    const parsedMinimum = Number(wigRequirements?.Minimum_Number_Donor);
+    return Number.isInteger(parsedMinimum) && parsedMinimum > 0 ? parsedMinimum : null;
+  }, [wigRequirements]);
+
+  const minimumExpectedAttendees = minimumDonorsPerWig || 1;
+  const expectedAttendeeCount = Number(form.expectedAttendees);
+  const isExpectedAttendeesBelowMinimum = Boolean(form.expectedAttendees)
+    && Number.isFinite(expectedAttendeeCount)
+    && expectedAttendeeCount < minimumExpectedAttendees;
+
   const minimumProgramDateKey = useMemo(
     () => toProgramDateKey(minimumProposedStartLocalValue),
     [minimumProposedStartLocalValue],
@@ -1131,7 +1142,8 @@ export default function EventApplicationPage() {
       && form.venueName.trim()
       && form.eventOverview.trim()
       && form.expectedAttendees
-      && Number(form.expectedAttendees) > 0
+      && Number.isInteger(Number(form.expectedAttendees))
+      && Number(form.expectedAttendees) >= minimumExpectedAttendees
       && form.proposedStartAt.trim()
       && form.proposedEndAt.trim()
       && eventPlacePhotoFile
@@ -1155,6 +1167,7 @@ export default function EventApplicationPage() {
     isEmailOtpVerified,
     normalizedEmail,
     verifiedEmail,
+    minimumExpectedAttendees,
   ]);
 
   useEffect(() => {
@@ -1240,7 +1253,16 @@ export default function EventApplicationPage() {
       if (!form.eventName.trim()) return issue('eventName', 'Program name is required.');
       if (!form.venueName.trim()) return issue('venueName', 'Venue name is required.');
       if (!form.eventOverview.trim()) return issue('eventOverview', 'Program overview is required.');
-      if (!form.expectedAttendees || Number(form.expectedAttendees) <= 0) return issue('expectedAttendees', 'Expected attendees must be greater than zero.');
+      if (!form.expectedAttendees) return issue('expectedAttendees', 'Expected attendees is required.');
+      if (!Number.isInteger(Number(form.expectedAttendees)) || Number(form.expectedAttendees) <= 0) {
+        return issue('expectedAttendees', 'Expected attendees must be a whole number greater than zero.');
+      }
+      if (Number(form.expectedAttendees) < minimumExpectedAttendees) {
+        return issue(
+          'expectedAttendees',
+          `Expected attendees cannot be below the current minimum of ${minimumExpectedAttendees} donors per wig.`,
+        );
+      }
       if (!form.proposedDate.trim()) return issue('proposedDate', 'Choose an available program date.');
       if (!form.proposedStartTime.trim()) return issue('proposedStartTime', 'Start time is required.');
       if (!form.proposedEndTime.trim()) return issue('proposedEndTime', 'End time is required.');
@@ -1284,6 +1306,7 @@ export default function EventApplicationPage() {
     isEmailOtpVerified,
     normalizedEmail,
     verifiedEmail,
+    minimumExpectedAttendees,
   ]);
 
   const goNextStep = useCallback(() => {
@@ -2141,7 +2164,7 @@ export default function EventApplicationPage() {
             <div>
               <h2 className="text-base font-bold text-slate-900">Wig donation requirements</h2>
               <p className="mt-0.5 text-xs leading-5 text-slate-600">
-                Review these current hair-donation standards before completing Step 1 and planning your program.
+                Review these current hair-donation standards before completing your application and planning your program.
               </p>
             </div>
           </div>
@@ -2180,6 +2203,16 @@ export default function EventApplicationPage() {
                   </p>
                 </div>
               </div>
+
+              {minimumDonorsPerWig && (
+                <div role="note" className="flex items-start gap-3 rounded-xl border-2 border-amber-300 bg-amber-50 px-4 py-3 text-amber-950">
+                  <Users size={20} className="mt-0.5 flex-none" aria-hidden="true" />
+                  <p className="text-sm leading-6">
+                    <span className="block font-bold">Required attendance for the program application</span>
+                    In Step 2, Expected Attendees must be <strong>{minimumDonorsPerWig} or more</strong> to meet the current minimum donors-per-wig requirement. A lower number cannot be submitted.
+                  </p>
+                </div>
+              )}
 
               <div>
                 <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Accepted treatment history</p>
@@ -2547,10 +2580,37 @@ export default function EventApplicationPage() {
                 </div>
               )}
 
-              <label className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-slate-700">Expected Attendees *</span>
-                <input ref={setFieldRef('expectedAttendees')} type="number" min="1" value={form.expectedAttendees} onChange={updateField('expectedAttendees')} className={getFieldInputClassName('expectedAttendees')} style={{ '--tw-ring-color': primaryColor }} />
+              <label className="flex flex-col gap-2 rounded-xl border-2 border-amber-300 bg-amber-50 p-4 md:col-span-2">
+                <span className="flex flex-wrap items-center justify-between gap-2 text-sm font-bold text-slate-800">
+                  <span>Expected Attendees *</span>
+                  <span className="rounded-full bg-amber-200 px-2.5 py-1 text-xs font-bold text-amber-950">
+                    Minimum: {minimumExpectedAttendees}
+                  </span>
+                </span>
+                <input
+                  ref={setFieldRef('expectedAttendees')}
+                  type="number"
+                  inputMode="numeric"
+                  min={minimumExpectedAttendees}
+                  step="1"
+                  value={form.expectedAttendees}
+                  onChange={updateField('expectedAttendees')}
+                  aria-describedby="expected-attendees-requirement"
+                  aria-invalid={Boolean(fieldErrors.expectedAttendees) || isExpectedAttendeesBelowMinimum}
+                  className={getFieldInputClassName('expectedAttendees', 'bg-white')}
+                  style={{ '--tw-ring-color': primaryColor }}
+                />
                 {fieldError('expectedAttendees')}
+                {isExpectedAttendeesBelowMinimum && !fieldErrors.expectedAttendees && (
+                  <span role="alert" className="text-xs font-bold text-rose-700">
+                    Too low: enter at least {minimumExpectedAttendees} expected attendees.
+                  </span>
+                )}
+                <span id="expected-attendees-requirement" className="text-xs font-medium leading-5 text-amber-900">
+                  {minimumDonorsPerWig
+                    ? 'This value cannot be lower than the current Minimum Donors per Wig requirement shown above.'
+                    : 'Enter the expected attendance as a whole number greater than zero.'}
+                </span>
               </label>
 
               <label className="flex flex-col gap-1">
@@ -2613,17 +2673,19 @@ export default function EventApplicationPage() {
                     <span className="text-sm font-medium text-slate-700">Program Place Photo *</span>
                     <div className="flex flex-wrap gap-2">
                       <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white" style={{ backgroundColor: primaryColor }}>
-                        <Camera size={16} /> Take Photo
-                        <input type="file" accept="image/*" capture="environment" onChange={handleEventPlacePhotoFileChange} className="sr-only" />
+                        <Upload size={16} /> Upload from Device
+                        <input type="file" accept="image/*" onChange={handleEventPlacePhotoFileChange} className="sr-only" />
                       </label>
                       <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
-                        <Upload size={16} /> Upload Photo
-                        <input type="file" accept="image/*" onChange={handleEventPlacePhotoFileChange} className="sr-only" />
+                        <Camera size={16} /> Take Photo on Phone
+                        <input type="file" accept="image/*" capture="environment" onChange={handleEventPlacePhotoFileChange} className="sr-only" />
                       </label>
                     </div>
                     {eventPlacePhotoFile && <span className="text-xs text-emerald-700">Selected: {eventPlacePhotoFile.name}</span>}
                     {fieldError('eventPlacePhoto')}
-                    <span className="text-xs text-slate-500">Exactly one venue/place image is required. Choosing another image replaces the current one.</span>
+                    <span className="text-xs text-slate-500">
+                      On a laptop, upload an existing image from your files. On a phone, you can upload an image or take a new one. Exactly one venue/place image is required; choosing another replaces it.
+                    </span>
                   </div>
 
                   {eventPlacePhotoPreviewUrl && (
