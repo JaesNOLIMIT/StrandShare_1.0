@@ -41,6 +41,8 @@ const WIGS_TABLE = 'Wigs';
 const USER_DETAILS_TABLE = 'user_details';
 const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
+const CUT_HAIR_INVENTORY_TABLE = 'Cut_Hair_Inventory';
+const HAIR_AI_REVIEW_COMPARISONS_TABLE = 'Hair_AI_Review_Comparisons';
 
 const REPORT_TEMPLATES = [
   {
@@ -97,6 +99,37 @@ const REPORT_TEMPLATES = [
       { key: 'approved', label: 'Approved' },
       { key: 'rejected', label: 'Rejected' },
       { key: 'approvalRate', label: 'Approval Rate %' },
+    ],
+  },
+  {
+    id: 'cut_hair_inventory',
+    name: 'Cut Hair Inventory Report',
+    description: 'Approved cut hair by event and production lifecycle status.',
+    icon: Boxes,
+    columns: [
+      { key: 'code', label: 'Inventory Code' },
+      { key: 'submission', label: 'Submission' },
+      { key: 'drive', label: 'Event / Source' },
+      { key: 'status', label: 'Status' },
+      { key: 'bundle', label: 'Bundle' },
+      { key: 'wig', label: 'Wig' },
+      { key: 'approved', label: 'Approved At' },
+    ],
+  },
+  {
+    id: 'ai_hair_accuracy',
+    name: 'AI Hair Scan Accuracy Report',
+    description: 'AI predictions compared with final staff observations, including rejected cut hair.',
+    icon: AlertCircle,
+    columns: [
+      { key: 'code', label: 'Comparison' },
+      { key: 'submission', label: 'Submission' },
+      { key: 'drive', label: 'Event' },
+      { key: 'status', label: 'Final Decision' },
+      { key: 'accuracy', label: 'AI Accuracy' },
+      { key: 'critical', label: 'Critical Corrections' },
+      { key: 'minor', label: 'Minor Corrections' },
+      { key: 'reviewed', label: 'Reviewed At' },
     ],
   },
 ];
@@ -227,6 +260,8 @@ export default function GenerateReportsPage({ userProfile }) {
   const [bundles, setBundles] = useState([]);
   const [bundleMembers, setBundleMembers] = useState({});
   const [wigs, setWigs] = useState([]);
+  const [cutHairInventory, setCutHairInventory] = useState([]);
+  const [aiComparisons, setAiComparisons] = useState([]);
   const [donorsById, setDonorsById] = useState({});
   const [drivesById, setDrivesById] = useState({});
 
@@ -250,7 +285,7 @@ export default function GenerateReportsPage({ userProfile }) {
     setNotice({ kind: '', text: '' });
 
     try {
-      const [submissionsRes, bundlesRes, wigsRes] = await Promise.all([
+      const [submissionsRes, bundlesRes, wigsRes, inventoryRes, comparisonsRes, detailStatusesRes] = await Promise.all([
         supabase
           .from(HAIR_SUBMISSIONS_TABLE)
           .select('Submission_ID, User_ID, Event_Attendee_ID, Event_Request_ID, Status, Created_At, Updated_At, Bundle_ID')
@@ -266,15 +301,42 @@ export default function GenerateReportsPage({ userProfile }) {
           .select('Wig_ID, Wig_Code, Wig_Name, Bundle_ID, Wig_Status, Completed_At, Total_Donated_Hairs, Total_Bundles_Used, Production_Notes')
           .order('Completed_At', { ascending: false, nullsFirst: false })
           .limit(500),
+        supabase
+          .from(CUT_HAIR_INVENTORY_TABLE)
+          .select('Inventory_ID, Submission_ID, Event_Request_ID, Source_Type, Status, Bundle_ID, Wig_ID, Approved_At, Updated_At')
+          .order('Approved_At', { ascending: false })
+          .limit(3000),
+        supabase
+          .from(HAIR_AI_REVIEW_COMPARISONS_TABLE)
+          .select('Comparison_ID, Submission_ID, Event_Request_ID, Is_AI_Source, Critical_Changed_Fields, Minor_Changed_Fields, AI_Accuracy_Percent, Final_Decision, Reviewed_At, Updated_At')
+          .order('Reviewed_At', { ascending: false, nullsFirst: false })
+          .limit(3000),
+        supabase
+          .from('Hair_Submission_Details')
+          .select('Submission_Detail_ID, Submission_ID, Status, Updated_At')
+          .order('Submission_Detail_ID', { ascending: false })
+          .limit(5000),
       ]);
 
       if (submissionsRes.error) throw submissionsRes.error;
       if (bundlesRes.error) throw bundlesRes.error;
       if (wigsRes.error) throw wigsRes.error;
+      if (inventoryRes.error) throw inventoryRes.error;
+      if (comparisonsRes.error) throw comparisonsRes.error;
+      if (detailStatusesRes.error) throw detailStatusesRes.error;
 
       const submissionRowsRaw = submissionsRes.data || [];
       const bundleRows = bundlesRes.data || [];
       const wigRows = wigsRes.data || [];
+      const inventoryRows = inventoryRes.data || [];
+      const comparisonRows = comparisonsRes.data || [];
+      const qualityStatusBySubmission = new Map();
+      for (const detail of detailStatusesRes.data || []) {
+        const submissionId = Number(detail.Submission_ID || 0);
+        if (submissionId && !qualityStatusBySubmission.has(submissionId)) {
+          qualityStatusBySubmission.set(submissionId, detail.Status || 'Pending');
+        }
+      }
 
       const attendeeIds = Array.from(new Set(submissionRowsRaw.map((r) => Number(r.Event_Attendee_ID || 0)).filter(Boolean)));
       let attendeeToRequestId = {};
@@ -304,6 +366,7 @@ export default function GenerateReportsPage({ userProfile }) {
         const resolvedEventRequestId = Number(attendeeToRequestId[attendeeId] || row.Event_Request_ID || 0) || null;
         return {
           ...row,
+          _qualityStatus: qualityStatusBySubmission.get(Number(row.Submission_ID)) || null,
           _resolvedEventRequestId: resolvedEventRequestId,
           _resolvedWaybillCode: String(attendeeToWaybillCode[attendeeId] || '').trim() || '',
         };
@@ -312,6 +375,8 @@ export default function GenerateReportsPage({ userProfile }) {
       setSubmissions(submissionRows);
       setBundles(bundleRows);
       setWigs(wigRows);
+      setCutHairInventory(inventoryRows);
+      setAiComparisons(comparisonRows);
 
       const bundlesByMembers = submissionRows.reduce((acc, row) => {
         const bid = Number(row.Bundle_ID || 0);
@@ -322,7 +387,11 @@ export default function GenerateReportsPage({ userProfile }) {
       setBundleMembers(bundlesByMembers);
 
       const userIds = Array.from(new Set(submissionRows.map((r) => Number(r.User_ID || 0)).filter(Boolean)));
-      const driveIds = Array.from(new Set(submissionRows.map((r) => Number(r._resolvedEventRequestId || 0)).filter(Boolean)));
+      const driveIds = Array.from(new Set([
+        ...submissionRows.map((r) => Number(r._resolvedEventRequestId || 0)),
+        ...inventoryRows.map((r) => Number(r.Event_Request_ID || 0)),
+        ...comparisonRows.map((r) => Number(r.Event_Request_ID || 0)),
+      ].filter(Boolean)));
 
       if (userIds.length) {
         const { data, error } = await supabase
@@ -382,6 +451,8 @@ export default function GenerateReportsPage({ userProfile }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_SUBMISSIONS_TABLE }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_SUBMISSION_BUNDLES_TABLE }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: WIGS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: CUT_HAIR_INVENTORY_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_AI_REVIEW_COMPARISONS_TABLE }, scheduleRefresh)
       .subscribe();
     return () => {
       isMounted = false;
@@ -403,7 +474,7 @@ export default function GenerateReportsPage({ userProfile }) {
     if (selectedTemplateId === 'qa_decisions') {
       return submissions
         .filter((row) => {
-          if (statusFilter !== 'all' && statusKey(row.Status) !== statusFilter) return false;
+          if (statusFilter !== 'all' && statusKey(row._qualityStatus || row.Status) !== statusFilter) return false;
           if (driveFilter !== 'all' && Number(row._resolvedEventRequestId || 0) !== Number(driveFilter)) return false;
           if ((dateFrom || dateTo) && !isWithinRange(row.Updated_At || row.Created_At, dateFrom, dateTo)) return false;
           return true;
@@ -416,7 +487,7 @@ export default function GenerateReportsPage({ userProfile }) {
             code: row._resolvedWaybillCode || `#${Number(row.Submission_ID || 0)}`,
             donor: donor ? buildFullName(donor.first_name, donor.middle_name, donor.last_name, donor.suffix) : `User #${row.User_ID || 0}`,
             drive: drive?.Event_Name || (resolvedEventRequestId ? `Event #${resolvedEventRequestId}` : '-'),
-            status: row.Status || '-',
+            status: row._qualityStatus || row.Status || '-',
             created: formatDateTime(row.Created_At),
             updated: formatDateTime(row.Updated_At),
           };
@@ -464,6 +535,54 @@ export default function GenerateReportsPage({ userProfile }) {
         }));
     }
 
+    if (selectedTemplateId === 'cut_hair_inventory') {
+      return cutHairInventory
+        .filter((row) => {
+          if (statusFilter !== 'all' && statusKey(row.Status) !== statusFilter) return false;
+          if (driveFilter !== 'all' && Number(row.Event_Request_ID || 0) !== Number(driveFilter)) return false;
+          if ((dateFrom || dateTo) && !isWithinRange(row.Approved_At, dateFrom, dateTo)) return false;
+          return true;
+        })
+        .map((row) => ({
+          code: `CHI-${String(row.Inventory_ID).padStart(6, '0')}`,
+          submission: `#${row.Submission_ID}`,
+          drive: drivesById[Number(row.Event_Request_ID)]?.Event_Name
+            || (row.Source_Type === 'Non-Event' ? 'Non-event donation' : `Event #${row.Event_Request_ID || 'N/A'}`),
+          status: row.Status || 'Cut',
+          bundleId: Number(row.Bundle_ID || 0) || null,
+          wigId: Number(row.Wig_ID || 0) || null,
+          bundle: row.Bundle_ID ? `#${row.Bundle_ID}` : '-',
+          wig: row.Wig_ID ? `#${row.Wig_ID}` : '-',
+          approved: formatDateTime(row.Approved_At),
+        }));
+    }
+
+    if (selectedTemplateId === 'ai_hair_accuracy') {
+      return aiComparisons
+        .filter((row) => {
+          if (statusFilter !== 'all' && statusKey(row.Final_Decision || 'pending') !== statusFilter) return false;
+          if (driveFilter !== 'all' && Number(row.Event_Request_ID || 0) !== Number(driveFilter)) return false;
+          if ((dateFrom || dateTo) && !isWithinRange(row.Reviewed_At, dateFrom, dateTo)) return false;
+          return true;
+        })
+        .map((row) => {
+          const critical = Array.isArray(row.Critical_Changed_Fields) ? row.Critical_Changed_Fields : [];
+          const minor = Array.isArray(row.Minor_Changed_Fields) ? row.Minor_Changed_Fields : [];
+          return {
+            code: `AI-${String(row.Comparison_ID).padStart(6, '0')}`,
+            submission: `#${row.Submission_ID}`,
+            drive: drivesById[Number(row.Event_Request_ID)]?.Event_Name || `Event #${row.Event_Request_ID || 'N/A'}`,
+            status: row.Final_Decision || 'Pending',
+            accuracy: row.Is_AI_Source
+              ? (row.AI_Accuracy_Percent == null ? 'Pending' : `${row.AI_Accuracy_Percent}%`)
+              : 'Manual source',
+            critical: critical.length ? critical.join(', ') : 'None',
+            minor: minor.length ? minor.join(', ') : 'None',
+            reviewed: formatDateTime(row.Reviewed_At),
+          };
+        });
+    }
+
     if (selectedTemplateId === 'donor_throughput') {
       const grouped = new Map();
       submissions.forEach((row) => {
@@ -483,9 +602,9 @@ export default function GenerateReportsPage({ userProfile }) {
         const bucket = grouped.get(driveId);
         bucket.submitted += 1;
         if (row.User_ID) bucket.donors.add(Number(row.User_ID));
-        const sk = statusKey(row.Status);
+        const sk = statusKey(row._qualityStatus || row.Status);
         if (sk === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()) bucket.approved += 1;
-        if (sk === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase()) bucket.rejected += 1;
+        if (sk === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase() || sk === 'rejected cut') bucket.rejected += 1;
       });
       return Array.from(grouped.values())
         .sort((a, b) => b.submitted - a.submitted)
@@ -509,6 +628,8 @@ export default function GenerateReportsPage({ userProfile }) {
     submissions,
     bundles,
     wigs,
+    cutHairInventory,
+    aiComparisons,
     donorsById,
     drivesById,
     bundleMembers,
@@ -523,13 +644,15 @@ export default function GenerateReportsPage({ userProfile }) {
       const total = filteredRows.length;
       const approved = filteredRows.filter((r) => statusKey(r.status) === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()).length;
       const rejected = filteredRows.filter((r) => statusKey(r.status) === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase()).length;
+      const rejectedCut = filteredRows.filter((r) => statusKey(r.status) === 'rejected cut').length;
       const received = filteredRows.filter((r) => statusKey(r.status) === HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase()).length;
-      const decided = approved + rejected;
+      const decided = approved + rejected + rejectedCut;
       const rate = decided > 0 ? Math.round((approved / decided) * 100) : 0;
       return [
         { label: 'Total submissions', value: total },
         { label: 'Approved', value: approved },
         { label: 'Rejected', value: rejected },
+        { label: 'Rejected Cut', value: rejectedCut },
         { label: 'Approval rate', value: `${rate}%` },
         { label: 'Awaiting decision', value: received },
       ];
@@ -562,6 +685,35 @@ export default function GenerateReportsPage({ userProfile }) {
         { label: 'Hairs used', value: hairsUsed },
       ];
     }
+    if (selectedTemplateId === 'cut_hair_inventory') {
+      const completedBundleCount = new Set(
+        filteredRows
+          .filter((row) => row.status === 'Wig Created' && row.bundleId && row.wigId)
+          .map((row) => row.bundleId),
+      ).size;
+      return [
+        { label: 'Approved hair items', value: filteredRows.length },
+        { label: 'Cut / available', value: filteredRows.filter((row) => row.status === 'Cut').length },
+        { label: 'Bundling', value: filteredRows.filter((row) => row.status === 'Bundling').length },
+        { label: 'Completed wigs', value: completedBundleCount },
+        { label: 'Rejected Cut excluded', value: 'Yes' },
+      ];
+    }
+    if (selectedTemplateId === 'ai_hair_accuracy') {
+      const numericAccuracy = filteredRows
+        .map((row) => Number.parseFloat(row.accuracy))
+        .filter((value) => Number.isFinite(value));
+      const average = numericAccuracy.length
+        ? Math.round(numericAccuracy.reduce((sum, value) => sum + value, 0) / numericAccuracy.length)
+        : null;
+      return [
+        { label: 'Reviews', value: filteredRows.length },
+        { label: 'Average AI accuracy', value: average == null ? 'N/A' : `${average}%` },
+        { label: 'Critical corrections', value: filteredRows.filter((row) => row.critical !== 'None').length },
+        { label: 'Rejected Cut', value: filteredRows.filter((row) => statusKey(row.status) === 'rejected cut').length },
+        { label: 'Length tolerance', value: '6 in' },
+      ];
+    }
     const drives = filteredRows.length;
     const totalDonors = filteredRows.reduce((sum, r) => sum + Number(r.donors || 0), 0);
     const totalSubmitted = filteredRows.reduce((sum, r) => sum + Number(r.submitted || 0), 0);
@@ -584,6 +736,7 @@ export default function GenerateReportsPage({ userProfile }) {
         { name: HAIR_SUBMISSION_STATUS.RECEIVED, color: primaryColor },
         { name: HAIR_SUBMISSION_STATUS.APPROVED, color: tertiaryColor },
         { name: HAIR_SUBMISSION_STATUS.REJECTED, color: '#dc2626' },
+        { name: 'Rejected Cut', color: '#d97706' },
       ].map((b) => ({
         ...b,
         value: filteredRows.filter((r) => statusKey(r.status) === b.name.toLowerCase()).length,
@@ -612,6 +765,18 @@ export default function GenerateReportsPage({ userProfile }) {
       const palette = [primaryColor, tertiaryColor, '#b45309', '#dc2626', '#7c3aed', '#0891b2'];
       const data = Array.from(map.entries()).map(([name, value], idx) => ({ name, value, color: palette[idx % palette.length] }));
       return { type: 'pie', data };
+    }
+    if (selectedTemplateId === 'cut_hair_inventory' || selectedTemplateId === 'ai_hair_accuracy') {
+      const map = new Map();
+      filteredRows.forEach((row) => {
+        const key = row.status || 'Pending';
+        map.set(key, (map.get(key) || 0) + 1);
+      });
+      const colors = [tertiaryColor, primaryColor, '#7c3aed', '#dc2626', '#b45309'];
+      return {
+        type: 'pie',
+        data: Array.from(map.entries()).map(([name, value], index) => ({ name, value, color: colors[index % colors.length] })),
+      };
     }
     return {
       type: 'bar',
@@ -801,6 +966,7 @@ export default function GenerateReportsPage({ userProfile }) {
         { id: HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase(), label: 'Received' },
         { id: HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase(), label: 'Approved' },
         { id: HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase(), label: 'Rejected' },
+        { id: 'rejected cut', label: 'Rejected Cut' },
       ];
     }
     if (selectedTemplateId === 'bundle_production') {
@@ -809,6 +975,23 @@ export default function GenerateReportsPage({ userProfile }) {
         { id: HAIR_BUNDLE_STATUS.DRAFT.toLowerCase(), label: 'Draft' },
         { id: HAIR_BUNDLE_STATUS.IN_PRODUCTION.toLowerCase(), label: 'In Production' },
         { id: HAIR_BUNDLE_STATUS.WIG_COMPLETED.toLowerCase(), label: 'Wig Created' },
+      ];
+    }
+    if (selectedTemplateId === 'cut_hair_inventory') {
+      return [
+        { id: 'all', label: 'All statuses' },
+        { id: 'cut', label: 'Cut' },
+        { id: 'bundling', label: 'Bundling' },
+        { id: 'wig created', label: 'Wig Created' },
+      ];
+    }
+    if (selectedTemplateId === 'ai_hair_accuracy') {
+      return [
+        { id: 'all', label: 'All decisions' },
+        { id: 'approved', label: 'Approved' },
+        { id: 'rejected', label: 'Rejected' },
+        { id: 'rejected cut', label: 'Rejected Cut' },
+        { id: 'pending', label: 'Pending' },
       ];
     }
     return [

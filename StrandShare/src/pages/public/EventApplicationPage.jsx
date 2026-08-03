@@ -13,6 +13,8 @@ const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
 const WIG_REQUIREMENTS_TABLE = 'wig_requirements';
 const EVENT_APPLICATION_ASSETS_BUCKET = 'event_application_assets';
 const MAX_UPLOAD_FILE_SIZE_BYTES = 8 * 1024 * 1024;
+const PROGRAM_DATE_AVAILABILITY_CHANNEL = 'program-date-availability';
+const PROGRAM_DATE_REFRESH_INTERVAL_MS = 4000;
 let isolatedAuthClient = null;
 
 const DEFAULT_COUNTRY = 'PHILIPPINES';
@@ -84,9 +86,9 @@ const PH_VALID_ID_OPTIONS = [
 
 const GENDER_OPTIONS = ['Male', 'Female', 'Non-binary', 'Prefer not to say'];
 const FORM_STEPS = [
-  { id: 1, title: 'Applicant Details + Email' },
-  { id: 2, title: 'Program + Venue' },
-  { id: 3, title: 'Review + Submit' },
+  { id: 1, title: 'Applicant', description: 'Details & email' },
+  { id: 2, title: 'Program', description: 'Schedule & venue' },
+  { id: 3, title: 'Review', description: 'Confirm & submit' },
 ];
 const HAIR_TREATMENT_REQUIREMENTS = [
   { key: 'Chemical_Treatment_Status', label: 'Chemically treated hair' },
@@ -193,8 +195,10 @@ function toSqlTimestampOrNull(value) {
 const UTC8_OFFSET_MINUTES = 8 * 60;
 
 function toUtc8ShiftedDate(date = new Date()) {
-  const utcMilliseconds = date.getTime() + (date.getTimezoneOffset() * 60 * 1000);
-  return new Date(utcMilliseconds + (UTC8_OFFSET_MINUTES * 60 * 1000));
+  // Shift the absolute instant by UTC+8, then read it through UTC getters as a
+  // Manila wall-clock value. Applying the browser timezone offset here would
+  // incorrectly expose yesterday's UTC date on devices already set to UTC+8.
+  return new Date(date.getTime() + (UTC8_OFFSET_MINUTES * 60 * 1000));
 }
 
 function getMinimumProposedStartLocalValue() {
@@ -209,6 +213,16 @@ function combineProgramDateAndTime(date, time) {
   const dateValue = String(date || '').trim();
   const timeValue = String(time || '').trim();
   return dateValue && timeValue ? `${dateValue}T${timeValue}` : '';
+}
+
+function addMinutesToTime(time, minutesToAdd = 1) {
+  const match = String(time || '').match(/^(\d{2}):(\d{2})$/);
+  if (!match) return '';
+  const totalMinutes = (Number(match[1]) * 60) + Number(match[2]) + minutesToAdd;
+  if (totalMinutes < 0 || totalMinutes >= 24 * 60) return '';
+  const hours = String(Math.floor(totalMinutes / 60)).padStart(2, '0');
+  const minutes = String(totalMinutes % 60).padStart(2, '0');
+  return `${hours}:${minutes}`;
 }
 
 function formatProgramDateLabel(value) {
@@ -316,7 +330,7 @@ function ProgramDateCalendar({ value, minimumDateKey, blockedDates, onChange, bu
                     onChange(dateKey);
                     setIsOpen(false);
                   }}
-                  title={isReserved ? 'Reserved—available only if staff rejects the existing application' : isTooEarly ? 'The date must be at least 7 days from today' : formatProgramDateLabel(dateKey)}
+                  title={isReserved ? 'Reserved—available only if staff rejects the existing application' : isTooEarly ? 'The date must be at least 7 calendar days in advance (UTC+8)' : formatProgramDateLabel(dateKey)}
                   className={`aspect-square rounded-lg text-sm font-medium transition ${isSelected ? 'text-white shadow-sm' : isReserved ? 'cursor-not-allowed bg-rose-50 text-rose-400 line-through' : isTooEarly ? 'cursor-not-allowed text-slate-300' : 'text-slate-700 hover:bg-slate-100'}`}
                   style={isSelected ? { backgroundColor: primaryColor } : undefined}
                 >
@@ -328,7 +342,7 @@ function ProgramDateCalendar({ value, minimumDateKey, blockedDates, onChange, bu
 
           <div className="mt-3 flex flex-wrap gap-3 border-t border-slate-100 pt-2 text-[11px] text-slate-500">
             <span><span className="mr-1 inline-block h-2.5 w-2.5 rounded-sm bg-rose-100" />Reserved</span>
-            <span><span className="mr-1 inline-block h-2.5 w-2.5 rounded-sm bg-slate-200" />Inside 7-day notice</span>
+            <span><span className="mr-1 inline-block h-2.5 w-2.5 rounded-sm bg-slate-200" />Inside 7-day notice (UTC+8)</span>
           </div>
         </div>
       )}
@@ -893,6 +907,7 @@ export default function EventApplicationPage() {
   const [isLoadingWigRequirements, setIsLoadingWigRequirements] = useState(true);
   const [wigRequirementsError, setWigRequirementsError] = useState('');
   const fieldRefs = useRef({});
+  const programDateAvailabilityChannelRef = useRef(null);
 
   const incomingTransition = (() => {
     try {
@@ -1080,7 +1095,9 @@ export default function EventApplicationPage() {
     Array.isArray(selectedCity?.barangays) ? selectedCity.barangays : []
   ), [selectedCity]);
 
-  const minimumProposedStartLocalValue = useMemo(() => getMinimumProposedStartLocalValue(), []);
+  const [minimumProposedStartLocalValue, setMinimumProposedStartLocalValue] = useState(
+    () => getMinimumProposedStartLocalValue(),
+  );
   const normalizedEmail = useMemo(() => String(form.applicantEmail || '').trim().toLowerCase(), [form.applicantEmail]);
   const isDiditVerified = useMemo(
     () => String(diditStatus || '').toLowerCase() === 'approved' && Boolean(diditSession?.sessionId),
@@ -1106,6 +1123,27 @@ export default function EventApplicationPage() {
     () => toProgramDateKey(minimumProposedStartLocalValue),
     [minimumProposedStartLocalValue],
   );
+  const minimumProgramDateLabel = useMemo(
+    () => formatProgramDateLabel(minimumProgramDateKey),
+    [minimumProgramDateKey],
+  );
+  const minimumProgramEndTime = useMemo(
+    () => addMinutesToTime(form.proposedStartTime),
+    [form.proposedStartTime],
+  );
+
+  useEffect(() => {
+    const refreshMinimumProgramDate = () => {
+      const nextMinimum = getMinimumProposedStartLocalValue();
+      setMinimumProposedStartLocalValue((previous) => (
+        previous === nextMinimum ? previous : nextMinimum
+      ));
+    };
+
+    refreshMinimumProgramDate();
+    const intervalId = window.setInterval(refreshMinimumProgramDate, 60 * 1000);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   const preferredContactMethodLabel = useMemo(
     () => normalizePreferredContactLabel(form.preferredContactMethod),
@@ -1274,12 +1312,13 @@ export default function EventApplicationPage() {
       if (!form.region.trim()) return issue('region', 'Region is required.');
       if (!form.latitude.trim() || !form.longitude.trim()) return issue('locationPin', 'Map pin location is required.');
 
-      const minimumStart = parseUtc8DateTime(minimumProposedStartLocalValue);
       const proposedStart = parseUtc8DateTime(form.proposedStartAt);
       const proposedEnd = parseUtc8DateTime(form.proposedEndAt);
 
       if (!proposedStart || !proposedEnd) return issue('proposedStartTime', 'Start and end times are required.');
-      if (minimumStart && proposedStart < minimumStart) return issue('proposedDate', 'Program date must be at least 7 days from today.');
+      if (form.proposedDate < minimumProgramDateKey) {
+        return issue('proposedDate', `Choose ${minimumProgramDateLabel} or later. Dates use UTC+8.`);
+      }
       if (toProgramDateKey(form.proposedStartAt) !== toProgramDateKey(form.proposedEndAt)) return issue('proposedEndTime', 'The program must start and end on the same date.');
       if (proposedEnd <= proposedStart) return issue('proposedEndTime', 'End time must be later than start time.');
       const blockedDate = enumerateProgramDates(form.proposedStartAt, form.proposedEndAt)
@@ -1298,7 +1337,8 @@ export default function EventApplicationPage() {
   }, [
     form,
     isDiditVerified,
-    minimumProposedStartLocalValue,
+    minimumProgramDateKey,
+    minimumProgramDateLabel,
     canSubmit,
     unavailableProgramDateSet,
     eventPlacePhotoFile,
@@ -1346,28 +1386,100 @@ export default function EventApplicationPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [hasConfirmedTerms]);
 
-  const loadUnavailableProgramDates = useCallback(async () => {
-    if (!isSupabaseConfigured || !supabase) return;
-    setIsLoadingProgramDates(true);
+  const loadUnavailableProgramDates = useCallback(async ({ showLoading = true } = {}) => {
+    if (!isSupabaseConfigured || !supabase) return null;
+    if (showLoading) setIsLoadingProgramDates(true);
     try {
       const { data, error } = await supabase.rpc('get_unavailable_program_dates', {
-        p_from_date: toProgramDateKey(minimumProposedStartLocalValue),
+        p_from_date: minimumProgramDateKey,
       });
       if (error) throw error;
-      setUnavailableProgramDates((Array.isArray(data) ? data : [])
+      const nextUnavailableDates = (Array.isArray(data) ? data : [])
         .map((row) => toProgramDateKey(row?.program_date))
-        .filter(Boolean));
+        .filter(Boolean);
+      setUnavailableProgramDates(nextUnavailableDates);
+      return nextUnavailableDates;
     } catch (availabilityError) {
       console.warn('[Program dates] Unable to load unavailable dates:', availabilityError);
+      return null;
     } finally {
-      setIsLoadingProgramDates(false);
+      if (showLoading) setIsLoadingProgramDates(false);
     }
-  }, [minimumProposedStartLocalValue]);
+  }, [minimumProgramDateKey]);
 
   useEffect(() => {
     if (!hasAcceptedTerms) return;
-    loadUnavailableProgramDates();
+    void loadUnavailableProgramDates();
+
+    const refreshDates = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void loadUnavailableProgramDates({ showLoading: false });
+    };
+
+    const availabilityChannel = supabase
+      .channel(PROGRAM_DATE_AVAILABILITY_CHANNEL, {
+        config: { broadcast: { ack: true } },
+      })
+      .on('broadcast', { event: 'availability_changed' }, refreshDates)
+      .subscribe();
+
+    programDateAvailabilityChannelRef.current = availabilityChannel;
+
+    const intervalId = window.setInterval(refreshDates, PROGRAM_DATE_REFRESH_INTERVAL_MS);
+    window.addEventListener('focus', refreshDates);
+    document.addEventListener('visibilitychange', refreshDates);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', refreshDates);
+      document.removeEventListener('visibilitychange', refreshDates);
+      if (programDateAvailabilityChannelRef.current === availabilityChannel) {
+        programDateAvailabilityChannelRef.current = null;
+      }
+      void supabase.removeChannel(availabilityChannel);
+    };
   }, [hasAcceptedTerms, loadUnavailableProgramDates]);
+
+  useEffect(() => {
+    if (!form.proposedDate || !unavailableProgramDateSet.has(form.proposedDate)) return;
+
+    const newlyReservedDate = form.proposedDate;
+    setForm((previous) => {
+      if (previous.proposedDate !== newlyReservedDate) return previous;
+      return {
+        ...previous,
+        proposedDate: '',
+        proposedStartTime: '',
+        proposedEndTime: '',
+        proposedStartAt: '',
+        proposedEndAt: '',
+      };
+    });
+    setFieldErrors((previous) => ({
+      ...previous,
+      proposedDate: `${newlyReservedDate} was just reserved by another application. Please choose another date.`,
+    }));
+  }, [form.proposedDate, unavailableProgramDateSet]);
+
+  useEffect(() => {
+    if (!form.proposedDate || form.proposedDate >= minimumProgramDateKey) return;
+
+    setForm((previous) => {
+      if (!previous.proposedDate || previous.proposedDate >= minimumProgramDateKey) return previous;
+      return {
+        ...previous,
+        proposedDate: '',
+        proposedStartTime: '',
+        proposedEndTime: '',
+        proposedStartAt: '',
+        proposedEndAt: '',
+      };
+    });
+    setFieldErrors((previous) => ({
+      ...previous,
+      proposedDate: `The notice window changed. Choose ${minimumProgramDateLabel} or later (UTC+8).`,
+    }));
+  }, [form.proposedDate, minimumProgramDateKey, minimumProgramDateLabel]);
 
   const applyDiditDocument = useCallback((document) => {
     if (!document || typeof document !== 'object') return;
@@ -1737,10 +1849,40 @@ export default function EventApplicationPage() {
     setErrorMessage('');
     setSuccessMessage('');
 
+    if (key === 'proposedDate' && nextValue && nextValue < minimumProgramDateKey) {
+      markFieldError('proposedDate', `Choose ${minimumProgramDateLabel} or later. Dates use UTC+8.`);
+      return;
+    }
+
     if (key === 'proposedDate' && nextValue && unavailableProgramDateSet.has(nextValue)) {
       markFieldError('proposedDate', `${nextValue} is reserved and cannot be selected unless staff rejects the existing application.`);
       return;
     }
+
+    if (
+      key === 'proposedEndTime'
+      && nextValue
+      && form.proposedStartTime
+      && nextValue <= form.proposedStartTime
+    ) {
+      setFieldErrors((previous) => ({
+        ...previous,
+        proposedEndTime: 'End time must be later than the selected start time.',
+      }));
+      return;
+    }
+
+    if (key === 'proposedStartTime' && nextValue === '23:59') {
+      setFieldErrors((previous) => ({
+        ...previous,
+        proposedStartTime: 'Choose an earlier start time so the program can end on the same date.',
+      }));
+      return;
+    }
+
+    const clearsInvalidEndTime = key === 'proposedStartTime'
+      && form.proposedEndTime
+      && form.proposedEndTime <= nextValue;
 
     setFieldErrors((previous) => {
       const next = { ...previous };
@@ -1748,6 +1890,9 @@ export default function EventApplicationPage() {
       if (key === 'proposedDate') delete next.proposedDate;
       if (key === 'proposedStartTime') delete next.proposedStartTime;
       if (key === 'proposedEndTime') delete next.proposedEndTime;
+      if (clearsInvalidEndTime) {
+        next.proposedEndTime = 'The previous end time was cleared. Choose a time later than the new start time.';
+      }
       return next;
     });
 
@@ -1871,7 +2016,6 @@ export default function EventApplicationPage() {
   };
 
   const validateSchedule = useCallback(() => {
-    const minimumStart = parseUtc8DateTime(minimumProposedStartLocalValue);
     const proposedStart = parseUtc8DateTime(form.proposedStartAt);
     const proposedEnd = parseUtc8DateTime(form.proposedEndAt);
 
@@ -1879,8 +2023,8 @@ export default function EventApplicationPage() {
       return 'Proposed start and end are required.';
     }
 
-    if (minimumStart && proposedStart < minimumStart) {
-      return 'Proposed start must be at least 7 days from today.';
+    if (form.proposedDate < minimumProgramDateKey) {
+      return `Choose ${minimumProgramDateLabel} or later. Program dates use UTC+8.`;
     }
 
     if (toProgramDateKey(form.proposedStartAt) !== toProgramDateKey(form.proposedEndAt)) {
@@ -1898,7 +2042,14 @@ export default function EventApplicationPage() {
     }
 
     return '';
-  }, [form.proposedEndAt, form.proposedStartAt, minimumProposedStartLocalValue, unavailableProgramDateSet]);
+  }, [
+    form.proposedDate,
+    form.proposedEndAt,
+    form.proposedStartAt,
+    minimumProgramDateKey,
+    minimumProgramDateLabel,
+    unavailableProgramDateSet,
+  ]);
 
   const handleSubmit = async (event, isConfirmed = false) => {
     event?.preventDefault();
@@ -1952,6 +2103,17 @@ export default function EventApplicationPage() {
     setSuccessMessage('');
 
     try {
+      const selectedProgramDate = form.proposedDate;
+      const latestUnavailableDates = await loadUnavailableProgramDates({ showLoading: false });
+      if (latestUnavailableDates?.includes(selectedProgramDate)) {
+        setCurrentStep(2);
+        markFieldError(
+          'proposedDate',
+          `${selectedProgramDate} was just reserved by another application. Please choose another date.`,
+        );
+        return;
+      }
+
       // Check before uploading assets. The database insert trigger performs the
       // same check atomically to protect against simultaneous submissions.
       await assertEventApplicationEmailAvailable(normalizedEmail);
@@ -2017,6 +2179,21 @@ export default function EventApplicationPage() {
       };
 
       await insertEventApplicationIntake(payload);
+
+      try {
+        const broadcastResult = await programDateAvailabilityChannelRef.current?.send({
+          type: 'broadcast',
+          event: 'availability_changed',
+          payload: { programDate: selectedProgramDate },
+        });
+        if (broadcastResult && broadcastResult !== 'ok') {
+          console.warn('[Program dates] Realtime availability broadcast was not acknowledged:', broadcastResult);
+        }
+      } catch (broadcastError) {
+        // Other calendars also poll the availability RPC, so a temporary
+        // Realtime failure cannot weaken the database reservation guarantee.
+        console.warn('[Program dates] Realtime availability broadcast failed:', broadcastError);
+      }
 
       const smtpKickResult = await triggerSmtpNow('event_application_submitted');
       if (!smtpKickResult.ok) {
@@ -2128,11 +2305,11 @@ export default function EventApplicationPage() {
       <div className="mx-auto max-w-4xl rounded-3xl border border-slate-200 bg-white/95 p-6 shadow-lg backdrop-blur md:p-8">
         <button
           type="button"
-          onClick={() => window.location.assign('/')}
+          onClick={currentStep > 1 ? goPreviousStep : () => window.location.assign('/')}
           className="mb-5 inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
         >
           <ArrowLeft size={16} />
-          Back
+          {currentStep > 1 ? 'Previous Step' : 'Back to Home'}
         </button>
 
         <h1 className="text-2xl font-bold text-slate-900 md:text-3xl">Program Application Form</h1>
@@ -2153,83 +2330,126 @@ export default function EventApplicationPage() {
           </div>
         )}
 
-        <section className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex items-start gap-3 border-b border-slate-100 bg-slate-50 px-4 py-4 md:px-5">
-            <span
-              className="inline-flex h-10 w-10 flex-none items-center justify-center rounded-xl text-white"
-              style={{ backgroundColor: primaryColor }}
-            >
-              <ShieldCheck size={19} />
-            </span>
+        <nav aria-label="Application progress" className="sticky top-3 z-30 mt-5 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-md backdrop-blur md:p-4">
+          <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-bold text-slate-900">Wig donation requirements</h2>
-              <p className="mt-0.5 text-xs leading-5 text-slate-600">
-                Review these current hair-donation standards before completing your application and planning your program.
+              <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                Step {currentStep} of {FORM_STEPS.length}
+              </p>
+              <p className="mt-0.5 text-sm font-bold text-slate-900">
+                {FORM_STEPS[currentStep - 1].title}
+                <span className="ml-1.5 font-normal text-slate-500">{FORM_STEPS[currentStep - 1].description}</span>
               </p>
             </div>
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+              {Math.round((currentStep / FORM_STEPS.length) * 100)}%
+            </span>
           </div>
 
+          <ol className="mt-3 grid grid-cols-3 gap-1.5">
+            {FORM_STEPS.map((step) => {
+              const isActive = currentStep === step.id;
+              const isComplete = currentStep > step.id;
+              return (
+                <li key={step.id} aria-current={isActive ? 'step' : undefined}>
+                  <div
+                    className={`h-1.5 rounded-full transition-colors ${isActive || isComplete ? '' : 'bg-slate-200'}`}
+                    style={isActive || isComplete ? { backgroundColor: primaryColor } : undefined}
+                  />
+                  <div className={`mt-1.5 flex items-center gap-1.5 text-xs ${isActive ? 'font-bold text-slate-900' : isComplete ? 'font-semibold text-slate-600' : 'text-slate-400'}`}>
+                    <span
+                      className={`inline-flex h-5 w-5 flex-none items-center justify-center rounded-full border text-[10px] ${isActive || isComplete ? 'text-white' : 'border-slate-200 bg-white'}`}
+                      style={isActive || isComplete ? { backgroundColor: primaryColor, borderColor: primaryColor } : undefined}
+                    >
+                      {isComplete ? <CheckCircle2 size={12} /> : step.id}
+                    </span>
+                    <span className="truncate">{step.title}</span>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </nav>
+
+        <details className="group mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+            <span
+              className="inline-flex h-9 w-9 flex-none items-center justify-center rounded-lg text-white"
+              style={{ backgroundColor: primaryColor }}
+            >
+              <ShieldCheck size={17} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-bold text-slate-900">Wig donation requirements</h2>
+              <p className="mt-0.5 truncate text-xs text-slate-500">
+                {isLoadingWigRequirements
+                  ? 'Loading current requirements...'
+                  : wigRequirementsError
+                    ? wigRequirementsError
+                    : `${wigRequirements.Minimum_Number_Donor ?? '—'} donors minimum · ${wigRequirements.Minimum_Hair_Length ?? '—'} inches minimum · ${minimumExpectedAttendees}+ expected attendees`}
+              </p>
+            </div>
+            <span className="flex-none text-xs font-semibold text-slate-500 group-open:hidden">View</span>
+            <span className="hidden flex-none text-xs font-semibold text-slate-500 group-open:inline">Hide</span>
+          </summary>
+
           {isLoadingWigRequirements ? (
-            <div className="flex items-center gap-2 px-5 py-6 text-sm text-slate-600">
+            <div className="flex items-center gap-2 border-t border-slate-100 px-4 py-4 text-sm text-slate-600">
               <Loader2 size={16} className="animate-spin" />
               Loading current requirements...
             </div>
           ) : wigRequirementsError ? (
-            <div className="px-5 py-4 text-sm text-amber-800">
+            <div className="border-t border-slate-100 px-4 py-3 text-sm text-amber-800">
               {wigRequirementsError}
             </div>
           ) : (
-            <div className="space-y-4 p-4 md:p-5">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="space-y-3 border-t border-slate-100 bg-slate-50/60 p-4">
+              <div className="grid gap-2 sm:grid-cols-3">
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
                   <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
                     <Users size={13} />
-                    Minimum donors per wig
+                    Donors per wig
                   </p>
-                  <p className="mt-1 text-lg font-bold text-slate-900">
+                  <p className="mt-1 text-base font-bold text-slate-900">
                     {wigRequirements.Minimum_Number_Donor ?? 'Not specified'}
                   </p>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
                   <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
                     <Ruler size={13} />
-                    Minimum hair length
+                    Hair length
                   </p>
-                  <p className="mt-1 text-lg font-bold text-slate-900">
+                  <p className="mt-1 text-base font-bold text-slate-900">
                     {wigRequirements.Minimum_Hair_Length === null
                       || wigRequirements.Minimum_Hair_Length === undefined
                       ? 'Not specified'
                       : `${Number(wigRequirements.Minimum_Hair_Length).toLocaleString()} inches`}
                   </p>
                 </div>
-              </div>
-
-              {minimumDonorsPerWig && (
-                <div role="note" className="flex items-start gap-3 rounded-xl border-2 border-amber-300 bg-amber-50 px-4 py-3 text-amber-950">
-                  <Users size={20} className="mt-0.5 flex-none" aria-hidden="true" />
-                  <p className="text-sm leading-6">
-                    <span className="block font-bold">Required attendance for the program application</span>
-                    In Step 2, Expected Attendees must be <strong>{minimumDonorsPerWig} or more</strong> to meet the current minimum donors-per-wig requirement. A lower number cannot be submitted.
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-amber-800">Required attendance</p>
+                  <p className="mt-1 text-base font-bold text-amber-950">
+                    {minimumExpectedAttendees}+ attendees
                   </p>
                 </div>
-              )}
+              </div>
 
               <div>
-                <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Accepted treatment history</p>
-                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Treatment history</p>
+                <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
                   {HAIR_TREATMENT_REQUIREMENTS.map((requirement) => {
                     const isAllowed = Boolean(wigRequirements[requirement.key]);
                     return (
                       <div
                         key={requirement.key}
-                        className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5 text-sm ${
+                        className={`flex items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 text-xs ${
                           isAllowed
                             ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                            : 'border-slate-200 bg-slate-50 text-slate-700'
+                            : 'border-slate-200 text-slate-600'
                         }`}
                       >
                         <span className="font-medium">{requirement.label}</span>
-                        <span className="inline-flex items-center gap-1 text-xs font-bold">
+                        <span className="inline-flex items-center gap-1 font-bold">
                           {isAllowed ? <CheckCircle2 size={13} /> : <X size={13} />}
                           {isAllowed ? 'Accepted' : 'Not accepted'}
                         </span>
@@ -2239,40 +2459,25 @@ export default function EventApplicationPage() {
                 </div>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="rounded-xl border border-slate-200 px-4 py-3">
+              <div className="grid gap-2 md:grid-cols-2">
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
                   <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Accepted hair textures</p>
-                  <p className="mt-1 text-sm leading-6 text-slate-800">
+                  <p className="mt-1 text-xs leading-5 text-slate-700">
                     {wigRequirements.Hair_Texture_Status || 'No texture restriction specified'}
                   </p>
                 </div>
-                <div className="rounded-xl border border-slate-200 px-4 py-3">
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
                   <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Additional guidance</p>
-                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-800">
+                  <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-slate-700">
                     {wigRequirements.Notes || 'No additional notes provided'}
                   </p>
                 </div>
               </div>
             </div>
           )}
-        </section>
+        </details>
 
-        <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-          <div className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Application Steps</div>
-          <div className="flex gap-2 overflow-x-auto pb-1 md:grid md:grid-cols-3 md:overflow-visible">
-            {FORM_STEPS.map((step) => (
-              <div
-                key={step.id}
-                className={`min-w-[150px] rounded-xl border px-3 py-2 text-xs transition md:min-w-0 md:text-sm ${currentStep === step.id ? 'border-slate-700 bg-white text-slate-900 shadow-sm' : 'border-slate-200 bg-white/70 text-slate-600'}`}
-              >
-                <div className="font-semibold">Step {step.id}</div>
-                <div>{step.title}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <form onSubmit={(event) => event.preventDefault()} className="mt-6">
+        <form onSubmit={(event) => event.preventDefault()} className="mt-4">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {currentStep === 1 && (
             <>
@@ -2580,11 +2785,11 @@ export default function EventApplicationPage() {
                 </div>
               )}
 
-              <label className="flex flex-col gap-2 rounded-xl border-2 border-amber-300 bg-amber-50 p-4 md:col-span-2">
-                <span className="flex flex-wrap items-center justify-between gap-2 text-sm font-bold text-slate-800">
+              <label className="flex flex-col gap-1 md:col-span-2">
+                <span className="flex flex-wrap items-center justify-between gap-2 text-sm font-medium text-slate-700">
                   <span>Expected Attendees *</span>
-                  <span className="rounded-full bg-amber-200 px-2.5 py-1 text-xs font-bold text-amber-950">
-                    Minimum: {minimumExpectedAttendees}
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
+                    Minimum {minimumExpectedAttendees}
                   </span>
                 </span>
                 <input
@@ -2597,7 +2802,7 @@ export default function EventApplicationPage() {
                   onChange={updateField('expectedAttendees')}
                   aria-describedby="expected-attendees-requirement"
                   aria-invalid={Boolean(fieldErrors.expectedAttendees) || isExpectedAttendeesBelowMinimum}
-                  className={getFieldInputClassName('expectedAttendees', 'bg-white')}
+                  className={getFieldInputClassName('expectedAttendees')}
                   style={{ '--tw-ring-color': primaryColor }}
                 />
                 {fieldError('expectedAttendees')}
@@ -2606,51 +2811,88 @@ export default function EventApplicationPage() {
                     Too low: enter at least {minimumExpectedAttendees} expected attendees.
                   </span>
                 )}
-                <span id="expected-attendees-requirement" className="text-xs font-medium leading-5 text-amber-900">
+                <span id="expected-attendees-requirement" className="text-xs text-slate-500">
                   {minimumDonorsPerWig
-                    ? 'This value cannot be lower than the current Minimum Donors per Wig requirement shown above.'
+                    ? `Enter at least ${minimumExpectedAttendees} attendees to meet the current donor requirement.`
                     : 'Enter the expected attendance as a whole number greater than zero.'}
                 </span>
               </label>
 
-              <label className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-slate-700">Program Date (UTC+8) *</span>
-                <ProgramDateCalendar
-                  value={form.proposedDate}
-                  minimumDateKey={minimumProgramDateKey}
-                  blockedDates={unavailableProgramDateSet}
-                  onChange={updateScheduleField('proposedDate')}
-                  buttonRef={setFieldRef('proposedDate')}
-                  hasError={Boolean(fieldErrors.proposedDate)}
-                  primaryColor={primaryColor}
-                />
-                {fieldError('proposedDate')}
-                <span className="text-xs text-slate-500">Choose from the calendar. Reserved dates and dates inside the 7-day notice are disabled.</span>
-              </label>
-
-              <label className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-slate-700">Start Time *</span>
-                <input ref={setFieldRef('proposedStartTime')} type="time" value={form.proposedStartTime} onChange={updateScheduleField('proposedStartTime')} disabled={!form.proposedDate} className={getFieldInputClassName('proposedStartTime', 'disabled:cursor-not-allowed disabled:bg-slate-100')} style={{ '--tw-ring-color': primaryColor }} />
-                {fieldError('proposedStartTime')}
-              </label>
-
-              <label className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-slate-700">End Time *</span>
-                <input ref={setFieldRef('proposedEndTime')} type="time" value={form.proposedEndTime} onChange={updateScheduleField('proposedEndTime')} min={form.proposedStartTime || undefined} disabled={!form.proposedDate || !form.proposedStartTime} className={getFieldInputClassName('proposedEndTime', 'disabled:cursor-not-allowed disabled:bg-slate-100')} style={{ '--tw-ring-color': primaryColor }} />
-                {fieldError('proposedEndTime')}
-                <span className="text-xs text-slate-500">The program must end later on the same date.</span>
-              </label>
-
-              <div className="md:col-span-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                <span className="font-semibold">One application per date:</span>{' '}
-                pending and approved program dates are reserved for everyone. A date reopens only after staff rejects its application.
-                {isLoadingProgramDates && <span> Checking dates...</span>}
-                {!isLoadingProgramDates && unavailableProgramDates.length > 0 && (
-                  <span className="block pt-1 text-amber-700">
-                    Currently reserved: {unavailableProgramDates.slice(0, 12).join(', ')}{unavailableProgramDates.length > 12 ? ` and ${unavailableProgramDates.length - 12} more` : ''}
+              <section className="md:col-span-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900">Program schedule</h2>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      UTC+8 · 7-day notice · Earliest available date: <span className="font-semibold text-slate-700">{minimumProgramDateLabel}</span>
+                    </p>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    Live availability
                   </span>
+                </div>
+
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  <span className="font-bold">One application per date.</span> Pending and approved dates remain unavailable until staff rejects the application.
+                  {isLoadingProgramDates && <span> Checking availability...</span>}
+                </div>
+
+                <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1.6fr)_minmax(0,0.7fr)_minmax(0,0.7fr)]">
+                  <label className="flex min-w-0 flex-col gap-1">
+                    <span className="text-xs font-semibold text-slate-700">Program Date *</span>
+                    <ProgramDateCalendar
+                      value={form.proposedDate}
+                      minimumDateKey={minimumProgramDateKey}
+                      blockedDates={unavailableProgramDateSet}
+                      onChange={updateScheduleField('proposedDate')}
+                      buttonRef={setFieldRef('proposedDate')}
+                      hasError={Boolean(fieldErrors.proposedDate)}
+                      primaryColor={primaryColor}
+                    />
+                    {fieldError('proposedDate')}
+                  </label>
+
+                  <label className="flex min-w-0 flex-col gap-1">
+                    <span className="text-xs font-semibold text-slate-700">Start Time *</span>
+                    <input
+                      ref={setFieldRef('proposedStartTime')}
+                      type="time"
+                      value={form.proposedStartTime}
+                      onChange={updateScheduleField('proposedStartTime')}
+                      max="23:58"
+                      step="60"
+                      disabled={!form.proposedDate}
+                      aria-invalid={Boolean(fieldErrors.proposedStartTime)}
+                      className={getFieldInputClassName('proposedStartTime', 'disabled:cursor-not-allowed disabled:bg-slate-100')}
+                      style={{ '--tw-ring-color': primaryColor }}
+                    />
+                    {fieldError('proposedStartTime')}
+                  </label>
+
+                  <label className="flex min-w-0 flex-col gap-1">
+                    <span className="text-xs font-semibold text-slate-700">End Time *</span>
+                    <input
+                      ref={setFieldRef('proposedEndTime')}
+                      type="time"
+                      value={form.proposedEndTime}
+                      onChange={updateScheduleField('proposedEndTime')}
+                      min={minimumProgramEndTime || undefined}
+                      step="60"
+                      disabled={!form.proposedDate || !form.proposedStartTime || !minimumProgramEndTime}
+                      aria-invalid={Boolean(fieldErrors.proposedEndTime)}
+                      className={getFieldInputClassName('proposedEndTime', 'disabled:cursor-not-allowed disabled:bg-slate-100')}
+                      style={{ '--tw-ring-color': primaryColor }}
+                    />
+                    {fieldError('proposedEndTime')}
+                  </label>
+                </div>
+
+                {!isLoadingProgramDates && unavailableProgramDates.length > 0 && (
+                  <p className="mt-2 truncate text-[11px] text-slate-500" title={unavailableProgramDates.join(', ')}>
+                    Reserved dates: {unavailableProgramDates.slice(0, 8).join(', ')}{unavailableProgramDates.length > 8 ? ` +${unavailableProgramDates.length - 8} more` : ''}
+                  </p>
                 )}
-              </div>
+              </section>
 
               <label className="flex flex-col gap-1 md:col-span-2">
                 <span className="text-sm font-medium text-slate-700">Program Overview *</span>
@@ -2876,8 +3118,7 @@ export default function EventApplicationPage() {
 
           </div>
 
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-            <div className="text-xs text-slate-500">Step {currentStep} of {FORM_STEPS.length}</div>
+          <div className="mt-3 flex justify-end">
             <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
               {currentStep > 1 && (
                 <button

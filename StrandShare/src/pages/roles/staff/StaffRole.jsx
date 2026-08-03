@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   BarChart3,
+  Boxes,
   CalendarDays,
   LayoutDashboard,
   CheckCircle,
@@ -18,12 +19,14 @@ import SettingsPage from './SettingsPage';
 import ManageRequirementsPage from '../../shared/features/ManageRequirementsPage';
 import RoleReportsPage from '../../shared/features/RoleReportsPage';
 import SalonSchedulePage from './SalonSchedulePage';
+import CutHairInventoryPage from '../../shared/features/CutHairInventoryPage';
 
 const staffNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'salon-schedule', label: 'Salon Schedule', icon: CalendarDays },
   { id: 'event-application-intake', label: 'Manage Event Application', icon: CheckCircle },
   { id: 'assigned-event-operations', label: 'Manage Assigned Events', icon: FileText },
+  { id: 'cut-hair-inventory', label: 'Cut Hair Inventory', icon: Boxes },
   { id: 'update-wig-request-status', label: 'Manage Wig Request', icon: Package },
   { id: 'manage-requirements', label: 'Manage Requirements', icon: SlidersHorizontal },
   { id: 'reports', label: 'Reports', icon: BarChart3 },
@@ -34,6 +37,7 @@ const staffPageComponents = {
   dashboard: DashboardPage,
   'event-application-intake': EventApplicationIntakePage,
   'assigned-event-operations': AssignedEventOperationsPage,
+  'cut-hair-inventory': CutHairInventoryPage,
   'salon-schedule': SalonSchedulePage,
   'update-wig-request-status': UpdateWigRequestStatusPage,
   'manage-requirements': ManageRequirementsPage,

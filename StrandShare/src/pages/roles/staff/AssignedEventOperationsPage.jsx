@@ -35,7 +35,12 @@ const EVENT_FILTERS = [
   { id: 'today', label: 'Today' },
   { id: 'this_week', label: 'This Week' },
   { id: 'upcoming', label: 'Upcoming' },
+  { id: 'ended', label: 'Ended' },
 ];
+const HAIR_COLOR_OPTIONS = ['Black', 'Dark Brown', 'Brown', 'Light Brown', 'Blonde', 'Gray', 'Red / Auburn', 'Other'];
+const HAIR_TEXTURE_OPTIONS = ['Straight', 'Wavy', 'Curly', 'Coily'];
+const HAIR_DENSITY_OPTIONS = ['Thin', 'Medium', 'Thick'];
+const HAIR_CONDITION_OPTIONS = ['Healthy', 'Slightly Dry', 'Dry', 'Damaged'];
 const MANILA_OFFSET_MINUTES = 8 * 60;
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 
@@ -164,6 +169,17 @@ function normalizeFlowStatusKey(value) {
     .replace(/[_\s-]+/g, '');
 }
 
+function isEventEnded(eventRow) {
+  if (normalizeFlowStatusKey(eventRow?.Status) === 'ended') return true;
+  if (!eventRow?.End_Date) return false;
+  const endTime = new Date(eventRow.End_Date).getTime();
+  return Number.isFinite(endTime) && endTime <= Date.now();
+}
+
+function getEffectiveEventStatus(eventRow) {
+  return isEventEnded(eventRow) ? 'Ended' : (eventRow?.Status || 'Approved');
+}
+
 function normalizeAttendeeType(value) {
   return normalizeFlowStatusKey(value) === 'voluntary' ? 'Voluntary' : 'Donor';
 }
@@ -245,11 +261,14 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     message: 'Camera is off. Start scanner to mark RSVP attendance.',
   });
   const [manualWaybillCode, setManualWaybillCode] = useState('');
+  const [scanMode, setScanMode] = useState('rsvp');
   const [activeReview, setActiveReview] = useState(null);
   const [qualityReason, setQualityReason] = useState('');
   const [detailDraft, setDetailDraft] = useState(() => createDetailDraft(null));
   const [isSubmittingQuality, setIsSubmittingQuality] = useState(false);
   const [isSavingDetail, setIsSavingDetail] = useState(false);
+  const [eventSummary, setEventSummary] = useState(null);
+  const [isLoadingSummary, setIsLoadingSummary] = useState(false);
 
   const videoRef = useRef(null);
   const cameraStreamRef = useRef(null);
@@ -413,6 +432,9 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     const weekEnd = todayStart + (6 * DAY_IN_MS);
 
     return events.filter((row) => {
+      const ended = isEventEnded(row);
+      if (eventTimeFilter === 'ended') return ended;
+      if (ended) return false;
       const eventDay = toManilaDayStartMs(row?.Start_Date || row?.Created_At || new Date());
       if (eventTimeFilter === 'today') {
         return eventDay === todayStart;
@@ -430,6 +452,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   const selectedEvent = useMemo(() => (
     events.find((row) => Number(row.Event_Request_ID || 0) === Number(selectedRequestId || 0)) || null
   ), [events, selectedRequestId]);
+  const selectedEventEnded = useMemo(() => isEventEnded(selectedEvent), [selectedEvent]);
 
   // Auto-select first event when nothing is selected yet
   useEffect(() => {
@@ -457,7 +480,40 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     setActiveReview(null);
     setQualityReason('');
     setDetailDraft(createDetailDraft(null));
+    setEventSummary(null);
   }, [selectedEvent, loadAttendees]);
+
+  useEffect(() => {
+    if (!supabase || !selectedEvent?.Event_Request_ID || !selectedEventEnded) {
+      setEventSummary(null);
+      return;
+    }
+    let active = true;
+    setIsLoadingSummary(true);
+    supabase.rpc('get_event_operations_summary', {
+      p_event_request_id: Number(selectedEvent.Event_Request_ID),
+    }).then(({ data, error }) => {
+      if (!active) return;
+      if (error) {
+        setNotice({ kind: 'error', text: error.message || 'Unable to load ended event summary.' });
+        setEventSummary(null);
+      } else {
+        setEventSummary(data || {});
+      }
+      setIsLoadingSummary(false);
+    });
+    return () => { active = false; };
+  }, [selectedEvent?.Event_Request_ID, selectedEventEnded]);
+
+  useEffect(() => {
+    if (selectedEventEnded && scanMode === 'rsvp') {
+      setScanMode('hair_review');
+      setCameraStatus({
+        kind: 'info',
+        message: 'This event has ended. RSVP is closed, but pending Hair Intake & Review scans remain available.',
+      });
+    }
+  }, [scanMode, selectedEventEnded]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return undefined;
@@ -604,13 +660,18 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       }
 
       setIsCameraOn(true);
-      setCameraStatus({ kind: 'success', message: 'Scanner is running. Point camera at attendee RSVP QR/waybill.' });
+      setCameraStatus({
+        kind: 'success',
+        message: scanMode === 'hair_review'
+          ? 'Hair Intake & Review scanner is running. Scan a checked-in donor QR.'
+          : 'RSVP Check-in scanner is running. Point the camera at an attendee QR.',
+      });
     } catch (error) {
       setCameraStatus({ kind: 'error', message: error?.message || 'Could not access the camera.' });
     } finally {
       setIsStartingCamera(false);
     }
-  }, [isCameraOn, isStartingCamera, stopCamera]);
+  }, [isCameraOn, isStartingCamera, scanMode, stopCamera]);
 
   const loadSubmissionDetailsById = useCallback(async (submissionId) => {
     const targetId = Number(submissionId || 0);
@@ -648,8 +709,8 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   const markAttendeePresentByWaybill = useCallback(async (rawValue) => {
     if (isScanProcessingRef.current || !selectedEvent || !supabase) return;
 
-    if (reviewStatusMeta.needsDecision) {
-      const message = 'Complete the current hair quality decision first before scanning another RSVP.';
+    if (scanMode === 'hair_review' && reviewStatusMeta.needsDecision) {
+      const message = 'Complete the current hair quality decision before scanning another donor.';
       setNotice({ kind: 'warning', text: message });
       setCameraStatus({ kind: 'warning', message });
       return;
@@ -669,9 +730,10 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         throw new Error('Selected event has no Event_Request_ID.');
       }
 
-      const scanResult = await supabase.rpc('scan_event_attendee_rsvp_by_type', {
+      const scanResult = await supabase.rpc('scan_event_attendee_operation', {
         p_event_request_id: eventRequestId,
         p_qr_payload: String(rawValue || ''),
+        p_mode: scanMode,
       });
       if (scanResult.error) throw scanResult.error;
 
@@ -687,9 +749,9 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         payload?.attendee_type
         || updated?.Attendee_Type,
       );
-      const requiresHairReview = payload?.requires_hair_review == null
+      const requiresHairReview = scanMode === 'hair_review' && (payload?.requires_hair_review == null
         ? attendeeType === 'Donor'
-        : Boolean(payload.requires_hair_review);
+        : Boolean(payload.requires_hair_review));
       const resolvedWaybillCode = String(
         payload?.waybill_code
         || updated?.Waybill_Code
@@ -736,23 +798,23 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       setNotice({
         kind: 'success',
         text: requiresHairReview
-          ? `RSVP marked present for donor ${attendeeLabel}. Continue with the hair quality review.`
-          : `RSVP marked present for voluntary attendee ${attendeeLabel}. Check-in is complete.`,
+          ? `Hair intake loaded for ${attendeeLabel}. Double-check the AI details and record the final decision.`
+          : `RSVP check-in complete for ${attendeeLabel}. Donors may now use Hair Intake & Review.`,
       });
       setCameraStatus({
         kind: 'success',
         message: requiresHairReview
-          ? `RSVP success: ${updated?.Full_Name || 'Donor'} marked Present.${submissionStatus ? ` Hair submission: ${submissionStatus}.` : ''} Review hair quality below.`
-          : `RSVP success: ${updated?.Full_Name || 'Voluntary attendee'} marked Present. No hair-details scan or review is required.`,
+          ? `Hair intake opened.${submissionStatus ? ` Submission: ${submissionStatus}.` : ''} Review the details below.`
+          : `RSVP success: ${attendeeLabel} marked Present.`,
       });
     } catch (error) {
-      setNotice({ kind: 'error', text: error.message || 'Unable to process RSVP scan.' });
-      setCameraStatus({ kind: 'error', message: error.message || 'RSVP scan failed.' });
+      setNotice({ kind: 'error', text: error.message || 'Unable to process scan.' });
+      setCameraStatus({ kind: 'error', message: error.message || 'Scan failed.' });
     } finally {
       setIsSaving(false);
       isScanProcessingRef.current = false;
     }
-  }, [loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, selectedEvent]);
+  }, [loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, scanMode, selectedEvent]);
 
   const handleSaveDetailEdits = useCallback(async () => {
     if (!supabase || !selectedEvent) return;
@@ -927,9 +989,15 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       setManualWaybillCode('');
       setCameraStatus({
         kind: 'info',
-        message: 'Decision saved. Scanner is restarting for the next RSVP...',
+        message: 'Decision saved. Hair Intake & Review is restarting for the next donor...',
       });
       await loadAttendees(eventRequestId);
+      if (selectedEventEnded) {
+        const summaryResult = await supabase.rpc('get_event_operations_summary', {
+          p_event_request_id: eventRequestId,
+        });
+        if (!summaryResult.error) setEventSummary(summaryResult.data || {});
+      }
       void startCameraScanner();
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to submit hair quality decision.' });
@@ -938,11 +1006,11 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       setIsSubmittingQuality(false);
       setIsSaving(false);
     }
-  }, [activeReview, qualityReason, reviewStatusMeta.isFinal, selectedEvent, loadAttendees, startCameraScanner]);
+  }, [activeReview, qualityReason, reviewStatusMeta.isFinal, selectedEvent, selectedEventEnded, loadAttendees, startCameraScanner]);
 
   const handleToggleCamera = async () => {
     if (reviewStatusMeta.needsDecision) {
-      const message = 'Complete the current hair quality decision first before scanning another RSVP.';
+      const message = 'Complete the current hair quality decision before scanning another donor.';
       setNotice({ kind: 'warning', text: message });
       setCameraStatus({ kind: 'warning', message });
       return;
@@ -951,7 +1019,12 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     if (isCameraOn) {
       stopCamera();
       setIsCameraOn(false);
-      setCameraStatus({ kind: 'info', message: 'Camera is off. Start scanner to mark RSVP attendance.' });
+      setCameraStatus({
+        kind: 'info',
+        message: scanMode === 'hair_review'
+          ? 'Camera is off. Start the scanner to open a pending hair review.'
+          : 'Camera is off. Start the scanner to mark RSVP attendance.',
+      });
       return;
     }
 
@@ -962,7 +1035,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     const value = String(manualWaybillCode || '').trim();
     if (!value) return;
     if (reviewStatusMeta.needsDecision) {
-      const message = 'Complete the current hair quality decision first before scanning another RSVP.';
+      const message = 'Complete the current hair quality decision before scanning another donor.';
       setNotice({ kind: 'warning', text: message });
       setCameraStatus({ kind: 'warning', message });
       return;
@@ -971,13 +1044,35 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     void markAttendeePresentByWaybill(value);
   };
 
+  const handleScanModeChange = (nextMode) => {
+    if (nextMode === scanMode) return;
+    if (reviewStatusMeta.needsDecision) {
+      setNotice({ kind: 'warning', text: 'Finish the open hair review before changing scanner mode.' });
+      return;
+    }
+    if (nextMode === 'rsvp' && selectedEventEnded) {
+      setNotice({ kind: 'warning', text: 'RSVP check-in is closed because this event has ended.' });
+      return;
+    }
+    stopCamera();
+    setIsCameraOn(false);
+    setScanMode(nextMode);
+    setManualWaybillCode('');
+    setCameraStatus({
+      kind: 'info',
+      message: nextMode === 'hair_review'
+        ? 'Hair Intake & Review selected. Scan only donors who already completed RSVP check-in.'
+        : 'RSVP Check-in selected. This scan only records attendance.',
+    });
+  };
+
   useEffect(() => {
     if (!reviewStatusMeta.needsDecision || !isCameraOn) return;
     stopCamera();
     setIsCameraOn(false);
     setCameraStatus({
       kind: 'warning',
-      message: 'Scanner paused. Complete the current hair quality decision before scanning the next RSVP.',
+      message: 'Scanner paused. Complete the current hair quality decision before scanning the next donor.',
     });
   }, [isCameraOn, reviewStatusMeta.needsDecision, stopCamera]);
 
@@ -1432,7 +1527,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 </span>
               </div>
             </div>
-            <div className="mt-3 grid grid-cols-3 gap-1">
+            <div className="mt-3 grid grid-cols-2 gap-1 sm:grid-cols-4 lg:grid-cols-2">
               {EVENT_FILTERS.map((filterItem) => {
                 const active = eventTimeFilter === filterItem.id;
                 return (
@@ -1484,7 +1579,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 <p className="text-xs text-slate-500">
                   {selectedCalendarDate
                     ? 'No assigned events are scheduled on the selected date.'
-                    : 'Try another filter (Today, This Week, Upcoming).'}
+                    : 'Try another filter (Today, This Week, Upcoming, Ended).'}
                 </p>
               </div>
             ) : (
@@ -1505,8 +1600,12 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
                             ER-{row.Event_Request_ID}
                           </span>
-                          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
-                            {row.Status || 'Approved'}
+                          <span className={`rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${
+                            isEventEnded(row)
+                              ? 'border-slate-300 bg-slate-100 text-slate-700'
+                              : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                          }`}>
+                            {getEffectiveEventStatus(row)}
                           </span>
                         </div>
                         <p className="truncate text-sm font-semibold text-slate-900">
@@ -1553,8 +1652,12 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                         {selectedEvent.Event_Name || 'Untitled Event'}
                       </h2>
                     </div>
-                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                      {selectedEvent.Status || 'Approved'}
+                    <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                      selectedEventEnded
+                        ? 'border-slate-300 bg-slate-100 text-slate-700'
+                        : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    }`}>
+                      {getEffectiveEventStatus(selectedEvent)}
                     </span>
                   </div>
 
@@ -1588,22 +1691,89 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 </div>
               </div>
 
-              {/* RSVP Scanner */}
+              {selectedEventEnded && (
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Ended event summary</p>
+                      <h3 className="mt-0.5 text-sm font-bold text-slate-900">Final attendance, hair intake, and AI review results</h3>
+                    </div>
+                    {isLoadingSummary && <Loader2 size={15} className="animate-spin text-slate-500" />}
+                  </div>
+                  <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+                    {[
+                      ['Registered', eventSummary?.registered],
+                      ['Present', eventSummary?.present],
+                      ['No-show', eventSummary?.no_show],
+                      ['Donors', eventSummary?.donors],
+                      ['Voluntary', eventSummary?.voluntary],
+                      ['Approved cut', eventSummary?.approved_cut],
+                      ['Rejected', eventSummary?.rejected],
+                      ['Rejected cut', eventSummary?.rejected_cut],
+                      ['Pending review', eventSummary?.pending],
+                      ['Inventory added', eventSummary?.inventory_added],
+                      ['AI corrections', eventSummary?.ai_corrections],
+                      ['AI accuracy', eventSummary?.ai_accuracy_percent == null ? 'N/A' : `${eventSummary.ai_accuracy_percent}%`],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+                        <p className="mt-0.5 text-lg font-bold text-slate-900">{value ?? 0}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-xs text-slate-500">
+                    New RSVP check-ins are closed. Pending donor hair reviews can still be completed below.
+                  </p>
+                </div>
+              )}
+
+              {/* Event scanner */}
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <ScanLine size={16} className="text-slate-500" />
-                    <h3 className="text-sm font-bold text-slate-800">RSVP Scanner</h3>
+                    <h3 className="text-sm font-bold text-slate-800">
+                      {scanMode === 'hair_review' ? 'Hair Intake & Review Scanner' : 'RSVP Check-in Scanner'}
+                    </h3>
                   </div>
                   <button
                     type="button"
                     onClick={() => { void handleToggleCamera(); }}
-                    disabled={isStartingCamera || reviewStatusMeta.needsDecision}
+                    disabled={isStartingCamera || reviewStatusMeta.needsDecision || (scanMode === 'rsvp' && selectedEventEnded)}
                     className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition disabled:opacity-60"
                     style={{ backgroundColor: isCameraOn ? '#dc2626' : tertiaryColor }}
                   >
                     {isStartingCamera ? <Loader2 size={12} className="animate-spin" /> : isCameraOn ? <CameraOff size={12} /> : <Camera size={12} />}
                     {isCameraOn ? 'Stop Camera' : 'Start Camera'}
+                  </button>
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => handleScanModeChange('rsvp')}
+                    disabled={selectedEventEnded || reviewStatusMeta.needsDecision}
+                    className={`rounded-lg border px-3 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      scanMode === 'rsvp'
+                        ? 'border-emerald-300 bg-emerald-50 ring-1 ring-emerald-200'
+                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="block text-xs font-bold text-slate-900">1. RSVP Check-in</span>
+                    <span className="mt-0.5 block text-[11px] text-slate-600">Attendance only. Marks the attendee Present.</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleScanModeChange('hair_review')}
+                    disabled={reviewStatusMeta.needsDecision}
+                    className={`rounded-lg border px-3 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      scanMode === 'hair_review'
+                        ? 'border-violet-300 bg-violet-50 ring-1 ring-violet-200'
+                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="block text-xs font-bold text-slate-900">2. Hair Intake &amp; Review</span>
+                    <span className="mt-0.5 block text-[11px] text-slate-600">Checked-in donors only. Opens AI details for staff review.</span>
                   </button>
                 </div>
 
@@ -1648,7 +1818,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                             handleManualScanLookup();
                           }
                         }}
-                        placeholder="Enter waybill code"
+                        placeholder={scanMode === 'hair_review' ? 'Enter checked-in donor waybill' : 'Enter attendee waybill'}
                         className="w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
                         disabled={reviewStatusMeta.needsDecision}
                       />
@@ -1664,7 +1834,9 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                     </div>
 
                     <p className="text-[11px] text-slate-500">
-                      Scanning marks the attendee as <strong>Present</strong>. Donors continue to Hair Quality Review; Voluntary attendees finish after this RSVP scan with no hair-details step.
+                      {scanMode === 'hair_review'
+                        ? 'This scan does not change attendance. It opens a checked-in donor for the final hair decision.'
+                        : 'This scan only marks attendance as Present. Donors use the second mode for hair review; voluntary attendees are finished after check-in.'}
                     </p>
                   </div>
                 </div>
@@ -1681,7 +1853,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
 
                 {!activeReview?.submission?.Submission_ID ? (
                   <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-xs text-slate-600">
-                    Scan an RSVP QR first to load donor hair details for approval or rejection.
+                    Select <strong>Hair Intake &amp; Review</strong>, then scan a donor who already completed RSVP Check-in.
                   </div>
                 ) : (
                   <div className="mt-3 space-y-3">
@@ -1732,43 +1904,63 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                         </label>
                         <label className="text-xs text-slate-700">
                           Color
-                          <input
-                            type="text"
+                          <select
                             value={detailDraft.declaredColor}
                             onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredColor: event.target.value }))}
                             disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
                             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
-                          />
+                          >
+                            <option value="">Select color</option>
+                            {detailDraft.declaredColor && !HAIR_COLOR_OPTIONS.includes(detailDraft.declaredColor) && (
+                              <option value={detailDraft.declaredColor}>{detailDraft.declaredColor} (existing)</option>
+                            )}
+                            {HAIR_COLOR_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
                         </label>
                         <label className="text-xs text-slate-700">
                           Texture
-                          <input
-                            type="text"
+                          <select
                             value={detailDraft.declaredTexture}
                             onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredTexture: event.target.value }))}
                             disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
                             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
-                          />
+                          >
+                            <option value="">Select texture</option>
+                            {detailDraft.declaredTexture && !HAIR_TEXTURE_OPTIONS.includes(detailDraft.declaredTexture) && (
+                              <option value={detailDraft.declaredTexture}>{detailDraft.declaredTexture} (existing)</option>
+                            )}
+                            {HAIR_TEXTURE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
                         </label>
                         <label className="text-xs text-slate-700">
                           Density
-                          <input
-                            type="text"
+                          <select
                             value={detailDraft.declaredDensity}
                             onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredDensity: event.target.value }))}
                             disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
                             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
-                          />
+                          >
+                            <option value="">Select density</option>
+                            {detailDraft.declaredDensity && !HAIR_DENSITY_OPTIONS.includes(detailDraft.declaredDensity) && (
+                              <option value={detailDraft.declaredDensity}>{detailDraft.declaredDensity} (existing)</option>
+                            )}
+                            {HAIR_DENSITY_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
                         </label>
                         <label className="text-xs text-slate-700 md:col-span-2">
                           Condition
-                          <input
-                            type="text"
+                          <select
                             value={detailDraft.declaredCondition}
                             onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredCondition: event.target.value }))}
                             disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
                             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
-                          />
+                          >
+                            <option value="">Select condition</option>
+                            {detailDraft.declaredCondition && !HAIR_CONDITION_OPTIONS.includes(detailDraft.declaredCondition) && (
+                              <option value={detailDraft.declaredCondition}>{detailDraft.declaredCondition} (existing)</option>
+                            )}
+                            {HAIR_CONDITION_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
                         </label>
                         <label className="text-xs text-slate-700 md:col-span-2">
                           Notes
@@ -2056,11 +2248,12 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         resultCount={filteredEvents.length}
         getStartDate={(row) => row.Start_Date}
         getEndDate={(row) => row.Start_Date}
-        getStatus={(row) => row.Status}
+        getStatus={getEffectiveEventStatus}
         statusItems={[
           { key: 'pendingadminapproval', label: 'Pending', dotClass: 'bg-amber-500', reserved: true },
           { key: 'appealed', label: 'Appealed', dotClass: 'bg-violet-500', reserved: true },
           { key: 'approved', label: 'Assigned / Approved', dotClass: 'bg-emerald-500', reserved: true },
+          { key: 'ended', label: 'Ended', dotClass: 'bg-slate-500', reserved: false },
           { key: 'rejected', label: 'Rejected', dotClass: 'bg-rose-500', reserved: false },
           { key: 'cancelled', label: 'Cancelled', dotClass: 'bg-slate-400', reserved: false },
         ]}
@@ -2088,10 +2281,10 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 Always print all waybills before going to the event.
               </p>
               <div className="mt-3 space-y-2 text-slate-700">
-                <p>1. Pick an event using the left panel filters: <strong>Today</strong>, <strong>This Week</strong>, or <strong>Upcoming</strong>.</p>
+                <p>1. Pick an event using the left panel filters: <strong>Today</strong>, <strong>This Week</strong>, <strong>Upcoming</strong>, or <strong>Ended</strong>.</p>
                 <p>2. Click <strong>Print All Waybills</strong> to print every attendee waybill with QR before event deployment.</p>
-                <p>3. At the event, use <strong>Start Camera</strong> to scan the attendee RSVP QR or waybill.</p>
-                <p>4. A <strong>Voluntary</strong> attendee is finished after the RSVP scan. For a <strong>Donor</strong>, review the loaded hair details and submit one final decision: <strong>Approve</strong>, <strong>Reject</strong>, or <strong>Rejected Cut</strong>.</p>
+                <p>3. Use <strong>RSVP Check-in</strong> first. It only records attendance and marks the attendee Present.</p>
+                <p>4. For donors, switch to <strong>Hair Intake &amp; Review</strong> and scan the same QR again. Double-check the AI details, make corrections, then choose <strong>Approve</strong>, <strong>Reject</strong>, or <strong>Rejected Cut</strong>.</p>
                 <p>5. Use <strong>Refresh</strong> anytime if you want an immediate sync; live updates are already active.</p>
               </div>
             </div>
