@@ -48,8 +48,8 @@ const STATUS_LABELS = {
 const DASHBOARD_SHORTCUTS = [
   {
     id: 'wig-request',
-    label: 'New Wig Request',
-    description: 'Open the request form and submit a new case quickly.',
+    label: 'Wig Requests',
+    description: 'Submit a case, track stock outcomes, or manage release approvals.',
     icon: PackagePlus,
   },
   {
@@ -57,12 +57,6 @@ const DASHBOARD_SHORTCUTS = [
     label: 'Manage Patients',
     description: 'View patient records, linked accounts, and profile details.',
     icon: Users,
-  },
-  {
-    id: 'fitting-release',
-    label: 'Release Approvals',
-    description: 'Approve release schedules or request reschedule notes.',
-    icon: CalendarClock,
   },
   {
     id: 'reports',

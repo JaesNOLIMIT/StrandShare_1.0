@@ -57,6 +57,14 @@ const STATUS_OPTIONS = [
 
 const REPORT_TEMPLATES = [
   {
+    id: 'patient_registry',
+    name: 'Patient Registry',
+    description: 'Export the hospital patient directory and medical intake summary.',
+    defaultFormat: 'csv',
+    availableFormats: ['csv', 'pdf'],
+    cadenceHint: 'Weekly or Monthly',
+  },
+  {
     id: 'request_intake',
     name: 'Request Intake Summary',
     description: 'Track request volume and per-case status movement.',
@@ -133,38 +141,22 @@ function writeLocalJson(key, value) {
 }
 
 function createDefaultSchedules() {
-  return [
-    {
-      id: 'SCH-DEFAULT-1',
-      title: 'Weekly Request Snapshot',
-      templateId: 'request_intake',
-      cadence: 'weekly',
-      time: '07:00',
-      format: 'csv',
-      recipients: 'hrepresentative@Donivra.org',
-      status: 'Active',
-      createdAt: new Date().toISOString(),
-      lastRunAt: null,
-      runCount: 0,
-    },
-    {
-      id: 'SCH-DEFAULT-2',
-      title: 'Monthly SLA Review',
-      templateId: 'turnaround_sla',
-      cadence: 'monthly',
-      time: '08:00',
-      format: 'pdf',
-      recipients: 'operations@Donivra.org',
-      status: 'Paused',
-      createdAt: new Date().toISOString(),
-      lastRunAt: null,
-      runCount: 0,
-    },
-  ];
+  return [];
 }
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function parseRecipientEmails(value) {
+  return String(value || '')
+    .split(/[;,]/)
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
 }
 
 function normalizeStatusKey(value) {
@@ -274,6 +266,35 @@ function getPatientUserName(userRow) {
     .trim();
 
   return fullName || String(userRow.email || '').trim() || '';
+}
+
+function getPatientUserDetails(userRow) {
+  if (!userRow) return null;
+  return Array.isArray(userRow.user_details) ? userRow.user_details[0] : userRow.user_details;
+}
+
+function computeAge(birthdateValue) {
+  if (!birthdateValue) return 'N/A';
+  const birthdate = new Date(birthdateValue);
+  if (Number.isNaN(birthdate.getTime())) return 'N/A';
+
+  const today = new Date();
+  let age = today.getFullYear() - birthdate.getFullYear();
+  const monthDifference = today.getMonth() - birthdate.getMonth();
+  if (monthDifference < 0 || (monthDifference === 0 && today.getDate() < birthdate.getDate())) age -= 1;
+  return age >= 0 && age <= 130 ? String(age) : 'N/A';
+}
+
+function formatDateOnly(value) {
+  if (!value) return 'N/A';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'N/A';
+  return parsed.toLocaleDateString('en-PH', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  });
 }
 
 function getPatientFullName(patientRow, linkedUserRow = null) {
@@ -455,8 +476,11 @@ export default function GenerateReportsPage({ userProfile }) {
 
   const [selectedTemplateId, setSelectedTemplateId] = useState(REPORT_TEMPLATES[0].id);
 
-  const [scheduledReports, setScheduledReports] = useState(() => readLocalJson(SCHEDULES_STORAGE_KEY, createDefaultSchedules()));
-  const [generatedHistory, setGeneratedHistory] = useState(() => readLocalJson(HISTORY_STORAGE_KEY, []));
+  const storageScope = String(userProfile?.user_id || 'anonymous');
+  const schedulesStorageKey = `${SCHEDULES_STORAGE_KEY}.${storageScope}`;
+  const historyStorageKey = `${HISTORY_STORAGE_KEY}.${storageScope}`;
+  const [scheduledReports, setScheduledReports] = useState(() => readLocalJson(schedulesStorageKey, createDefaultSchedules()));
+  const [generatedHistory, setGeneratedHistory] = useState(() => readLocalJson(historyStorageKey, []));
 
   const [scheduleForm, setScheduleForm] = useState({
     title: '',
@@ -468,12 +492,12 @@ export default function GenerateReportsPage({ userProfile }) {
   });
 
   useEffect(() => {
-    writeLocalJson(SCHEDULES_STORAGE_KEY, scheduledReports);
-  }, [scheduledReports]);
+    writeLocalJson(schedulesStorageKey, scheduledReports);
+  }, [scheduledReports, schedulesStorageKey]);
 
   useEffect(() => {
-    writeLocalJson(HISTORY_STORAGE_KEY, generatedHistory);
-  }, [generatedHistory]);
+    writeLocalJson(historyStorageKey, generatedHistory);
+  }, [generatedHistory, historyStorageKey]);
 
   const resolveAssignedHospital = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -552,7 +576,7 @@ export default function GenerateReportsPage({ userProfile }) {
           .order('Request_Date', { ascending: false }),
         supabase
           .from(PATIENTS_TABLE)
-          .select('Patient_ID,Patient_Code,Medical_Condition,User_ID')
+          .select('Patient_ID,Patient_Code,Medical_Condition,User_ID,Date_of_Diagnosis,Guardian,Guardian_Contact_Number,Created_At')
           .eq('Hospital_ID', hospitalId),
       ]);
 
@@ -579,7 +603,10 @@ export default function GenerateReportsPage({ userProfile }) {
               first_name,
               middle_name,
               last_name,
-              suffix
+              suffix,
+              birthdate,
+              gender,
+              contact_number
             )
           `)
           .in('user_id', linkedUserIds);
@@ -660,6 +687,28 @@ export default function GenerateReportsPage({ userProfile }) {
   const patientById = useMemo(() => {
     return new Map(patients.map((row) => [Number(row.Patient_ID || 0), row]));
   }, [patients]);
+
+  const patientReportRows = useMemo(() => {
+    return patients.map((patient) => {
+      const linkedUser = patientUsersById[Number(patient.User_ID || 0)] || null;
+      const details = getPatientUserDetails(linkedUser);
+
+      return {
+        patientId: Number(patient.Patient_ID || 0),
+        patientCode: String(patient.Patient_Code || `Patient #${patient.Patient_ID}`).trim(),
+        patientName: getPatientFullName(patient, linkedUser),
+        email: String(linkedUser?.email || '').trim() || 'N/A',
+        age: computeAge(details?.birthdate),
+        gender: String(details?.gender || '').trim() || 'N/A',
+        contactNumber: String(details?.contact_number || '').trim() || 'N/A',
+        medicalCondition: String(patient.Medical_Condition || '').trim() || 'N/A',
+        diagnosisDate: patient.Date_of_Diagnosis || null,
+        guardian: String(patient.Guardian || '').trim() || 'N/A',
+        guardianContact: String(patient.Guardian_Contact_Number || '').trim() || 'N/A',
+        registeredAt: patient.Created_At || null,
+      };
+    });
+  }, [patients, patientUsersById]);
 
   const currentScheduleByReqId = useMemo(() => {
     const map = new Map();
@@ -747,6 +796,40 @@ export default function GenerateReportsPage({ userProfile }) {
     });
   }, [reportRows, statusFilter, dateFrom, dateTo, searchTerm]);
 
+  const filteredPatientRows = useMemo(() => {
+    const normalizedQuery = normalizeText(searchTerm);
+
+    return patientReportRows.filter((row) => {
+      if (dateFrom) {
+        const fromDate = new Date(`${dateFrom}T00:00:00`);
+        const registeredAt = row.registeredAt ? new Date(row.registeredAt) : null;
+        if (!registeredAt || registeredAt < fromDate) return false;
+      }
+
+      if (dateTo) {
+        const toDate = new Date(`${dateTo}T23:59:59`);
+        const registeredAt = row.registeredAt ? new Date(row.registeredAt) : null;
+        if (!registeredAt || registeredAt > toDate) return false;
+      }
+
+      if (!normalizedQuery) return true;
+
+      return [
+        row.patientCode,
+        row.patientName,
+        row.email,
+        row.gender,
+        row.contactNumber,
+        row.medicalCondition,
+        row.guardian,
+      ]
+        .map(normalizeText)
+        .filter(Boolean)
+        .join(' ')
+        .includes(normalizedQuery);
+    });
+  }, [patientReportRows, dateFrom, dateTo, searchTerm]);
+
   const statusDistribution = useMemo(() => {
     return STATUS_OPTIONS
       .filter((option) => option.id !== 'all')
@@ -801,25 +884,15 @@ export default function GenerateReportsPage({ userProfile }) {
   }, [filteredRows]);
 
   const reportSummary = useMemo(() => {
-    const currentDate = new Date();
-    const generatedThisMonth = generatedHistory.filter((row) => {
-      const parsed = new Date(row.generatedAt);
-      return (
-        parsed.getFullYear() === currentDate.getFullYear()
-        && parsed.getMonth() === currentDate.getMonth()
-      );
-    }).length;
-
-    const activeSchedules = scheduledReports.filter((row) => row.status === 'Active').length;
     const pendingReview = filteredRows.filter((row) => row.statusKey === 'pending').length;
 
     return [
-      { label: 'Generated This Month', value: String(generatedThisMonth) },
-      { label: 'Active Schedules', value: String(activeSchedules) },
+      { label: 'Hospital Patients', value: String(patients.length) },
+      { label: 'Wig Requests', value: String(reportRows.length) },
       { label: 'Pending Review', value: String(pendingReview) },
       { label: 'Exports', value: String(generatedHistory.length) },
     ];
-  }, [generatedHistory, scheduledReports, filteredRows]);
+  }, [generatedHistory, filteredRows, patients.length, reportRows.length]);
 
   const activeTemplate = useMemo(() => {
     return REPORT_TEMPLATES.find((template) => template.id === selectedTemplateId) || REPORT_TEMPLATES[0];
@@ -828,6 +901,42 @@ export default function GenerateReportsPage({ userProfile }) {
   const buildReportPayload = useCallback((templateId, sourceRows) => {
     const generatedAt = new Date();
     const baseSubtitle = `Scope: ${hospitalName || (hospitalId ? `H-Representative #${hospitalId}` : 'Not assigned')} | Generated: ${formatDateTime(generatedAt.toISOString())}`;
+
+    if (templateId === 'patient_registry') {
+      const withMedicalCondition = sourceRows.filter((row) => row.medicalCondition !== 'N/A').length;
+      const withGuardian = sourceRows.filter((row) => row.guardian !== 'N/A').length;
+
+      return {
+        filePrefix: 'Patient_Registry',
+        title: 'Hospital Patient Registry',
+        subtitle: baseSubtitle,
+        summary: [
+          { label: 'Total Patients', value: String(sourceRows.length) },
+          { label: 'With Medical Condition', value: String(withMedicalCondition) },
+          { label: 'With Guardian Details', value: String(withGuardian) },
+        ],
+        columns: [
+          { key: 'patientCode', label: 'Patient Code' },
+          { key: 'patientName', label: 'Patient Name' },
+          { key: 'age', label: 'Age' },
+          { key: 'gender', label: 'Gender' },
+          { key: 'medicalCondition', label: 'Medical Condition' },
+          { key: 'diagnosisDateLabel', label: 'Diagnosis Date' },
+          { key: 'contactNumber', label: 'Contact' },
+          { key: 'registeredAtLabel', label: 'Registered' },
+        ],
+        rows: sourceRows.map((row) => ({
+          patientCode: row.patientCode,
+          patientName: row.patientName,
+          age: row.age,
+          gender: row.gender,
+          medicalCondition: row.medicalCondition,
+          diagnosisDateLabel: formatDateOnly(row.diagnosisDate),
+          contactNumber: row.contactNumber,
+          registeredAtLabel: formatDateTime(row.registeredAt),
+        })),
+      };
+    }
 
     if (templateId === 'status_distribution') {
       const grouped = STATUS_OPTIONS
@@ -983,9 +1092,14 @@ export default function GenerateReportsPage({ userProfile }) {
     };
   }, [hospitalName, hospitalId]);
 
+  const activeSourceRows = useMemo(
+    () => (activeTemplate.id === 'patient_registry' ? filteredPatientRows : filteredRows),
+    [activeTemplate.id, filteredPatientRows, filteredRows],
+  );
+
   const activePayload = useMemo(() => {
-    return buildReportPayload(activeTemplate.id, filteredRows);
-  }, [activeTemplate.id, filteredRows, buildReportPayload]);
+    return buildReportPayload(activeTemplate.id, activeSourceRows);
+  }, [activeTemplate.id, activeSourceRows, buildReportPayload]);
 
   const pieColors = ['#0f766e', '#0ea5e9', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6', '#6366f1', '#64748b', '#22c55e'];
 
@@ -1055,7 +1169,7 @@ export default function GenerateReportsPage({ userProfile }) {
         doc.text(headerLines, 14, y);
         y += headerLines.length * 4.2 + 1;
 
-        payload.rows.slice(0, 60).forEach((row) => {
+        payload.rows.forEach((row) => {
           const lineRaw = payload.columns.map((column) => String(row[column.key] ?? '')).join(' | ');
           const wrapped = doc.splitTextToSize(lineRaw, 182);
 
@@ -1105,14 +1219,20 @@ export default function GenerateReportsPage({ userProfile }) {
 
   const handleAddSchedule = () => {
     const template = REPORT_TEMPLATES.find((item) => item.id === scheduleForm.templateId);
+    const recipientEmails = parseRecipientEmails(scheduleForm.recipients);
 
     if (!scheduleForm.title.trim()) {
       setNotice({ kind: 'error', text: 'Schedule title is required.' });
       return;
     }
 
-    if (!scheduleForm.recipients.trim()) {
+    if (recipientEmails.length === 0) {
       setNotice({ kind: 'error', text: 'At least one recipient email is required.' });
+      return;
+    }
+
+    if (recipientEmails.some((email) => !isValidEmail(email))) {
+      setNotice({ kind: 'error', text: 'Enter valid recipient emails separated by commas.' });
       return;
     }
 
@@ -1123,7 +1243,7 @@ export default function GenerateReportsPage({ userProfile }) {
       cadence: scheduleForm.cadence,
       time: scheduleForm.time,
       format: scheduleForm.format,
-      recipients: scheduleForm.recipients.trim(),
+      recipients: recipientEmails.join(', '),
       status: 'Active',
       createdAt: new Date().toISOString(),
       lastRunAt: null,
@@ -1144,10 +1264,11 @@ export default function GenerateReportsPage({ userProfile }) {
   };
 
   const handleRunScheduleNow = async (schedule) => {
+    const sourceRows = schedule.templateId === 'patient_registry' ? patientReportRows : reportRows;
     await handleGenerate({
       templateId: schedule.templateId,
       format: schedule.format,
-      sourceRows: reportRows,
+      sourceRows,
       sourceType: 'scheduled',
       scheduleId: schedule.id,
     });
@@ -1168,11 +1289,26 @@ export default function GenerateReportsPage({ userProfile }) {
   };
 
   const handleQuickGenerate = async (format) => {
+    if (dateFrom && dateTo && new Date(dateFrom) > new Date(dateTo)) {
+      setNotice({ kind: 'error', text: 'Date From cannot be later than Date To.' });
+      return;
+    }
+
     await handleGenerate({
       templateId: selectedTemplateId,
       format,
-      sourceRows: filteredRows,
+      sourceRows: activeSourceRows,
       sourceType: 'manual',
+    });
+  };
+
+  const handleRegenerateHistory = async (historyRow) => {
+    const sourceRows = historyRow.templateId === 'patient_registry' ? patientReportRows : reportRows;
+    await handleGenerate({
+      templateId: historyRow.templateId,
+      format: String(historyRow.format || 'CSV').toLowerCase(),
+      sourceRows,
+      sourceType: 'history',
     });
   };
 
@@ -1266,6 +1402,7 @@ export default function GenerateReportsPage({ userProfile }) {
                 <select
                   value={statusFilter}
                   onChange={(event) => setStatusFilter(event.target.value)}
+                  disabled={activeTemplate.id === 'patient_registry'}
                   className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800"
                 >
                   {STATUS_OPTIONS.map((option) => (
@@ -1286,9 +1423,26 @@ export default function GenerateReportsPage({ userProfile }) {
               </div>
             </div>
 
-            <p className="mt-2 text-xs text-gray-500">
-              Current scope rows: <span className="font-semibold text-gray-700">{filteredRows.length}</span>
-            </p>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-gray-500">
+                Current scope rows: <span className="font-semibold text-gray-700">{activeSourceRows.length}</span>
+                {activeTemplate.id === 'patient_registry' ? ' patients' : ' requests'}
+              </p>
+              {(dateFrom || dateTo || statusFilter !== 'all' || searchTerm) ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDateFrom('');
+                    setDateTo('');
+                    setStatusFilter('all');
+                    setSearchTerm('');
+                  }}
+                  className="text-xs font-semibold text-blue-700 hover:text-blue-800"
+                >
+                  Clear all filters
+                </button>
+              ) : null}
+            </div>
           </section>
 
           <section className="rounded-xl border border-gray-200 bg-white p-4">
@@ -1312,7 +1466,10 @@ export default function GenerateReportsPage({ userProfile }) {
                     </p>
                     <button
                       type="button"
-                      onClick={() => setSelectedTemplateId(template.id)}
+                      onClick={() => {
+                        setSelectedTemplateId(template.id);
+                        if (template.id === 'patient_registry') setStatusFilter('all');
+                      }}
                       className={`mt-3 rounded-md px-3 py-1.5 text-xs font-semibold ${
                         isActive
                           ? 'bg-white text-slate-900'
@@ -1644,8 +1801,17 @@ export default function GenerateReportsPage({ userProfile }) {
 
       {activeTab === 'history' && (
         <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-          <div className="border-b border-gray-200 px-4 py-3">
+          <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
             <h2 className="text-lg font-semibold text-gray-900">Generated Files</h2>
+            {generatedHistory.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setGeneratedHistory([])}
+                className="text-xs font-semibold text-red-700 hover:text-red-800"
+              >
+                Clear history
+              </button>
+            ) : null}
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -1657,12 +1823,13 @@ export default function GenerateReportsPage({ userProfile }) {
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">Rows</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">Generated By</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">Generated At</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-700">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {generatedHistory.length === 0 ? (
                   <tr className="border-t border-gray-200">
-                    <td className="px-4 py-4 text-gray-500" colSpan={6}>No generated reports yet.</td>
+                    <td className="px-4 py-4 text-gray-500" colSpan={7}>No generated reports yet.</td>
                   </tr>
                 ) : (
                   generatedHistory.map((row) => (
@@ -1673,6 +1840,25 @@ export default function GenerateReportsPage({ userProfile }) {
                       <td className="px-4 py-3 text-gray-700">{row.rowCount}</td>
                       <td className="px-4 py-3 text-gray-700">{row.generatedBy}</td>
                       <td className="px-4 py-3 text-gray-700">{formatDateTime(row.generatedAt)}</td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="inline-flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleRegenerateHistory(row)}
+                            disabled={isGenerating || isLoading || isResolvingHospital}
+                            className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                          >
+                            <Download size={12} /> Generate Again
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setGeneratedHistory((previous) => previous.filter((item) => item.id !== row.id))}
+                            className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+                          >
+                            <Trash2 size={12} /> Remove
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -1685,7 +1871,7 @@ export default function GenerateReportsPage({ userProfile }) {
       <div className="rounded-xl border border-gray-200 bg-white p-3 text-xs text-gray-500">
         <p className="inline-flex items-center gap-2">
           <CalendarClock size={14} />
-          Scheduled reports are managed in-app and persisted locally for this browser profile.
+          Saved report schedules and export history are private to this signed-in browser profile. Use Run Now to generate a scheduled export; automatic email delivery requires a server-side mail scheduler.
         </p>
         {!isReleaseWorkflowAvailable && (
           <p className="mt-1 text-amber-700">

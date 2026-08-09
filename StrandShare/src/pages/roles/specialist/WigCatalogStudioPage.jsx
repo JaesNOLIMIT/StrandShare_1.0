@@ -398,9 +398,16 @@ export default function WigCatalogStudioPage({ userProfile }) {
     }));
 
     try {
-      const result = await supabase.rpc('complete_wig_stock_from_bundle_scan', {
+      let result = await supabase.rpc('complete_wig_request_or_stock_from_bundle_scan', {
         p_waybill_payload: payload,
       });
+      const missingWorkflowFunction = result.error
+        && String(result.error.message || '').toLowerCase().includes('complete_wig_request_or_stock_from_bundle_scan');
+      if (missingWorkflowFunction) {
+        result = await supabase.rpc('complete_wig_stock_from_bundle_scan', {
+          p_waybill_payload: payload,
+        });
+      }
       if (result.error) throw result.error;
 
       const data = result.data || {};
@@ -414,10 +421,12 @@ export default function WigCatalogStudioPage({ userProfile }) {
       const previousStock = Number(data.previous_stock ?? 0);
       const nextStock = Number(data.next_stock ?? previousStock + 1);
       const memberCount = Number(data.member_count || 0);
+      const directToRequest = Boolean(data.direct_to_request);
+      const request = data.request || {};
 
       void logAuditAction({
         action: 'wig_catalog_bundle_scan_completed',
-        description: `bundle_id=${bundle.Bundle_ID} bundle_code=${bundleCode} wig_id=${wig.Wig_ID} stock:${previousStock}->${nextStock} members=${memberCount}`,
+        description: `bundle_id=${bundle.Bundle_ID} bundle_code=${bundleCode} wig_id=${wig.Wig_ID} stock:${previousStock}->${nextStock} members=${memberCount} direct_to_request=${directToRequest}`,
         resource: 'wig_catalog_studio',
         userProfile,
       });
@@ -427,7 +436,9 @@ export default function WigCatalogStudioPage({ userProfile }) {
         manualCode: '',
         saving: false,
         error: '',
-        success: `Bundle ${bundleCode} completed. ${wigLabel}${capLabel} stock increased from ${previousStock} to ${nextStock}; ${memberCount} linked submission${memberCount === 1 ? '' : 's'} now show Wig Created.`,
+        success: directToRequest
+          ? `Bundle ${bundleCode} completed and was reserved directly for ${request.Request_Code || `request #${request.Req_ID}`}. Catalog stock remains ${nextStock}; the request is now ready for release.`
+          : `Bundle ${bundleCode} completed. ${wigLabel}${capLabel} stock increased from ${previousStock} to ${nextStock}; ${memberCount} linked submission${memberCount === 1 ? '' : 's'} now show Wig Created.`,
       }));
       await loadInventory();
       return true;

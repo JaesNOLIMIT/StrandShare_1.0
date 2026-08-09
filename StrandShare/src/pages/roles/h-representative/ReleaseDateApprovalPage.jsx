@@ -312,7 +312,7 @@ function matchesSearch(row, query) {
   return blob.includes(query);
 }
 
-export default function ReleaseDateApprovalPage({ userProfile }) {
+export default function ReleaseDateApprovalPage({ userProfile, embedded = false }) {
   const [activeTab, setActiveTab] = useState('approvals');
   const [hospitalId, setHospitalId] = useState(null);
   const [hospitalName, setHospitalName] = useState('');
@@ -1099,7 +1099,7 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="mb-2 text-3xl font-bold text-gray-900">Release Date Approval</h1>
+        <h1 className={`${embedded ? 'text-xl' : 'mb-2 text-3xl'} font-bold text-gray-900`}>Release Date Approval</h1>
         <p className="text-gray-600">
           Review proposed release dates from staff, approve or request reschedule, and finalize releases.
         </p>
@@ -1108,7 +1108,7 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className={`${embedded ? 'hidden' : 'grid'} grid-cols-2 gap-3 md:grid-cols-4`}>
         {summaryCards.map((item) => (
           <article key={item.label} className="rounded-xl border border-gray-200 bg-white p-4">
             <p className="text-xs text-gray-500">{item.label}</p>
@@ -1141,21 +1141,23 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="border-b border-gray-200">
+        <nav className="-mb-px flex flex-wrap gap-6" aria-label="Release approval sections">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
             onClick={() => setActiveTab(tab.id)}
-            className={
+            className={`border-b-2 px-1 py-3 text-sm font-semibold transition-colors ${
               activeTab === tab.id
-                ? 'rounded-lg border border-slate-900 bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white'
-                : 'rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-50'
-            }
+                ? 'border-slate-900 text-slate-900'
+                : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-800'
+            }`}
           >
             {tab.label}
           </button>
         ))}
+        </nav>
       </div>
 
       {notice.text && (
@@ -1185,6 +1187,74 @@ export default function ReleaseDateApprovalPage({ userProfile }) {
             </div>
           ) : filteredQueueRows.length === 0 ? (
             <div className="px-4 py-8 text-sm text-gray-600">No records in release approval queue.</div>
+          ) : embedded ? (
+            <div className="grid grid-cols-1 gap-3 bg-slate-50 p-4 lg:grid-cols-2 2xl:grid-cols-3">
+              {filteredQueueRows.map((row) => {
+                const canQuickAct = rowCanApprove(row);
+                return (
+                  <article key={row.reqId} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <button type="button" onClick={() => setSelectedRow(row)} className="block w-full text-left">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{row.requestId}</p>
+                          <h3 className="mt-1 text-sm font-bold text-slate-900">{row.patientName}</h3>
+                          <p className="text-[11px] text-slate-500">{row.patientCode || 'No patient code'}</p>
+                        </div>
+                        <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${statusClass(row.status)}`}>
+                          {row.statusLabel}
+                        </span>
+                      </div>
+
+                      <dl className="mt-3 space-y-2 border-t border-slate-100 pt-3 text-xs">
+                        <div>
+                          <dt className="text-slate-500">Medical condition</dt>
+                          <dd className="font-semibold text-slate-800">{row.medicalCondition}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Proposed release date</dt>
+                          <dd className="font-semibold text-slate-800">{formatDateTime(row.releaseDate)}</dd>
+                        </div>
+                      </dl>
+                    </button>
+
+                    <div className="mt-4 grid grid-cols-2 gap-2">
+                      {canQuickAct ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setQuickApproveTarget(row)}
+                            disabled={isApplyingDecision}
+                            className="inline-flex items-center justify-center gap-1 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+                          >
+                            <Check size={13} /> Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQuickRescheduleReason('');
+                              setQuickRescheduleAttempted(false);
+                              setQuickRescheduleTarget(row);
+                            }}
+                            disabled={isApplyingDecision}
+                            className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                          >
+                            <CalendarDays size={13} /> Reschedule
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedRow(row)}
+                          className="col-span-2 inline-flex items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          <Info size={13} /> View Details
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">

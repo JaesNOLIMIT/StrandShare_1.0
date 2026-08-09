@@ -19,6 +19,7 @@
     "lucide-react": "^0.263.1",
     "maplibre-gl": "^5.24.0",
     "nodemailer": "^8.0.7",
+    "pdfjs-dist": "5.4.530",
     "postcss": "^8.4.24",
     "qrcode": "^1.5.4",
     "react": "^18.2.0",
@@ -29,6 +30,7 @@
     "react-select": "^5.10.2",
     "recharts": "^2.8.0",
     "tailwindcss": "^3.3.0",
+    "tesseract.js": "7.0.0",
     "three": "^0.169.0"
   },
   "scripts": {
@@ -64,4 +66,3 @@
     ]
   }
 }
-

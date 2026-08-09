@@ -39,6 +39,8 @@ const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const WIG_SPECIFICATIONS_TABLE = 'Wig_Specifications';
 const WIGS_TABLE = 'Wigs';
+const WIG_REQUESTS_TABLE = 'Wig_Requests';
+const PATIENTS_TABLE = 'Patients';
 const USER_DETAILS_TABLE = 'user_details';
 const SCAN_DEBOUNCE_MS = 2000;
 const INITIAL_CONFIRM_MODAL = {
@@ -154,6 +156,8 @@ export default function BundlingPage() {
   const [activePrintBundle, setActivePrintBundle] = useState(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [wigSpecOptions, setWigSpecOptions] = useState([]);
+  const [wishRequests, setWishRequests] = useState([]);
+  const [openingWishRequestId, setOpeningWishRequestId] = useState(null);
   const [scannerDraftBundleId, setScannerDraftBundleId] = useState(null);
   const [scannerWaybillCode, setScannerWaybillCode] = useState('');
   const [scannerSpecId, setScannerSpecId] = useState('');
@@ -208,7 +212,7 @@ export default function BundlingPage() {
         }, {});
       }
 
-      setWigSpecOptions(specs.map((row) => {
+      const nextSpecOptions = specs.map((row) => {
         const wig = wigNamesById[Number(row.Wig_ID || 0)] || {};
         const labelParts = [
           wig.Wig_Name || wig.Wig_Code || `Wig #${row.Wig_ID}`,
@@ -233,13 +237,67 @@ export default function BundlingPage() {
           style: row.Style || '',
           label: labelParts.join(' | '),
         };
+      });
+      setWigSpecOptions(nextSpecOptions);
+
+      const wishResult = await supabase
+        .from(WIG_REQUESTS_TABLE)
+        .select('Req_ID, Request_Code, Patient_ID, Hospital_ID, Status, Request_Date, Requested_Wig_ID, Requested_Wig_Specification_ID, Requested_Cap_Size, Is_Wish_Request, Fulfillment_Status, Fulfillment_Bundle_ID')
+        .eq('Is_Wish_Request', true)
+        .order('Request_Date', { ascending: true })
+        .limit(200);
+      const wishWorkflowUnavailable = Boolean(wishResult.error);
+      const actionableWishRows = (wishResult.error ? [] : (wishResult.data || [])).filter((row) => {
+        const statusKey = String(row.Status || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const fulfillmentKey = String(row.Fulfillment_Status || '').toLowerCase();
+        return ['acceptednowigavailable', 'inproduction'].includes(statusKey)
+          && !['ready_for_release', 'fulfilled', 'released'].includes(fulfillmentKey);
+      });
+
+      const patientIds = Array.from(new Set(actionableWishRows.map((row) => Number(row.Patient_ID || 0)).filter(Boolean)));
+      let patientById = {};
+      if (patientIds.length) {
+        const patientResult = await supabase
+          .from(PATIENTS_TABLE)
+          .select('Patient_ID, Patient_Code, User_ID, Medical_Condition')
+          .in('Patient_ID', patientIds);
+        if (patientResult.error) throw patientResult.error;
+        patientById = (patientResult.data || []).reduce((acc, patient) => {
+          acc[Number(patient.Patient_ID)] = patient;
+          return acc;
+        }, {});
+      }
+
+      setWishRequests(actionableWishRows.map((row) => {
+        const specification = nextSpecOptions.find(
+          (option) => Number(option.Wig_Specification_ID) === Number(row.Requested_Wig_Specification_ID),
+        ) || nextSpecOptions.find((option) => Number(option.Wig_ID) === Number(row.Requested_Wig_ID)) || null;
+        const patient = patientById[Number(row.Patient_ID)] || {};
+        return {
+          ...row,
+          patientCode: patient.Patient_Code || `Patient #${row.Patient_ID}`,
+          medicalCondition: patient.Medical_Condition || '',
+          specification,
+        };
       }));
 
-      const bundlesResult = await supabase
+      if (wishWorkflowUnavailable) {
+        setNotice({ kind: 'warning', text: 'Requested-wig production queue is not active yet. Apply the new Supabase fulfillment migration to enable it.' });
+      }
+
+      let bundlesResult = await supabase
         .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-        .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At, Created_By, Wig_Specification_ID')
+        .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At, Created_By, Wig_Specification_ID, Wig_Request_ID')
         .order('Created_At', { ascending: false })
         .limit(100);
+
+      if (bundlesResult.error && String(bundlesResult.error.message || '').toLowerCase().includes('wig_request_id')) {
+        bundlesResult = await supabase
+          .from(HAIR_SUBMISSION_BUNDLES_TABLE)
+          .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At, Created_By, Wig_Specification_ID')
+          .order('Created_At', { ascending: false })
+          .limit(100);
+      }
 
       if (bundlesResult.error) throw bundlesResult.error;
       const bundleRows = bundlesResult.data || [];
@@ -595,6 +653,42 @@ export default function BundlingPage() {
       setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to open draft bundle.') });
     } finally {
       setIsOpeningScannerBundle(false);
+    }
+  };
+
+  const handleOpenWishRequestDraft = async (requestRow) => {
+    const requestId = Number(requestRow?.Req_ID || 0);
+    if (!requestId) return;
+    if (draftCount >= 3) {
+      setNotice({ kind: 'warning', text: 'You already have 3 open drafts. Close or delete one before opening this requested wig.' });
+      return;
+    }
+
+    setOpeningWishRequestId(requestId);
+    setNotice({ kind: '', text: '' });
+    try {
+      const result = await supabase.rpc('create_wig_request_bundle_draft', {
+        p_wig_request_id: requestId,
+        p_notes: `Requested wig for ${requestRow.patientCode || `patient #${requestRow.Patient_ID}`}`,
+      });
+      if (result.error) throw result.error;
+      const bundle = result.data?.bundle || {};
+      const bundleId = Number(bundle.Bundle_ID || 0);
+      if (!bundleId) throw new Error('The linked draft was created but no Bundle_ID was returned.');
+
+      setScannerSpecId(String(bundle.Wig_Specification_ID || requestRow.Requested_Wig_Specification_ID || ''));
+      setScannerNotes(bundle.Notes || '');
+      setScannerDraftBundleId(bundleId);
+      setSelectedKey(`draft-${bundleId}`);
+      await loadData();
+      setNotice({
+        kind: 'success',
+        text: `${requestRow.Request_Code || `Request #${requestId}`} is linked to draft #${bundleId}. Wig, cap size, patient, and request references were assigned automatically.`,
+      });
+    } catch (error) {
+      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to open the requested wig draft.') });
+    } finally {
+      setOpeningWishRequestId(null);
     }
   };
 
@@ -1122,6 +1216,56 @@ export default function BundlingPage() {
           {notice.text}
         </div>
       )}
+
+      {wishRequests.length > 0 ? (
+      <section className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-sm font-bold text-amber-950">
+              <AlertCircle size={16} /> Requested wigs without stock
+            </h2>
+            <p className="mt-0.5 text-xs text-amber-800">Accepted hospital wishes appear here first. Opening a draft locks the request to one production bundle.</p>
+          </div>
+          <span className="rounded-full bg-amber-200 px-2.5 py-1 text-xs font-bold text-amber-950">{wishRequests.length} waiting</span>
+        </div>
+        <div className="grid gap-3 p-4 lg:grid-cols-2">
+            {wishRequests.map((requestRow) => {
+              const specification = requestRow.specification || {};
+              const hasDraft = Boolean(requestRow.Fulfillment_Bundle_ID);
+              return (
+                <article key={requestRow.Req_ID} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-mono text-xs font-bold text-slate-900">{requestRow.Request_Code || `WR-${requestRow.Req_ID}`}</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">{specification.wigName || `Wig #${requestRow.Requested_Wig_ID}`}</p>
+                      <p className="mt-0.5 text-xs text-slate-600">
+                        {requestRow.patientCode} · Cap {requestRow.Requested_Cap_Size || specification.capSize || 'N/A'}
+                      </p>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        {specification.style || specification.hairTexture || 'Style N/A'}
+                        {requestRow.medicalCondition ? ` · ${requestRow.medicalCondition}` : ''}
+                      </p>
+                    </div>
+                    <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold uppercase text-amber-800 ring-1 ring-amber-200">
+                      {String(requestRow.Fulfillment_Status || 'awaiting production').replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenWishRequestDraft(requestRow)}
+                    disabled={hasDraft || openingWishRequestId === requestRow.Req_ID || draftCount >= 3}
+                    className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-white disabled:opacity-55"
+                    style={{ backgroundColor: primaryColor }}
+                  >
+                    {openingWishRequestId === requestRow.Req_ID ? <Loader2 size={14} className="animate-spin" /> : <Package size={14} />}
+                    {hasDraft ? `Draft #${requestRow.Fulfillment_Bundle_ID} linked` : 'Open auto-filled draft'}
+                  </button>
+                </article>
+              );
+            })}
+        </div>
+      </section>
+      ) : null}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {stats.map((s) => {

@@ -2,44 +2,37 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
-  ClipboardList,
   FileText,
   Loader2,
-  Mail,
-  Paperclip,
   Plus,
   RefreshCw,
   Search,
-  Stethoscope,
   UploadCloud,
-  User,
   UserPlus,
   Users,
   X,
 } from 'lucide-react';
-import { createClient } from '@supabase/supabase-js';
 import { useTheme } from '../../../context/ThemeContext';
 import {
   isSupabaseConfigured,
   supabase,
 } from '../../../lib/supabaseClient';
+import {
+  extractMedicalDocumentText,
+  parseMedicalDocumentFields,
+} from '../../../lib/medicalDocumentAutofill';
 
 const PATIENTS_TABLE = 'Patients';
 const USERS_TABLE = 'users';
 const USER_DETAILS_TABLE = 'user_details';
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
-const HOSPITALS_TABLE = 'Hospitals';
 const PATIENT_ASSETS_BUCKET = 'patient_assets';
 const PH_MOBILE_REGEX = /^\+63 9\d{2} \d{3} \d{4}$/;
 const PST_TIMEZONE = 'Asia/Manila';
 const PST_OFFSET = '+08:00';
-let patientInviteAdminClient = null;
 
 const EMPTY_FORM = {
   email: '',
-  patientCode: '',
   accessStart: '',
   accessEnd: '',
   firstName: '',
@@ -62,13 +55,20 @@ const GENDER_OPTIONS = [
   { id: 'Prefer not to say', label: 'Prefer not to say' },
 ];
 
-const WIZARD_STEPS = [
-  { id: 1, label: 'Account', icon: Mail },
-  { id: 2, label: 'Identity', icon: User },
-  { id: 3, label: 'Clinical', icon: Stethoscope },
-  { id: 4, label: 'Attachments', icon: Paperclip },
-  { id: 5, label: 'Review', icon: ClipboardList },
-];
+const AUTOFILL_FIELD_LABELS = {
+  email: 'Email',
+  firstName: 'First name',
+  middleName: 'Middle name',
+  lastName: 'Last name',
+  suffix: 'Suffix',
+  birthdate: 'Birthdate',
+  gender: 'Gender',
+  dateOfDiagnosis: 'Diagnosis date',
+  guardian: 'Guardian',
+  guardianContactNumber: 'Guardian contact',
+  guardianRelationship: 'Guardian relationship',
+  medicalCondition: 'Medical condition',
+};
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
@@ -211,16 +211,6 @@ function shuffleArray(values) {
 
 function buildRandomPatientCode() {
   return `PT${String(Math.floor(Math.random() * 1000000)).padStart(6, '0')}`;
-}
-
-function normalizePatientCodeInput(value) {
-  const raw = String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const digits = raw.replace(/^PT/, '').replace(/\D/g, '').slice(0, 6);
-  return `PT${digits}`;
-}
-
-function isValidPatientCode(value) {
-  return /^PT\d{6}$/.test(String(value || '').trim().toUpperCase());
 }
 
 function generateTemporaryPassword() {
@@ -371,30 +361,6 @@ function buildDisplayName({ firstName, middleName, lastName, suffix }) {
     .trim();
 }
 
-function createPatientInviteAdminClient() {
-  if (patientInviteAdminClient) {
-    return patientInviteAdminClient;
-  }
-
-  const url = process.env.REACT_APP_SUPABASE_URL;
-  const serviceRoleKey = process.env.REACT_APP_SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !serviceRoleKey) {
-    return null;
-  }
-
-  patientInviteAdminClient = createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-      storageKey: 'Donivra-hospital-patient-invite-auth-client',
-    },
-  });
-
-  return patientInviteAdminClient;
-}
-
 function getPatientFullName(userRow, patientRow = null) {
   const details = pickPreferredUserDetails(userRow?.user_details);
 
@@ -432,8 +398,13 @@ function mapAuthSignupError(rawMessage) {
   const message = String(rawMessage || 'Unable to create authentication account.');
   const lowerMessage = message.toLowerCase();
 
-  if (!message || lowerMessage.includes('missing-service-role')) {
-    return 'Invite email service is not configured. Add REACT_APP_SUPABASE_SERVICE_ROLE_KEY in .env.local and restart the app.';
+  if (
+    !message
+    || lowerMessage.includes('failed to send a request')
+    || lowerMessage.includes('function not found')
+    || lowerMessage.includes('non-2xx status')
+  ) {
+    return 'Patient invite service is not active. Deploy the invite-patient-account Edge Function, then retry.';
   }
 
   if (lowerMessage.includes('already registered') || lowerMessage.includes('already been registered')) {
@@ -475,7 +446,7 @@ function mapPatientInsertError(rawMessage) {
   }
 
   if (lowerMessage.includes('row-level security')) {
-    return 'Action blocked by database policy. Verify your hospital role permissions.';
+    return 'Patient creation was denied by the database. Refresh the page and try again. If it continues, sign out and back in so your hospital assignment is refreshed.';
   }
 
   return message;
@@ -522,6 +493,9 @@ function extractReadableErrorText(error, fallback = 'Unable to process this requ
 export default function ManagePatientsPage({ userProfile }) {
   const { theme } = useTheme();
   const submitLockRef = useRef(false);
+  const errorToastIdRef = useRef(0);
+  const documentAutofillRunRef = useRef(0);
+  const formRef = useRef({ ...EMPTY_FORM });
 
   const [hospitalId, setHospitalId] = useState(null);
   const [hospitalName, setHospitalName] = useState('');
@@ -531,28 +505,54 @@ export default function ManagePatientsPage({ userProfile }) {
 
   const [form, setForm] = useState(() => ({
     ...EMPTY_FORM,
-    patientCode: buildRandomPatientCode(),
   }));
+
+  useEffect(() => {
+    formRef.current = form;
+  }, [form]);
 
   const [patientPictureFile, setPatientPictureFile] = useState(null);
   const [medicalDocumentFile, setMedicalDocumentFile] = useState(null);
   const [patientPicturePreviewUrl, setPatientPicturePreviewUrl] = useState('');
   const [medicalDocumentPreviewUrl, setMedicalDocumentPreviewUrl] = useState('');
+  const [documentAutofill, setDocumentAutofill] = useState({
+    status: 'idle',
+    message: '',
+    fieldNames: [],
+    progress: 0,
+  });
 
   const [isResolvingHospital, setIsResolvingHospital] = useState(false);
   const [isLoadingPatients, setIsLoadingPatients] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   const [notice, setNotice] = useState({ kind: '', text: '' });
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [successPopup, setSuccessPopup] = useState({ open: false, text: '' });
+  const [errorToasts, setErrorToasts] = useState([]);
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
 
   const [activeTab, setActiveTab] = useState('directory');
-  const [wizardStep, setWizardStep] = useState(1);
-  const [stepError, setStepError] = useState('');
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [genderFilter, setGenderFilter] = useState('all');
   const [filesFilter, setFilesFilter] = useState('all');
+
+  useEffect(() => {
+    if (notice.kind !== 'error' || !notice.text) return;
+
+    errorToastIdRef.current += 1;
+    const errorToast = {
+      id: errorToastIdRef.current,
+      text: notice.text,
+    };
+
+    setErrorToasts((previous) => [...previous, errorToast].slice(-5));
+    setNotice({ kind: '', text: '' });
+  }, [notice.kind, notice.text]);
+
+  const dismissErrorToast = useCallback((toastId) => {
+    setErrorToasts((previous) => previous.filter((toast) => toast.id !== toastId));
+  }, []);
 
   const patientUsersById = useMemo(() => {
     const map = new Map();
@@ -566,6 +566,12 @@ export default function ManagePatientsPage({ userProfile }) {
     const age = computeAgeFromBirthdate(form.birthdate);
     return age === '' ? '' : String(age);
   }, [form.birthdate]);
+  const confirmationPatientName = useMemo(() => buildDisplayName({
+    firstName: form.firstName,
+    middleName: form.middleName,
+    lastName: form.lastName,
+    suffix: form.suffix,
+  }), [form.firstName, form.middleName, form.lastName, form.suffix]);
   const nowLocalDateTimeValue = useMemo(() => formatDateForInput(new Date()), []);
   const todayDateValue = useMemo(() => formatDateForInput(new Date()).slice(0, 10), []);
 
@@ -804,94 +810,20 @@ export default function ManagePatientsPage({ userProfile }) {
   }, [enrichedPatients, patientSearchTerm, genderFilter, filesFilter]);
 
   const resetForm = useCallback(() => {
-    setForm({
+    documentAutofillRunRef.current += 1;
+    const emptyForm = {
       ...EMPTY_FORM,
-      patientCode: buildRandomPatientCode(),
-    });
+    };
+    formRef.current = emptyForm;
+    setForm(emptyForm);
     setPatientPictureFile(null);
     setMedicalDocumentFile(null);
-    setWizardStep(1);
-    setStepError('');
+    setConfirmationOpen(false);
+    setDocumentAutofill({ status: 'idle', message: '', fieldNames: [], progress: 0 });
   }, []);
-
-  const validateCurrentStep = useCallback(() => {
-    if (wizardStep === 1) {
-      const email = String(form.email || '').trim();
-      if (!email) return 'Patient email is required.';
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Enter a valid email address.';
-      if (!isValidPatientCode(form.patientCode)) return 'Patient code must be PT plus 6 digits (example: PT123456).';
-      const accessStart = String(form.accessStart || '').trim();
-      const accessEnd = String(form.accessEnd || '').trim();
-      if ((accessStart && !accessEnd) || (!accessStart && accessEnd)) {
-        return 'Set both Access Start and Access End, or leave both empty.';
-      }
-      const accessStartDate = phtDateTimeLocalToDate(accessStart);
-      const accessEndDate = phtDateTimeLocalToDate(accessEnd);
-      if (accessStartDate && accessStartDate.getTime() < Date.now()) {
-        return 'Access Start cannot be in the past (PST).';
-      }
-      if (accessStartDate && accessEndDate && accessEndDate.getTime() <= accessStartDate.getTime()) {
-        return 'Access End must be later than Access Start.';
-      }
-      return '';
-    }
-
-    if (wizardStep === 2) {
-      if (!String(form.firstName || '').trim()) return 'First name is required.';
-      if (!String(form.lastName || '').trim()) return 'Last name is required.';
-      if (!String(form.birthdate || '').trim()) return 'Birthdate is required.';
-      if (new Date(form.birthdate) > new Date()) return 'Birthdate cannot be in the future.';
-      if (!normalizePatientGender(form.gender)) return 'Gender is required.';
-      return '';
-    }
-
-    if (wizardStep === 3) {
-      const contact = String(form.guardianContactNumber || '').trim();
-      if (contact && !isValidPhilippineMobileNumber(contact)) {
-        return 'Guardian contact number must use +63 912 345 6789 format.';
-      }
-      if (String(form.dateOfDiagnosis || '').trim() && new Date(form.dateOfDiagnosis) > new Date()) {
-        return 'Date of diagnosis cannot be in the future.';
-      }
-      return '';
-    }
-
-    return '';
-  }, [wizardStep, form]);
-
-  const handleNextStep = useCallback(() => {
-    const error = validateCurrentStep();
-    if (error) {
-      setStepError(error);
-      return;
-    }
-    setStepError('');
-    setWizardStep((step) => Math.min(step + 1, WIZARD_STEPS.length));
-  }, [validateCurrentStep]);
-
-  const handlePrevStep = useCallback(() => {
-    setStepError('');
-    setWizardStep((step) => Math.max(step - 1, 1));
-  }, []);
-
-  const goToStep = useCallback((targetStep) => {
-    if (targetStep < wizardStep) {
-      setStepError('');
-      setWizardStep(targetStep);
-    }
-  }, [wizardStep]);
 
   const handleInputChange = useCallback((event) => {
     const { name, value } = event.target;
-
-    if (name === 'patientCode') {
-      const normalizedCode = normalizePatientCodeInput(value);
-      setForm((previous) => ({
-        ...previous,
-        patientCode: normalizedCode,
-      }));
-      return;
-    }
 
     if (name === 'guardianContactNumber') {
       const formattedContactNumber = formatPhilippineMobileInput(value);
@@ -908,11 +840,96 @@ export default function ManagePatientsPage({ userProfile }) {
     }));
   }, []);
 
-  const generatePatientCode = useCallback(() => {
-    setForm((previous) => ({
-      ...previous,
-      patientCode: buildRandomPatientCode(),
-    }));
+  const handleMedicalDocumentChange = useCallback(async (event) => {
+    const file = event.target.files?.[0] || null;
+    const runId = documentAutofillRunRef.current + 1;
+    documentAutofillRunRef.current = runId;
+    setMedicalDocumentFile(file);
+
+    if (!file) {
+      setDocumentAutofill({ status: 'idle', message: '', fieldNames: [], progress: 0 });
+      return;
+    }
+
+    setDocumentAutofill({
+      status: 'processing',
+      message: 'Reading the medical document and looking for patient details...',
+      fieldNames: [],
+      progress: 0,
+    });
+
+    try {
+      const documentText = await extractMedicalDocumentText(file, {
+        onProgress: ({ stage, progress }) => {
+          if (documentAutofillRunRef.current !== runId) return;
+          const percent = Math.max(0, Math.min(100, Math.round(Number(progress || 0) * 100)));
+          const stageLabel = stage === 'reading-pdf'
+            ? 'Reading PDF text'
+            : stage === 'scanning-pdf'
+              ? 'Preparing scanned PDF page'
+              : 'Recognizing document text';
+          setDocumentAutofill((previous) => ({
+            ...previous,
+            status: 'processing',
+            message: `${stageLabel}${percent ? ` (${percent}%)` : ''}...`,
+            progress: percent,
+          }));
+        },
+      });
+
+      if (documentAutofillRunRef.current !== runId) return;
+
+      const recognizedFields = parseMedicalDocumentFields(documentText);
+      const appliedFieldNames = [];
+      const nextForm = { ...formRef.current };
+
+      Object.entries(recognizedFields).forEach(([fieldName, value]) => {
+        if (!String(formRef.current[fieldName] || '').trim() && String(value || '').trim()) {
+          nextForm[fieldName] = value;
+          appliedFieldNames.push(fieldName);
+        }
+      });
+
+      if (appliedFieldNames.length > 0) {
+        formRef.current = nextForm;
+        setForm(nextForm);
+      }
+
+      if (appliedFieldNames.length > 0) {
+        setDocumentAutofill({
+          status: 'success',
+          message: `Filled ${appliedFieldNames.length} empty field${appliedFieldNames.length === 1 ? '' : 's'}. Please review the recognized details before saving.`,
+          fieldNames: appliedFieldNames,
+          progress: 100,
+        });
+      } else if (Object.keys(recognizedFields).length > 0) {
+        setDocumentAutofill({
+          status: 'info',
+          message: 'Patient details were recognized, but the matching form fields already contain values. Nothing was overwritten.',
+          fieldNames: [],
+          progress: 100,
+        });
+      } else {
+        setDocumentAutofill({
+          status: 'info',
+          message: 'The document is attached, but no clearly labeled patient details could be recognized. You can complete the form manually.',
+          fieldNames: [],
+          progress: 100,
+        });
+      }
+    } catch (error) {
+      if (documentAutofillRunRef.current !== runId) return;
+      setDocumentAutofill({
+        status: 'info',
+        message: 'The file is still attached. Complete or review the patient details manually.',
+        fieldNames: [],
+        progress: 0,
+      });
+      setNotice({
+        kind: 'error',
+        text: error.message || 'Unable to read this document automatically.',
+      });
+    }
   }, []);
 
   const uploadAsset = useCallback(async (file, subFolder) => {
@@ -957,29 +974,7 @@ export default function ManagePatientsPage({ userProfile }) {
     }
   }, []);
 
-  const resolveUniquePatientCode = useCallback(async (manualInputValue) => {
-    const manualCode = normalizePatientCodeInput(manualInputValue);
-
-    if (manualCode && manualCode !== 'PT') {
-      if (!isValidPatientCode(manualCode)) {
-        throw new Error('Patient code must follow PT plus 6 digits (example: PT123456).');
-      }
-
-      const { data: duplicateRow, error: duplicateError } = await supabase
-        .from(PATIENTS_TABLE)
-        .select('Patient_ID')
-        .eq('Patient_Code', manualCode)
-        .maybeSingle();
-
-      if (duplicateError) throw duplicateError;
-
-      if (duplicateRow) {
-        throw new Error('Patient code already exists. Generate a new code and try again.');
-      }
-
-      return manualCode;
-    }
-
+  const resolveUniquePatientCode = useCallback(async () => {
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const candidate = buildRandomPatientCode();
 
@@ -1007,12 +1002,6 @@ export default function ManagePatientsPage({ userProfile }) {
     accessStart,
     accessEnd,
   }) => {
-    const adminInviteClient = createPatientInviteAdminClient();
-
-    if (!adminInviteClient) {
-      throw new Error('missing-service-role');
-    }
-
     const metadata = {
       account_type: 'patient',
       decision: 'approved',
@@ -1030,32 +1019,47 @@ export default function ManagePatientsPage({ userProfile }) {
       name: displayName || '',
     };
 
-    const inviteOptions = {
-      data: metadata,
-    };
-
-    const { data, error } = await adminInviteClient.auth.admin.inviteUserByEmail(email, inviteOptions);
+    const { data, error } = await supabase.functions.invoke('invite-patient-account', {
+      body: {
+        action: 'invite',
+        hospitalId: Number(hospitalId),
+        email,
+        temporaryPassword,
+        metadata,
+      },
+    });
 
     if (error) {
       throw new Error(mapAuthSignupError(error.message));
     }
+    if (data?.error) throw new Error(mapAuthSignupError(data.error));
 
-    const authUserId = data?.user?.id || null;
+    const authUserId = data?.authUserId || null;
     if (!authUserId) {
       throw new Error('Invite was sent but auth user id was not returned.');
     }
 
-    const { error: updateAuthError } = await adminInviteClient.auth.admin.updateUserById(authUserId, {
-      email_confirm: true,
-      password: temporaryPassword,
+    return authUserId;
+  }, [hospitalId]);
+
+  const deleteInvitedPatientAuthUser = useCallback(async (authUserId) => {
+    if (!authUserId || !supabase) return;
+    await supabase.functions.invoke('invite-patient-account', {
+      body: { action: 'delete', hospitalId: Number(hospitalId), authUserId },
+    });
+  }, [hospitalId]);
+
+  const ensurePatientInviteServiceAvailable = useCallback(async () => {
+    const { data, error } = await supabase.functions.invoke('invite-patient-account', {
+      body: { action: 'authorize', hospitalId: Number(hospitalId) },
     });
 
-    if (updateAuthError) {
-      throw new Error(mapAuthSignupError(updateAuthError.message));
+    if (error) throw new Error(mapAuthSignupError(error.message));
+    if (data?.error) throw new Error(mapAuthSignupError(data.error));
+    if (data?.authorized !== true) {
+      throw new Error('Patient invite service did not authorize this hospital account.');
     }
-
-    return authUserId;
-  }, []);
+  }, [hospitalId]);
 
   const resolveOrCreatePublicUser = useCallback(async ({
     email,
@@ -1219,13 +1223,8 @@ export default function ManagePatientsPage({ userProfile }) {
     return Boolean(data?.Patient_ID);
   }, []);
 
-  const handleSubmit = async (event) => {
-    event.preventDefault();
+  const createPatientAccount = async () => {
     if (submitLockRef.current || isSaving) {
-      return;
-    }
-    if (wizardStep < WIZARD_STEPS.length) {
-      handleNextStep();
       return;
     }
     submitLockRef.current = true;
@@ -1343,7 +1342,9 @@ export default function ManagePatientsPage({ userProfile }) {
       setIsSaving(true);
       setNotice({ kind: '', text: '' });
 
-      const patientCode = await resolveUniquePatientCode(form.patientCode);
+      await ensurePatientInviteServiceAvailable();
+
+      const patientCode = await resolveUniquePatientCode();
       const temporaryPassword = generateTemporaryPassword();
       const {
         data: { session: activeHospitalSession },
@@ -1361,20 +1362,6 @@ export default function ManagePatientsPage({ userProfile }) {
 
       if (existingPublicUserByEmail?.user_id) {
         throw new Error('Patient email already exists in users table. Use a different email.');
-      }
-
-      const { data: existingHospitalRow, error: existingHospitalError } = await supabase
-        .from(HOSPITALS_TABLE)
-        .select('Hospital_ID')
-        .eq('Hospital_ID', Number(hospitalId))
-        .maybeSingle();
-
-      if (existingHospitalError) {
-        throw new Error(existingHospitalError.message || 'Unable to verify hospital before patient insert.');
-      }
-
-      if (!existingHospitalRow?.Hospital_ID) {
-        throw new Error('Hospital_ID is not valid in Hospitals table. Patient row cannot be inserted.');
       }
 
       const publicUserRow = await resolveOrCreatePublicUser({
@@ -1488,7 +1475,7 @@ export default function ManagePatientsPage({ userProfile }) {
       setActiveTab('directory');
       setSuccessPopup({
         open: true,
-        text: 'Patient was added and login credentials submitted.',
+        text: `The patient account was created and the invitation email was sent to ${normalizedEmail}.`,
       });
 
       await fetchPatients();
@@ -1514,10 +1501,7 @@ export default function ManagePatientsPage({ userProfile }) {
 
       if (createdAuthUserId) {
         try {
-          const adminInviteClient = createPatientInviteAdminClient();
-          if (adminInviteClient) {
-            await adminInviteClient.auth.admin.deleteUser(createdAuthUserId);
-          }
+          await deleteInvitedPatientAuthUser(createdAuthUserId);
         } catch {
           // Keep original error as primary response.
         }
@@ -1534,6 +1518,60 @@ export default function ManagePatientsPage({ userProfile }) {
       setIsSaving(false);
       submitLockRef.current = false;
     }
+  };
+
+  const validatePatientFormForConfirmation = useCallback(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      return 'Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.';
+    }
+    if (!hospitalId) return 'You are not assigned to any hospital. Ask Admin to assign your account first.';
+    if (documentAutofill.status === 'processing') return 'Please wait until the medical document has finished processing.';
+
+    const email = String(form.email || '').trim();
+    const guardianContactNumber = String(form.guardianContactNumber || '').trim();
+    const accessStart = String(form.accessStart || '').trim();
+    const accessEnd = String(form.accessEnd || '').trim();
+    const accessStartIso = toIsoOrNull(accessStart);
+    const accessEndIso = toIsoOrNull(accessEnd);
+
+    if (!email) return 'Patient email is required for invite email delivery.';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Enter a valid patient email address.';
+    if (!String(form.firstName || '').trim() || !String(form.lastName || '').trim()) {
+      return 'First name and last name are required.';
+    }
+    if (!String(form.birthdate || '').trim()) return 'Birthdate is required to compute age.';
+    if (!normalizePatientGender(form.gender)) return 'Gender is required.';
+    if (guardianContactNumber && !isValidPhilippineMobileNumber(guardianContactNumber)) {
+      return 'Guardian contact number must use +63 912 345 6789 format.';
+    }
+    if ((accessStart && !accessEnd) || (!accessStart && accessEnd)) {
+      return 'Access Start and Access End are both required when setting access time.';
+    }
+    if ((accessStart && !accessStartIso) || (accessEnd && !accessEndIso)) return 'Invalid access date/time value.';
+    if (accessStartIso && new Date(accessStartIso) < new Date(getPstTimestamp())) {
+      return 'Access Start cannot be in the past (PST).';
+    }
+    if (accessStartIso && accessEndIso && new Date(accessEndIso) <= new Date(accessStartIso)) {
+      return 'Access End must be later than Access Start.';
+    }
+    if (new Date(form.birthdate) > new Date()) return 'Birthdate cannot be in the future.';
+    if (String(form.dateOfDiagnosis || '').trim() && new Date(form.dateOfDiagnosis) > new Date()) {
+      return 'Date of diagnosis cannot be in the future.';
+    }
+    return '';
+  }, [documentAutofill.status, form, hospitalId]);
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    if (submitLockRef.current || isSaving) return;
+
+    const validationError = validatePatientFormForConfirmation();
+    if (validationError) {
+      setNotice({ kind: 'error', text: validationError });
+      return;
+    }
+
+    setConfirmationOpen(true);
   };
 
   const refreshPageData = async () => {
@@ -1609,13 +1647,6 @@ export default function ManagePatientsPage({ userProfile }) {
           })}
         </nav>
       </div>
-
-      {notice.kind === 'error' && notice.text && (
-        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-800">
-          <AlertTriangle size={16} />
-          <span>{notice.text}</span>
-        </div>
-      )}
 
       {activeTab === 'directory' && (
         <div className="space-y-5">
@@ -1770,66 +1801,130 @@ export default function ManagePatientsPage({ userProfile }) {
           <div className="mb-5">
             <h2 className="text-lg font-semibold text-gray-900">Create Patient Account and Record</h2>
             <p className="mt-1 text-xs text-gray-500">
-              This will create auth signup, users, user_details, and patients records in one submit.
+              Upload available files first, then review and complete the patient details before submitting.
             </p>
           </div>
 
-          <div className="mb-6">
-            <ol className="flex flex-wrap items-center gap-y-3">
-              {WIZARD_STEPS.map((step, index) => {
-                const StepIcon = step.icon;
-                const isActive = wizardStep === step.id;
-                const isComplete = wizardStep > step.id;
-                const isClickable = step.id < wizardStep;
-                const baseColor = isActive || isComplete ? theme.primaryColor : '#d1d5db';
+          <form noValidate onSubmit={handleSubmit} className="space-y-5" style={{ '--tw-ring-color': theme.primaryColor }}>
+            <div className="space-y-4 rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900">Attachments</h3>
+                <p className="text-xs text-gray-500">
+                  Upload a medical document first to fill clearly recognized empty fields automatically. All recognized details must be reviewed.
+                </p>
+              </div>
 
-                return (
-                  <li key={step.id} className="flex flex-1 items-center" style={{ minWidth: 0 }}>
-                    <button
-                      type="button"
-                      onClick={() => goToStep(step.id)}
-                      disabled={!isClickable}
-                      className="flex min-w-0 items-center gap-2"
-                    >
-                      <span
-                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white transition-colors"
-                        style={{ backgroundColor: baseColor }}
-                      >
-                        {isComplete ? <CheckCircle2 size={16} /> : <StepIcon size={14} />}
-                      </span>
-                      <span className="flex flex-col text-left">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                          Step {step.id}
-                        </span>
-                        <span
-                          className="text-xs font-semibold"
-                          style={{ color: isActive || isComplete ? theme.primaryColor : '#6b7280' }}
-                        >
-                          {step.label}
-                        </span>
-                      </span>
-                    </button>
-                    {index < WIZARD_STEPS.length - 1 && (
-                      <div
-                        className="mx-2 hidden h-px flex-1 sm:block"
-                        style={{ backgroundColor: isComplete ? theme.primaryColor : '#e5e7eb' }}
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">Patient Picture</label>
+                  <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white px-3 py-2 hover:bg-gray-50">
+                    <UploadCloud size={15} className="text-gray-600" />
+                    <span className="text-sm text-gray-700">Choose image</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(event) => setPatientPictureFile(event.target.files?.[0] || null)}
+                      className="hidden"
+                    />
+                  </label>
+                  <p className="mt-1 break-all text-xs text-gray-500">{patientPictureFile?.name || 'No file selected.'}</p>
+
+                  {patientPicturePreviewUrl && (
+                    <div className="mt-2 overflow-hidden rounded-lg border border-gray-200 bg-white">
+                      <img
+                        src={patientPicturePreviewUrl}
+                        alt="Patient preview"
+                        className="h-36 w-full object-cover"
                       />
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">Medical Document</label>
+                  <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white px-3 py-2 hover:bg-gray-50">
+                    {documentAutofill.status === 'processing' ? (
+                      <Loader2 size={15} className="animate-spin text-blue-600" />
+                    ) : (
+                      <FileText size={15} className="text-gray-600" />
                     )}
-                  </li>
-                );
-              })}
-            </ol>
-          </div>
+                    <span className="text-sm text-gray-700">Choose file (PDF/image)</span>
+                    <input
+                      type="file"
+                      accept=".pdf,image/*"
+                      onChange={handleMedicalDocumentChange}
+                      className="hidden"
+                    />
+                  </label>
+                  <p className="mt-1 break-all text-xs text-gray-500">{medicalDocumentFile?.name || 'No file selected.'}</p>
 
-          {stepError && (
-            <div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
-              <AlertTriangle size={16} />
-              <span>{stepError}</span>
+                  {documentAutofill.status !== 'idle' && documentAutofill.message && (
+                    <div
+                      className={`mt-2 rounded-lg border px-3 py-2 text-xs ${
+                        documentAutofill.status === 'success'
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                          : documentAutofill.status === 'error'
+                            ? 'border-red-200 bg-red-50 text-red-800'
+                            : documentAutofill.status === 'processing'
+                              ? 'border-blue-200 bg-blue-50 text-blue-800'
+                              : 'border-amber-200 bg-amber-50 text-amber-800'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        {documentAutofill.status === 'processing' ? (
+                          <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin" />
+                        ) : documentAutofill.status === 'success' ? (
+                          <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+                        ) : (
+                          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                        )}
+                        <span>{documentAutofill.message}</span>
+                      </div>
+
+                      {documentAutofill.fieldNames.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {documentAutofill.fieldNames.map((fieldName) => (
+                            <span key={fieldName} className="rounded-full bg-white/80 px-2 py-0.5 font-medium">
+                              {AUTOFILL_FIELD_LABELS[fieldName] || fieldName}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {medicalDocumentPreviewUrl && isMedicalDocumentImage && (
+                    <div className="mt-2 overflow-hidden rounded-lg border border-gray-200 bg-white">
+                      <img
+                        src={medicalDocumentPreviewUrl}
+                        alt="Medical document preview"
+                        className="h-36 w-full object-cover"
+                      />
+                    </div>
+                  )}
+
+                  {medicalDocumentPreviewUrl && !isMedicalDocumentImage && isMedicalDocumentPdf && (
+                    <div className="mt-2 rounded-lg border border-gray-200 bg-white p-2">
+                      <iframe
+                        title="Medical document PDF preview"
+                        src={medicalDocumentPreviewUrl}
+                        className="h-40 w-full rounded border border-gray-100"
+                      />
+                      <a
+                        href={medicalDocumentPreviewUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-block text-xs font-semibold text-blue-700 hover:underline"
+                      >
+                        Open PDF preview
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
-          )}
 
-          <form onSubmit={handleSubmit} className="space-y-5" style={{ '--tw-ring-color': theme.primaryColor }}>
-            {wizardStep === 1 && (
+            {(
               <div className="space-y-4">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-900">Account Setup</h3>
@@ -1837,7 +1932,7 @@ export default function ManagePatientsPage({ userProfile }) {
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div>
+                  <div className="md:col-span-2">
                     <label className="mb-1 block text-sm font-medium text-gray-700">Patient Email (required)</label>
                     <input
                       type="email"
@@ -1848,28 +1943,6 @@ export default function ManagePatientsPage({ userProfile }) {
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
                       placeholder="patient@example.com"
                     />
-                  </div>
-
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">Patient Code (PT + 6 digits)</label>
-                    <div className="flex gap-2">
-                      <input
-                        name="patientCode"
-                        value={form.patientCode}
-                        onChange={handleInputChange}
-                        maxLength={8}
-                        required
-                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 uppercase outline-none focus:ring-2"
-                        placeholder="PT123456"
-                      />
-                      <button
-                        type="button"
-                        onClick={generatePatientCode}
-                        className="rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-100"
-                      >
-                        Auto
-                      </button>
-                    </div>
                   </div>
 
                   <div>
@@ -1900,7 +1973,7 @@ export default function ManagePatientsPage({ userProfile }) {
               </div>
             )}
 
-            {wizardStep === 2 && (
+            {(
               <div className="space-y-4">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-900">Identity Details</h3>
@@ -1982,15 +2055,22 @@ export default function ManagePatientsPage({ userProfile }) {
                       ))}
                     </select>
                   </div>
-                </div>
 
-                <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
-                  Computed Age Preview: <span className="font-semibold text-gray-900">{computedAgeFromForm || 'N/A'}</span>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Age (computed)</label>
+                    <input
+                      value={computedAgeFromForm}
+                      readOnly
+                      className="w-full cursor-not-allowed rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-gray-700 outline-none"
+                      placeholder="Select a birthdate"
+                      aria-label="Computed patient age"
+                    />
+                  </div>
                 </div>
               </div>
             )}
 
-            {wizardStep === 3 && (
+            {(
               <div className="space-y-4">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-900">Clinical Details</h3>
@@ -2059,135 +2139,6 @@ export default function ManagePatientsPage({ userProfile }) {
               </div>
             )}
 
-            {wizardStep === 4 && (
-              <div className="space-y-4">
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900">Attachments</h3>
-                  <p className="text-xs text-gray-500">Optional patient picture and medical document. Skip if unavailable.</p>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">Patient Picture</label>
-                    <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 hover:bg-gray-100">
-                      <UploadCloud size={15} className="text-gray-600" />
-                      <span className="text-sm text-gray-700">Choose image</span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={(event) => setPatientPictureFile(event.target.files?.[0] || null)}
-                        className="hidden"
-                      />
-                    </label>
-                    <p className="mt-1 break-all text-xs text-gray-500">{patientPictureFile?.name || 'No file selected.'}</p>
-
-                    {patientPicturePreviewUrl && (
-                      <div className="mt-2 overflow-hidden rounded-lg border border-gray-200 bg-white">
-                        <img
-                          src={patientPicturePreviewUrl}
-                          alt="Patient preview"
-                          className="h-36 w-full object-cover"
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">Medical Document</label>
-                    <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-2 hover:bg-gray-100">
-                      <FileText size={15} className="text-gray-600" />
-                      <span className="text-sm text-gray-700">Choose file (PDF/image)</span>
-                      <input
-                        type="file"
-                        accept=".pdf,image/*"
-                        onChange={(event) => setMedicalDocumentFile(event.target.files?.[0] || null)}
-                        className="hidden"
-                      />
-                    </label>
-                    <p className="mt-1 break-all text-xs text-gray-500">{medicalDocumentFile?.name || 'No file selected.'}</p>
-
-                    {medicalDocumentPreviewUrl && isMedicalDocumentImage && (
-                      <div className="mt-2 overflow-hidden rounded-lg border border-gray-200 bg-white">
-                        <img
-                          src={medicalDocumentPreviewUrl}
-                          alt="Medical document preview"
-                          className="h-36 w-full object-cover"
-                        />
-                      </div>
-                    )}
-
-                    {medicalDocumentPreviewUrl && !isMedicalDocumentImage && isMedicalDocumentPdf && (
-                      <div className="mt-2 rounded-lg border border-gray-200 bg-white p-2">
-                        <iframe
-                          title="Medical document PDF preview"
-                          src={medicalDocumentPreviewUrl}
-                          className="h-40 w-full rounded border border-gray-100"
-                        />
-                        <a
-                          href={medicalDocumentPreviewUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mt-2 inline-block text-xs font-semibold text-blue-700 hover:underline"
-                        >
-                          Open PDF preview
-                        </a>
-                      </div>
-                    )}
-
-                    {medicalDocumentPreviewUrl && !isMedicalDocumentImage && !isMedicalDocumentPdf && (
-                      <p className="mt-2 text-xs text-gray-500">Preview is not available for this file type.</p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {wizardStep === 5 && (
-              <div className="space-y-4">
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900">Review and Submit</h3>
-                  <p className="text-xs text-gray-500">Verify the details below. Submitting will create the auth account and patient record.</p>
-                </div>
-
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <ReviewCard title="Account">
-                    <ReviewRow label="Email" value={form.email} />
-                    <ReviewRow label="Patient Code" value={form.patientCode} mono />
-                    <ReviewRow label="Access Start" value={form.accessStart || 'Not set'} />
-                    <ReviewRow label="Access End" value={form.accessEnd || 'Not set'} />
-                  </ReviewCard>
-
-                  <ReviewCard title="Identity">
-                    <ReviewRow
-                      label="Full Name"
-                      value={buildDisplayName({
-                        firstName: form.firstName,
-                        middleName: form.middleName,
-                        lastName: form.lastName,
-                        suffix: form.suffix,
-                      }) || 'Not set'}
-                    />
-                    <ReviewRow label="Birthdate" value={form.birthdate || 'Not set'} />
-                    <ReviewRow label="Age" value={computedAgeFromForm || 'N/A'} />
-                    <ReviewRow label="Gender" value={form.gender || 'Not set'} />
-                  </ReviewCard>
-
-                  <ReviewCard title="Clinical">
-                    <ReviewRow label="Date of Diagnosis" value={form.dateOfDiagnosis || 'Not set'} />
-                    <ReviewRow label="Guardian" value={form.guardian || 'Not set'} />
-                    <ReviewRow label="Guardian Contact" value={form.guardianContactNumber || 'Not set'} />
-                    <ReviewRow label="Guardian Relationship" value={form.guardianRelationship || 'Not set'} />
-                    <ReviewRow label="Medical Condition" value={form.medicalCondition || 'Not set'} />
-                  </ReviewCard>
-
-                  <ReviewCard title="Attachments">
-                    <ReviewRow label="Patient Picture" value={patientPictureFile?.name || 'No file'} />
-                    <ReviewRow label="Medical Document" value={medicalDocumentFile?.name || 'No file'} />
-                  </ReviewCard>
-                </div>
-              </div>
-            )}
-
             <div className="flex flex-col-reverse gap-2 border-t border-gray-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
               <button
                 type="button"
@@ -2198,40 +2149,102 @@ export default function ManagePatientsPage({ userProfile }) {
                 Clear All
               </button>
 
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={handlePrevStep}
-                  disabled={wizardStep === 1 || isSaving}
-                  className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-                >
-                  <ChevronLeft size={16} /> Back
-                </button>
-
-                {wizardStep < WIZARD_STEPS.length ? (
-                  <button
-                    type="button"
-                    onClick={handleNextStep}
-                    className="inline-flex items-center gap-1 rounded-lg px-4 py-2 text-sm font-semibold text-white"
-                    style={{ backgroundColor: theme.primaryColor }}
-                  >
-                    Next <ChevronRight size={16} />
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={isSaving || !hospitalId}
-                    className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                    style={{ backgroundColor: theme.primaryColor }}
-                  >
-                    {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                    {isSaving ? 'Saving...' : 'Create Patient Account'}
-                  </button>
-                )}
-              </div>
+              <button
+                type="submit"
+                disabled={isSaving || !hospitalId || documentAutofill.status === 'processing'}
+                className="inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+                style={{ backgroundColor: theme.primaryColor }}
+              >
+                {isSaving || documentAutofill.status === 'processing' ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                {isSaving
+                  ? 'Creating Patient...'
+                  : documentAutofill.status === 'processing'
+                    ? 'Reading Document...'
+                    : 'Create Patient Account'}
+              </button>
             </div>
           </form>
         </section>
+      )}
+
+      {confirmationOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/55 px-4 py-6 backdrop-blur-[1px]">
+          <button
+            type="button"
+            aria-label="Close patient account confirmation"
+            className="absolute inset-0 h-full w-full cursor-default"
+            onClick={() => setConfirmationOpen(false)}
+          />
+
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="patient-confirmation-title"
+            className="relative max-h-full w-full max-w-xl overflow-y-auto rounded-2xl border border-gray-200 bg-white shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-5 py-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Final confirmation</p>
+                <h3 id="patient-confirmation-title" className="mt-1 text-lg font-bold text-gray-900">
+                  Check the patient details
+                </h3>
+                <p className="mt-1 text-sm text-gray-600">Confirm these details before the account and patient record are created.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmationOpen(false)}
+                className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                aria-label="Close confirmation"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <dl className="grid grid-cols-1 gap-2 rounded-xl border border-gray-200 bg-gray-50 p-4 sm:grid-cols-2">
+                <DrawerRow label="Patient" value={confirmationPatientName || 'Not provided'} />
+                <DrawerRow label="Email" value={String(form.email || '').trim() || 'Not provided'} />
+                <DrawerRow label="Hospital" value={hospitalName || `Hospital #${hospitalId}`} />
+                <DrawerRow label="Birthdate" value={form.birthdate || 'Not provided'} />
+                <DrawerRow label="Age" value={computedAgeFromForm || 'N/A'} />
+                <DrawerRow label="Gender" value={form.gender || 'Not provided'} />
+                <DrawerRow label="Medical condition" value={form.medicalCondition || 'Not provided'} />
+                <DrawerRow label="Guardian" value={form.guardian || 'Not provided'} />
+                <DrawerRow label="Patient picture" value={patientPictureFile?.name || 'Not attached'} />
+                <DrawerRow label="Medical document" value={medicalDocumentFile?.name || 'Not attached'} />
+              </dl>
+
+              <div className="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                <CheckCircle2 size={18} className="mt-0.5 shrink-0" />
+                <p>
+                  Creating this account will also send the patient invitation email to{' '}
+                  <span className="font-semibold">{String(form.email || '').trim()}</span>.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 border-t border-gray-200 px-5 py-4 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setConfirmationOpen(false)}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                Back to Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmationOpen(false);
+                  void createPatientAccount();
+                }}
+                className="inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white"
+                style={{ backgroundColor: theme.primaryColor }}
+              >
+                <UserPlus size={16} /> Confirm and Create
+              </button>
+            </div>
+          </section>
+        </div>
       )}
 
       {selectedPatient && (
@@ -2360,9 +2373,13 @@ export default function ManagePatientsPage({ userProfile }) {
                 <CheckCircle2 size={20} />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-gray-900">Task Completed</h3>
+                <h3 className="text-base font-semibold text-gray-900">Patient Created</h3>
                 <p className="mt-1 text-sm text-gray-700">{successPopup.text}</p>
               </div>
+            </div>
+
+            <div className="mt-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+              <CheckCircle2 size={16} /> Invitation email sent successfully
             </div>
 
             <div className="mt-5 flex justify-end">
@@ -2378,26 +2395,34 @@ export default function ManagePatientsPage({ userProfile }) {
           </section>
         </div>
       )}
-    </div>
-  );
-}
 
-function ReviewCard({ title, children }) {
-  return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500">{title}</p>
-      <dl className="space-y-1.5 text-sm">{children}</dl>
-    </div>
-  );
-}
-
-function ReviewRow({ label, value, mono = false }) {
-  return (
-    <div className="flex items-start justify-between gap-3">
-      <dt className="text-xs text-gray-500">{label}</dt>
-      <dd className={`text-right text-xs font-semibold text-gray-800 ${mono ? 'font-mono' : ''}`}>
-        {value || 'Not set'}
-      </dd>
+      {errorToasts.length > 0 && (
+        <div className="fixed bottom-5 right-5 z-[10020] flex w-[min(92vw,390px)] flex-col gap-2" aria-live="assertive">
+          {errorToasts.map((toast) => (
+            <div
+              key={toast.id}
+              role="alert"
+              className="flex items-start gap-3 rounded-xl border border-red-200 bg-white px-4 py-3 text-red-900 shadow-xl"
+            >
+              <div className="mt-0.5 rounded-full bg-red-100 p-1.5 text-red-700">
+                <AlertTriangle size={16} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold uppercase tracking-wide text-red-700">Unable to continue</p>
+                <p className="mt-0.5 break-words text-sm text-gray-800">{toast.text}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => dismissErrorToast(toast.id)}
+                className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                aria-label="Dismiss error"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

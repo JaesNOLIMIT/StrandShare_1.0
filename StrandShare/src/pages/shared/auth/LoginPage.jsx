@@ -5,11 +5,44 @@ import { ArrowLeft, ArrowRight, Coins, Eye, EyeOff, Heart, Lock, Mail, QrCode, S
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { toCanonicalRole } from '../../../lib/roleUtils';
+import {
+  clearLoginSessionPersistence,
+  configureLoginSessionPersistence,
+} from '../../../lib/sessionPersistence';
 
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
 const EMAIL_OTP_COOLDOWN_SECONDS = 60;
 const DEFAULT_LOGIN_BG = 'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=1080&q=80';
+
+function getPasswordResetErrorMessage(error) {
+  const code = String(error?.code || '').trim().toLowerCase();
+  const rawMessage = [error?.message, error?.error_description, error?.error]
+    .find((value) => typeof value === 'string' && value.trim());
+  const message = String(rawMessage || '').trim();
+  const normalized = message.toLowerCase();
+
+  if (code === 'over_email_send_rate_limit' || normalized.includes('rate limit')) {
+    return 'Too many reset emails were requested. Please wait a few minutes, then try again.';
+  }
+
+  if (code === 'email_address_not_authorized' || normalized.includes('email address not authorized')) {
+    return 'Password reset email delivery is not enabled for this address. Please contact an administrator.';
+  }
+
+  // auth-js can serialize a browser network/CORS exception as the unhelpful string "{}".
+  if (
+    !message ||
+    message === '{}' ||
+    message === '[object Object]' ||
+    normalized.includes('failed to fetch') ||
+    normalized.includes('network request failed')
+  ) {
+    return 'Unable to contact the password service. Check your internet connection and try again.';
+  }
+
+  return message;
+}
 
 function withAlpha(colorValue, alpha) {
   const input = String(colorValue || '').trim();
@@ -284,14 +317,6 @@ export default function LoginPage({ authNotice, onClearNotice }) {
     const verifiedTotpFactor = (factorsData?.totp || []).find((factor) => factor.status === 'verified');
 
     if (verifiedTotpFactor) {
-      const { error: challengeError } = await supabase.auth.mfa.challenge({
-        factorId: verifiedTotpFactor.id,
-      });
-
-      if (challengeError) {
-        throw challengeError;
-      }
-
       setMfaPendingProfile(profile);
       setMfaPendingAuthUserId(authUserId);
       setMfaFactorId(verifiedTotpFactor.id);
@@ -344,91 +369,6 @@ export default function LoginPage({ authNotice, onClearNotice }) {
     setSuccessMessage('Scan the QR code with Google Authenticator, then enter the 6-digit code.');
   };
 
-  const handleRequestEmailOtp = async () => {
-    clearMessages();
-
-    if (emailOtpCooldown > 0) {
-      setErrorMessage(`Please wait ${emailOtpCooldown}s before requesting a new code.`);
-      return;
-    }
-
-    const targetEmail = mfaPendingProfile?.email || email;
-    if (!targetEmail) {
-      setErrorMessage('No email address found for OTP delivery.');
-      return;
-    }
-
-    setIsSendingEmailOtp(true);
-
-    try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email: targetEmail,
-        options: {
-          shouldCreateUser: false,
-        },
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      setEmailOtpTarget(targetEmail);
-      setEmailOtpRequested(true);
-      setEmailOtpCooldown(EMAIL_OTP_COOLDOWN_SECONDS);
-      setMfaMethod('email-otp');
-      setSuccessMessage('Sign-in code sent to your email. Enter the 6-digit code to continue.');
-    } catch (otpError) {
-      setErrorMessage(otpError.message || 'Unable to send email OTP. Please try again.');
-    } finally {
-      setIsSendingEmailOtp(false);
-    }
-  };
-
-  const handleVerifyEmailOtp = async (e) => {
-    e.preventDefault();
-    clearMessages();
-
-    if (!emailOtpTarget) {
-      setErrorMessage('Request an email OTP first.');
-      return;
-    }
-
-    if (!emailOtpCode.trim()) {
-      setErrorMessage('Enter the OTP code from your email.');
-      return;
-    }
-
-    setIsSubmitting(true);
-
-    try {
-      const { data, error } = await supabase.auth.verifyOtp({
-        email: emailOtpTarget,
-        token: emailOtpCode.trim(),
-        type: 'email',
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      const authUserId = data?.user?.id || data?.session?.user?.id || mfaPendingAuthUserId;
-
-      if (!authUserId) {
-        throw new Error('Could not verify your account profile. Please contact an administrator.');
-      }
-
-      const verifiedProfile = await getValidatedProfileByAuthUserId(authUserId);
-      finalizeLoginProfile(verifiedProfile, authUserId, emailOtpTarget);
-
-      clearMfaState();
-      setSuccessMessage('Email OTP verified. Redirecting to your dashboard...');
-    } catch (otpError) {
-      setErrorMessage(otpError.message || 'Email OTP verification failed. Please try again.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
   const handleMfaVerify = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -465,6 +405,15 @@ export default function LoginPage({ authNotice, onClearNotice }) {
         throw verifyError;
       }
 
+      const { data: assuranceData, error: assuranceError } =
+        await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (assuranceError) {
+        throw assuranceError;
+      }
+      if (assuranceData?.currentLevel !== 'aal2') {
+        throw new Error('Google Authenticator verification did not create an AAL2 session. Please try again.');
+      }
+
       finalizeLoginProfile(
         mfaPendingProfile,
         mfaPendingAuthUserId,
@@ -490,9 +439,11 @@ export default function LoginPage({ authNotice, onClearNotice }) {
     }
 
     setIsSubmitting(true);
+    configureLoginSessionPersistence(rememberMe);
 
     const { data: loginData, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {
+      clearLoginSessionPersistence();
       localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
       setErrorMessage(error.message);
     } else {
@@ -500,6 +451,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
 
       if (!authUserId) {
         await supabase.auth.signOut();
+        clearLoginSessionPersistence();
         setErrorMessage('Could not verify your account profile. Please contact an administrator.');
         setIsSubmitting(false);
         return;
@@ -511,28 +463,22 @@ export default function LoginPage({ authNotice, onClearNotice }) {
         enrichedProfile = await getValidatedProfileByAuthUserId(authUserId);
       } catch (profileValidationError) {
         await supabase.auth.signOut();
+        clearLoginSessionPersistence();
         localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
         setErrorMessage(profileValidationError.message || 'Unable to validate account profile.');
         setIsSubmitting(false);
         return;
       }
 
-      const isMfaEnabled = loginData?.user?.user_metadata?.mfaEnabled !== false;
-
-      if (!isMfaEnabled) {
-        finalizeLoginProfile(enrichedProfile, authUserId, loginData?.user?.email || email);
-        clearMfaState();
-        setSuccessMessage('Login successful. Redirecting to your dashboard...');
-      } else {
-        try {
-          await beginMfaStep(enrichedProfile, authUserId, loginData?.user?.email || email);
-        } catch (mfaError) {
-          await supabase.auth.signOut();
-          localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-          setErrorMessage(mfaError.message || 'Unable to start MFA verification.');
-          setIsSubmitting(false);
-          return;
-        }
+      try {
+        await beginMfaStep(enrichedProfile, authUserId, loginData?.user?.email || email);
+      } catch (mfaError) {
+        await supabase.auth.signOut();
+        clearLoginSessionPersistence();
+        localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+        setErrorMessage(mfaError.message || 'Unable to start MFA verification.');
+        setIsSubmitting(false);
+        return;
       }
     }
 
@@ -542,7 +488,9 @@ export default function LoginPage({ authNotice, onClearNotice }) {
   const handleForgotPassword = async () => {
     clearMessages();
 
-    if (!email) {
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!normalizedEmail) {
       setErrorMessage('Enter your email first, then click Forgot password.');
       return;
     }
@@ -553,17 +501,132 @@ export default function LoginPage({ authNotice, onClearNotice }) {
     }
 
     setIsSubmitting(true);
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
-    });
 
-    if (error) {
-      setErrorMessage(error.message);
-    } else {
-      setSuccessMessage('Password reset link sent. Please check your email.');
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setSuccessMessage('If an account exists for that email, a password reset link has been sent.');
+    } catch (error) {
+      setErrorMessage(getPasswordResetErrorMessage(error));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRequestEmailOtp = async () => {
+    clearMessages();
+
+    if (!mfaPendingAuthUserId || !mfaMode) {
+      setErrorMessage('Log in with your email and password before requesting an email code.');
+      return;
     }
 
-    setIsSubmitting(false);
+    if (emailOtpCooldown > 0) {
+      setErrorMessage(`Please wait ${emailOtpCooldown}s before requesting a new code.`);
+      return;
+    }
+
+    setIsSendingEmailOtp(true);
+
+    try {
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError || !userData?.user?.id || userData.user.id !== mfaPendingAuthUserId) {
+        throw userError || new Error('The current login session could not be verified.');
+      }
+
+      const targetEmail = String(userData.user.email || '').trim().toLowerCase();
+      if (!targetEmail) {
+        throw new Error('No registered email address is available for this account.');
+      }
+
+      const { error: otpError } = await supabase.auth.signInWithOtp({
+        email: targetEmail,
+        options: {
+          shouldCreateUser: false,
+        },
+      });
+
+      if (otpError) {
+        throw otpError;
+      }
+
+      setEmailOtpTarget(targetEmail);
+      setEmailOtpRequested(true);
+      setEmailOtpCode('');
+      setEmailOtpCooldown(EMAIL_OTP_COOLDOWN_SECONDS);
+      setMfaMethod('email-otp');
+      setSuccessMessage(`A 6-digit sign-in code was sent to ${targetEmail}.`);
+    } catch (otpError) {
+      setErrorMessage(getPasswordResetErrorMessage(otpError));
+    } finally {
+      setIsSendingEmailOtp(false);
+    }
+  };
+
+  const handleVerifyEmailOtp = async (event) => {
+    event.preventDefault();
+    clearMessages();
+
+    if (!emailOtpRequested || !emailOtpTarget) {
+      setErrorMessage('Send an email OTP code first.');
+      return;
+    }
+
+    if (emailOtpCode.length !== 6) {
+      setErrorMessage('Enter the complete 6-digit code from your email.');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const { data: otpData, error: otpError } = await supabase.auth.verifyOtp({
+        email: emailOtpTarget,
+        token: emailOtpCode,
+        type: 'email',
+      });
+
+      if (otpError) {
+        throw otpError;
+      }
+
+      const verifiedAuthUserId = otpData?.user?.id || otpData?.session?.user?.id;
+      const verifiedEmail = String(otpData?.user?.email || otpData?.session?.user?.email || '')
+        .trim()
+        .toLowerCase();
+
+      if (
+        !verifiedAuthUserId
+        || verifiedAuthUserId !== mfaPendingAuthUserId
+        || verifiedEmail !== emailOtpTarget
+      ) {
+        throw new Error('The email OTP does not match the management account currently signing in.');
+      }
+
+      const verifiedProfile = await getValidatedProfileByAuthUserId(verifiedAuthUserId);
+      finalizeLoginProfile(verifiedProfile, verifiedAuthUserId, verifiedEmail);
+
+      void logAuditAction({
+        action: 'auth.email_otp_fallback_sign_in',
+        description: 'User completed authenticator fallback using a verified email OTP.',
+        resource: 'auth/email-otp-fallback',
+        status: 'success',
+        userProfile: verifiedProfile,
+      });
+
+      clearMfaState();
+      setSuccessMessage('Email code verified. Redirecting to your dashboard...');
+    } catch (otpError) {
+      setErrorMessage(otpError?.message || 'Email OTP verification failed. Request a new code and try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const incomingTransition = useMemo(() => {
@@ -811,34 +874,33 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                 <h3 className="font-semibold text-gray-900">Two-Factor Authentication</h3>
               </div>
 
-              <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Sign in another way</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setMfaMethod('authenticator')}
-                    className="px-3 py-2 rounded-md border text-sm font-medium"
-                    style={{
-                      borderColor: mfaMethod === 'authenticator' ? theme.primaryColor : '',
-                      color: mfaMethod === 'authenticator' ? theme.primaryColor : '',
-                    }}
-                    disabled={isSubmitting || isSendingEmailOtp}
-                  >
-                    Authenticator App
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMfaMethod('email-otp')}
-                    className="px-3 py-2 rounded-md border text-sm font-medium"
-                    style={{
-                      borderColor: mfaMethod === 'email-otp' ? theme.primaryColor : '',
-                      color: mfaMethod === 'email-otp' ? theme.primaryColor : '',
-                    }}
-                    disabled={isSubmitting || isSendingEmailOtp}
-                  >
-                    Email OTP
-                  </button>
-                </div>
+              <div className="grid grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-white p-2">
+                <button
+                  type="button"
+                  onClick={() => setMfaMethod('authenticator')}
+                  className="rounded-md border px-3 py-2 text-sm font-medium transition-colors"
+                  style={{
+                    borderColor: mfaMethod === 'authenticator' ? theme.primaryColor : '#e5e7eb',
+                    backgroundColor: mfaMethod === 'authenticator' ? `${theme.primaryColor}12` : '#ffffff',
+                    color: mfaMethod === 'authenticator' ? theme.primaryColor : '#4b5563',
+                  }}
+                  disabled={isSubmitting || isSendingEmailOtp}
+                >
+                  Google Authenticator
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMfaMethod('email-otp')}
+                  className="rounded-md border px-3 py-2 text-sm font-medium transition-colors"
+                  style={{
+                    borderColor: mfaMethod === 'email-otp' ? theme.primaryColor : '#e5e7eb',
+                    backgroundColor: mfaMethod === 'email-otp' ? `${theme.primaryColor}12` : '#ffffff',
+                    color: mfaMethod === 'email-otp' ? theme.primaryColor : '#4b5563',
+                  }}
+                  disabled={isSubmitting || isSendingEmailOtp}
+                >
+                  Email OTP
+                </button>
               </div>
 
               {mfaMethod === 'authenticator' && mfaMode === 'enroll' && (
@@ -900,27 +962,30 @@ export default function LoginPage({ authNotice, onClearNotice }) {
               )}
 
               {mfaMethod === 'email-otp' && (
-                <div className="space-y-3">
-                  <p className="text-sm text-gray-600">
-                    Receive a one-time sign-in code in your email and use it to complete sign in.
-                  </p>
-
-                  <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
-                    <p className="text-xs text-gray-500">OTP will be sent to</p>
-                    <p className="text-sm font-medium text-gray-900 break-all">{mfaPendingProfile?.email || email}</p>
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-gray-200 bg-white p-3">
+                    <p className="text-sm font-medium text-gray-800">Verify your registered email</p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Request the 6-digit OTP from your email, then enter it below.
+                    </p>
                   </div>
 
-                  {!emailOtpRequested ? (
-                    <button
-                      type="button"
-                      onClick={handleRequestEmailOtp}
-                      className="w-full py-2.5 rounded-lg text-white font-medium"
-                      style={{ backgroundColor: theme.primaryColor }}
-                      disabled={isSendingEmailOtp || isSubmitting}
-                    >
-                      {isSendingEmailOtp ? 'Sending OTP...' : 'Send Email OTP'}
-                    </button>
-                  ) : (
+                  <button
+                    type="button"
+                    onClick={handleRequestEmailOtp}
+                    className="w-full py-2.5 rounded-lg border border-gray-300 bg-white text-gray-700 font-medium disabled:opacity-60"
+                    disabled={isSubmitting || isSendingEmailOtp || emailOtpCooldown > 0}
+                  >
+                    {isSendingEmailOtp
+                      ? 'Sending Code...'
+                      : emailOtpCooldown > 0
+                        ? `Resend Code in ${emailOtpCooldown}s`
+                        : emailOtpRequested
+                          ? 'Resend Email OTP'
+                          : 'Send Email OTP'}
+                  </button>
+
+                  {emailOtpRequested && (
                     <form onSubmit={handleVerifyEmailOtp} className="space-y-3">
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -929,39 +994,21 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                         <input
                           value={emailOtpCode}
                           onChange={(event) => setEmailOtpCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
                           placeholder="123456"
-                          className="w-full p-2.5 border border-gray-300 rounded-lg bg-white text-gray-900"
+                          className="w-full p-2.5 border border-gray-300 rounded-lg bg-white text-gray-900 tracking-[0.3em]"
                           required
                         />
                       </div>
-
                       <button
                         type="submit"
-                        className="w-full py-2.5 rounded-lg text-white font-medium"
+                        className="w-full py-2.5 rounded-lg text-white font-medium disabled:opacity-60"
                         style={{ backgroundColor: theme.primaryColor }}
-                        disabled={isSubmitting}
+                        disabled={isSubmitting || emailOtpCode.length !== 6}
                       >
-                        {isSubmitting ? 'Verifying OTP...' : 'Verify Email OTP'}
+                        {isSubmitting ? 'Verifying Email Code...' : 'Verify Email And Continue'}
                       </button>
-
-                      <button
-                        type="button"
-                        onClick={handleRequestEmailOtp}
-                        className="w-full py-2.5 rounded-lg border border-gray-300 text-gray-700"
-                        disabled={isSendingEmailOtp || isSubmitting || emailOtpCooldown > 0}
-                      >
-                        {isSendingEmailOtp
-                          ? 'Resending...'
-                          : emailOtpCooldown > 0
-                            ? `Resend in ${emailOtpCooldown}s`
-                            : 'Resend code'}
-                      </button>
-
-                      {emailOtpCooldown > 0 && (
-                        <p className="text-xs text-gray-500 text-center">
-                          You can request a new code in {emailOtpCooldown}s.
-                        </p>
-                      )}
                     </form>
                   )}
                 </div>
@@ -972,6 +1019,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                 onClick={async () => {
                   clearMfaState();
                   await supabase.auth.signOut();
+                  clearLoginSessionPersistence();
                 }}
                 className="w-full py-2.5 rounded-lg border border-gray-300 text-gray-700"
                 disabled={isSubmitting || isSendingEmailOtp}

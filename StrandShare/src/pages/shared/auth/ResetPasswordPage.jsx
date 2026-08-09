@@ -1,11 +1,59 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Eye, EyeOff, Lock, ArrowRight, Check, ShieldCheck } from 'lucide-react';
+import { ArrowRight, Check, Eye, EyeOff, Lock, ShieldCheck } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
 const DEFAULT_LOGIN_BG =
   'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=1080&q=80';
-const EMAIL_OTP_COOLDOWN_SECONDS = 60;
+
+function getRecoveryParameters() {
+  const queryParams = new URLSearchParams(window.location.search);
+  const hash = String(window.location.hash || '');
+  const hashParams = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
+
+  return {
+    code: queryParams.get('code') || '',
+    accessToken: hashParams.get('access_token') || '',
+    refreshToken: hashParams.get('refresh_token') || '',
+    type: hashParams.get('type') || '',
+    errorDescription:
+      queryParams.get('error_description') ||
+      hashParams.get('error_description') ||
+      queryParams.get('error') ||
+      hashParams.get('error') ||
+      '',
+  };
+}
+
+function toRecoveryErrorMessage(error) {
+  const message = String(error?.message || error || '').replace(/\+/g, ' ').trim();
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes('expired') ||
+    normalized.includes('invalid') ||
+    normalized.includes('flow state') ||
+    normalized.includes('code verifier') ||
+    normalized.includes('auth session missing') ||
+    normalized.includes('session not found')
+  ) {
+    return 'This password reset link is invalid, expired, or has already been used. Request a new link below.';
+  }
+
+  return message || 'The password reset link could not be verified. Request a new link below.';
+}
+
+function isRecoverySessionError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return (
+    message.includes('expired') ||
+    message.includes('invalid jwt') ||
+    message.includes('flow state') ||
+    message.includes('code verifier') ||
+    message.includes('auth session missing') ||
+    message.includes('session not found')
+  );
+}
 
 export default function ResetPasswordPage() {
   const { theme } = useTheme();
@@ -14,33 +62,109 @@ export default function ResetPasswordPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCheckingRecovery, setIsCheckingRecovery] = useState(true);
+  const [isRecoveryReady, setIsRecoveryReady] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
-  const [mfaRequired, setMfaRequired] = useState(false);
-  const [mfaCode, setMfaCode] = useState('');
-  const [mfaFactorId, setMfaFactorId] = useState('');
-  const [isCheckingMfaCode, setIsCheckingMfaCode] = useState(false);
-  const [isMfaCodeVerified, setIsMfaCodeVerified] = useState(false);
-  const [isConfirmingReset, setIsConfirmingReset] = useState(false);
-  const [emailConfirmRequired, setEmailConfirmRequired] = useState(false);
-  const [emailOtpCode, setEmailOtpCode] = useState('');
-  const [isSendingEmailOtp, setIsSendingEmailOtp] = useState(false);
-  const [emailOtpCooldown, setEmailOtpCooldown] = useState(0);
   const [isPasswordChangeComplete, setIsPasswordChangeComplete] = useState(false);
   const [recoveryEmail, setRecoveryEmail] = useState('');
   const [isSendingRecoveryLink, setIsSendingRecoveryLink] = useState(false);
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [mfaFactorId, setMfaFactorId] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [isVerifyingMfa, setIsVerifyingMfa] = useState(false);
 
   useEffect(() => {
-    if (emailOtpCooldown <= 0) {
+    let isMounted = true;
+
+    if (!isSupabaseConfigured || !supabase) {
+      setErrorMessage('Supabase is not configured.');
+      setIsCheckingRecovery(false);
       return undefined;
     }
 
-    const timer = window.setInterval(() => {
-      setEmailOtpCooldown((seconds) => Math.max(0, seconds - 1));
-    }, 1000);
+    const parameters = getRecoveryParameters();
 
-    return () => window.clearInterval(timer);
-  }, [emailOtpCooldown]);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (!isMounted || event !== 'PASSWORD_RECOVERY') {
+        return;
+      }
+
+      if (nextSession) {
+        setIsRecoveryReady(true);
+        setErrorMessage('');
+        setIsCheckingRecovery(false);
+      }
+    });
+
+    const initializeRecoverySession = async () => {
+      if (parameters.errorDescription) {
+        if (isMounted) {
+          setErrorMessage(toRecoveryErrorMessage(parameters.errorDescription));
+          setIsCheckingRecovery(false);
+        }
+        return;
+      }
+
+      try {
+        const { data: existingSessionData, error: existingSessionError } = await supabase.auth.getSession();
+        if (existingSessionError) {
+          throw existingSessionError;
+        }
+
+        let recoverySession = existingSessionData?.session || null;
+
+        // PKCE recovery links return ?code=... and need a one-time code exchange.
+        if (!recoverySession && parameters.code) {
+          const { data, error } = await supabase.auth.exchangeCodeForSession(parameters.code);
+          if (error) {
+            throw error;
+          }
+          recoverySession = data?.session || null;
+        }
+
+        // Implicit recovery links return the session tokens in the URL fragment.
+        if (!recoverySession && parameters.accessToken && parameters.refreshToken) {
+          const { data, error } = await supabase.auth.setSession({
+            access_token: parameters.accessToken,
+            refresh_token: parameters.refreshToken,
+          });
+          if (error) {
+            throw error;
+          }
+          recoverySession = data?.session || null;
+        }
+
+        if (!recoverySession) {
+          throw new Error('Auth session missing');
+        }
+
+        if (isMounted) {
+          setRecoveryEmail(recoverySession.user?.email || '');
+          setIsRecoveryReady(true);
+          setErrorMessage('');
+        }
+      } catch (error) {
+        if (isMounted) {
+          setIsRecoveryReady(false);
+          setErrorMessage(toRecoveryErrorMessage(error));
+        }
+      } finally {
+        if (isMounted) {
+          setIsCheckingRecovery(false);
+        }
+      }
+    };
+
+    void initializeRecoverySession();
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   const passwordRules = useMemo(() => {
     const value = newPassword || '';
@@ -52,230 +176,67 @@ export default function ResetPasswordPage() {
     };
   }, [newPassword]);
 
-  const isPasswordValid =
-    passwordRules.length &&
-    passwordRules.uppercase &&
-    passwordRules.number &&
-    passwordRules.special;
-
+  const isPasswordValid = Object.values(passwordRules).every(Boolean);
   const passwordsMatch = Boolean(confirmPassword) && newPassword === confirmPassword;
   const passwordsMismatch = Boolean(confirmPassword) && newPassword !== confirmPassword;
 
-  const recoveryTokens = useMemo(() => {
-    const hash = String(window.location.hash || '');
-    const hashParams = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
-    return {
-      accessToken: hashParams.get('access_token') || '',
-      refreshToken: hashParams.get('refresh_token') || '',
-      type: hashParams.get('type') || '',
-    };
-  }, []);
-
-  const hasRecoveryToken = useMemo(() => {
-    return recoveryTokens.type === 'recovery' || Boolean(recoveryTokens.accessToken);
-  }, [recoveryTokens]);
-
-  const canRequestNewRecoveryLink = useMemo(() => {
-    const text = String(errorMessage || '').toLowerCase();
-    return text.includes('recovery session is missing or expired');
-  }, [errorMessage]);
-
   const goToLogin = () => {
-    window.location.assign('/');
+    window.location.assign('/login');
   };
 
-  const ensureRecoverySession = async () => {
-    const { data: currentSessionData } = await supabase.auth.getSession();
-    if (currentSessionData?.session) {
-      return true;
+  const finishPasswordUpdate = async ({ requiresAuthenticatorEnrollment = false } = {}) => {
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      throw error;
     }
 
-    const accessToken = recoveryTokens.accessToken;
-    const refreshToken = recoveryTokens.refreshToken;
-
-    if (!accessToken || !refreshToken) {
-      return false;
-    }
-
-    const { data: restoredSessionData, error: restoreError } = await supabase.auth.setSession({
-      access_token: accessToken,
-      refresh_token: refreshToken,
-    });
-
-    if (restoreError) {
-      return false;
-    }
-
-    return Boolean(restoredSessionData?.session);
+    await supabase.auth.signOut({ scope: 'local' });
+    window.history.replaceState({}, document.title, window.location.pathname);
+    setIsPasswordChangeComplete(true);
+    setIsRecoveryReady(false);
+    setMfaRequired(false);
+    setMfaFactorId('');
+    setMfaCode('');
+    setSuccessMessage(
+      requiresAuthenticatorEnrollment
+        ? 'Your password was updated successfully. Sign in with your new password to set up Google Authenticator.'
+        : 'Your password was updated successfully. You can now sign in with your new password.',
+    );
   };
 
-  const toFriendlyAuthMessage = (message, fallback) => {
-    const text = String(message || '').toLowerCase();
-    if (text.includes('auth session missing') || text.includes('session not found') || text.includes('invalid jwt')) {
-      return 'Recovery session is missing or expired. Please request a new reset email.';
-    }
-
-    return message || fallback;
-  };
-
-  const resolveMfaFactorId = async () => {
+  const requireGoogleAuthenticator = async () => {
     const { data: factorsData, error: factorsError } = await supabase.auth.mfa.listFactors();
     if (factorsError) {
       throw factorsError;
     }
 
-    const verifiedTotpFactor = (factorsData?.totp || []).find((factor) => factor.status === 'verified');
-    if (!verifiedTotpFactor?.id) {
-      throw new Error('No verified authenticator factor found for this account.');
+    const verifiedFactor = (factorsData?.totp || []).find((factor) => factor.status === 'verified');
+    if (!verifiedFactor?.id) {
+      return false;
     }
 
-    return verifiedTotpFactor.id;
-  };
-
-  const completePasswordUpdate = async (passwordValue, nonceValue = '') => {
-    const payload = nonceValue
-      ? { password: passwordValue, nonce: nonceValue }
-      : { password: passwordValue };
-
-    const { error } = await supabase.auth.updateUser(payload);
-    if (error) {
-      throw error;
-    }
-  };
-
-  const startVerificationStep = async () => {
-    const hasSession = await ensureRecoverySession();
-    if (!hasSession) {
-      throw new Error('Recovery session is missing or expired. Please request a new reset email.');
-    }
-
-    const factorId = await resolveMfaFactorId();
-    setMfaFactorId(factorId);
-    setMfaRequired(true);
-    setEmailConfirmRequired(true);
-    setEmailOtpCode('');
+    setMfaFactorId(verifiedFactor.id);
     setMfaCode('');
-    setIsMfaCodeVerified(false);
-
-    const { error } = await supabase.auth.reauthenticate();
-    if (error) {
-      throw error;
-    }
-
-    setEmailOtpCooldown(EMAIL_OTP_COOLDOWN_SECONDS);
-    setSuccessMessage('Enter your authenticator code and email confirmation code to complete password reset.');
+    setMfaRequired(true);
+    setSuccessMessage('Enter the current code from Google Authenticator to authorize this password change.');
+    return true;
   };
 
-  const requestEmailConfirmationCode = async () => {
-    setErrorMessage('');
-
-    const hasSession = await ensureRecoverySession();
-    if (!hasSession) {
-      setErrorMessage('Recovery session is missing or expired. Please request a new reset email.');
-      return false;
-    }
-
-    if (emailOtpCooldown > 0) {
-      setErrorMessage(`Please wait ${emailOtpCooldown}s before requesting a new code.`);
-      return false;
-    }
-
-    setIsSendingEmailOtp(true);
-    try {
-      const { error } = await supabase.auth.reauthenticate();
-      if (error) {
-        throw error;
-      }
-
-      setEmailConfirmRequired(true);
-      setEmailOtpCode('');
-      setEmailOtpCooldown(EMAIL_OTP_COOLDOWN_SECONDS);
-      setSuccessMessage('A new reauthentication code was sent to your email.');
-      return true;
-    } catch (error) {
-      setErrorMessage(toFriendlyAuthMessage(error.message, 'Unable to send email confirmation code.'));
-      return false;
-    } finally {
-      setIsSendingEmailOtp(false);
-    }
-  };
-
-  const handleConfirmReset = async (event) => {
-    event?.preventDefault();
+  const handleVerifyMfaAndUpdate = async (event) => {
+    event.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
 
-    const hasSession = await ensureRecoverySession();
-    if (!hasSession) {
-      setErrorMessage('Recovery session is missing or expired. Please request a new reset email.');
+    if (!mfaFactorId || mfaCode.length !== 6) {
+      setErrorMessage('Enter the current 6-digit code from Google Authenticator.');
       return;
     }
 
-    if (!mfaCode || mfaCode.length < 6) {
-      setErrorMessage('Enter the 6-digit authenticator code.');
-      return;
-    }
-
-    if (!mfaFactorId) {
-      setErrorMessage('MFA verification session is missing. Try submitting password again.');
-      return;
-    }
-
-    if (!isMfaCodeVerified) {
-      setErrorMessage('Please check and verify your authenticator code first.');
-      return;
-    }
-
-    if (!emailOtpCode || emailOtpCode.length < 6) {
-      setErrorMessage('Enter the 6-digit code sent to your email.');
-      return;
-    }
-
-    setIsConfirmingReset(true);
-    try {
-      await completePasswordUpdate(newPassword, emailOtpCode.trim());
-      setEmailConfirmRequired(false);
-      setMfaRequired(false);
-      setEmailOtpCode('');
-      setMfaCode('');
-      setMfaFactorId('');
-      setIsMfaCodeVerified(false);
-      setEmailOtpCooldown(0);
-      setIsPasswordChangeComplete(true);
-    } catch (error) {
-      const message = String(error?.message || '');
-      if (message.toLowerCase().includes('aal2 session is required')) {
-        setErrorMessage('Authenticator verification is required. Verify your 6-digit app code and try again.');
-      } else if (/different from the old password|same password|same as old|identical/i.test(message)) {
-        setErrorMessage('Please use a new password that is different from your current password. Request a new reset password link if you still wish to change your password.');
-      } else {
-        setErrorMessage(toFriendlyAuthMessage(error.message, 'Verification failed. Please check both codes and try again.'));
-      }
-    } finally {
-      setIsConfirmingReset(false);
-    }
-  };
-
-  const handleCheckMfaCode = async () => {
-    setErrorMessage('');
-
-    if (!mfaCode || mfaCode.length < 6) {
-      setErrorMessage('Enter the 6-digit authenticator code before checking.');
-      return;
-    }
-
-    if (!mfaFactorId) {
-      setErrorMessage('MFA verification session is missing. Try submitting password again.');
-      return;
-    }
-
-    setIsCheckingMfaCode(true);
-
+    setIsVerifyingMfa(true);
     try {
       const { data: challengeData, error: challengeError } = await supabase.auth.mfa.challenge({
         factorId: mfaFactorId,
       });
-
       if (challengeError) {
         throw challengeError;
       }
@@ -283,20 +244,31 @@ export default function ResetPasswordPage() {
       const { error: verifyError } = await supabase.auth.mfa.verify({
         factorId: mfaFactorId,
         challengeId: challengeData.id,
-        code: mfaCode.trim(),
+        code: mfaCode,
       });
-
       if (verifyError) {
         throw verifyError;
       }
 
-      setIsMfaCodeVerified(true);
-      setSuccessMessage('MFA confirmed. Now enter your email OTP, then click Confirm and Update Password.');
+      const { data: assuranceData, error: assuranceError } =
+        await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (assuranceError) {
+        throw assuranceError;
+      }
+      if (assuranceData?.currentLevel !== 'aal2') {
+        throw new Error('Google Authenticator verification did not create an AAL2 session. Please try again.');
+      }
+
+      await finishPasswordUpdate();
     } catch (error) {
-      setIsMfaCodeVerified(false);
-      setErrorMessage(toFriendlyAuthMessage(error.message, 'MFA code is invalid or expired. Please use the latest code and try again.'));
+      const message = String(error?.message || '');
+      if (/different from the old password|same password|same as old|identical/i.test(message)) {
+        setErrorMessage('Choose a password that is different from your current password.');
+      } else {
+        setErrorMessage(message || 'Google Authenticator verification failed. Please use the current code and try again.');
+      }
     } finally {
-      setIsCheckingMfaCode(false);
+      setIsVerifyingMfa(false);
     }
   };
 
@@ -305,17 +277,8 @@ export default function ResetPasswordPage() {
     setErrorMessage('');
     setSuccessMessage('');
 
-    if (isPasswordChangeComplete) {
-      return;
-    }
-
-    if (!isSupabaseConfigured || !supabase) {
-      setErrorMessage('Supabase is not configured.');
-      return;
-    }
-
-    if (!hasRecoveryToken) {
-      setErrorMessage('Recovery link is invalid or expired. Request a new reset email.');
+    if (!isRecoveryReady) {
+      setErrorMessage('Your recovery session is not ready. Request a new password reset link below.');
       return;
     }
 
@@ -337,16 +300,49 @@ export default function ResetPasswordPage() {
     setIsSubmitting(true);
 
     try {
-      const hasSession = await ensureRecoverySession();
-      if (!hasSession) {
-        setErrorMessage('Recovery session is missing or expired. Please request a new reset email.');
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData?.session) {
+        throw sessionError || new Error('Auth session missing');
+      }
+
+      const { data: assuranceData, error: assuranceError } =
+        await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (assuranceError) {
+        throw assuranceError;
+      }
+
+      if (assuranceData?.currentLevel !== 'aal2') {
+        const authenticatorIsEnrolled = await requireGoogleAuthenticator();
+        if (authenticatorIsEnrolled) {
+          return;
+        }
+
+        await finishPasswordUpdate({ requiresAuthenticatorEnrollment: true });
         return;
       }
 
-      // Proceed directly to verification. Supabase handles identical password checks natively.
-      await startVerificationStep();
+      await finishPasswordUpdate();
     } catch (error) {
-      setErrorMessage(toFriendlyAuthMessage(error?.message, 'Verification could not be started.'));
+      const message = String(error?.message || '');
+      if (/different from the old password|same password|same as old|identical/i.test(message)) {
+        setErrorMessage('Choose a password that is different from your current password.');
+      } else if (message.toLowerCase().includes('aal2 session is required')) {
+        try {
+          const authenticatorIsEnrolled = await requireGoogleAuthenticator();
+          if (!authenticatorIsEnrolled) {
+            setErrorMessage(
+              'The password service requested Google Authenticator verification, but this account has no verified factor. Please request a new recovery link and try again.',
+            );
+          }
+        } catch (mfaError) {
+          setErrorMessage(mfaError?.message || 'Google Authenticator verification could not be started.');
+        }
+      } else {
+        setErrorMessage(toRecoveryErrorMessage(error));
+        if (isRecoverySessionError(error)) {
+          setIsRecoveryReady(false);
+        }
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -354,8 +350,10 @@ export default function ResetPasswordPage() {
 
   const handleRequestNewRecoveryLink = async () => {
     setErrorMessage('');
+    setSuccessMessage('');
+    const normalizedEmail = recoveryEmail.trim().toLowerCase();
 
-    if (!recoveryEmail.trim()) {
+    if (!normalizedEmail) {
       setErrorMessage('Enter your account email to receive a new reset link.');
       return;
     }
@@ -367,7 +365,7 @@ export default function ResetPasswordPage() {
 
     setIsSendingRecoveryLink(true);
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(recoveryEmail.trim(), {
+      const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
         redirectTo: `${window.location.origin}/reset-password`,
       });
 
@@ -375,9 +373,9 @@ export default function ResetPasswordPage() {
         throw error;
       }
 
-      setSuccessMessage('A new password reset email has been sent. Please check your inbox.');
+      setSuccessMessage('If an account exists for that email, a new password reset link has been sent.');
     } catch (error) {
-      setErrorMessage(error?.message || 'Unable to send a new password reset email.');
+      setErrorMessage(error?.message || 'Unable to send a new password reset email. Please try again.');
     } finally {
       setIsSendingRecoveryLink(false);
     }
@@ -422,7 +420,7 @@ export default function ResetPasswordPage() {
                 className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold"
                 style={{ backgroundColor: theme.primaryColor }}
               >
-                S
+                D
               </div>
             )}
             <span className="text-2xl font-bold text-gray-900">{theme.brandName}</span>
@@ -430,7 +428,7 @@ export default function ResetPasswordPage() {
 
           <h1 className="text-3xl font-bold text-gray-900 mb-2">Reset Password</h1>
           <p className="text-gray-600 mb-6 text-sm">
-            Set a new password for your account.
+            {isCheckingRecovery ? 'Verifying your password reset link...' : 'Set a new password for your account.'}
           </p>
 
           {errorMessage && (
@@ -439,222 +437,162 @@ export default function ResetPasswordPage() {
             </div>
           )}
 
-          {successMessage && !isPasswordChangeComplete && (
+          {successMessage && (
             <div className="mb-4 rounded-lg border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-700">
               {successMessage}
             </div>
           )}
 
-          {canRequestNewRecoveryLink && (
-            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 space-y-3">
-              <p className="text-sm text-amber-800">
-                Your reset link expired. Request a new one below.
-              </p>
+          {!isCheckingRecovery && !isRecoveryReady && !isPasswordChangeComplete && (
+            <div className="mb-5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 space-y-3">
+              <p className="text-sm text-amber-800">Request a fresh password reset link.</p>
               <input
                 type="email"
                 value={recoveryEmail}
                 onChange={(event) => setRecoveryEmail(event.target.value)}
                 placeholder="name@example.com"
+                autoComplete="email"
                 className="w-full p-2.5 border border-amber-300 rounded-lg bg-white text-gray-900"
               />
               <button
                 type="button"
                 onClick={handleRequestNewRecoveryLink}
-                className="w-full py-2.5 rounded-lg text-white font-medium"
+                className="w-full py-2.5 rounded-lg text-white font-medium disabled:opacity-60"
                 style={{ backgroundColor: theme.primaryColor }}
                 disabled={isSendingRecoveryLink}
               >
-                {isSendingRecoveryLink ? 'Sending Reset Link...' : 'Request New Reset Email'}
+                {isSendingRecoveryLink ? 'Sending Reset Link...' : 'Send New Reset Link'}
               </button>
             </div>
           )}
 
-          <form onSubmit={handleUpdatePassword} className="space-y-5">
-            {!isPasswordChangeComplete && !mfaRequired && !emailConfirmRequired && (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">New Password</label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-3 text-gray-400" size={20} />
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      value={newPassword}
-                      onChange={(event) => setNewPassword(event.target.value)}
-                      className="w-full pl-10 pr-10 py-2.5 border border-gray-300 rounded-lg bg-white text-gray-900"
-                      placeholder="Enter new password"
-                      required
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword((prev) => !prev)}
-                      className="absolute right-3 top-3 text-gray-400"
-                    >
-                      {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
-                    </button>
-                  </div>
+          {isCheckingRecovery && (
+            <div className="mb-5 rounded-lg border border-gray-200 bg-gray-50 px-4 py-6 text-center text-sm text-gray-600">
+              Verifying your recovery session...
+            </div>
+          )}
+
+          {isRecoveryReady && !isPasswordChangeComplete && !mfaRequired && (
+            <form onSubmit={handleUpdatePassword} className="space-y-5">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">New Password</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-3 text-gray-400" size={20} />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                    className="w-full pl-10 pr-10 py-2.5 border border-gray-300 rounded-lg bg-white text-gray-900"
+                    placeholder="Enter new password"
+                    autoComplete="new-password"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((previous) => !previous)}
+                    className="absolute right-3 top-3 text-gray-400"
+                    aria-label={showPassword ? 'Hide new password' : 'Show new password'}
+                  >
+                    {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                  </button>
                 </div>
+              </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Confirm Password</label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-3 text-gray-400" size={20} />
-                    <input
-                      type={showConfirm ? 'text' : 'password'}
-                      value={confirmPassword}
-                      onChange={(event) => setConfirmPassword(event.target.value)}
-                      className="w-full pl-10 pr-10 py-2.5 border border-gray-300 rounded-lg bg-white text-gray-900"
-                      placeholder="Confirm new password"
-                      required
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowConfirm((prev) => !prev)}
-                      className="absolute right-3 top-3 text-gray-400"
-                    >
-                      {showConfirm ? <EyeOff size={20} /> : <Eye size={20} />}
-                    </button>
-                  </div>
-                  {passwordsMatch && (
-                    <p className="mt-2 text-xs font-medium text-emerald-600">Passwords matched.</p>
-                  )}
-                  {passwordsMismatch && (
-                    <p className="mt-2 text-xs font-medium text-red-600">Passwords mismatched.</p>
-                  )}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Confirm Password</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-3 text-gray-400" size={20} />
+                  <input
+                    type={showConfirm ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                    className="w-full pl-10 pr-10 py-2.5 border border-gray-300 rounded-lg bg-white text-gray-900"
+                    placeholder="Confirm new password"
+                    autoComplete="new-password"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirm((previous) => !previous)}
+                    className="absolute right-3 top-3 text-gray-400"
+                    aria-label={showConfirm ? 'Hide confirmed password' : 'Show confirmed password'}
+                  >
+                    {showConfirm ? <EyeOff size={20} /> : <Eye size={20} />}
+                  </button>
                 </div>
-
-                <div className="rounded-lg border border-gray-200 p-3 text-sm">
-                  {[
-                    ['At least 8 characters', passwordRules.length],
-                    ['At least one uppercase letter', passwordRules.uppercase],
-                    ['At least one number', passwordRules.number],
-                    ['At least one special character', passwordRules.special],
-                  ].map(([label, valid]) => (
-                    <div key={label} className="flex items-center gap-2 py-0.5 text-gray-600">
-                      <Check size={14} className={valid ? 'text-emerald-500' : 'text-gray-400'} />
-                      <span>{label}</span>
-                    </div>
-                  ))}
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-2.5 rounded-lg text-white font-medium flex items-center justify-center gap-2"
-                  style={{ backgroundColor: theme.primaryColor }}
-                  disabled={isSubmitting}
-                >
-                  {isSubmitting ? 'Starting verification...' : 'Update Password'}
-                  <ArrowRight size={18} />
-                </button>
-              </>
-            )}
-
-            {!isPasswordChangeComplete && mfaRequired && emailConfirmRequired && (
-              <div className="rounded-lg border border-gray-200 p-4 space-y-4">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck size={16} style={{ color: theme.primaryColor }} />
-                  <p className="text-sm font-semibold text-gray-800">Confirm It Is Really You</p>
-                </div>
-                <p className="text-xs text-gray-500">
-                  Enter your authenticator code and the reauthentication email code to finish changing your password.
-                </p>
-
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">Authenticator Code</label>
-                    <input
-                      value={mfaCode}
-                      onChange={(event) => {
-                        setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6));
-                        if (isMfaCodeVerified) {
-                          setIsMfaCodeVerified(false);
-                        }
-                      }}
-                      placeholder="123456"
-                      className="w-full p-2.5 border border-gray-300 rounded-lg bg-white text-gray-900 tracking-[0.25em]"
-                      inputMode="numeric"
-                      required
-                    />
-                    <p className="mt-1 text-[11px] text-gray-500">
-                      Authenticator codes refresh quickly. Use the current code before the timer resets.
-                    </p>
-
-                    <div className="mt-2 flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={handleCheckMfaCode}
-                        className="px-3 py-1.5 rounded-md border border-gray-300 text-xs font-semibold text-gray-700"
-                        disabled={isCheckingMfaCode || isConfirmingReset}
-                      >
-                        {isCheckingMfaCode ? 'Checking MFA...' : 'Check MFA Code'}
-                      </button>
-
-                      {isMfaCodeVerified && (
-                        <span className="text-xs font-semibold text-emerald-600">MFA verified ✓</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">Email OTP Code</label>
-                    <input
-                      value={emailOtpCode}
-                      onChange={(event) => setEmailOtpCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-                      placeholder="123456"
-                      className="w-full p-2.5 border border-gray-300 rounded-lg bg-white text-gray-900 tracking-[0.25em]"
-                      inputMode="numeric"
-                      required
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleConfirmReset}
-                  className="w-full py-2.5 rounded-lg text-white font-medium"
-                  style={{ backgroundColor: theme.primaryColor }}
-                  disabled={isConfirmingReset}
-                >
-                  {isConfirmingReset ? 'Confirming...' : 'Confirm and Update Password'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={requestEmailConfirmationCode}
-                  className="w-full py-2.5 rounded-lg border border-gray-300 text-gray-700 font-medium"
-                  disabled={isSendingEmailOtp || isConfirmingReset || emailOtpCooldown > 0}
-                >
-                  {isSendingEmailOtp
-                    ? 'Sending code...'
-                    : emailOtpCooldown > 0
-                      ? `Resend Email Code in ${emailOtpCooldown}s`
-                      : 'Resend Email Code'}
-                </button>
-
-                {emailOtpCooldown > 0 && (
-                  <p className="text-xs text-gray-500 text-center">
-                    You can request another code in {emailOtpCooldown}s.
-                  </p>
+                {passwordsMatch && (
+                  <p className="mt-2 text-xs font-medium text-emerald-600">Passwords match.</p>
+                )}
+                {passwordsMismatch && (
+                  <p className="mt-2 text-xs font-medium text-red-600">Passwords do not match.</p>
                 )}
               </div>
-            )}
 
-            {isPasswordChangeComplete && (
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
-                <p className="text-sm font-semibold text-emerald-700">Password confirmation done.</p>
-                <p className="mt-1 text-xs text-emerald-700/90">
-                  Your password was updated successfully. Use the button below when you are ready to go back to login.
-                </p>
+              <div className="rounded-lg border border-gray-200 p-3 text-sm">
+                {[
+                  ['At least 8 characters', passwordRules.length],
+                  ['At least one uppercase letter', passwordRules.uppercase],
+                  ['At least one number', passwordRules.number],
+                  ['At least one special character', passwordRules.special],
+                ].map(([label, valid]) => (
+                  <div key={label} className="flex items-center gap-2 py-0.5 text-gray-600">
+                    <Check size={14} className={valid ? 'text-emerald-500' : 'text-gray-400'} />
+                    <span>{label}</span>
+                  </div>
+                ))}
               </div>
-            )}
 
-            <button
-              type="button"
-              onClick={goToLogin}
-              className="w-full py-2.5 rounded-lg border border-gray-300 text-gray-700 font-medium"
-            >
-              Back to Login
-            </button>
-          </form>
+              <button
+                type="submit"
+                className="w-full py-2.5 rounded-lg text-white font-medium flex items-center justify-center gap-2 disabled:opacity-60"
+                style={{ backgroundColor: theme.primaryColor }}
+                disabled={isSubmitting || !isPasswordValid || !passwordsMatch}
+              >
+                {isSubmitting ? 'Updating Password...' : 'Update Password'}
+                <ArrowRight size={18} />
+              </button>
+            </form>
+          )}
+
+          {isRecoveryReady && !isPasswordChangeComplete && mfaRequired && (
+            <form onSubmit={handleVerifyMfaAndUpdate} className="space-y-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
+              <div className="flex items-center gap-2">
+                <ShieldCheck size={18} style={{ color: theme.primaryColor }} />
+                <h2 className="font-semibold text-gray-900">Google Authenticator Required</h2>
+              </div>
+              <p className="text-sm text-gray-600">
+                MFA is enabled for this account. Enter the current code from Google Authenticator to continue.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Authenticator Code</label>
+                <input
+                  value={mfaCode}
+                  onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="123456"
+                  className="w-full p-2.5 border border-gray-300 rounded-lg bg-white text-gray-900 tracking-[0.3em]"
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                className="w-full py-2.5 rounded-lg text-white font-medium disabled:opacity-60"
+                style={{ backgroundColor: theme.primaryColor }}
+                disabled={isVerifyingMfa || mfaCode.length !== 6}
+              >
+                {isVerifyingMfa ? 'Verifying and Updating...' : 'Verify and Update Password'}
+              </button>
+            </form>
+          )}
+
+          <button
+            type="button"
+            onClick={goToLogin}
+            className="mt-5 w-full py-2.5 rounded-lg border border-gray-300 text-gray-700 font-medium"
+          >
+            Back to Login
+          </button>
         </div>
       </div>
     </div>

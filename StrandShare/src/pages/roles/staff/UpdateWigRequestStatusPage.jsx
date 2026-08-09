@@ -526,6 +526,8 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [searchTerm, setSearchTerm] = useState('');
   const [activeStatusFilter, setActiveStatusFilter] = useState('all_review');
+  const [requestDateFrom, setRequestDateFrom] = useState('');
+  const [requestDateTo, setRequestDateTo] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isApplyingAction, setIsApplyingAction] = useState(false);
   const [isReleaseWorkflowAvailable, setIsReleaseWorkflowAvailable] = useState(true);
@@ -1014,12 +1016,18 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     });
 
     const query = normalizeText(searchTerm);
-    if (!query) {
-      return statusFiltered;
-    }
 
-    return statusFiltered.filter((row) => buildSearchBlob(row).includes(query));
-  }, [rows, activeStatusFilter, searchTerm]);
+    return statusFiltered.filter((row) => {
+      const requestDate = new Date(row.requestDate);
+      if (requestDateFrom && !Number.isNaN(requestDate.getTime()) && requestDate < new Date(`${requestDateFrom}T00:00:00`)) {
+        return false;
+      }
+      if (requestDateTo && !Number.isNaN(requestDate.getTime()) && requestDate > new Date(`${requestDateTo}T23:59:59`)) {
+        return false;
+      }
+      return !query || buildSearchBlob(row).includes(query);
+    });
+  }, [rows, activeStatusFilter, searchTerm, requestDateFrom, requestDateTo]);
 
   const quickStats = useMemo(() => {
     const reviewStatusSet = new Set(REVIEW_QUEUE_STATUS_KEYS);
@@ -1458,46 +1466,57 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
         ))}
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="relative w-full lg:max-w-md">
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-6">
+          <div className="relative xl:col-span-2">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm text-slate-800 focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-200"
-              placeholder="Search request, patient, hospital, status, or specifications"
+              className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-xs text-slate-800 focus:border-slate-500 focus:outline-none"
+              placeholder="Search requests, patients, hospitals, wigs..."
             />
           </div>
+
+          <select
+            value={activeStatusFilter}
+            onChange={(event) => setActiveStatusFilter(event.target.value)}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
+            aria-label="Wig request status filter"
+          >
+            {STATUS_FILTERS.map((filterItem) => (
+              <option key={filterItem.id} value={filterItem.id}>{filterItem.label}</option>
+            ))}
+          </select>
+
+          <input
+            type="date"
+            value={requestDateFrom}
+            onChange={(event) => setRequestDateFrom(event.target.value)}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
+            aria-label="Request from date"
+            title="From date"
+          />
+
+          <input
+            type="date"
+            value={requestDateTo}
+            onChange={(event) => setRequestDateTo(event.target.value)}
+            min={requestDateFrom || undefined}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
+            aria-label="Request to date"
+            title="To date"
+          />
 
           <button
             type="button"
             onClick={() => loadReviewRows(selectedRow?.reqId || null)}
             disabled={isLoading || isApplyingAction}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
           >
             {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             Refresh
           </button>
-        </div>
-
-        <div className="mt-3 overflow-x-auto">
-          <div className="flex min-w-max items-center gap-2 pb-1">
-            {STATUS_FILTERS.map((filterItem) => (
-              <button
-                key={filterItem.id}
-                type="button"
-                onClick={() => setActiveStatusFilter(filterItem.id)}
-                className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                  activeStatusFilter === filterItem.id
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                {filterItem.label}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
 
@@ -1517,8 +1536,8 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
 
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-4 py-3">
-          <h2 className="text-lg font-semibold text-slate-900">To Be Review Records</h2>
-          <p className="mt-0.5 text-xs text-slate-500">Click a row or Info to open complete request details and workflow actions.</p>
+          <h2 className="text-lg font-semibold text-slate-900">Wig Request Management</h2>
+          <p className="mt-0.5 text-xs text-slate-500">Review request details and continue the role-appropriate status workflow.</p>
         </div>
 
         {isLoading ? (
@@ -1533,14 +1552,13 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
               <thead className="bg-slate-50">
                 <tr>
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">Request ID</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">H-Representative</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Hospital</th>
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">Patient</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Medical Condition</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Specifications</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Release Date</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Wig Model</th>
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">Status</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Release Flow</th>
-                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Info</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Date Submitted</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Release Date</th>
+                  <th className="px-4 py-3 text-right font-semibold text-slate-700">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1555,27 +1573,24 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                     <td className="px-4 py-3 text-slate-700">
                       <p className="font-semibold text-slate-800">{row.patientName}</p>
                       <p className="text-xs text-slate-500">{row.patientCode || 'No patient code'}</p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">{row.medicalCondition}</p>
                     </td>
-                    <td className="px-4 py-3 text-slate-700">{row.medicalCondition}</td>
                     <td className="px-4 py-3 text-slate-700">
-                      <p className="text-xs">Wig: {row.specWigName}</p>
-                      <p className="text-xs">Color: {row.specColor}</p>
-                      <p className="text-xs">Length: {row.specLength}</p>
-                      <p className="text-xs">Density: {row.specDensity}</p>
+                      <p className="text-xs font-semibold text-slate-800">{row.specWigName}</p>
+                      <p className="text-[11px] text-slate-500">{row.specColor} / {row.specCapSize}</p>
                       {row.allocatedWigCode ? <p className="text-xs font-semibold text-emerald-700">Allocated Wig: {row.allocatedWigCode}</p> : null}
                     </td>
-                    <td className="px-4 py-3 text-slate-700">{formatDateTime(row.releaseDate)}</td>
                     <td className="px-4 py-3">
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(row.status)}`}>
                         {row.statusLabel}
                       </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${releaseWorkflowClass(row.releaseWorkflowStatus)}`}>
+                      <span className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-semibold ${releaseWorkflowClass(row.releaseWorkflowStatus)}`}>
                         {row.releaseWorkflowLabel}
                       </span>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 text-slate-700">{formatDateTime(row.requestDate)}</td>
+                    <td className="px-4 py-3 text-slate-700">{formatDateTime(row.releaseDate)}</td>
+                    <td className="px-4 py-3 text-right">
                       <button
                         type="button"
                         onClick={(event) => {
@@ -1584,7 +1599,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                         }}
                         className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                       >
-                        <Info size={13} /> Info
+                        <Info size={13} /> View Details
                       </button>
                     </td>
                   </tr>
