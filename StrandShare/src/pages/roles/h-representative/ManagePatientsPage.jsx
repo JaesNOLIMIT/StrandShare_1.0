@@ -1,16 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
+  ArrowRightLeft,
+  Check,
   CheckCircle2,
   FileText,
   Loader2,
   Plus,
+  PauseCircle,
+  PlayCircle,
   RefreshCw,
   Search,
   UploadCloud,
   UserPlus,
   Users,
   X,
+  XCircle,
 } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import {
@@ -26,6 +32,8 @@ const PATIENTS_TABLE = 'Patients';
 const USERS_TABLE = 'users';
 const USER_DETAILS_TABLE = 'user_details';
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
+const HOSPITALS_TABLE = 'Hospitals';
+const TRANSFER_REQUESTS_TABLE = 'Patient_Hospital_Transfer_Requests';
 const PATIENT_ASSETS_BUCKET = 'patient_assets';
 const PH_MOBILE_REGEX = /^\+63 9\d{2} \d{3} \d{4}$/;
 const PST_TIMEZONE = 'Asia/Manila';
@@ -45,7 +53,27 @@ const EMPTY_FORM = {
   guardian: '',
   guardianContactNumber: '',
   guardianRelationship: '',
-  medicalCondition: '',
+  secondaryGuardian: '',
+  secondaryGuardianContactNumber: '',
+  secondaryGuardianRelationship: '',
+  conditionCategory: '',
+  otherHairLossDisease: '',
+  conditionStage: '',
+  customConditionStage: '',
+  attendingPhysicianName: '',
+  attendingPhysicianContact: '',
+  treatmentHospitalClinic: '',
+  treatmentPlan: '',
+  treatmentStatus: '',
+  allergiesCurrentMedications: '',
+  insurancePhilHealthInfo: '',
+  clinicalSpecialNote: '',
+};
+
+const CONDITION_OPTIONS = ['Cancer', 'Alopecia', 'Other Hair-Loss Disease'];
+const CONDITION_STAGE_OPTIONS = {
+  Cancer: ['Stage 0', 'Stage I', 'Stage II', 'Stage III', 'Stage IV', 'Recurrent', 'Unknown', 'Custom'],
+  Alopecia: ['Mild', 'Moderate', 'Severe', 'Alopecia Totalis', 'Alopecia Universalis', 'Ophiasis Pattern', 'Custom'],
 };
 
 const GENDER_OPTIONS = [
@@ -67,11 +95,33 @@ const AUTOFILL_FIELD_LABELS = {
   guardian: 'Guardian',
   guardianContactNumber: 'Guardian contact',
   guardianRelationship: 'Guardian relationship',
-  medicalCondition: 'Medical condition',
+  conditionCategory: 'Condition category',
+  otherHairLossDisease: 'Other hair-loss disease',
+  conditionStage: 'Stage or severity',
+  attendingPhysicianName: 'Attending physician',
+  attendingPhysicianContact: 'Physician contact',
+  treatmentHospitalClinic: 'Treatment hospital or clinic',
+  treatmentPlan: 'Treatment plan',
+  treatmentStatus: 'Treatment status',
+  allergiesCurrentMedications: 'Allergies and medications',
+  insurancePhilHealthInfo: 'Insurance or PhilHealth',
+  clinicalSpecialNote: 'Clinical special note',
 };
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function resolveMedicalCondition(formValue) {
+  const category = String(formValue?.conditionCategory || '').trim();
+  return category === 'Other Hair-Loss Disease'
+    ? String(formValue?.otherHairLossDisease || '').trim()
+    : category;
+}
+
+function resolveConditionStage(formValue) {
+  const stage = String(formValue?.conditionStage || '').trim();
+  return stage === 'Custom' ? String(formValue?.customConditionStage || '').trim() : stage;
 }
 
 function getFirstPresentValue(source, keys) {
@@ -386,6 +436,31 @@ function getPatientFullName(userRow, patientRow = null) {
   return `Patient #${patientRow?.Patient_ID || 'N/A'}`;
 }
 
+function getPatientInitials(nameValue) {
+  const parts = String(nameValue || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'PT';
+  return `${parts[0]?.[0] || ''}${parts.length > 1 ? parts[parts.length - 1]?.[0] || '' : ''}`.toUpperCase();
+}
+
+function buildPatientAddress(details) {
+  return [
+    details?.street,
+    details?.barangay,
+    details?.city,
+    details?.province,
+    details?.region,
+    details?.country,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
+function isPdfDocument(pathValue, urlValue) {
+  const value = `${String(pathValue || '')} ${String(urlValue || '')}`.toLowerCase();
+  return value.includes('.pdf') || value.includes('application/pdf');
+}
+
 function mapStorageUploadError(rawMessage) {
   const message = String(rawMessage || 'Upload failed.');
   if (message.toLowerCase().includes('row-level security')) {
@@ -528,7 +603,7 @@ export default function ManagePatientsPage({ userProfile }) {
 
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [confirmationOpen, setConfirmationOpen] = useState(false);
-  const [successPopup, setSuccessPopup] = useState({ open: false, text: '' });
+  const [successPopup, setSuccessPopup] = useState({ open: false, text: '', emailSent: false });
   const [errorToasts, setErrorToasts] = useState([]);
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
 
@@ -536,6 +611,31 @@ export default function ManagePatientsPage({ userProfile }) {
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [genderFilter, setGenderFilter] = useState('all');
   const [filesFilter, setFilesFilter] = useState('all');
+  const [transferRequests, setTransferRequests] = useState([]);
+  const [transferHospitals, setTransferHospitals] = useState([]);
+  const [isLoadingTransfers, setIsLoadingTransfers] = useState(false);
+  const [transferActionId, setTransferActionId] = useState(null);
+  const [transferModal, setTransferModal] = useState({ open: false, patient: null, targetHospitalId: '', note: '' });
+  const [decisionModal, setDecisionModal] = useState({ open: false, request: null, status: '', note: '' });
+  const [accountStatusModal, setAccountStatusModal] = useState({ open: false, patient: null });
+  const [isUpdatingAccountStatus, setIsUpdatingAccountStatus] = useState(false);
+
+  useEffect(() => {
+    if (!selectedPatient || typeof document === 'undefined') return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setSelectedPatient(null);
+    };
+
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedPatient]);
 
   useEffect(() => {
     if (notice.kind !== 'error' || !notice.text) return;
@@ -674,7 +774,7 @@ export default function ManagePatientsPage({ userProfile }) {
       const userIds = Array.from(
         new Set(
           nextPatients
-            .map((row) => Number(row.User_ID || 0))
+            .flatMap((row) => [Number(row.User_ID || 0), Number(row.Created_By || 0)])
             .filter((id) => Number.isFinite(id) && id > 0),
         ),
       );
@@ -690,13 +790,23 @@ export default function ManagePatientsPage({ userProfile }) {
           user_id,
           email,
           role,
+          is_active,
+          access_start,
+          access_end,
           user_details:user_details (
             first_name,
             middle_name,
             last_name,
             suffix,
             birthdate,
-            gender
+            gender,
+            contact_number,
+            street,
+            barangay,
+            city,
+            province,
+            region,
+            country
           )
         `)
         .in('user_id', userIds);
@@ -707,6 +817,39 @@ export default function ManagePatientsPage({ userProfile }) {
       setNotice({ kind: 'error', text: error.message || 'Unable to load patients.' });
     } finally {
       setIsLoadingPatients(false);
+    }
+  }, [hospitalId]);
+
+  const fetchTransferData = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase || !hospitalId) {
+      setTransferRequests([]);
+      setTransferHospitals([]);
+      return;
+    }
+
+    try {
+      setIsLoadingTransfers(true);
+      const [requestsResult, hospitalsResult] = await Promise.all([
+        supabase
+          .from(TRANSFER_REQUESTS_TABLE)
+          .select('*')
+          .or(`From_Hospital_ID.eq.${hospitalId},To_Hospital_ID.eq.${hospitalId}`)
+          .order('Requested_At', { ascending: false }),
+        supabase
+          .from(HOSPITALS_TABLE)
+          .select('Hospital_ID, Hospital_Name')
+          .neq('Hospital_ID', hospitalId)
+          .order('Hospital_Name', { ascending: true }),
+      ]);
+
+      if (requestsResult.error) throw requestsResult.error;
+      if (hospitalsResult.error) throw hospitalsResult.error;
+      setTransferRequests(requestsResult.data || []);
+      setTransferHospitals(hospitalsResult.data || []);
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to load hospital transfer requests.' });
+    } finally {
+      setIsLoadingTransfers(false);
     }
   }, [hospitalId]);
 
@@ -722,7 +865,8 @@ export default function ManagePatientsPage({ userProfile }) {
     }
 
     fetchPatients();
-  }, [hospitalId, fetchPatients]);
+    fetchTransferData();
+  }, [hospitalId, fetchPatients, fetchTransferData]);
 
   useEffect(() => {
     if (!patientPictureFile) {
@@ -755,6 +899,7 @@ export default function ManagePatientsPage({ userProfile }) {
   const enrichedPatients = useMemo(() => {
     return patients.map((patient) => {
       const linkedUser = patientUsersById.get(Number(patient.User_ID || 0)) || null;
+      const creatorUser = patientUsersById.get(Number(patient.Created_By || 0)) || null;
       const details = pickPreferredUserDetails(linkedUser?.user_details);
 
       const birthdateValue = getFirstPresentValue(details, ['birthdate', 'Birthdate']);
@@ -766,8 +911,16 @@ export default function ManagePatientsPage({ userProfile }) {
         fullName: getPatientFullName(linkedUser, patient),
         age: ageValue === '' ? 'N/A' : String(ageValue),
         gender: genderValue || 'N/A',
+        birthdate: String(birthdateValue || '').trim() || 'N/A',
+        email: String(linkedUser?.email || '').trim() || 'N/A',
+        contactNumber: String(getFirstPresentValue(details, ['contact_number', 'Contact_Number']) || '').trim() || 'N/A',
+        address: buildPatientAddress(details) || 'N/A',
+        accessStart: linkedUser?.access_start || null,
+        accessEnd: linkedUser?.access_end || null,
+        isActive: linkedUser?.is_active !== false,
         pictureUrl: resolveAssetUrl(patient.Patient_Picture),
         documentUrl: resolveAssetUrl(patient.Medical_Document),
+        createdByName: creatorUser ? getPatientFullName(creatorUser) : 'N/A',
       };
     });
   }, [patients, patientUsersById, resolveAssetUrl]);
@@ -809,6 +962,19 @@ export default function ManagePatientsPage({ userProfile }) {
     return results;
   }, [enrichedPatients, patientSearchTerm, genderFilter, filesFilter]);
 
+  const transferHospitalNames = useMemo(() => {
+    const names = new Map([[Number(hospitalId), hospitalName || `Hospital #${hospitalId}`]]);
+    transferHospitals.forEach((hospital) => {
+      names.set(Number(hospital.Hospital_ID), hospital.Hospital_Name || `Hospital #${hospital.Hospital_ID}`);
+    });
+    return names;
+  }, [hospitalId, hospitalName, transferHospitals]);
+
+  const pendingIncomingTransfers = useMemo(
+    () => transferRequests.filter((request) => Number(request.To_Hospital_ID) === Number(hospitalId) && request.Status === 'pending'),
+    [hospitalId, transferRequests],
+  );
+
   const resetForm = useCallback(() => {
     documentAutofillRunRef.current += 1;
     const emptyForm = {
@@ -825,11 +991,22 @@ export default function ManagePatientsPage({ userProfile }) {
   const handleInputChange = useCallback((event) => {
     const { name, value } = event.target;
 
-    if (name === 'guardianContactNumber') {
+    if (name === 'guardianContactNumber' || name === 'secondaryGuardianContactNumber') {
       const formattedContactNumber = formatPhilippineMobileInput(value);
       setForm((previous) => ({
         ...previous,
-        guardianContactNumber: formattedContactNumber,
+        [name]: formattedContactNumber,
+      }));
+      return;
+    }
+
+    if (name === 'conditionCategory') {
+      setForm((previous) => ({
+        ...previous,
+        conditionCategory: value,
+        otherHairLossDisease: '',
+        conditionStage: '',
+        customConditionStage: '',
       }));
       return;
     }
@@ -1261,6 +1438,10 @@ export default function ManagePatientsPage({ userProfile }) {
       suffix: normalizedSuffix,
     });
     const normalizedGuardianContactNumber = String(form.guardianContactNumber || '').trim();
+    const normalizedSecondaryGuardianContactNumber = String(form.secondaryGuardianContactNumber || '').trim();
+    const normalizedConditionCategory = String(form.conditionCategory || '').trim();
+    const normalizedMedicalCondition = resolveMedicalCondition(form);
+    const normalizedConditionStage = resolveConditionStage(form);
     const normalizedAccessStart = String(form.accessStart || '').trim();
     const normalizedAccessEnd = String(form.accessEnd || '').trim();
     const accessStartIso = toIsoOrNull(normalizedAccessStart);
@@ -1290,8 +1471,48 @@ export default function ManagePatientsPage({ userProfile }) {
       return;
     }
 
-    if (normalizedGuardianContactNumber && !isValidPhilippineMobileNumber(normalizedGuardianContactNumber)) {
+    if (!String(form.guardian || '').trim() || !String(form.guardianRelationship || '').trim() || !normalizedGuardianContactNumber) {
+      setNotice({ kind: 'error', text: 'Primary guardian name, relationship, and contact number are required.' });
+      submitLockRef.current = false;
+      return;
+    }
+
+    if (!isValidPhilippineMobileNumber(normalizedGuardianContactNumber)) {
       setNotice({ kind: 'error', text: 'Guardian contact number must use +63 912 345 6789 format.' });
+      submitLockRef.current = false;
+      return;
+    }
+
+    const hasAnySecondaryGuardianField = [
+      form.secondaryGuardian,
+      form.secondaryGuardianRelationship,
+      normalizedSecondaryGuardianContactNumber,
+    ].some((value) => String(value || '').trim());
+    if (hasAnySecondaryGuardianField && (!String(form.secondaryGuardian || '').trim()
+      || !String(form.secondaryGuardianRelationship || '').trim()
+      || !normalizedSecondaryGuardianContactNumber)) {
+      setNotice({ kind: 'error', text: 'Complete all three secondary guardian fields, or leave all of them blank.' });
+      submitLockRef.current = false;
+      return;
+    }
+    if (normalizedSecondaryGuardianContactNumber && !isValidPhilippineMobileNumber(normalizedSecondaryGuardianContactNumber)) {
+      setNotice({ kind: 'error', text: 'Secondary guardian contact must use +63 912 345 6789 format.' });
+      submitLockRef.current = false;
+      return;
+    }
+
+    if (!CONDITION_OPTIONS.includes(normalizedConditionCategory)) {
+      setNotice({ kind: 'error', text: 'Select the patient clinical condition.' });
+      submitLockRef.current = false;
+      return;
+    }
+    if (normalizedConditionCategory === 'Other Hair-Loss Disease' && !normalizedMedicalCondition) {
+      setNotice({ kind: 'error', text: 'Enter the other hair-loss disease.' });
+      submitLockRef.current = false;
+      return;
+    }
+    if (CONDITION_STAGE_OPTIONS[normalizedConditionCategory] && !normalizedConditionStage) {
+      setNotice({ kind: 'error', text: `Select or enter the ${normalizedConditionCategory.toLowerCase()} stage or severity.` });
       submitLockRef.current = false;
       return;
     }
@@ -1411,12 +1632,29 @@ export default function ManagePatientsPage({ userProfile }) {
       const patientPayload = {
         User_ID: publicUserId,
         Hospital_ID: Number(hospitalId),
+        Created_By: Number(userProfile?.user_id || 0) || null,
         Patient_Code: patientCode,
         Date_of_Diagnosis: String(form.dateOfDiagnosis || '').trim() || null,
         Guardian: String(form.guardian || '').trim() || null,
         Guardian_Contact_Number: normalizedGuardianContactNumber || null,
         Guardian_Relationship: String(form.guardianRelationship || '').trim() || null,
-        Medical_Condition: String(form.medicalCondition || '').trim() || null,
+        Secondary_Guardian: String(form.secondaryGuardian || '').trim() || null,
+        Secondary_Guardian_Contact_Number: normalizedSecondaryGuardianContactNumber || null,
+        Secondary_Guardian_Relationship: String(form.secondaryGuardianRelationship || '').trim() || null,
+        Medical_Condition: normalizedMedicalCondition || null,
+        Condition_Category: normalizedConditionCategory || null,
+        Other_Hair_Loss_Disease: normalizedConditionCategory === 'Other Hair-Loss Disease'
+          ? normalizedMedicalCondition
+          : null,
+        Condition_Stage_Severity: normalizedConditionStage || null,
+        Doctor_Name: String(form.attendingPhysicianName || '').trim() || null,
+        Attending_Physician_Contact: String(form.attendingPhysicianContact || '').trim() || null,
+        Treatment_Hospital_Clinic: String(form.treatmentHospitalClinic || '').trim() || null,
+        Treatment_Plan: String(form.treatmentPlan || '').trim() || null,
+        Current_Treatment_Status: String(form.treatmentStatus || '').trim() || null,
+        Allergies_Current_Medications: String(form.allergiesCurrentMedications || '').trim() || null,
+        Insurance_PhilHealth_Info: String(form.insurancePhilHealthInfo || '').trim() || null,
+        Clinical_Special_Note: String(form.clinicalSpecialNote || '').trim() || null,
         Patient_Picture: patientPicturePath || null,
         Medical_Document: medicalDocumentPath || null,
       };
@@ -1476,6 +1714,7 @@ export default function ManagePatientsPage({ userProfile }) {
       setSuccessPopup({
         open: true,
         text: `The patient account was created and the invitation email was sent to ${normalizedEmail}.`,
+        emailSent: true,
       });
 
       await fetchPatients();
@@ -1529,6 +1768,7 @@ export default function ManagePatientsPage({ userProfile }) {
 
     const email = String(form.email || '').trim();
     const guardianContactNumber = String(form.guardianContactNumber || '').trim();
+    const secondaryGuardianContactNumber = String(form.secondaryGuardianContactNumber || '').trim();
     const accessStart = String(form.accessStart || '').trim();
     const accessEnd = String(form.accessEnd || '').trim();
     const accessStartIso = toIsoOrNull(accessStart);
@@ -1541,8 +1781,30 @@ export default function ManagePatientsPage({ userProfile }) {
     }
     if (!String(form.birthdate || '').trim()) return 'Birthdate is required to compute age.';
     if (!normalizePatientGender(form.gender)) return 'Gender is required.';
-    if (guardianContactNumber && !isValidPhilippineMobileNumber(guardianContactNumber)) {
+    if (!String(form.guardian || '').trim() || !String(form.guardianRelationship || '').trim() || !guardianContactNumber) {
+      return 'Primary guardian name, relationship, and contact number are required.';
+    }
+    if (!isValidPhilippineMobileNumber(guardianContactNumber)) {
       return 'Guardian contact number must use +63 912 345 6789 format.';
+    }
+    const hasSecondaryGuardian = [form.secondaryGuardian, form.secondaryGuardianRelationship, secondaryGuardianContactNumber]
+      .some((value) => String(value || '').trim());
+    if (hasSecondaryGuardian && (!String(form.secondaryGuardian || '').trim()
+      || !String(form.secondaryGuardianRelationship || '').trim()
+      || !secondaryGuardianContactNumber)) {
+      return 'Complete all three secondary guardian fields, or leave all of them blank.';
+    }
+    if (secondaryGuardianContactNumber && !isValidPhilippineMobileNumber(secondaryGuardianContactNumber)) {
+      return 'Secondary guardian contact must use +63 912 345 6789 format.';
+    }
+    if (!CONDITION_OPTIONS.includes(String(form.conditionCategory || '').trim())) {
+      return 'Select the patient clinical condition.';
+    }
+    if (form.conditionCategory === 'Other Hair-Loss Disease' && !String(form.otherHairLossDisease || '').trim()) {
+      return 'Enter the other hair-loss disease.';
+    }
+    if (CONDITION_STAGE_OPTIONS[form.conditionCategory] && !resolveConditionStage(form)) {
+      return `Select or enter the ${String(form.conditionCategory).toLowerCase()} stage or severity.`;
     }
     if ((accessStart && !accessEnd) || (!accessStart && accessEnd)) {
       return 'Access Start and Access End are both required when setting access time.';
@@ -1574,9 +1836,110 @@ export default function ManagePatientsPage({ userProfile }) {
     setConfirmationOpen(true);
   };
 
+  const updatePatientAccountStatus = useCallback(async () => {
+    const patient = accountStatusModal.patient;
+    if (!patient || !hospitalId || !supabase) return;
+    const nextIsActive = !patient.isActive;
+
+    try {
+      setIsUpdatingAccountStatus(true);
+      const { data, error } = await supabase.functions.invoke('invite-patient-account', {
+        body: {
+          action: 'set-active',
+          hospitalId: Number(hospitalId),
+          patientId: Number(patient.Patient_ID),
+          isActive: nextIsActive,
+        },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+
+      setAccountStatusModal({ open: false, patient: null });
+      setSelectedPatient((previous) => previous ? { ...previous, isActive: nextIsActive } : previous);
+      setSuccessPopup({
+        open: true,
+        text: nextIsActive
+          ? `${patient.fullName}'s account is active again.`
+          : `${patient.fullName}'s account has been paused. Their records were not deleted.`,
+      });
+      await fetchPatients();
+    } catch (error) {
+      setNotice({ kind: 'error', text: extractReadableErrorText(error, 'Unable to update the patient account status.') });
+    } finally {
+      setIsUpdatingAccountStatus(false);
+    }
+  }, [accountStatusModal.patient, fetchPatients, hospitalId]);
+
+  const submitTransferRequest = useCallback(async () => {
+    const patient = transferModal.patient;
+    const targetHospitalId = Number(transferModal.targetHospitalId || 0);
+    const actorUserId = Number(userProfile?.user_id || 0);
+    if (!patient || !targetHospitalId || !actorUserId || !hospitalId || !supabase) {
+      setNotice({ kind: 'error', text: 'Choose a receiving hospital before sending the transfer request.' });
+      return;
+    }
+
+    try {
+      setTransferActionId(`create-${patient.Patient_ID}`);
+      const { error } = await supabase.from(TRANSFER_REQUESTS_TABLE).insert({
+        Patient_ID: Number(patient.Patient_ID),
+        From_Hospital_ID: Number(hospitalId),
+        To_Hospital_ID: targetHospitalId,
+        Requested_By: actorUserId,
+        Patient_Code_Snapshot: patient.Patient_Code || 'N/A',
+        Patient_Name_Snapshot: patient.fullName || 'Patient',
+        Medical_Condition_Snapshot: patient.Medical_Condition || null,
+        Request_Note: String(transferModal.note || '').trim() || null,
+      });
+      if (error) throw error;
+
+      setTransferModal({ open: false, patient: null, targetHospitalId: '', note: '' });
+      setSelectedPatient(null);
+      setActiveTab('transfers');
+      setSuccessPopup({ open: true, text: 'The receiving hospital can now review and accept or reject the transfer request.', emailSent: false });
+      await fetchTransferData();
+    } catch (error) {
+      setNotice({ kind: 'error', text: extractReadableErrorText(error, 'Unable to send the hospital transfer request.') });
+    } finally {
+      setTransferActionId(null);
+    }
+  }, [fetchTransferData, hospitalId, transferModal, userProfile?.user_id]);
+
+  const decideTransferRequest = useCallback(async () => {
+    const request = decisionModal.request;
+    if (!request || !['accepted', 'rejected'].includes(decisionModal.status) || !supabase) return;
+
+    try {
+      setTransferActionId(Number(request.Transfer_Request_ID));
+      const { error } = await supabase
+        .from(TRANSFER_REQUESTS_TABLE)
+        .update({
+          Status: decisionModal.status,
+          Response_Note: String(decisionModal.note || '').trim() || null,
+        })
+        .eq('Transfer_Request_ID', request.Transfer_Request_ID)
+        .eq('Status', 'pending');
+      if (error) throw error;
+
+      setDecisionModal({ open: false, request: null, status: '', note: '' });
+      setSuccessPopup({
+        open: true,
+        text: decisionModal.status === 'accepted'
+          ? 'Transfer accepted. New patient activity now belongs to your hospital; the previous hospital keeps its historical records.'
+          : 'Transfer request rejected. The patient remains with the sending hospital.',
+      });
+      await Promise.all([fetchTransferData(), fetchPatients()]);
+    } catch (error) {
+      setNotice({ kind: 'error', text: extractReadableErrorText(error, 'Unable to decide the transfer request.') });
+    } finally {
+      setTransferActionId(null);
+    }
+  }, [decisionModal, fetchPatients, fetchTransferData]);
+
   const refreshPageData = async () => {
     await resolveAssignedHospital();
     await fetchPatients();
+    await fetchTransferData();
   };
 
 
@@ -1626,6 +1989,7 @@ export default function ManagePatientsPage({ userProfile }) {
           {[
             { id: 'directory', label: 'Patient Directory', icon: Users },
             { id: 'add', label: 'Add New Patient', icon: UserPlus },
+            { id: 'transfers', label: 'Hospital Transfers', icon: ArrowRightLeft },
           ].map((tab) => {
             const isActive = activeTab === tab.id;
             const TabIcon = tab.icon;
@@ -1642,6 +2006,11 @@ export default function ManagePatientsPage({ userProfile }) {
               >
                 <TabIcon size={16} />
                 {tab.label}
+                {tab.id === 'transfers' && pendingIncomingTransfers.length > 0 ? (
+                  <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700">
+                    {pendingIncomingTransfers.length}
+                  </span>
+                ) : null}
               </button>
             );
           })}
@@ -1757,6 +2126,7 @@ export default function ManagePatientsPage({ userProfile }) {
                       <th className="px-4 py-3 text-left font-semibold">Age</th>
                       <th className="px-4 py-3 text-left font-semibold">Gender</th>
                       <th className="px-4 py-3 text-left font-semibold">Medical Condition</th>
+                      <th className="px-4 py-3 text-left font-semibold">Account</th>
                       <th className="px-4 py-3 text-left font-semibold">Created</th>
                       <th className="px-4 py-3 text-right font-semibold">Action</th>
                     </tr>
@@ -1773,6 +2143,11 @@ export default function ManagePatientsPage({ userProfile }) {
                         <td className="px-4 py-3 text-gray-700">{patient.age}</td>
                         <td className="px-4 py-3 text-gray-700">{patient.gender}</td>
                         <td className="max-w-xs break-words px-4 py-3 text-gray-700">{patient.Medical_Condition || 'N/A'}</td>
+                        <td className="px-4 py-3">
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${patient.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                            {patient.isActive ? 'Active' : 'Paused'}
+                          </span>
+                        </td>
                         <td className="px-4 py-3 text-xs text-gray-600">{formatDateTime(patient.Created_At)}</td>
                         <td className="px-4 py-3 text-right">
                           <button
@@ -1792,6 +2167,113 @@ export default function ManagePatientsPage({ userProfile }) {
                 </table>
               </div>
             )}
+          </section>
+        </div>
+      )}
+
+      {activeTab === 'transfers' && (
+        <div className="space-y-5">
+          <section className="rounded-xl border border-gray-200 bg-white p-4 md:p-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Hospital Transfer Requests</h2>
+                <p className="mt-1 max-w-3xl text-xs text-gray-500">
+                  The receiving hospital must confirm every move. Accepting changes the patient's active hospital only; previously created requests and records keep their original hospital ownership.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={fetchTransferData}
+                disabled={isLoadingTransfers}
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 disabled:opacity-60"
+              >
+                <RefreshCw size={14} className={isLoadingTransfers ? 'animate-spin' : ''} /> Refresh
+              </button>
+            </div>
+
+            <div className="mt-5">
+              <h3 className="text-sm font-bold text-gray-900">Needs Your Confirmation</h3>
+              <p className="mt-1 text-xs text-gray-500">Requests sent to {hospitalName || 'your hospital'}.</p>
+              {isLoadingTransfers ? (
+                <div className="mt-3 flex items-center justify-center gap-2 rounded-xl border border-gray-200 py-10 text-sm text-gray-600">
+                  <Loader2 size={17} className="animate-spin" /> Loading transfers...
+                </div>
+              ) : pendingIncomingTransfers.length === 0 ? (
+                <div className="mt-3 rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center text-sm text-gray-500">
+                  No incoming transfer requests need confirmation.
+                </div>
+              ) : (
+                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                  {pendingIncomingTransfers.map((request) => (
+                    <article key={request.Transfer_Request_ID} className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-gray-900">{request.Patient_Name_Snapshot}</p>
+                          <p className="mt-0.5 font-mono text-xs text-gray-600">{request.Patient_Code_Snapshot}</p>
+                        </div>
+                        <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-bold text-amber-800">Pending</span>
+                      </div>
+                      <dl className="mt-3 space-y-1.5 text-xs">
+                        <DrawerRow label="From" value={transferHospitalNames.get(Number(request.From_Hospital_ID)) || `Hospital #${request.From_Hospital_ID}`} />
+                        <DrawerRow label="Condition" value={request.Medical_Condition_Snapshot || 'N/A'} />
+                        <DrawerRow label="Requested" value={formatDateTime(request.Requested_At)} />
+                        <DrawerRow label="Note" value={request.Request_Note || 'No note'} />
+                      </dl>
+                      <div className="mt-4 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setDecisionModal({ open: true, request, status: 'accepted', note: '' })}
+                          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700"
+                        >
+                          <Check size={14} /> Accept
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDecisionModal({ open: true, request, status: 'rejected', note: '' })}
+                          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-50"
+                        >
+                          <XCircle size={14} /> Reject
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 border-t border-gray-200 pt-5">
+              <h3 className="text-sm font-bold text-gray-900">Transfer History</h3>
+              <div className="mt-3 overflow-x-auto rounded-xl border border-gray-200">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
+                    <tr>
+                      <th className="px-4 py-3 text-left">Patient</th>
+                      <th className="px-4 py-3 text-left">Direction</th>
+                      <th className="px-4 py-3 text-left">Hospital</th>
+                      <th className="px-4 py-3 text-left">Status</th>
+                      <th className="px-4 py-3 text-left">Updated</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {transferRequests.length === 0 ? (
+                      <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-500">No hospital transfer history yet.</td></tr>
+                    ) : transferRequests.map((request) => {
+                      const incoming = Number(request.To_Hospital_ID) === Number(hospitalId);
+                      const otherHospitalId = incoming ? request.From_Hospital_ID : request.To_Hospital_ID;
+                      return (
+                        <tr key={request.Transfer_Request_ID} className="border-t border-gray-200">
+                          <td className="px-4 py-3"><p className="font-semibold text-gray-900">{request.Patient_Name_Snapshot}</p><p className="font-mono text-xs text-gray-500">{request.Patient_Code_Snapshot}</p></td>
+                          <td className="px-4 py-3 text-gray-700">{incoming ? 'Incoming' : 'Outgoing'}</td>
+                          <td className="px-4 py-3 text-gray-700">{transferHospitalNames.get(Number(otherHospitalId)) || `Hospital #${otherHospitalId}`}</td>
+                          <td className="px-4 py-3"><span className="capitalize font-semibold text-gray-700">{request.Status}</span></td>
+                          <td className="px-4 py-3 text-xs text-gray-600">{formatDateTime(request.Responded_At || request.Requested_At)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </section>
         </div>
       )}
@@ -2073,11 +2555,43 @@ export default function ManagePatientsPage({ userProfile }) {
             {(
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-900">Clinical Details</h3>
-                  <p className="text-xs text-gray-500">Optional fields. Add what is available.</p>
+                  <h3 className="text-sm font-semibold text-gray-900">Clinical Information</h3>
+                  <p className="text-xs text-gray-500">Choose the condition first. The stage or severity field adapts automatically.</p>
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Condition (required)</label>
+                    <select name="conditionCategory" value={form.conditionCategory} onChange={handleInputChange} required className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2">
+                      <option value="">Select condition</option>
+                      {CONDITION_OPTIONS.map((condition) => <option key={condition} value={condition}>{condition}</option>)}
+                    </select>
+                  </div>
+
+                  {form.conditionCategory === 'Other Hair-Loss Disease' ? (
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Disease Name (required)</label>
+                      <input name="otherHairLossDisease" value={form.otherHairLossDisease} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Specify the hair-loss disease" />
+                    </div>
+                  ) : null}
+
+                  {CONDITION_STAGE_OPTIONS[form.conditionCategory] ? (
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">{form.conditionCategory} Stage / Severity (required)</label>
+                      <select name="conditionStage" value={form.conditionStage} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2">
+                        <option value="">Select stage or severity</option>
+                        {CONDITION_STAGE_OPTIONS[form.conditionCategory].map((stage) => <option key={stage} value={stage}>{stage}</option>)}
+                      </select>
+                    </div>
+                  ) : null}
+
+                  {form.conditionStage === 'Custom' ? (
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Custom Stage / Severity (required)</label>
+                      <input name="customConditionStage" value={form.customConditionStage} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Enter the documented stage or severity" />
+                    </div>
+                  ) : null}
+
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Date of Diagnosis</label>
                     <input
@@ -2091,7 +2605,62 @@ export default function ManagePatientsPage({ userProfile }) {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">Full Name of Guardian</label>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Attending Physician / Oncologist</label>
+                    <input name="attendingPhysicianName" value={form.attendingPhysicianName} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Full name" />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Physician Contact</label>
+                    <input name="attendingPhysicianContact" value={form.attendingPhysicianContact} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Phone or email" />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Hospital / Clinic of Treatment</label>
+                    <input name="treatmentHospitalClinic" value={form.treatmentHospitalClinic} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Treatment facility" />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Current Treatment Status</label>
+                    <select name="treatmentStatus" value={form.treatmentStatus} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2">
+                      <option value="">Select status</option>
+                      <option value="Active treatment">Active treatment</option>
+                      <option value="Remission">Remission</option>
+                      <option value="Follow-up">Follow-up</option>
+                      <option value="Pre-treatment">Pre-treatment</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Treatment Plan / Type</label>
+                    <input name="treatmentPlan" value={form.treatmentPlan} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Chemotherapy, surgery, radiation, medication, etc." />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Allergies & Current Medications</label>
+                    <textarea name="allergiesCurrentMedications" value={form.allergiesCurrentMedications} onChange={handleInputChange} rows={3} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Known allergies and current medication" />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Insurance / PhilHealth Information</label>
+                    <textarea name="insurancePhilHealthInfo" value={form.insurancePhilHealthInfo} onChange={handleInputChange} rows={3} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Relevant membership or coverage details" />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Clinical Special Note</label>
+                    <textarea name="clinicalSpecialNote" value={form.clinicalSpecialNote} onChange={handleInputChange} rows={3} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Other important clinical information" />
+                  </div>
+                </div>
+
+                <div className="border-t border-gray-200 pt-4">
+                  <h3 className="text-sm font-semibold text-gray-900">Primary Guardian / Emergency Contact</h3>
+                  <p className="text-xs text-gray-500">Name, relationship, and mobile number are required.</p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Name (required)</label>
                     <input
                       name="guardian"
                       value={form.guardian}
@@ -2102,20 +2671,7 @@ export default function ManagePatientsPage({ userProfile }) {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">Guardian Contact Number</label>
-                    <input
-                      name="guardianContactNumber"
-                      value={form.guardianContactNumber}
-                      onChange={handleInputChange}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
-                      placeholder="+63 912 345 6789"
-                      maxLength={16}
-                    />
-                    <p className="mt-1 text-[11px] text-gray-500">Format: +63 912 345 6789</p>
-                  </div>
-
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">Guardian Relationship</label>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Relationship (required)</label>
                     <input
                       name="guardianRelationship"
                       value={form.guardianRelationship}
@@ -2124,17 +2680,29 @@ export default function ManagePatientsPage({ userProfile }) {
                       placeholder="e.g., Mother"
                     />
                   </div>
+
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number (required)</label>
+                    <input
+                      name="guardianContactNumber"
+                      value={form.guardianContactNumber}
+                      onChange={handleInputChange}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      placeholder="+63 912 345 6789"
+                      maxLength={16}
+                    />
+                  </div>
                 </div>
 
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-700">Medical Condition</label>
-                  <input
-                    name="medicalCondition"
-                    value={form.medicalCondition}
-                    onChange={handleInputChange}
-                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
-                    placeholder="Medical condition summary"
-                  />
+                <div className="border-t border-gray-200 pt-4">
+                  <h3 className="text-sm font-semibold text-gray-900">Secondary Guardian / Alternate Contact</h3>
+                  <p className="text-xs text-gray-500">Optional. If used, complete all three fields.</p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Name</label><input name="secondaryGuardian" value={form.secondaryGuardian} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Alternate contact name" /></div>
+                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Relationship</label><input name="secondaryGuardianRelationship" value={form.secondaryGuardianRelationship} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="e.g., Father" /></div>
+                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number</label><input name="secondaryGuardianContactNumber" value={form.secondaryGuardianContactNumber} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="+63 912 345 6789" maxLength={16} /></div>
                 </div>
               </div>
             )}
@@ -2208,8 +2776,11 @@ export default function ManagePatientsPage({ userProfile }) {
                 <DrawerRow label="Birthdate" value={form.birthdate || 'Not provided'} />
                 <DrawerRow label="Age" value={computedAgeFromForm || 'N/A'} />
                 <DrawerRow label="Gender" value={form.gender || 'Not provided'} />
-                <DrawerRow label="Medical condition" value={form.medicalCondition || 'Not provided'} />
-                <DrawerRow label="Guardian" value={form.guardian || 'Not provided'} />
+                <DrawerRow label="Medical condition" value={resolveMedicalCondition(form) || 'Not provided'} />
+                <DrawerRow label="Stage / severity" value={resolveConditionStage(form) || 'Not applicable'} />
+                <DrawerRow label="Primary guardian" value={`${form.guardian || 'Not provided'}${form.guardianRelationship ? ` (${form.guardianRelationship})` : ''}`} />
+                <DrawerRow label="Primary contact" value={form.guardianContactNumber || 'Not provided'} />
+                <DrawerRow label="Secondary guardian" value={form.secondaryGuardian || 'Not provided'} />
                 <DrawerRow label="Patient picture" value={patientPictureFile?.name || 'Not attached'} />
                 <DrawerRow label="Medical document" value={medicalDocumentFile?.name || 'Not attached'} />
               </dl>
@@ -2247,109 +2818,224 @@ export default function ManagePatientsPage({ userProfile }) {
         </div>
       )}
 
-      {selectedPatient && (
-        <div className="fixed inset-0 z-[9998] flex">
+      {selectedPatient && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-slate-950/65 p-3 backdrop-blur-sm sm:p-6">
           <button
             type="button"
-            aria-label="Close patient details"
-            className="flex-1 bg-black/50"
+            aria-label="Close patient profile"
+            className="absolute inset-0 h-full w-full cursor-default"
             onClick={() => setSelectedPatient(null)}
           />
-          <aside className="flex h-full w-full max-w-md flex-col overflow-y-auto bg-white shadow-2xl">
-            <div
-              className="flex items-start justify-between gap-3 border-b border-gray-200 p-5"
-              style={{ backgroundColor: `${theme.primaryColor}10` }}
-            >
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Patient Profile</p>
-                <h3 className="mt-1 text-lg font-bold text-gray-900">{selectedPatient.fullName}</h3>
-                <p className="mt-0.5 font-mono text-xs text-gray-600">{selectedPatient.Patient_Code || 'No code'}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedPatient(null)}
-                className="rounded-md p-1 text-gray-500 hover:bg-white hover:text-gray-900"
-                aria-label="Close drawer"
-              >
-                <X size={18} />
-              </button>
-            </div>
 
-            <div className="flex-1 space-y-5 p-5">
-              {selectedPatient.pictureUrl && (
-                <div className="overflow-hidden rounded-lg border border-gray-200">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="patient-profile-title"
+            className="relative flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+          >
+            <header className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 bg-white px-5 py-4 sm:px-6">
+              <div className="flex min-w-0 items-center gap-4">
+                {selectedPatient.pictureUrl ? (
                   <img
                     src={selectedPatient.pictureUrl}
                     alt={selectedPatient.fullName}
-                    className="h-48 w-full object-cover"
+                    className="h-16 w-16 shrink-0 rounded-2xl border border-slate-200 object-cover shadow-sm sm:h-20 sm:w-20"
                   />
+                ) : (
+                  <div
+                    className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl text-lg font-bold text-white shadow-sm sm:h-20 sm:w-20 sm:text-xl"
+                    style={{ backgroundColor: theme.primaryColor }}
+                  >
+                    {getPatientInitials(selectedPatient.fullName)}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">Patient Biodata</p>
+                  <h3 id="patient-profile-title" className="mt-1 truncate text-xl font-bold text-slate-950 sm:text-2xl">
+                    {selectedPatient.fullName}
+                  </h3>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 font-mono font-semibold text-slate-700">
+                      {selectedPatient.Patient_Code || 'No patient code'}
+                    </span>
+                    <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-semibold text-emerald-700">
+                      {hospitalName || `Hospital #${hospitalId}`}
+                    </span>
+                  </div>
                 </div>
-              )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAccountStatusModal({ open: true, patient: selectedPatient })}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold ${selectedPatient.isActive ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}
+                >
+                  {selectedPatient.isActive ? <PauseCircle size={15} /> : <PlayCircle size={15} />}
+                  {selectedPatient.isActive ? 'Pause Account' : 'Resume Account'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTransferModal({ open: true, patient: selectedPatient, targetHospitalId: '', note: '' })}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800"
+                >
+                  <ArrowRightLeft size={15} /> Transfer
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPatient(null)}
+                  className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 shadow-sm hover:bg-slate-100 hover:text-slate-900"
+                  aria-label="Close patient profile"
+                >
+                  <X size={19} />
+                </button>
+              </div>
+            </header>
 
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Demographics</h4>
-                <dl className="space-y-1.5 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+            <div className="flex-1 overflow-y-auto bg-slate-100 p-4 sm:p-6">
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <ProfileSection title="Personal Information">
+                  <DrawerRow label="Full Name" value={selectedPatient.fullName} />
+                  <DrawerRow label="Birthdate" value={selectedPatient.birthdate} />
                   <DrawerRow label="Age" value={selectedPatient.age} />
                   <DrawerRow label="Gender" value={selectedPatient.gender} />
-                </dl>
-              </div>
+                  <DrawerRow label="Email" value={selectedPatient.email} />
+                  <DrawerRow label="Contact Number" value={selectedPatient.contactNumber} />
+                  <DrawerRow label="Address" value={selectedPatient.address} />
+                </ProfileSection>
 
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Clinical</h4>
-                <dl className="space-y-1.5 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+                <ProfileSection title="Clinical Information">
                   <DrawerRow label="Medical Condition" value={selectedPatient.Medical_Condition || 'N/A'} />
+                  <DrawerRow label="Category" value={selectedPatient.Condition_Category || 'N/A'} />
+                  <DrawerRow label="Stage / Severity" value={selectedPatient.Condition_Stage_Severity || 'N/A'} />
                   <DrawerRow label="Date of Diagnosis" value={selectedPatient.Date_of_Diagnosis || 'N/A'} />
-                </dl>
-              </div>
+                  <DrawerRow label="Attending Physician / Oncologist" value={selectedPatient.Doctor_Name || 'N/A'} />
+                  <DrawerRow label="Physician Contact" value={selectedPatient.Attending_Physician_Contact || 'N/A'} />
+                  <DrawerRow label="Treatment Hospital / Clinic" value={selectedPatient.Treatment_Hospital_Clinic || 'N/A'} />
+                  <DrawerRow label="Treatment Plan" value={selectedPatient.Treatment_Plan || 'N/A'} />
+                  <DrawerRow label="Current Status" value={selectedPatient.Current_Treatment_Status || 'N/A'} />
+                  <DrawerRow label="Allergies & Medications" value={selectedPatient.Allergies_Current_Medications || 'N/A'} />
+                  <DrawerRow label="Insurance / PhilHealth" value={selectedPatient.Insurance_PhilHealth_Info || 'N/A'} />
+                  <DrawerRow label="Special Note" value={selectedPatient.Clinical_Special_Note || 'N/A'} />
+                </ProfileSection>
 
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Guardian</h4>
-                <dl className="space-y-1.5 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+                <ProfileSection title="Guardian Information">
                   <DrawerRow label="Name" value={selectedPatient.Guardian || 'N/A'} />
                   <DrawerRow label="Relationship" value={selectedPatient.Guardian_Relationship || 'N/A'} />
-                  <DrawerRow label="Contact" value={selectedPatient.Guardian_Contact_Number || 'N/A'} />
-                </dl>
+                  <DrawerRow label="Contact Number" value={selectedPatient.Guardian_Contact_Number || 'N/A'} />
+                  <div className="my-2 border-t border-slate-100" />
+                  <DrawerRow label="Secondary Name" value={selectedPatient.Secondary_Guardian || 'N/A'} />
+                  <DrawerRow label="Secondary Relationship" value={selectedPatient.Secondary_Guardian_Relationship || 'N/A'} />
+                  <DrawerRow label="Secondary Contact" value={selectedPatient.Secondary_Guardian_Contact_Number || 'N/A'} />
+                </ProfileSection>
+
+                <ProfileSection title="Account & Record">
+                  <DrawerRow label="Record ID" value={selectedPatient.Patient_ID || 'N/A'} />
+                  <DrawerRow label="Account Status" value={selectedPatient.isActive ? 'Active' : 'Paused'} />
+                  <DrawerRow label="Created By" value={selectedPatient.createdByName || 'N/A'} />
+                  <DrawerRow label="Access Starts" value={formatDateTime(selectedPatient.accessStart)} />
+                  <DrawerRow label="Access Ends" value={formatDateTime(selectedPatient.accessEnd)} />
+                  <DrawerRow label="Record Created" value={formatDateTime(selectedPatient.Created_At)} />
+                  <DrawerRow label="Last Updated" value={formatDateTime(selectedPatient.Updated_At)} />
+                </ProfileSection>
               </div>
 
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Documents</h4>
-                <div className="space-y-2">
-                  {selectedPatient.pictureUrl ? (
-                    <a
-                      href={selectedPatient.pictureUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
-                    >
-                      <UploadCloud size={15} /> View Patient Picture
-                    </a>
-                  ) : (
-                    <p className="rounded-lg border border-dashed border-gray-300 px-3 py-2 text-xs text-gray-500">No patient picture uploaded.</p>
-                  )}
-
+              <section className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 sm:px-5">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900">Medical Document Preview</h4>
+                    <p className="mt-0.5 text-xs text-slate-500">Review the uploaded document without leaving the patient profile.</p>
+                  </div>
                   {selectedPatient.documentUrl ? (
                     <a
                       href={selectedPatient.documentUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                      className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                     >
-                      <FileText size={15} /> View Medical Document
+                      <FileText size={14} /> Open Full Document
                     </a>
-                  ) : (
-                    <p className="rounded-lg border border-dashed border-gray-300 px-3 py-2 text-xs text-gray-500">No medical document uploaded.</p>
-                  )}
+                  ) : null}
                 </div>
-              </div>
 
-              <div>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Record</h4>
-                <dl className="space-y-1.5 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
-                  <DrawerRow label="Created" value={formatDateTime(selectedPatient.Created_At)} />
-                </dl>
-              </div>
+                {selectedPatient.documentUrl ? (
+                  isPdfDocument(selectedPatient.Medical_Document, selectedPatient.documentUrl) ? (
+                    <iframe
+                      title={`${selectedPatient.fullName} medical document`}
+                      src={`${selectedPatient.documentUrl}#toolbar=1&navpanes=0&view=FitH`}
+                      className="h-[560px] w-full bg-white"
+                    />
+                  ) : (
+                    <div className="flex min-h-80 items-center justify-center bg-white p-4">
+                      <img
+                        src={selectedPatient.documentUrl}
+                        alt={`${selectedPatient.fullName} medical document`}
+                        className="max-h-[680px] max-w-full rounded-lg object-contain"
+                      />
+                    </div>
+                  )
+                ) : (
+                  <div className="flex min-h-64 items-center justify-center bg-slate-200 px-6 text-center">
+                    <div>
+                      <FileText size={34} className="mx-auto text-slate-400" />
+                      <p className="mt-3 text-sm font-semibold text-slate-600">No medical document was uploaded for this patient.</p>
+                    </div>
+                  </div>
+                )}
+              </section>
             </div>
-          </aside>
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {accountStatusModal.open && (
+        <div className="fixed inset-0 z-[10010] flex items-center justify-center bg-slate-950/65 p-4">
+          <button type="button" aria-label="Close account status confirmation" className="absolute inset-0" onClick={() => !isUpdatingAccountStatus && setAccountStatusModal({ open: false, patient: null })} />
+          <section role="dialog" aria-modal="true" className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <div className={`inline-flex rounded-full p-2 ${accountStatusModal.patient?.isActive ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+              {accountStatusModal.patient?.isActive ? <PauseCircle size={22} /> : <PlayCircle size={22} />}
+            </div>
+            <h3 className="mt-4 text-lg font-bold text-gray-900">{accountStatusModal.patient?.isActive ? 'Pause patient account?' : 'Resume patient account?'}</h3>
+            <p className="mt-2 text-sm text-gray-600">
+              {accountStatusModal.patient?.isActive
+                ? 'The patient will be unable to sign in. All patient and wig-request records will remain unchanged.'
+                : 'The patient will be allowed to sign in again.'}
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" disabled={isUpdatingAccountStatus} onClick={() => setAccountStatusModal({ open: false, patient: null })} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700">Cancel</button>
+              <button type="button" disabled={isUpdatingAccountStatus} onClick={updatePatientAccountStatus} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white disabled:opacity-60" style={{ backgroundColor: theme.primaryColor }}>
+                {isUpdatingAccountStatus ? <Loader2 size={15} className="animate-spin" /> : null}
+                Confirm
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {transferModal.open && (
+        <div className="fixed inset-0 z-[10010] flex items-center justify-center bg-slate-950/65 p-4">
+          <button type="button" aria-label="Close transfer request" className="absolute inset-0" onClick={() => setTransferModal({ open: false, patient: null, targetHospitalId: '', note: '' })} />
+          <section role="dialog" aria-modal="true" className="relative w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start gap-3"><div className="rounded-full bg-blue-100 p-2 text-blue-700"><ArrowRightLeft size={21} /></div><div><h3 className="text-lg font-bold text-gray-900">Request Hospital Transfer</h3><p className="mt-1 text-sm text-gray-600">{transferModal.patient?.fullName} remains with {hospitalName} until the receiving hospital accepts.</p></div></div>
+            <div className="mt-5 space-y-4">
+              <div><label className="mb-1 block text-sm font-semibold text-gray-700">Receiving Hospital</label><select value={transferModal.targetHospitalId} onChange={(event) => setTransferModal((previous) => ({ ...previous, targetHospitalId: event.target.value }))} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm"><option value="">Select approved hospital</option>{transferHospitals.map((hospital) => <option key={hospital.Hospital_ID} value={hospital.Hospital_ID}>{hospital.Hospital_Name}</option>)}</select></div>
+              <div><label className="mb-1 block text-sm font-semibold text-gray-700">Transfer Note (optional)</label><textarea rows={4} value={transferModal.note} onChange={(event) => setTransferModal((previous) => ({ ...previous, note: event.target.value }))} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm" placeholder="Reason or important handoff information" /></div>
+              <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">Historical records stay assigned to the old hospital. Only records created after acceptance use the new hospital.</div>
+            </div>
+            <div className="mt-6 flex justify-end gap-2"><button type="button" onClick={() => setTransferModal({ open: false, patient: null, targetHospitalId: '', note: '' })} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700">Cancel</button><button type="button" disabled={!transferModal.targetHospitalId || Boolean(transferActionId)} onClick={submitTransferRequest} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white disabled:opacity-60" style={{ backgroundColor: theme.primaryColor }}>{transferActionId ? <Loader2 size={15} className="animate-spin" /> : <ArrowRightLeft size={15} />} Send Request</button></div>
+          </section>
+        </div>
+      )}
+
+      {decisionModal.open && (
+        <div className="fixed inset-0 z-[10010] flex items-center justify-center bg-slate-950/65 p-4">
+          <button type="button" aria-label="Close transfer decision" className="absolute inset-0" onClick={() => setDecisionModal({ open: false, request: null, status: '', note: '' })} />
+          <section role="dialog" aria-modal="true" className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <h3 className="text-lg font-bold text-gray-900">{decisionModal.status === 'accepted' ? 'Accept Transfer?' : 'Reject Transfer?'}</h3>
+            <p className="mt-2 text-sm text-gray-600">Patient: <span className="font-semibold">{decisionModal.request?.Patient_Name_Snapshot}</span></p>
+            <textarea rows={4} value={decisionModal.note} onChange={(event) => setDecisionModal((previous) => ({ ...previous, note: event.target.value }))} className="mt-4 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm" placeholder="Response note (optional)" />
+            <div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setDecisionModal({ open: false, request: null, status: '', note: '' })} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700">Cancel</button><button type="button" disabled={Boolean(transferActionId)} onClick={decideTransferRequest} className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white disabled:opacity-60 ${decisionModal.status === 'accepted' ? 'bg-emerald-600' : 'bg-red-600'}`}>{transferActionId ? <Loader2 size={15} className="animate-spin" /> : null}{decisionModal.status === 'accepted' ? 'Accept Transfer' : 'Reject Transfer'}</button></div>
+          </section>
         </div>
       )}
 
@@ -2359,7 +3045,7 @@ export default function ManagePatientsPage({ userProfile }) {
             type="button"
             aria-label="Close success popup"
             className="absolute inset-0 h-full w-full cursor-default"
-            onClick={() => setSuccessPopup({ open: false, text: '' })}
+            onClick={() => setSuccessPopup({ open: false, text: '', emailSent: false })}
           />
 
           <section
@@ -2373,19 +3059,21 @@ export default function ManagePatientsPage({ userProfile }) {
                 <CheckCircle2 size={20} />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-gray-900">Patient Created</h3>
+                <h3 className="text-base font-semibold text-gray-900">{successPopup.emailSent ? 'Patient Created' : 'Update Complete'}</h3>
                 <p className="mt-1 text-sm text-gray-700">{successPopup.text}</p>
               </div>
             </div>
 
-            <div className="mt-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
-              <CheckCircle2 size={16} /> Invitation email sent successfully
-            </div>
+            {successPopup.emailSent ? (
+              <div className="mt-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+                <CheckCircle2 size={16} /> Invitation email sent successfully
+              </div>
+            ) : null}
 
             <div className="mt-5 flex justify-end">
               <button
                 type="button"
-                onClick={() => setSuccessPopup({ open: false, text: '' })}
+                onClick={() => setSuccessPopup({ open: false, text: '', emailSent: false })}
                 className="rounded-lg px-4 py-2 text-sm font-semibold text-white"
                 style={{ backgroundColor: theme.primaryColor }}
               >
@@ -2427,11 +3115,22 @@ export default function ManagePatientsPage({ userProfile }) {
   );
 }
 
+function ProfileSection({ title, children }) {
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-200 bg-white px-4 py-3">
+        <h4 className="text-xs font-bold uppercase tracking-[0.14em] text-slate-600">{title}</h4>
+      </div>
+      <dl className="divide-y divide-slate-100 bg-white px-4 py-1">{children}</dl>
+    </section>
+  );
+}
+
 function DrawerRow({ label, value }) {
   return (
-    <div className="flex items-start justify-between gap-3">
-      <dt className="text-xs text-gray-500">{label}</dt>
-      <dd className="text-right text-xs font-semibold text-gray-800">{value}</dd>
+    <div className="grid grid-cols-[minmax(110px,0.42fr)_minmax(0,0.58fr)] gap-3 py-2.5">
+      <dt className="text-xs font-medium text-slate-500">{label}</dt>
+      <dd className="break-words text-right text-xs font-semibold text-slate-900">{value || 'N/A'}</dd>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CalendarDays, Info, Loader2, RefreshCw, Search, X } from 'lucide-react';
+import { CalendarDays, CheckCircle2, Info, Loader2, RefreshCw, Search, X } from 'lucide-react';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
@@ -12,6 +12,9 @@ const PATIENTS_TABLE = 'Patients';
 const USERS_TABLE = 'users';
 const HOSPITALS_TABLE = 'Hospitals';
 const RELEASE_SCHEDULES_TABLE = 'Release_Schedules';
+const SAFETY_ASSESSMENTS_TABLE = 'patient_wig_safety_assessments';
+const PATIENT_ASSETS_BUCKET = 'patient_assets';
+const PROFILE_PICTURES_BUCKET = 'profile_pictures';
 const WIG_REQUEST_PREVIEWS_BUCKET = 'wig_request_previews';
 const WIG_AI_FILTERS_BUCKET = 'wig_ai_filters';
 const WIG_AI_SOURCES_BUCKET = 'wig_ai_sources';
@@ -21,7 +24,7 @@ const PST_OFFSET = '+08:00';
 const REQUEST_STATUS = {
   pending: 'Pending',
   acceptedAllocated: 'Accepted - Wig Allocated',
-  acceptedNoWig: 'Accepted - No Wig Available',
+  acceptedInProduction: 'Accepted - In Production',
   toBeRelease: 'To Be Release',
   releasing: 'Releasing',
   released: 'Released',
@@ -30,23 +33,24 @@ const REQUEST_STATUS = {
 };
 
 const STATUS_FILTERS = [
-  { id: 'all_review', label: 'All To Be Review' },
+  { id: 'all_active', label: 'All Active Requests' },
   { id: 'pending', label: 'Pending' },
   { id: 'accepted_allocated', label: 'Accepted - Wig Allocated' },
-  { id: 'accepted_no_wig', label: 'Accepted - No Wig Available' },
+  { id: 'accepted_in_production', label: 'Accepted - In Production' },
   { id: 'to_be_release', label: 'To Be Release' },
   { id: 'releasing', label: 'Releasing' },
+  { id: 'released', label: 'Released' },
 ];
 
-const REVIEW_QUEUE_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_no_wig'];
+const ACTIVE_REQUEST_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_in_production', 'to_be_release', 'releasing'];
 
 const ACTION_DEFINITIONS = {
   accept_allocated: {
     label: 'Accept - Wig Allocated',
     requiresWigSelection: true,
   },
-  accept_no_wig: {
-    label: 'Accept - No Wig Available',
+  accept_in_production: {
+    label: 'Accept - In Production',
   },
   submit_release_date: {
     label: 'Submit Release Date (Move to To Be Release)',
@@ -58,10 +62,6 @@ const ACTION_DEFINITIONS = {
   },
   reject: {
     label: 'Reject Request',
-    requiresReason: true,
-  },
-  cancel: {
-    label: 'Cancel Request',
     requiresReason: true,
   },
 };
@@ -126,12 +126,8 @@ function getCanonicalStatusKey(statusValue) {
     return 'accepted_allocated';
   }
 
-  if (['acceptedbutnowigavailable', 'acceptednowigavailable', 'nowigavailable', 'findingmatchingwig', 'formatching', 'matching', 'findingallocatingwig', 'findingandallocatingwig'].includes(key)) {
-    return 'accepted_no_wig';
-  }
-
-  if (['inproduction', 'production', 'inprocess'].includes(key)) {
-    return 'accepted_no_wig';
+  if (['acceptedbutnowigavailable', 'acceptednowigavailable', 'acceptedinproduction', 'inproduction', 'production', 'inprocess', 'nowigavailable', 'findingmatchingwig', 'formatching', 'matching', 'findingallocatingwig', 'findingandallocatingwig'].includes(key)) {
+    return 'accepted_in_production';
   }
 
   if (['readyforevent', 'readyforrelease', 'readyforfitting', 'readyforhandingover', 'toberelease'].includes(key)) {
@@ -165,7 +161,7 @@ function getStatusLabel(statusValue) {
   const key = getCanonicalStatusKey(statusValue);
 
   if (key === 'accepted_allocated') return REQUEST_STATUS.acceptedAllocated;
-  if (key === 'accepted_no_wig') return REQUEST_STATUS.acceptedNoWig;
+  if (key === 'accepted_in_production') return REQUEST_STATUS.acceptedInProduction;
   if (key === 'to_be_release') return REQUEST_STATUS.toBeRelease;
   if (key === 'releasing') return REQUEST_STATUS.releasing;
   if (key === 'released') return REQUEST_STATUS.released;
@@ -178,7 +174,7 @@ function statusClass(statusValue) {
   const key = getCanonicalStatusKey(statusValue);
 
   if (key === 'accepted_allocated') return 'bg-emerald-100 text-emerald-700';
-  if (key === 'accepted_no_wig') return 'bg-lime-100 text-lime-700';
+  if (key === 'accepted_in_production') return 'bg-lime-100 text-lime-700';
   if (key === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (key === 'releasing') return 'bg-teal-100 text-teal-700';
   if (key === 'released') return 'bg-green-100 text-green-700';
@@ -229,6 +225,17 @@ function formatRequestCode(requestCodeValue, reqIdValue) {
     return 'WR------';
   }
   return `WR${String(reqId).padStart(6, '0')}`;
+}
+
+function buildPatientAddress(details) {
+  return [
+    details?.street,
+    details?.barangay,
+    details?.city,
+    details?.province,
+    details?.region,
+    details?.country,
+  ].map((value) => String(value || '').trim()).filter(Boolean).join(', ') || 'N/A';
 }
 
 function parseSpecialNotesPayload(specialNotesValue) {
@@ -331,23 +338,19 @@ function toIsoFromDateTimeLocal(value) {
   return `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}:${parts.second}${PST_OFFSET}`;
 }
 
-function getPstTimestamp(date = new Date()) {
+function getMinimumReleaseDateTimeLocal(date = new Date()) {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: PST_TIMEZONE,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
   });
-
-  const parts = Object.fromEntries(
-    formatter.formatToParts(date).map((part) => [part.type, part.value]),
-  );
-  const hour = parts.hour === '24' ? '00' : parts.hour;
-  return `${parts.year}-${parts.month}-${parts.day}T${hour}:${parts.minute}:${parts.second}${PST_OFFSET}`;
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+  const minimumDate = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day) + 3));
+  const year = minimumDate.getUTCFullYear();
+  const month = String(minimumDate.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(minimumDate.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}T00:00`;
 }
 
 function isAbsoluteUrl(value) {
@@ -420,8 +423,22 @@ function mapActionError(rawMessage) {
     return 'Database migration is missing. Run supabase/119_add_allocated_wig_id_for_actual_allocation.sql, then retry.';
   }
 
-  if (lowerMessage.includes('release_schedules') && (lowerMessage.includes('relation') || lowerMessage.includes('does not exist'))) {
-    return 'Release scheduling data is unavailable. Ensure Release_Schedules exists and refresh Supabase schema cache.';
+  if (lowerMessage.includes('hospital_id') && lowerMessage.includes('release_schedules')) {
+    return 'Release scheduling has a database schema mismatch. Apply the latest release-scheduling migration, then retry.';
+  }
+
+  if (
+    lowerMessage.includes('release_schedules')
+    && (lowerMessage.includes('could not find the table') || lowerMessage.includes('relation "release_schedules" does not exist'))
+  ) {
+    return 'The Release_Schedules table is not exposed to the application. Verify the table and Data API configuration.';
+  }
+
+  if (
+    (lowerMessage.includes('staff_schedule_wig_release') || lowerMessage.includes('staff_complete_wig_release'))
+    && lowerMessage.includes('schema cache')
+  ) {
+    return 'The release scheduling service is not available in the API schema cache yet. Refresh the page and retry.';
   }
 
   if (lowerMessage.includes('row-level security')) {
@@ -430,6 +447,10 @@ function mapActionError(rawMessage) {
 
   if (lowerMessage.includes('out of stock') || lowerMessage.includes('stock')) {
     return 'Selected wig is out of stock. Refresh and choose another wig specification.';
+  }
+
+  if (lowerMessage.includes('three days') || lowerMessage.includes('3 days') || lowerMessage.includes('earliest release')) {
+    return 'Release scheduling must be at least three calendar days from today.';
   }
 
   return message;
@@ -468,15 +489,17 @@ function getAllowedActionsForRow(row) {
   }
 
   if (row.statusKey === 'pending') {
-    return ['accept_allocated', 'accept_no_wig', 'reject', 'cancel'];
+    return row.requestedStockAvailable
+      ? ['accept_allocated', 'reject']
+      : ['accept_in_production', 'reject'];
   }
 
-  if (row.statusKey === 'accepted_no_wig') {
-    return ['accept_allocated', 'cancel'];
+  if (row.statusKey === 'accepted_in_production') {
+    return [];
   }
 
   if (row.statusKey === 'accepted_allocated') {
-    return ['submit_release_date', 'accept_no_wig', 'cancel'];
+    return ['submit_release_date'];
   }
 
   if (row.statusKey === 'to_be_release') {
@@ -525,7 +548,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
   const [rows, setRows] = useState([]);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeStatusFilter, setActiveStatusFilter] = useState('all_review');
+  const [activeStatusFilter, setActiveStatusFilter] = useState('all_active');
   const [requestDateFrom, setRequestDateFrom] = useState('');
   const [requestDateTo, setRequestDateTo] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -539,6 +562,9 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
   const [isLoadingAvailableWigs, setIsLoadingAvailableWigs] = useState(false);
   const [actionReason, setActionReason] = useState('');
   const [actionReleaseDate, setActionReleaseDate] = useState('');
+  const [safetyReviewStatus, setSafetyReviewStatus] = useState('Pending');
+  const [safetyReviewNotes, setSafetyReviewNotes] = useState('');
+  const [releaseConfirmationStep, setReleaseConfirmationStep] = useState('');
 
   const loadReviewRows = useCallback(async (keepSelectedReqId = null) => {
     if (!isSupabaseConfigured || !supabase) {
@@ -552,19 +578,22 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
 
     try {
       setIsLoading(true);
+      setNotice({ kind: '', text: '' });
 
-      const [requestsRes, patientsRes, hospitalsRes] = await Promise.all([
+      const [requestsRes, patientsRes, hospitalsRes, safetyRes] = await Promise.all([
         supabase
           .from(WIG_REQUESTS_TABLE)
           .select('*')
           .order('Request_Date', { ascending: false }),
-        supabase.from(PATIENTS_TABLE).select('Patient_ID,Hospital_ID,Patient_Code,Medical_Condition,User_ID'),
+        supabase.from(PATIENTS_TABLE).select('*'),
         supabase.from(HOSPITALS_TABLE).select('Hospital_ID,Hospital_Name'),
+        supabase.from(SAFETY_ASSESSMENTS_TABLE).select('*'),
       ]);
 
       if (requestsRes.error) throw requestsRes.error;
       if (patientsRes.error) throw patientsRes.error;
       if (hospitalsRes.error) throw hospitalsRes.error;
+      if (safetyRes.error) throw safetyRes.error;
 
       const linkedUserIds = Array.from(
         new Set(
@@ -586,7 +615,17 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
               first_name,
               middle_name,
               last_name,
-              suffix
+              suffix,
+              birthdate,
+              gender,
+              contact_number,
+              photo_path,
+              street,
+              barangay,
+              city,
+              province,
+              region,
+              country
             )
           `)
           .in('user_id', linkedUserIds);
@@ -604,7 +643,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
 
       const scheduleRes = await supabase
         .from(RELEASE_SCHEDULES_TABLE)
-        .select('*')
+        .select('Release_Schedule_ID,Req_ID,Proposed_Release_Date,Hospital_Decision,Hospital_Decision_Reason,Is_Current,Created_At,Updated_At')
         .eq('Is_Current', true);
 
       if (scheduleRes.error) {
@@ -637,7 +676,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
         const [allocatedWigsRes, allocatedSpecsRes, allocatedFiltersRes] = await Promise.all([
           supabase
             .from(WIGS_TABLE)
-            .select('Wig_ID, Wig_Code, Wig_Name, Wig_Status, Stock_Count')
+            .select('Wig_ID, Wig_Code, Wig_Name, Wig_Status, Stock_Count, Catalog_Image_Path')
             .in('Wig_ID', wigIdsForLookup),
           supabase
             .from(WIG_SPECS_TABLE)
@@ -660,6 +699,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       }
 
       const patientById = new Map((patientsRes.data || []).map((row) => [Number(row.Patient_ID), row]));
+      const safetyByReqId = new Map((safetyRes.data || []).map((row) => [Number(row.req_id), row]));
       const hospitalById = new Map((hospitalsRes.data || []).map((row) => [Number(row.Hospital_ID), row]));
       const allocatedWigById = new Map(
         allocatedWigs
@@ -669,6 +709,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
             wigName: String(row.Wig_Name || '').trim(),
             wigStatus: getCanonicalWigStatusLabel(row.Wig_Status),
             stockCount: Number(row.Stock_Count || 0),
+            catalogImagePath: String(row.Catalog_Image_Path || '').trim(),
           }))
           .filter((row) => row.wigId > 0)
           .map((row) => [row.wigId, row]),
@@ -738,6 +779,8 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
         const allocatedWigFilter = allocatedWigId ? (allocatedFilterByWigId.get(allocatedWigId) || null) : null;
         const schedule = currentScheduleByReqId.get(reqId) || null;
         const linkedPatientUser = patient ? patientUsersById[Number(patient.User_ID || 0)] : null;
+        const linkedPatientDetails = Array.isArray(linkedPatientUser?.user_details) ? linkedPatientUser.user_details[0] : linkedPatientUser?.user_details;
+        const safetyAssessment = safetyByReqId.get(reqId) || null;
 
         const statusRaw = requestRow.Status || REQUEST_STATUS.pending;
         const statusKey = getCanonicalStatusKey(statusRaw);
@@ -756,11 +799,33 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           patientName: getPatientFullName(patient, linkedPatientUser),
           patientCode: String(patient?.Patient_Code || ''),
           medicalCondition: String(patient?.Medical_Condition || requestRow.Medical_Condition || '').trim() || 'N/A',
+          conditionCategory: String(patient?.Condition_Category || '').trim() || 'N/A',
+          conditionStage: String(patient?.Condition_Stage_Severity || '').trim() || 'N/A',
+          patientEmail: String(linkedPatientUser?.email || '').trim() || 'N/A',
+          patientBirthdate: String(linkedPatientDetails?.birthdate || '').trim() || 'N/A',
+          patientGender: String(linkedPatientDetails?.gender || '').trim() || 'N/A',
+          patientContact: String(linkedPatientDetails?.contact_number || '').trim() || 'N/A',
+          patientAddress: buildPatientAddress(linkedPatientDetails),
+          patientPhotoUrl: resolveStoragePublicUrl(PATIENT_ASSETS_BUCKET, patient?.Patient_Picture)
+            || resolveStoragePublicUrl(PROFILE_PICTURES_BUCKET, linkedPatientDetails?.photo_path),
+          guardianName: String(patient?.Guardian || '').trim() || 'N/A',
+          guardianRelationship: String(patient?.Guardian_Relationship || '').trim() || 'N/A',
+          guardianContact: String(patient?.Guardian_Contact_Number || '').trim() || 'N/A',
+          secondaryGuardianName: String(patient?.Secondary_Guardian || '').trim(),
+          secondaryGuardianRelationship: String(patient?.Secondary_Guardian_Relationship || '').trim(),
+          secondaryGuardianContact: String(patient?.Secondary_Guardian_Contact_Number || '').trim(),
+          attendingPhysician: String(patient?.Doctor_Name || '').trim() || 'N/A',
+          attendingPhysicianContact: String(patient?.Attending_Physician_Contact || '').trim() || 'N/A',
+          treatmentHospitalClinic: String(patient?.Treatment_Hospital_Clinic || '').trim() || 'N/A',
+          treatmentPlan: String(patient?.Treatment_Plan || '').trim() || 'N/A',
+          treatmentStatus: String(patient?.Current_Treatment_Status || '').trim() || 'N/A',
+          clinicalAllergiesMedications: String(patient?.Allergies_Current_Medications || '').trim() || 'N/A',
           requestDate: requestRow.Request_Date,
           updatedAt: requestRow.Updated_At || requestRow.Request_Date,
           status: statusRaw,
           statusKey,
           statusLabel: getStatusLabel(statusRaw),
+          fulfillmentStatus: String(requestRow.Fulfillment_Status || '').trim(),
           statusReason: rawStatusReason.startsWith('SSMETA:') ? '' : rawStatusReason,
           previewPdfUrl: String(requestRow.Pdf_Url || requestRow.Preview_Pdf_Url || '').trim(),
           requestedWigSpecificationId: requestedSpecId || null,
@@ -772,6 +837,10 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           specDensity: String(requestedSpec?.Hair_Density || '').trim() || 'N/A',
           specCapSize: String(requestedSpec?.Cap_Size || '').trim() || 'N/A',
           specSpecialNote: String(specialNotesPayload?.specialNoteTemplate || '').trim() || 'N/A',
+          requestedStockCount: requestedWig?.stockCount ?? 0,
+          requestedStockAvailable: Number(requestedWig?.stockCount || 0) > 0
+            && normalizeStatusKey(requestedWig?.wigStatus) === 'available',
+          safetyAssessment,
           requestedWigFrontImageUrl: signedSourceUrlByPath.get(String(requestedWigFilter?.Source_Front_Path || '').trim())
             || resolveStoragePublicUrl(
               WIG_AI_SOURCES_BUCKET,
@@ -779,7 +848,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
             ) || resolveStoragePublicUrl(
               WIG_AI_FILTERS_BUCKET,
               String(requestedWigFilter?.Source_Front_Path || '').trim(),
-            ),
+            ) || resolveStoragePublicUrl(WIG_AI_FILTERS_BUCKET, requestedWig?.catalogImagePath),
           requestedWigSideImageUrl: signedSourceUrlByPath.get(String(requestedWigFilter?.Source_Side_Path || '').trim())
             || resolveStoragePublicUrl(
               WIG_AI_SOURCES_BUCKET,
@@ -904,7 +973,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           .select('Wig_Specification_ID, Wig_ID, Hair_Length, Hair_Color, Hair_Texture, Hair_Density, Cap_Size, Style'),
         supabase
           .from(WIGS_TABLE)
-          .select('Wig_ID, Wig_Code, Wig_Name, Wig_Status, Stock_Count, Completed_At'),
+          .select('Wig_ID, Wig_Code, Wig_Name, Wig_Status, Stock_Count, Completed_At, Catalog_Image_Path'),
         supabase
           .from(WIG_FILTERS_TABLE)
           .select('Wig_ID, Is_Active, Status, Source_Front_Path, Source_Side_Path, Source_Top_Path, Source_Back_Path, Layer_Back_Hair_Path, Updated_At')
@@ -957,7 +1026,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
             ) || resolveStoragePublicUrl(
               WIG_AI_FILTERS_BUCKET,
               String(wigFilter?.Source_Front_Path || '').trim(),
-            ),
+            ) || resolveStoragePublicUrl(WIG_AI_FILTERS_BUCKET, wigRow.Catalog_Image_Path),
             sideImageUrl: resolveStoragePublicUrl(
               WIG_AI_SOURCES_BUCKET,
               String(wigFilter?.Source_Side_Path || '').trim(),
@@ -1005,11 +1074,11 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
   }, [loadReviewRows]);
 
   const filteredRows = useMemo(() => {
-    const reviewStatusSet = new Set(REVIEW_QUEUE_STATUS_KEYS);
+    const activeStatusSet = new Set(ACTIVE_REQUEST_STATUS_KEYS);
 
     const statusFiltered = rows.filter((row) => {
-      if (activeStatusFilter === 'all_review') {
-        return reviewStatusSet.has(row.statusKey);
+      if (activeStatusFilter === 'all_active') {
+        return activeStatusSet.has(row.statusKey);
       }
 
       return row.statusKey === activeStatusFilter;
@@ -1030,20 +1099,26 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
   }, [rows, activeStatusFilter, searchTerm, requestDateFrom, requestDateTo]);
 
   const quickStats = useMemo(() => {
-    const reviewStatusSet = new Set(REVIEW_QUEUE_STATUS_KEYS);
-
-    const toBeReviewCount = rows.filter((row) => reviewStatusSet.has(row.statusKey)).length;
-    const acceptedNoWigCount = rows.filter((row) => row.statusKey === 'accepted_no_wig').length;
+    const pendingCount = rows.filter((row) => row.statusKey === 'pending').length;
+    const acceptedAllocatedCount = rows.filter((row) => row.statusKey === 'accepted_allocated').length;
+    const acceptedInProductionCount = rows.filter((row) => row.statusKey === 'accepted_in_production').length;
     const toBeReleaseCount = rows.filter((row) => row.statusKey === 'to_be_release').length;
+    const releasingCount = rows.filter((row) => row.statusKey === 'releasing').length;
+    const releasedCount = rows.filter((row) => row.statusKey === 'released').length;
     const rescheduleRequestedCount = rows.filter((row) => row.releaseWorkflowKey === 'hospital_reschedule_requested').length;
 
     return [
-      { label: 'To Be Review', value: String(toBeReviewCount) },
-      { label: 'Accepted - No Wig', value: String(acceptedNoWigCount) },
+      { label: 'Pending Review', value: String(pendingCount) },
+      { label: 'Accepted - Wig Allocated', value: String(acceptedAllocatedCount) },
+      { label: 'Accepted - In Production', value: String(acceptedInProductionCount) },
       { label: 'To Be Release', value: String(toBeReleaseCount) },
+      { label: 'Releasing', value: String(releasingCount) },
+      { label: 'Released', value: String(releasedCount) },
       { label: 'Reschedule Requested', value: String(rescheduleRequestedCount) },
     ];
   }, [rows]);
+
+  const minimumReleaseDateTimeLocal = getMinimumReleaseDateTimeLocal();
 
   const selectedPreviewUrl = useMemo(() => {
     if (!selectedRow) {
@@ -1080,7 +1155,9 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     setAvailableWigs([]);
     setActionReason('');
     setActionReleaseDate('');
-  }, [selectedRow?.reqId]);
+    setSafetyReviewStatus(selectedRow?.safetyAssessment?.review_status || 'Pending');
+    setSafetyReviewNotes(selectedRow?.safetyAssessment?.review_notes || '');
+  }, [selectedRow?.reqId, selectedRow?.safetyAssessment?.review_notes, selectedRow?.safetyAssessment?.review_status]);
 
   useEffect(() => {
     setSelectedWigSpecificationId('');
@@ -1092,14 +1169,20 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
   }, [selectedAction, selectedRow, loadAvailableWigs]);
 
   useEffect(() => {
+    if (selectedAction !== 'accept_allocated' || selectedWigSpecificationId || assignableWigs.length === 0) return;
+    setSelectedWigSpecificationId(String(assignableWigs[0].specificationId));
+  }, [assignableWigs, selectedAction, selectedWigSpecificationId]);
+
+  useEffect(() => {
     if (!selectedAction || !actionRequiresReleaseDate(selectedAction) || actionReleaseDate) {
       return;
     }
 
-    const defaultDate = selectedRow?.releaseDate
-      || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    setActionReleaseDate(toDateTimeLocalValue(defaultDate));
-  }, [selectedAction, selectedRow, actionReleaseDate]);
+    const savedDate = toDateTimeLocalValue(selectedRow?.releaseDate);
+    setActionReleaseDate(savedDate && savedDate >= minimumReleaseDateTimeLocal
+      ? savedDate
+      : `${minimumReleaseDateTimeLocal.slice(0, 10)}T09:00`);
+  }, [selectedAction, selectedRow, actionReleaseDate, minimumReleaseDateTimeLocal]);
 
   const canApplyAction = useMemo(() => {
     if (!selectedRow || !selectedAction || isApplyingAction) {
@@ -1112,6 +1195,10 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       }
 
       if (!String(actionReleaseDate || '').trim()) {
+        return false;
+      }
+
+      if (actionReleaseDate < minimumReleaseDateTimeLocal) {
         return false;
       }
     }
@@ -1143,154 +1230,17 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     actionReason,
     selectedWigSpecificationId,
     requestedSpecIdForSelection,
+    minimumReleaseDateTimeLocal,
   ]);
 
-  const updateRequestWithStatusReasonFallback = useCallback(async (reqId, payload) => {
-    const { error } = await supabase
-      .from(WIG_REQUESTS_TABLE)
-      .update(payload)
-      .eq('Req_ID', reqId);
-
-    if (!error) {
-      return;
-    }
-
-    const lowerError = String(error.message || '').toLowerCase();
-    if (lowerError.includes('status_reason') && lowerError.includes('column')) {
-      const { Status_Reason: _ignored, ...fallbackPayload } = payload;
-      const { error: fallbackError } = await supabase
-        .from(WIG_REQUESTS_TABLE)
-        .update(fallbackPayload)
-        .eq('Req_ID', reqId);
-
-      if (fallbackError) {
-        throw fallbackError;
-      }
-
-      return;
-    }
-
-    throw error;
-  }, []);
-
-  const updateWigStock = useCallback(async ({ wigId, delta, nowIso }) => {
-    const numericWigId = Number(wigId || 0);
-    const numericDelta = Number(delta || 0);
-    if (!numericWigId || !numericDelta) return;
-
-    const { data: currentWig, error: readError } = await supabase
-      .from(WIGS_TABLE)
-      .select('Wig_ID, Stock_Count, Wig_Status')
-      .eq('Wig_ID', numericWigId)
-      .single();
-    if (readError) throw readError;
-
-    const currentStock = Math.max(0, Number(currentWig?.Stock_Count || 0));
-    const nextStock = currentStock + numericDelta;
-    if (nextStock < 0) {
-      throw new Error('Selected wig is out of stock.');
-    }
-
-    const { error: updateError } = await supabase
-      .from(WIGS_TABLE)
-      .update({
-        Stock_Count: nextStock,
-        Updated_At: nowIso,
-      })
-      .eq('Wig_ID', numericWigId)
-      .eq('Stock_Count', currentStock);
-    if (updateError) throw updateError;
-  }, []);
-
-  const proposeReleaseSchedule = useCallback(async ({ requestRow, releaseDateIso, note, actorUserId }) => {
-    const nowIso = getPstTimestamp();
-
-    const { error: clearCurrentError } = await supabase
-      .from(RELEASE_SCHEDULES_TABLE)
-      .update({
-        Is_Current: false,
-        Updated_At: nowIso,
-      })
-      .eq('Req_ID', requestRow.reqId)
-      .eq('Is_Current', true);
-
-    if (clearCurrentError) {
-      throw clearCurrentError;
-    }
-
-    const schedulePayload = {
-      Req_ID: requestRow.reqId,
-      Proposed_Release_Date: releaseDateIso,
-      Proposed_By: actorUserId,
-      Proposal_Note: note || null,
-      Hospital_Decision: 'Pending',
-      Is_Current: true,
-      Created_At: nowIso,
-      Updated_At: nowIso,
-    };
-
-    let insertScheduleError = null;
-
-    {
-      const { error } = await supabase
-        .from(RELEASE_SCHEDULES_TABLE)
-        .insert(schedulePayload);
-
-      insertScheduleError = error;
-    }
-
-    if (insertScheduleError) {
-      const lowerInsertError = String(insertScheduleError.message || '').toLowerCase();
-      const requiresHospitalId = lowerInsertError.includes('hospital_id')
-        || (lowerInsertError.includes('not-null') && lowerInsertError.includes('null value'));
-
-      if (requiresHospitalId && Number(requestRow.hospitalId || 0) > 0) {
-        const { error: retryInsertError } = await supabase
-          .from(RELEASE_SCHEDULES_TABLE)
-          .insert({
-            ...schedulePayload,
-            Hospital_ID: requestRow.hospitalId,
-          });
-
-        insertScheduleError = retryInsertError;
-      }
-    }
-
-    if (insertScheduleError) {
-      throw insertScheduleError;
-    }
-
-    const releasePayload = {
-      Status: REQUEST_STATUS.toBeRelease,
-      Updated_At: nowIso,
-      Status_Reason: null,
-    };
-
-    const { error: releaseUpdateError } = await supabase
-      .from(WIG_REQUESTS_TABLE)
-      .update(releasePayload)
-      .eq('Req_ID', requestRow.reqId);
-
-    if (!releaseUpdateError) {
-      return;
-    }
-
-    const lowerError = String(releaseUpdateError.message || '').toLowerCase();
-    if (lowerError.includes('status_reason') && lowerError.includes('column')) {
-      const { Status_Reason: _ignored, ...fallbackPayload } = releasePayload;
-      const { error: fallbackError } = await supabase
-        .from(WIG_REQUESTS_TABLE)
-        .update(fallbackPayload)
-        .eq('Req_ID', requestRow.reqId);
-
-      if (fallbackError) {
-        throw fallbackError;
-      }
-
-      return;
-    }
-
-    throw releaseUpdateError;
+  const proposeReleaseSchedule = useCallback(async ({ requestRow, releaseDateIso, note }) => {
+    const result = await supabase.rpc('staff_schedule_wig_release', {
+      p_req_id: requestRow.reqId,
+      p_proposed_release_date: releaseDateIso,
+      p_note: note || null,
+    });
+    if (result.error) throw result.error;
+    return result.data;
   }, []);
 
   const handleApplyAction = async () => {
@@ -1300,7 +1250,6 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
 
     const actionLabel = ACTION_DEFINITIONS[selectedAction]?.label || 'Update';
     const requestCode = selectedRow.requestId;
-    const actorUserId = Number(userProfile?.user_id || 0) || null;
     const reasonText = String(actionReason || '').trim();
 
     if (actionRequiresReleaseDate(selectedAction) && !isReleaseWorkflowAvailable) {
@@ -1316,92 +1265,25 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       return;
     }
 
+    if (actionRequiresReleaseDate(selectedAction) && actionReleaseDate < minimumReleaseDateTimeLocal) {
+      setNotice({ kind: 'error', text: 'The earliest release schedule is three calendar days from today.' });
+      return;
+    }
+
     try {
       setIsApplyingAction(true);
       setNotice({ kind: '', text: '' });
 
-      const nowIso = getPstTimestamp();
-      const hasExistingAllocation = Number(selectedRow.allocatedWigId || 0) > 0;
-      const releaseExistingAllocation = async () => {
-        const existingWigId = Number(selectedRow.allocatedWigId || 0);
-        if (!existingWigId) return;
-        await updateWigStock({ wigId: existingWigId, delta: +1, nowIso });
-      };
-
-      if (selectedAction === 'accept_allocated') {
-        const selectedSpecificationNumericId = Number(selectedWigSpecificationId || 0);
-        if (!selectedSpecificationNumericId) {
-          throw new Error('Select a wig specification to allocate.');
-        }
-
-        if (
-          requestedSpecIdForSelection
-          && selectedSpecificationNumericId !== requestedSpecIdForSelection
-        ) {
-          throw new Error(`Selected wig must match requested specification #${requestedSpecIdForSelection}.`);
-        }
-
-        const chosenWig = assignableWigs.find((row) => row.specificationId === selectedSpecificationNumericId);
-        if (!chosenWig) {
-          throw new Error('Selected wig specification is no longer available. Refresh and try again.');
-        }
-        const targetWigId = Number(chosenWig.wigId || 0);
-        if (!targetWigId) {
-          throw new Error('Selected specification has no linked wig.');
-        }
-
-        const existingWigId = Number(selectedRow.allocatedWigId || 0);
-        const changedAllocation = !existingWigId || existingWigId !== targetWigId;
-        if (changedAllocation && existingWigId) {
-          await updateWigStock({ wigId: existingWigId, delta: +1, nowIso });
-        }
-
-        if (changedAllocation) {
-          await updateWigStock({ wigId: targetWigId, delta: -1, nowIso });
-        }
-
-        await updateRequestWithStatusReasonFallback(selectedRow.reqId, {
-          Status: REQUEST_STATUS.acceptedAllocated,
-          Allocated_Wig_ID: targetWigId,
-          Updated_At: nowIso,
-          Status_Reason: null,
+      if (['accept_allocated', 'accept_in_production', 'reject'].includes(selectedAction)) {
+        const transactionalResult = await supabase.rpc('review_wig_request_transactional', {
+          p_req_id: selectedRow.reqId,
+          p_action: selectedAction === 'accept_in_production' ? 'accept_production_required' : selectedAction,
+          p_wig_specification_id: selectedAction === 'accept_allocated' ? Number(selectedWigSpecificationId || 0) : null,
+          p_reason: reasonText || null,
+          p_safety_review_status: safetyReviewStatus || null,
+          p_safety_review_notes: String(safetyReviewNotes || '').trim() || null,
         });
-      }
-
-      if (selectedAction === 'accept_no_wig') {
-        if (hasExistingAllocation) {
-          await releaseExistingAllocation();
-        }
-        await updateRequestWithStatusReasonFallback(selectedRow.reqId, {
-          Status: REQUEST_STATUS.acceptedNoWig,
-          Allocated_Wig_ID: null,
-          Updated_At: nowIso,
-          Status_Reason: null,
-        });
-      }
-
-      if (selectedAction === 'reject') {
-        if (hasExistingAllocation) {
-          await releaseExistingAllocation();
-        }
-        await updateRequestWithStatusReasonFallback(selectedRow.reqId, {
-          Status: REQUEST_STATUS.rejected,
-          Allocated_Wig_ID: null,
-          Updated_At: nowIso,
-          Status_Reason: reasonText,
-        });
-      }
-
-      if (selectedAction === 'cancel') {
-        if (hasExistingAllocation) {
-          await releaseExistingAllocation();
-        }
-        await updateRequestWithStatusReasonFallback(selectedRow.reqId, {
-          Status: REQUEST_STATUS.cancelled,
-          Allocated_Wig_ID: null,
-          Updated_At: nowIso,
-          Status_Reason: reasonText,
-        });
+        if (transactionalResult.error) throw transactionalResult.error;
       }
 
       if (selectedAction === 'submit_release_date' || selectedAction === 'resubmit_release_date') {
@@ -1414,7 +1296,6 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           requestRow: selectedRow,
           releaseDateIso,
           note: reasonText,
-          actorUserId,
         });
       }
 
@@ -1447,6 +1328,33 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     }
   };
 
+  const handleOpenReleaseConfirmation = () => {
+    if (!selectedRow || selectedRow.statusKey !== 'releasing') return;
+    setReleaseConfirmationStep('confirm');
+  };
+
+  const handleConfirmRelease = async () => {
+    if (!selectedRow || selectedRow.statusKey !== 'releasing' || isApplyingAction) return;
+
+    try {
+      setIsApplyingAction(true);
+      setNotice({ kind: '', text: '' });
+
+      const result = await supabase.rpc('staff_complete_wig_release', {
+        p_req_id: selectedRow.reqId,
+      });
+      if (result.error) throw result.error;
+
+      await loadReviewRows(selectedRow.reqId);
+      setReleaseConfirmationStep('success');
+    } catch (error) {
+      setReleaseConfirmationStep('');
+      setNotice({ kind: 'error', text: mapActionError(error.message) });
+    } finally {
+      setIsApplyingAction(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -1457,7 +1365,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-7">
         {quickStats.map((item) => (
           <article key={item.label} className="rounded-xl border border-slate-200 bg-white p-3">
             <p className="text-[11px] uppercase tracking-wide text-slate-500">{item.label}</p>
@@ -1565,7 +1473,10 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                 {filteredRows.map((row) => (
                   <tr
                     key={row.reqId}
-                    onClick={() => setSelectedRow(row)}
+                    onClick={() => {
+                      setReleaseConfirmationStep('');
+                      setSelectedRow(row);
+                    }}
                     className="cursor-pointer border-t border-slate-200 hover:bg-slate-50"
                   >
                     <td className="px-4 py-3 font-semibold text-slate-800">{row.requestId}</td>
@@ -1578,6 +1489,9 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                     <td className="px-4 py-3 text-slate-700">
                       <p className="text-xs font-semibold text-slate-800">{row.specWigName}</p>
                       <p className="text-[11px] text-slate-500">{row.specColor} / {row.specCapSize}</p>
+                      <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold ${row.requestedStockAvailable ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                        {row.requestedStockAvailable ? `${row.requestedStockCount} in stock` : 'No matching stock'}
+                      </span>
                       {row.allocatedWigCode ? <p className="text-xs font-semibold text-emerald-700">Allocated Wig: {row.allocatedWigCode}</p> : null}
                     </td>
                     <td className="px-4 py-3">
@@ -1595,6 +1509,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
+                          setReleaseConfirmationStep('');
                           setSelectedRow(row);
                         }}
                         className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
@@ -1611,38 +1526,92 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       </section>
 
       {selectedRow && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 z-[90] m-0 p-0">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6">
           <button
             type="button"
             aria-label="Close staff request panel"
             className="absolute inset-0 m-0 p-0 border-0 appearance-none bg-black bg-opacity-50 backdrop-blur-sm"
-            onClick={() => setSelectedRow(null)}
+            onClick={() => {
+              setReleaseConfirmationStep('');
+              setSelectedRow(null);
+            }}
           />
 
-          <aside
-            className="absolute right-0 top-0 h-full w-full max-w-3xl overflow-y-auto border-l border-slate-200 bg-white shadow-2xl"
-            style={{ animation: 'staffRequestSlideIn 0.25s ease-out' }}
-          >
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
+          <section className="relative flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="z-10 flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900">Wig Request Review</h3>
                 <p className="mt-0.5 text-xs text-slate-500">
                   {selectedRow.requestId} | {selectedRow.patientName}
                 </p>
               </div>
-              <button type="button" onClick={() => setSelectedRow(null)} className="text-slate-400 hover:text-red-500">
+              <button type="button" onClick={() => { setReleaseConfirmationStep(''); setSelectedRow(null); }} className="text-slate-400 hover:text-red-500">
                 <X size={22} />
               </button>
             </div>
 
-            <div className="space-y-4 p-5">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                <p><span className="font-semibold text-slate-900">H-Representative:</span> {selectedRow.hospitalName}</p>
-                <p className="mt-1"><span className="font-semibold text-slate-900">Patient:</span> {selectedRow.patientName}</p>
-                <p className="mt-1"><span className="font-semibold text-slate-900">Medical Condition:</span> {selectedRow.medicalCondition}</p>
-                <p className="mt-1"><span className="font-semibold text-slate-900">Request Date:</span> {formatDateTime(selectedRow.requestDate)}</p>
-                <p className="mt-1"><span className="font-semibold text-slate-900">Last Updated:</span> {formatDateTime(selectedRow.updatedAt)}</p>
-                <p className="mt-1"><span className="font-semibold text-slate-900">Status:</span> {selectedRow.statusLabel}</p>
+            <div className="flex flex-1 flex-col gap-4 overflow-y-auto bg-slate-100 p-5">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-4">
+                  <div className="flex min-w-0 items-center gap-3">
+                    {selectedRow.patientPhotoUrl ? (
+                      <img src={selectedRow.patientPhotoUrl} alt={selectedRow.patientName} className="h-16 w-16 shrink-0 rounded-full border border-slate-200 object-cover" />
+                    ) : (
+                      <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-slate-900 text-lg font-bold text-white">{String(selectedRow.patientName || 'P').charAt(0).toUpperCase()}</div>
+                    )}
+                    <div className="min-w-0">
+                      <p className="truncate text-lg font-bold text-slate-900">{selectedRow.patientName}</p>
+                      <p className="text-xs text-slate-500">{selectedRow.patientCode || `Patient #${selectedRow.patientId}`}</p>
+                      <p className="mt-1 text-xs text-slate-600">{selectedRow.hospitalName}</p>
+                    </div>
+                  </div>
+                  <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass(selectedRow.status)}`}>
+                    {selectedRow.statusLabel}
+                  </span>
+                </div>
+                <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+                  <section>
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Personal Information</p>
+                    <div className="mt-2 space-y-1.5">
+                      <p><span className="font-semibold text-slate-900">Birthdate:</span> {selectedRow.patientBirthdate}</p>
+                      <p><span className="font-semibold text-slate-900">Gender:</span> {selectedRow.patientGender}</p>
+                      <p><span className="font-semibold text-slate-900">Email:</span> {selectedRow.patientEmail}</p>
+                      <p><span className="font-semibold text-slate-900">Contact:</span> {selectedRow.patientContact}</p>
+                      <p><span className="font-semibold text-slate-900">Address:</span> {selectedRow.patientAddress}</p>
+                    </div>
+                  </section>
+                  <section>
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Clinical Information</p>
+                    <div className="mt-2 space-y-1.5">
+                      <p><span className="font-semibold text-slate-900">Condition:</span> {selectedRow.medicalCondition}</p>
+                      <p><span className="font-semibold text-slate-900">Category / Stage:</span> {selectedRow.conditionCategory} / {selectedRow.conditionStage}</p>
+                      <p><span className="font-semibold text-slate-900">Physician:</span> {selectedRow.attendingPhysician}</p>
+                      <p><span className="font-semibold text-slate-900">Physician Contact:</span> {selectedRow.attendingPhysicianContact}</p>
+                      <p><span className="font-semibold text-slate-900">Treatment:</span> {selectedRow.treatmentPlan}</p>
+                      <p><span className="font-semibold text-slate-900">Current Status:</span> {selectedRow.treatmentStatus}</p>
+                    </div>
+                  </section>
+                  <section>
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Emergency Contacts</p>
+                    <div className="mt-2 space-y-1.5">
+                      <p className="font-semibold text-slate-900">Primary</p>
+                      <p>{selectedRow.guardianName} · {selectedRow.guardianRelationship}</p>
+                      <p>{selectedRow.guardianContact}</p>
+                      {selectedRow.secondaryGuardianName || selectedRow.secondaryGuardianRelationship || selectedRow.secondaryGuardianContact ? (
+                        <div className="border-t border-slate-100 pt-2">
+                          <p className="font-semibold text-slate-900">Secondary</p>
+                          <p>{selectedRow.secondaryGuardianName || 'N/A'} · {selectedRow.secondaryGuardianRelationship || 'N/A'}</p>
+                          <p>{selectedRow.secondaryGuardianContact || 'N/A'}</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  </section>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1 border-t border-slate-200 pt-3 text-xs text-slate-600">
+                  <p><span className="font-semibold text-slate-900">Request:</span> {formatDateTime(selectedRow.requestDate)}</p>
+                  <p><span className="font-semibold text-slate-900">Updated:</span> {formatDateTime(selectedRow.updatedAt)}</p>
+                  <p><span className="font-semibold text-slate-900">Status:</span> {selectedRow.statusLabel}</p>
+                </div>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -1658,36 +1627,31 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                     Refresh
                   </button>
                 </div>
-                <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-700 sm:grid-cols-2">
-                  <p><span className="font-semibold text-slate-900">Spec ID:</span> {selectedRow.requestedWigSpecificationId || 'N/A'}</p>
-                  <p><span className="font-semibold text-slate-900">Wig Name:</span> {selectedRow.specWigName}</p>
-                  <p><span className="font-semibold text-slate-900">Color:</span> {selectedRow.specColor}</p>
-                  <p><span className="font-semibold text-slate-900">Length:</span> {selectedRow.specLength}</p>
-                  <p><span className="font-semibold text-slate-900">Density:</span> {selectedRow.specDensity}</p>
-                  <p><span className="font-semibold text-slate-900">Texture:</span> {selectedRow.specTexture}</p>
-                  <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedRow.specCapSize}</p>
-                  <p><span className="font-semibold text-slate-900">Allocated Wig:</span> {selectedRow.allocatedWigCode || 'Not assigned yet'}</p>
-                </div>
-                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
-                  <p className="font-semibold text-slate-900">
-                    Requested Wig Preview: {selectedRow.specWigName || 'N/A'}
-                  </p>
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    {[
-                      ['Front', selectedRow.requestedWigFrontImageUrl],
-                      ['Side', selectedRow.requestedWigSideImageUrl],
-                      ['Top', selectedRow.requestedWigTopImageUrl],
-                      ['Back', selectedRow.requestedWigBackImageUrl],
-                    ].map(([label, imageUrl]) => (
-                      <div key={label} className="rounded-md border border-slate-200 bg-white p-1">
-                        <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                        {imageUrl ? (
-                          <img src={imageUrl} alt={`${label} requested wig`} className="mt-1 h-24 w-full rounded object-cover" />
-                        ) : (
-                          <div className="mt-1 flex h-24 items-center justify-center rounded bg-slate-100 text-[11px] text-slate-500">No image</div>
-                        )}
-                      </div>
-                    ))}
+                <div className="mt-3 flex flex-col gap-4 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:flex-row">
+                  <div className="w-full shrink-0 sm:w-40">
+                  {selectedRow.requestedWigFrontImageUrl || selectedRow.requestedWigSideImageUrl || selectedRow.requestedWigTopImageUrl || selectedRow.requestedWigBackImageUrl ? (
+                    <img
+                      src={selectedRow.requestedWigFrontImageUrl || selectedRow.requestedWigSideImageUrl || selectedRow.requestedWigTopImageUrl || selectedRow.requestedWigBackImageUrl}
+                      alt={`${selectedRow.specWigName} requested wig`}
+                      className="h-40 w-full rounded-lg border border-slate-200 bg-white object-contain"
+                    />
+                  ) : (
+                    <div className="flex h-40 items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white px-3 text-center text-xs text-slate-500">Catalog image unavailable</div>
+                  )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-base font-bold text-slate-900">{selectedRow.specWigName}</p>
+                    <p className="mt-0.5 text-xs text-slate-500">Specification #{selectedRow.requestedWigSpecificationId || 'N/A'}</p>
+                    <div className="mt-3 grid grid-cols-2 gap-x-5 gap-y-2 text-sm text-slate-700 md:grid-cols-3">
+                      <p><span className="font-semibold text-slate-900">Style:</span> {selectedRow.specStyle}</p>
+                      <p><span className="font-semibold text-slate-900">Color:</span> {selectedRow.specColor}</p>
+                      <p><span className="font-semibold text-slate-900">Length:</span> {selectedRow.specLength}</p>
+                      <p><span className="font-semibold text-slate-900">Density:</span> {selectedRow.specDensity}</p>
+                      <p><span className="font-semibold text-slate-900">Texture:</span> {selectedRow.specTexture}</p>
+                      <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedRow.specCapSize}</p>
+                    </div>
+                    <p className="mt-3 text-sm text-slate-700"><span className="font-semibold text-slate-900">Allocated Wig:</span> {selectedRow.allocatedWigCode || 'Not assigned yet'}</p>
+                    <p className="mt-2 whitespace-pre-line text-sm text-slate-700"><span className="font-semibold text-slate-900">Special Note:</span> {selectedRow.specSpecialNote}</p>
                   </div>
                 </div>
                 {selectedRow.allocatedWigId ? (
@@ -1701,28 +1665,48 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                     <p className="mt-1">
                       Style: {selectedRow.allocatedWigStyle || 'N/A'} | Color: {selectedRow.allocatedWigColor || 'N/A'} | Texture: {selectedRow.allocatedWigTexture || 'N/A'} | Cap: {selectedRow.allocatedWigCapSize || 'N/A'}
                     </p>
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      {[
-                        ['Front', selectedRow.allocatedWigFrontImageUrl],
-                        ['Side', selectedRow.allocatedWigSideImageUrl],
-                        ['Top', selectedRow.allocatedWigTopImageUrl],
-                        ['Back', selectedRow.allocatedWigBackImageUrl],
-                      ].map(([label, imageUrl]) => (
-                        <div key={label} className="rounded-md border border-slate-200 bg-white p-1">
-                          <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                          {imageUrl ? (
-                            <img src={imageUrl} alt={`${label} allocated wig`} className="mt-1 h-24 w-full rounded object-cover" />
-                          ) : (
-                            <div className="mt-1 flex h-24 items-center justify-center rounded bg-slate-100 text-[11px] text-slate-500">No image</div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
+                    {selectedRow.allocatedWigFrontImageUrl || selectedRow.allocatedWigSideImageUrl || selectedRow.allocatedWigTopImageUrl || selectedRow.allocatedWigBackImageUrl ? (
+                      <img
+                        src={selectedRow.allocatedWigFrontImageUrl || selectedRow.allocatedWigSideImageUrl || selectedRow.allocatedWigTopImageUrl || selectedRow.allocatedWigBackImageUrl}
+                        alt="Allocated wig"
+                        className="mt-2 h-52 w-full rounded-lg bg-white object-contain"
+                      />
+                    ) : null}
                   </div>
                 ) : null}
-                <p className="mt-3 whitespace-pre-line text-sm text-slate-700">
-                  <span className="font-semibold text-slate-900">Special Note:</span> {selectedRow.specSpecialNote}
-                </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <p className="text-sm font-semibold text-slate-900">Patient Wig Safety Assessment</p>
+                {selectedRow.safetyAssessment ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="grid grid-cols-1 gap-2 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-3">
+                      <p><span className="font-semibold text-slate-900">Known allergies:</span> {selectedRow.safetyAssessment.has_known_allergies == null ? 'Not answered' : selectedRow.safetyAssessment.has_known_allergies ? 'Yes' : 'No'}</p>
+                      <p><span className="font-semibold text-slate-900">Sensitive scalp:</span> {selectedRow.safetyAssessment.has_sensitive_scalp == null ? 'Not answered' : selectedRow.safetyAssessment.has_sensitive_scalp ? 'Yes' : 'No'}</p>
+                      <p><span className="font-semibold text-slate-900">Scalp irritation:</span> {selectedRow.safetyAssessment.has_scalp_irritation == null ? 'Not answered' : selectedRow.safetyAssessment.has_scalp_irritation ? 'Yes' : 'No'}</p>
+                      <p><span className="font-semibold text-slate-900">Open scalp wounds:</span> {selectedRow.safetyAssessment.has_open_scalp_wounds == null ? 'Not answered' : selectedRow.safetyAssessment.has_open_scalp_wounds ? 'Yes' : 'No'}</p>
+                      <p><span className="font-semibold text-slate-900">Medical restriction:</span> {selectedRow.safetyAssessment.has_medical_restriction == null ? 'Not answered' : selectedRow.safetyAssessment.has_medical_restriction ? 'Yes' : 'No'}</p>
+                      <p><span className="font-semibold text-slate-900">Information confirmed:</span> {selectedRow.safetyAssessment.information_confirmed ? 'Yes' : 'No'}</p>
+                    </div>
+                    {selectedRow.safetyAssessment.allergy_details ? <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Allergy details:</span> {selectedRow.safetyAssessment.allergy_details}</p> : null}
+                    {selectedRow.safetyAssessment.medical_restriction_details ? <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Restriction details:</span> {selectedRow.safetyAssessment.medical_restriction_details}</p> : null}
+                    <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Clinical allergies/current medications:</span> {selectedRow.clinicalAllergiesMedications}</p>
+                    <div className="grid grid-cols-1 gap-3 border-t border-slate-200 pt-3 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-600">Safety Review</label>
+                        <select value={safetyReviewStatus} onChange={(event) => setSafetyReviewStatus(event.target.value)} disabled={isApplyingAction} className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm text-slate-800">
+                          {['Pending', 'Cleared', 'Needs Clarification', 'Requires Medical Clearance'].map((value) => <option key={value} value={value}>{value}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-600">Review Notes</label>
+                        <textarea value={safetyReviewNotes} onChange={(event) => setSafetyReviewNotes(event.target.value)} disabled={isApplyingAction} rows={2} className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm text-slate-800" />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">No safety assessment was saved for this request.</div>
+                )}
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -1742,11 +1726,37 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <div className="order-last rounded-xl border border-slate-300 bg-white p-4 shadow-sm">
                 <p className="text-sm font-semibold text-slate-900">Apply Review Action</p>
-                <p className="mt-1 text-xs text-slate-500">Select only the next valid step for this request.</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {selectedRow.statusKey === 'pending'
+                    ? selectedRow.requestedStockAvailable
+                      ? 'Matching stock is available, so this request can only be allocated or rejected.'
+                      : 'No matching stock is available, so this request can only enter production or be rejected.'
+                    : selectedRow.statusKey === 'releasing'
+                      ? 'Complete the physical handover to move this request to its final Released status.'
+                    : 'Select only the next valid step for this request.'}
+                </p>
 
-                {selectedAllowedActions.length === 0 ? (
+                {selectedRow.statusKey === 'releasing' ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-900">
+                      The hospital approved the release schedule. Confirm only after the wig has been physically handed over to the patient or authorized recipient.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleOpenReleaseConfirmation}
+                      disabled={isApplyingAction}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
+                    >
+                      <CheckCircle2 size={16} /> Release Wig
+                    </button>
+                  </div>
+                ) : selectedRow.statusKey === 'released' ? (
+                  <div className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-900">
+                    <CheckCircle2 size={18} /> This wig request is complete and has reached its final Released status.
+                  </div>
+                ) : selectedAllowedActions.length === 0 ? (
                   <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
                     No staff action is available for the current status.
                   </div>
@@ -1816,29 +1826,15 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                             <p className="mt-1 text-xs text-slate-700">
                               Style: {selectedAllocationChoice.style || 'N/A'} | Color: {selectedAllocationChoice.color || 'N/A'} | Texture: {selectedAllocationChoice.texture || 'N/A'} | Cap: {selectedAllocationChoice.capSize || 'N/A'} | Stock: {selectedAllocationChoice.stockCount}
                             </p>
-                            <div className="mt-2 grid grid-cols-2 gap-2">
-                              {[
-                                ['Front', selectedAllocationChoice.frontImageUrl],
-                                ['Side', selectedAllocationChoice.sideImageUrl],
-                                ['Top', selectedAllocationChoice.topImageUrl],
-                                ['Back', selectedAllocationChoice.backImageUrl],
-                              ].map(([label, imageUrl]) => (
-                                <div key={label} className="rounded-md border border-slate-200 bg-white p-1">
-                                  <p className="px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                                  {imageUrl ? (
-                                    <img src={imageUrl} alt={`${label} wig preview`} className="mt-1 h-24 w-full rounded object-cover" />
-                                  ) : (
-                                    <div className="mt-1 flex h-24 items-center justify-center rounded bg-slate-100 text-[11px] text-slate-500">No image</div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
+                            {selectedAllocationChoice.frontImageUrl || selectedAllocationChoice.sideImageUrl || selectedAllocationChoice.topImageUrl || selectedAllocationChoice.backImageUrl ? (
+                              <img src={selectedAllocationChoice.frontImageUrl || selectedAllocationChoice.sideImageUrl || selectedAllocationChoice.topImageUrl || selectedAllocationChoice.backImageUrl} alt="Selected wig" className="mt-2 h-52 w-full rounded-lg bg-white object-contain" />
+                            ) : null}
                           </div>
                         ) : null}
 
                         {!isLoadingAvailableWigs && assignableWigs.length === 0 && (
                           <p className="mt-1 text-xs text-amber-700">
-                            No assignable wig specifications found right now. Use "Accept - No Wig Available" and assign later.
+                            No matching stock is available. Use "Accept - In Production" to send this request to the specialist priority queue.
                           </p>
                         )}
                       </div>
@@ -1850,10 +1846,12 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                         <input
                           type="datetime-local"
                           value={actionReleaseDate}
+                          min={minimumReleaseDateTimeLocal}
                           onChange={(event) => setActionReleaseDate(event.target.value)}
                           disabled={isApplyingAction || !isReleaseWorkflowAvailable}
                           className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-800 focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-200"
                         />
+                        <p className="mt-1 text-xs text-slate-500">Earliest allowed date: {minimumReleaseDateTimeLocal.slice(0, 10)} (three days from today).</p>
                         {!isReleaseWorkflowAvailable && (
                           <p className="mt-1 text-xs text-red-700">
                             Release scheduling data is unavailable. Ensure Release_Schedules exists and refresh Supabase schema cache.
@@ -1916,21 +1914,79 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                 </div>
               )}
             </div>
-          </aside>
+          </section>
         </div>,
         document.body,
       )}
 
-      <style>{`
-        @keyframes staffRequestSlideIn {
-          from {
-            transform: translateX(100%);
-          }
-          to {
-            transform: translateX(0);
-          }
-        }
-      `}</style>
+      {releaseConfirmationStep && selectedRow && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm" />
+          <section className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            {releaseConfirmationStep === 'confirm' ? (
+              <>
+                <div className="border-b border-slate-200 px-5 py-4">
+                  <h3 className="text-lg font-bold text-slate-900">Final Release Confirmation</h3>
+                  <p className="mt-1 text-sm text-slate-600">Review the handover details before completing this request.</p>
+                </div>
+                <div className="space-y-4 p-5">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Request</span>{selectedRow.requestId}</p>
+                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Current Status</span>{selectedRow.statusLabel}</p>
+                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Patient</span>{selectedRow.patientName}</p>
+                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Hospital</span>{selectedRow.hospitalName}</p>
+                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Allocated Wig</span>{selectedRow.allocatedWigCode || selectedRow.specWigName}</p>
+                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Approved Release Date</span>{formatDateTime(selectedRow.releaseDate)}</p>
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    Continuing confirms the wig was handed over. The request will move permanently from <strong>Releasing</strong> to <strong>Released</strong>.
+                  </div>
+                </div>
+                <div className="flex flex-col-reverse gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setReleaseConfirmationStep('')}
+                    disabled={isApplyingAction}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmRelease}
+                    disabled={isApplyingAction}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
+                  >
+                    {isApplyingAction ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                    {isApplyingAction ? 'Releasing...' : 'Confirm Release'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="p-6 text-center">
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+                  <CheckCircle2 size={34} />
+                </div>
+                <h3 className="mt-4 text-xl font-bold text-slate-900">Wig Released Successfully</h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  {selectedRow.requestId} for {selectedRow.patientName} is now in its final <strong>Released</strong> status.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setReleaseConfirmationStep('')}
+                  className="mt-5 w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800"
+                >
+                  Done
+                </button>
+              </div>
+            )}
+          </section>
+        </div>,
+        document.body,
+      )}
+
     </div>
   );
 }

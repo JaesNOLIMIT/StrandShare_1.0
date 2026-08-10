@@ -243,15 +243,14 @@ export default function BundlingPage() {
       const wishResult = await supabase
         .from(WIG_REQUESTS_TABLE)
         .select('Req_ID, Request_Code, Patient_ID, Hospital_ID, Status, Request_Date, Requested_Wig_ID, Requested_Wig_Specification_ID, Requested_Cap_Size, Is_Wish_Request, Fulfillment_Status, Fulfillment_Bundle_ID')
-        .eq('Is_Wish_Request', true)
         .order('Request_Date', { ascending: true })
         .limit(200);
       const wishWorkflowUnavailable = Boolean(wishResult.error);
       const actionableWishRows = (wishResult.error ? [] : (wishResult.data || [])).filter((row) => {
         const statusKey = String(row.Status || '').toLowerCase().replace(/[^a-z0-9]/g, '');
         const fulfillmentKey = String(row.Fulfillment_Status || '').toLowerCase();
-        return ['acceptednowigavailable', 'inproduction'].includes(statusKey)
-          && !['ready_for_release', 'fulfilled', 'released'].includes(fulfillmentKey);
+        return ['acceptedinproduction', 'acceptednowigavailable', 'inproduction'].includes(statusKey)
+          && !['catalog_allocated', 'ready_for_release', 'fulfilled', 'released', 'rejected'].includes(fulfillmentKey);
       });
 
       const patientIds = Array.from(new Set(actionableWishRows.map((row) => Number(row.Patient_ID || 0)).filter(Boolean)));
@@ -1229,7 +1228,7 @@ export default function BundlingPage() {
           <span className="rounded-full bg-amber-200 px-2.5 py-1 text-xs font-bold text-amber-950">{wishRequests.length} waiting</span>
         </div>
         <div className="grid gap-3 p-4 lg:grid-cols-2">
-            {wishRequests.map((requestRow) => {
+            {wishRequests.map((requestRow, requestIndex) => {
               const specification = requestRow.specification || {};
               const hasDraft = Boolean(requestRow.Fulfillment_Bundle_ID);
               return (
@@ -1246,9 +1245,12 @@ export default function BundlingPage() {
                         {requestRow.medicalCondition ? ` · ${requestRow.medicalCondition}` : ''}
                       </p>
                     </div>
-                    <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-semibold uppercase text-amber-800 ring-1 ring-amber-200">
-                      {String(requestRow.Fulfillment_Status || 'awaiting production').replace(/_/g, ' ')}
-                    </span>
+                    <div className="flex shrink-0 flex-col items-end gap-1.5">
+                      <span className="rounded-full bg-amber-900 px-2 py-1 text-[10px] font-bold uppercase text-white">Priority #{requestIndex + 1}</span>
+                      <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold uppercase text-amber-800 ring-1 ring-amber-200">
+                        {String(requestRow.Fulfillment_Status || 'awaiting production').replace(/_/g, ' ')}
+                      </span>
+                    </div>
                   </div>
                   <button
                     type="button"

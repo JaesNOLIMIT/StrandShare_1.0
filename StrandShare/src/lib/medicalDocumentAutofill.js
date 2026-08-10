@@ -167,6 +167,38 @@ function sanitizeShortText(value, maxLength = 160) {
   return cleaned && cleaned.length <= maxLength ? cleaned : '';
 }
 
+function inferConditionFields(diagnosisValue, text) {
+  const diagnosis = sanitizeShortText(diagnosisValue, 240);
+  const searchable = `${diagnosis}\n${normalizeDocumentText(text)}`.toLowerCase();
+  let conditionCategory = '';
+  let otherHairLossDisease = '';
+
+  if (/\b(?:cancer|carcinoma|leukemia|lymphoma|sarcoma|malignant|oncology)\b/.test(searchable)) {
+    conditionCategory = 'Cancer';
+  } else if (/\balopecia\b/.test(searchable)) {
+    conditionCategory = 'Alopecia';
+  } else if (/\b(?:hair loss|hair-loss|trichotillomania|telogen effluvium|tinea capitis|trichorrhexis)\b/.test(searchable)) {
+    conditionCategory = 'Other Hair-Loss Disease';
+    otherHairLossDisease = diagnosis;
+  }
+
+  const labeledStage = sanitizeShortText(findLabeledValue(text, [
+    'cancer stage',
+    'stage/severity',
+    'stage or severity',
+    'alopecia severity',
+    'severity',
+    'stage',
+  ]));
+
+  return {
+    conditionCategory,
+    otherHairLossDisease,
+    conditionStage: labeledStage ? 'Custom' : '',
+    customConditionStage: labeledStage,
+  };
+}
+
 export function parseMedicalDocumentFields(text) {
   const firstName = normalizeNamePart(findLabeledValue(text, ['first name', 'given name', 'given names']));
   const middleName = normalizeNamePart(findLabeledValue(text, ['middle name', 'middle initial']));
@@ -175,6 +207,8 @@ export function parseMedicalDocumentFields(text) {
   const fullName = findLabeledValue(text, ["patient's name", 'patient name', 'name of patient', 'full name']);
   const fallbackName = splitFullName(fullName);
   const emailMatch = normalizeDocumentText(text).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  const diagnosis = sanitizeShortText(findLabeledValue(text, ['medical condition', 'clinical diagnosis', 'primary diagnosis', 'diagnosis', 'impression']), 240);
+  const conditionFields = inferConditionFields(diagnosis, text);
 
   const fields = {
     email: String(emailMatch?.[0] || '').toLowerCase(),
@@ -188,7 +222,15 @@ export function parseMedicalDocumentFields(text) {
     guardian: sanitizeShortText(findLabeledValue(text, ['guardian name', "guardian's name", 'parent or guardian', 'parent/guardian'])),
     guardianContactNumber: normalizePhilippinePhone(findLabeledValue(text, ['guardian contact number', 'guardian contact', 'contact number', 'mobile number'])),
     guardianRelationship: sanitizeShortText(findLabeledValue(text, ['guardian relationship', 'relationship to patient', 'relationship'])),
-    medicalCondition: sanitizeShortText(findLabeledValue(text, ['medical condition', 'clinical diagnosis', 'primary diagnosis', 'diagnosis', 'impression']), 240),
+    ...conditionFields,
+    attendingPhysicianName: sanitizeShortText(findLabeledValue(text, ['attending physician', 'attending oncologist', 'oncologist', 'physician name', 'doctor name'])),
+    attendingPhysicianContact: sanitizeShortText(findLabeledValue(text, ['physician contact', 'doctor contact', 'oncologist contact'])),
+    treatmentHospitalClinic: sanitizeShortText(findLabeledValue(text, ['hospital/clinic of treatment', 'hospital or clinic of treatment', 'treatment hospital', 'treatment clinic', 'facility'])),
+    treatmentPlan: sanitizeShortText(findLabeledValue(text, ['treatment plan', 'treatment type', 'plan of treatment']), 300),
+    treatmentStatus: sanitizeShortText(findLabeledValue(text, ['current status', 'treatment status', 'clinical status'])),
+    allergiesCurrentMedications: sanitizeShortText(findLabeledValue(text, ['allergies and current medications', 'allergies & medications', 'allergies/medications', 'current medications']), 300),
+    insurancePhilHealthInfo: sanitizeShortText(findLabeledValue(text, ['insurance/philhealth', 'insurance or philhealth', 'philhealth information', 'insurance information']), 300),
+    clinicalSpecialNote: sanitizeShortText(findLabeledValue(text, ['clinical special note', 'special note', 'clinical notes']), 500),
   };
 
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => Boolean(String(value || '').trim())));

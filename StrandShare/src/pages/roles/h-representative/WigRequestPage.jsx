@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { jsPDF } from 'jspdf';
-import { AlertTriangle, CheckCircle2, Info, Search, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FileText, Info, Loader2, Search, X } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import ReleaseDateApprovalPage from './ReleaseDateApprovalPage';
@@ -17,6 +17,7 @@ const WIG_SPECS_TABLE = 'Wig_Specifications';
 const WIGS_TABLE = 'Wigs';
 const WIG_FILTERS_TABLE = 'Wig_AI_Filters';
 const RELEASE_SCHEDULES_TABLE = 'Release_Schedules';
+const SAFETY_ASSESSMENTS_TABLE = 'patient_wig_safety_assessments';
 
 const PATIENT_ASSETS_BUCKET = 'patient_assets';
 const PROFILE_PICTURES_BUCKET = 'profile_pictures';
@@ -28,8 +29,7 @@ const BRANDING_BUCKET = 'branding_assests';
 const REQUEST_STATUS = {
   pending: 'Pending',
   acceptedWithAllocatedWig: 'Accepted - Wig Allocated',
-  acceptedNoWigAvailable: 'Accepted - No Wig Available',
-  inProduction: 'In Production',
+  acceptedInProduction: 'Accepted - In Production',
   toBeRelease: 'To Be Release',
   releasing: 'Releasing',
   released: 'Released',
@@ -46,8 +46,7 @@ const SUBMITTED_STATUS_FILTERS = [
   { id: 'all', label: 'All' },
   { id: 'pending', label: 'Pending' },
   { id: 'accepted_allocated', label: 'Accepted - Wig Allocated' },
-  { id: 'accepted_no_wig', label: 'Accepted - No Wig Available' },
-  { id: 'in_production', label: 'In Production' },
+  { id: 'accepted_in_production', label: 'Accepted - In Production' },
   { id: 'to_be_release', label: 'To Be Release' },
   { id: 'releasing', label: 'Releasing' },
   { id: 'released', label: 'Released' },
@@ -55,7 +54,7 @@ const SUBMITTED_STATUS_FILTERS = [
   { id: 'cancelled', label: 'Cancelled' },
 ];
 
-const REVIEW_QUEUE_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_no_wig'];
+const REVIEW_QUEUE_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_in_production'];
 
 const CAP_SIZE_OPTIONS = [
   { value: 'Small', label: 'Small (21-21.5 inches)' },
@@ -69,6 +68,14 @@ const EMPTY_FORM = {
   medicalCondition: '',
   wigSpecificationId: '',
   specialNoteTemplate: '',
+  hasKnownAllergies: '',
+  allergyDetails: '',
+  hasSensitiveScalp: '',
+  hasScalpIrritation: '',
+  hasOpenScalpWounds: '',
+  hasMedicalRestriction: '',
+  medicalRestrictionDetails: '',
+  informationConfirmed: false,
 };
 
 const LABEL_CLASS = 'mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-600';
@@ -81,6 +88,18 @@ function normalizeStatusKey(value) {
   return String(value || '')
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '');
+}
+
+function yesNoValue(value) {
+  if (value === true || value === 'yes') return 'Yes';
+  if (value === false || value === 'no') return 'No';
+  return 'Not answered';
+}
+
+function toNullableBoolean(value) {
+  if (value === 'yes' || value === true) return true;
+  if (value === 'no' || value === false) return false;
+  return null;
 }
 
 function normalizeReleaseWorkflowKey(value) {
@@ -285,12 +304,8 @@ function getCanonicalStatusKey(status) {
     return 'accepted_allocated';
   }
 
-  if (['acceptedbutnowigavailable', 'acceptednowigavailable', 'nowigavailable', 'findingmatchingwig', 'formatching', 'matching', 'findingallocatingwig', 'findingandallocatingwig'].includes(key)) {
-    return 'accepted_no_wig';
-  }
-
-  if (['inproduction', 'production', 'inprocess'].includes(key)) {
-    return 'in_production';
+  if (['acceptedbutnowigavailable', 'acceptednowigavailable', 'acceptedinproduction', 'inproduction', 'production', 'inprocess', 'nowigavailable', 'findingmatchingwig', 'formatching', 'matching', 'findingallocatingwig', 'findingandallocatingwig'].includes(key)) {
+    return 'accepted_in_production';
   }
 
   if (['toberelease', 'forrelease', 'releasequeue'].includes(key)) {
@@ -329,8 +344,7 @@ function getStatusLabel(status) {
   const key = getCanonicalStatusKey(status);
 
   if (key === 'accepted_allocated') return REQUEST_STATUS.acceptedWithAllocatedWig;
-  if (key === 'accepted_no_wig') return REQUEST_STATUS.acceptedNoWigAvailable;
-  if (key === 'in_production') return REQUEST_STATUS.inProduction;
+  if (key === 'accepted_in_production') return REQUEST_STATUS.acceptedInProduction;
   if (key === 'to_be_release') return REQUEST_STATUS.toBeRelease;
   if (key === 'releasing') return REQUEST_STATUS.releasing;
   if (key === 'released') return REQUEST_STATUS.released;
@@ -342,8 +356,7 @@ function getStatusLabel(status) {
 function statusClass(status) {
   const key = getCanonicalStatusKey(status);
   if (key === 'accepted_allocated') return 'bg-emerald-100 text-emerald-700';
-  if (key === 'accepted_no_wig') return 'bg-lime-100 text-lime-700';
-  if (key === 'in_production') return 'bg-blue-100 text-blue-700';
+  if (key === 'accepted_in_production') return 'bg-blue-100 text-blue-700';
   if (key === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (key === 'releasing') return 'bg-teal-100 text-teal-700';
   if (key === 'released') return 'bg-green-100 text-green-700';
@@ -382,21 +395,16 @@ function getJourneyPath(statusKey) {
     },
   ];
 
-  const noWigPath = [
+  const productionPath = [
     {
       id: 'pending',
       title: REQUEST_STATUS.pending,
       note: 'Request submitted and queued for review.',
     },
     {
-      id: 'accepted_no_wig',
-      title: REQUEST_STATUS.acceptedNoWigAvailable,
-      note: 'Request accepted but no suitable wig is currently available yet.',
-    },
-    {
-      id: 'in_production',
-      title: REQUEST_STATUS.inProduction,
-      note: 'A specialist opened the linked bundle and production is underway.',
+      id: 'accepted_in_production',
+      title: REQUEST_STATUS.acceptedInProduction,
+      note: 'No matching stock was available. The request is queued for priority specialist production.',
     },
     {
       id: 'to_be_release',
@@ -445,24 +453,20 @@ function getJourneyPath(statusKey) {
     return { steps: allocatedPath, currentStepId: 'accepted_allocated' };
   }
 
-  if (statusKey === 'accepted_no_wig') {
-    return { steps: noWigPath, currentStepId: 'accepted_no_wig' };
-  }
-
-  if (statusKey === 'in_production') {
-    return { steps: noWigPath, currentStepId: 'in_production' };
+  if (statusKey === 'accepted_in_production') {
+    return { steps: productionPath, currentStepId: 'accepted_in_production' };
   }
 
   if (statusKey === 'to_be_release') {
-    return { steps: noWigPath, currentStepId: 'to_be_release' };
+    return { steps: productionPath, currentStepId: 'to_be_release' };
   }
 
   if (statusKey === 'releasing') {
-    return { steps: noWigPath, currentStepId: 'releasing' };
+    return { steps: productionPath, currentStepId: 'releasing' };
   }
 
   if (statusKey === 'released') {
-    return { steps: noWigPath, currentStepId: 'released' };
+    return { steps: productionPath, currentStepId: 'released' };
   }
 
   if (statusKey === 'rejected') {
@@ -473,7 +477,7 @@ function getJourneyPath(statusKey) {
     return { steps: cancelledPath, currentStepId: 'cancelled' };
   }
 
-  return { steps: noWigPath, currentStepId: 'pending' };
+  return { steps: productionPath, currentStepId: 'pending' };
 }
 
 function mapWigRequestInsertError(rawMessage) {
@@ -674,15 +678,6 @@ function PatientDetailRow({ label, value }) {
   );
 }
 
-function PreviewRow({ label, value }) {
-  return (
-    <div className="grid grid-cols-[70px_1fr] gap-2 text-[10px] leading-4">
-      <span className="font-semibold text-slate-500">{label}</span>
-      <span className="whitespace-pre-line break-words text-slate-800">{safePreviewValue(value)}</span>
-    </div>
-  );
-}
-
 function WigPreviewImage({
   label,
   candidates = [],
@@ -734,6 +729,7 @@ export default function WigRequestPage({ userProfile }) {
   const [userDetailsByUserId, setUserDetailsByUserId] = useState({});
   const [wigRequests, setWigRequests] = useState([]);
   const [currentReleaseSchedules, setCurrentReleaseSchedules] = useState([]);
+  const [safetyAssessmentsByReqId, setSafetyAssessmentsByReqId] = useState({});
   const [wigSpecifications, setWigSpecifications] = useState([]);
 
   const [form, setForm] = useState(EMPTY_FORM);
@@ -753,9 +749,14 @@ export default function WigRequestPage({ userProfile }) {
   const [isLoadingWigSpecifications, setIsLoadingWigSpecifications] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingPreview, setIsUploadingPreview] = useState(false);
+  const [requestConfirmationOpen, setRequestConfirmationOpen] = useState(false);
+  const [requestSuccessModal, setRequestSuccessModal] = useState({ open: false, requestCode: '', isWish: false });
+  const [liveRequestPdfPreviewUrl, setLiveRequestPdfPreviewUrl] = useState('');
+  const [isBuildingLivePdfPreview, setIsBuildingLivePdfPreview] = useState(false);
   const [selectedSubmittedRequest, setSelectedSubmittedRequest] = useState(null);
 
   const patientSearchContainerRef = useRef(null);
+  const livePdfPreviewUrlRef = useRef('');
 
   const patientById = useMemo(() => {
     const map = new Map();
@@ -781,6 +782,22 @@ export default function WigRequestPage({ userProfile }) {
         contactNumber: '',
         address: '',
         medicalCondition: '',
+        conditionCategory: '',
+        conditionStage: '',
+        attendingPhysician: '',
+        attendingPhysicianContact: '',
+        treatmentHospitalClinic: '',
+        treatmentPlan: '',
+        treatmentStatus: '',
+        allergiesMedications: '',
+        insurancePhilHealth: '',
+        clinicalSpecialNote: '',
+        guardian: '',
+        guardianRelationship: '',
+        guardianContact: '',
+        secondaryGuardian: '',
+        secondaryGuardianRelationship: '',
+        secondaryGuardianContact: '',
         photoUrl: '',
       };
     }
@@ -811,6 +828,22 @@ export default function WigRequestPage({ userProfile }) {
       contactNumber: String(getFirstPresentValue(linkedUserDetails, ['contact_number', 'Contact_Number']) || '').trim() || 'N/A',
       address: buildAddress(linkedUserDetails) || 'N/A',
       medicalCondition: String(selectedPatient.Medical_Condition || '').trim() || 'N/A',
+      conditionCategory: String(selectedPatient.Condition_Category || '').trim() || 'N/A',
+      conditionStage: String(selectedPatient.Condition_Stage_Severity || '').trim() || 'N/A',
+      attendingPhysician: String(selectedPatient.Doctor_Name || '').trim() || 'N/A',
+      attendingPhysicianContact: String(selectedPatient.Attending_Physician_Contact || '').trim() || 'N/A',
+      treatmentHospitalClinic: String(selectedPatient.Treatment_Hospital_Clinic || '').trim() || 'N/A',
+      treatmentPlan: String(selectedPatient.Treatment_Plan || '').trim() || 'N/A',
+      treatmentStatus: String(selectedPatient.Current_Treatment_Status || '').trim() || 'N/A',
+      allergiesMedications: String(selectedPatient.Allergies_Current_Medications || '').trim() || 'N/A',
+      insurancePhilHealth: String(selectedPatient.Insurance_PhilHealth_Info || '').trim() || 'N/A',
+      clinicalSpecialNote: String(selectedPatient.Clinical_Special_Note || '').trim() || 'N/A',
+      guardian: String(selectedPatient.Guardian || '').trim() || 'N/A',
+      guardianRelationship: String(selectedPatient.Guardian_Relationship || '').trim() || 'N/A',
+      guardianContact: String(selectedPatient.Guardian_Contact_Number || '').trim() || 'N/A',
+      secondaryGuardian: String(selectedPatient.Secondary_Guardian || '').trim() || 'N/A',
+      secondaryGuardianRelationship: String(selectedPatient.Secondary_Guardian_Relationship || '').trim() || 'N/A',
+      secondaryGuardianContact: String(selectedPatient.Secondary_Guardian_Contact_Number || '').trim() || 'N/A',
       photoUrl: resolvedPhotoUrl,
     };
   }, [selectedPatient, usersById, userDetailsByUserId]);
@@ -919,6 +952,7 @@ export default function WigRequestPage({ userProfile }) {
         const reqId = Number(requestRow.Req_ID || 0);
       const patient = patientById.get(Number(requestRow.Patient_ID)) || null;
       const linkedDetails = patient ? userDetailsByUserId[Number(patient.User_ID || 0)] : null;
+      const linkedUser = patient ? usersById[Number(patient.User_ID || 0)] : null;
       const rawStatusReason = String(requestRow.Status_Reason || requestRow.status_reason || '').trim();
       const specialNotesPayload = rawStatusReason.startsWith('SSMETA:')
         ? parseSpecialNotesPayload(rawStatusReason)
@@ -935,7 +969,30 @@ export default function WigRequestPage({ userProfile }) {
           reqId,
           requestId: formatRequestCode(requestRow.Request_Code || ''),
           patient: getPatientFullName(patient, linkedDetails),
+        patientId: Number(patient?.Patient_ID || 0) || null,
+        patientCode: String(patient?.Patient_Code || '').trim() || 'N/A',
+        patientPhotoUrl: resolveStoragePublicUrl(PATIENT_ASSETS_BUCKET, patient?.Patient_Picture)
+          || resolveStoragePublicUrl(PROFILE_PICTURES_BUCKET, getFirstPresentValue(linkedDetails, ['photo_path', 'Photo_Path'])),
+        patientAge: computeAgeFromBirthdate(getFirstPresentValue(linkedDetails, ['birthdate', 'Birthdate'])) || 'N/A',
+        patientBirthdate: String(getFirstPresentValue(linkedDetails, ['birthdate', 'Birthdate']) || '').trim() || 'N/A',
+        patientGender: String(getFirstPresentValue(linkedDetails, ['gender', 'Gender']) || '').trim() || 'N/A',
+        patientEmail: String(getFirstPresentValue(linkedUser, ['email', 'Email']) || '').trim() || 'N/A',
+        patientContact: String(getFirstPresentValue(linkedDetails, ['contact_number', 'Contact_Number']) || '').trim() || 'N/A',
+        patientAddress: buildAddress(linkedDetails) || 'N/A',
         medicalCondition: patient?.Medical_Condition || 'N/A',
+        conditionCategory: String(patient?.Condition_Category || '').trim() || 'N/A',
+        conditionStage: String(patient?.Condition_Stage_Severity || '').trim() || 'N/A',
+        attendingPhysician: String(patient?.Doctor_Name || '').trim() || 'N/A',
+        treatmentPlan: String(patient?.Treatment_Plan || '').trim() || 'N/A',
+        treatmentStatus: String(patient?.Current_Treatment_Status || '').trim() || 'N/A',
+        guardianName: String(patient?.Guardian || '').trim() || 'N/A',
+        guardianRelationship: String(patient?.Guardian_Relationship || '').trim() || 'N/A',
+        guardianContact: String(patient?.Guardian_Contact_Number || '').trim() || 'N/A',
+        secondaryGuardianName: String(patient?.Secondary_Guardian || '').trim(),
+        secondaryGuardianRelationship: String(patient?.Secondary_Guardian_Relationship || '').trim(),
+        secondaryGuardianContact: String(patient?.Secondary_Guardian_Contact_Number || '').trim(),
+        clinicalAllergiesMedications: String(patient?.Allergies_Current_Medications || '').trim() || 'N/A',
+        safetyAssessment: safetyAssessmentsByReqId[reqId] || null,
         requestDate: requestRow.Request_Date,
         updatedAt: requestRow.Updated_At || requestRow.updated_at || requestRow.Request_Date,
         previewPdfUrl: String(requestRow.Pdf_Url || requestRow.Preview_Pdf_Url || '').trim(),
@@ -967,7 +1024,7 @@ export default function WigRequestPage({ userProfile }) {
         requestSpecPrimaryImageCandidates: requestedSpecRow?.primaryImageCandidates || [],
       };
     });
-  }, [wigRequests, patientById, userDetailsByUserId, wigSpecifications]);
+  }, [wigRequests, patientById, safetyAssessmentsByReqId, userDetailsByUserId, usersById, wigSpecifications]);
 
   const submittedQuickStats = useMemo(() => {
     const reviewStatusSet = new Set(REVIEW_QUEUE_STATUS_KEYS);
@@ -984,8 +1041,8 @@ export default function WigRequestPage({ userProfile }) {
         value: submittedRows.filter((row) => reviewStatusSet.has(row.statusKey)).length,
       },
       {
-        label: 'Accepted - No Wig',
-        value: submittedRows.filter((row) => row.statusKey === 'accepted_no_wig').length,
+        label: 'Accepted - In Production',
+        value: submittedRows.filter((row) => row.statusKey === 'accepted_in_production').length,
       },
       {
         label: 'To Be Release',
@@ -1080,6 +1137,22 @@ export default function WigRequestPage({ userProfile }) {
       contactNumber: selectedPatientProfile.contactNumber,
       address: selectedPatientProfile.address,
       medicalCondition: selectedPatientProfile.medicalCondition,
+      conditionCategory: selectedPatientProfile.conditionCategory,
+      conditionStage: selectedPatientProfile.conditionStage,
+      attendingPhysician: selectedPatientProfile.attendingPhysician,
+      attendingPhysicianContact: selectedPatientProfile.attendingPhysicianContact,
+      treatmentHospitalClinic: selectedPatientProfile.treatmentHospitalClinic,
+      treatmentPlan: selectedPatientProfile.treatmentPlan,
+      treatmentStatus: selectedPatientProfile.treatmentStatus,
+      allergiesMedications: selectedPatientProfile.allergiesMedications,
+      insurancePhilHealth: selectedPatientProfile.insurancePhilHealth,
+      clinicalSpecialNote: selectedPatientProfile.clinicalSpecialNote,
+      guardian: selectedPatientProfile.guardian,
+      guardianRelationship: selectedPatientProfile.guardianRelationship,
+      guardianContact: selectedPatientProfile.guardianContact,
+      secondaryGuardian: selectedPatientProfile.secondaryGuardian,
+      secondaryGuardianRelationship: selectedPatientProfile.secondaryGuardianRelationship,
+      secondaryGuardianContact: selectedPatientProfile.secondaryGuardianContact,
       wigSpecificationId: selectedRequestedSpecification?.specificationId || '',
       stylePreference: selectedRequestedSpecification?.style || '',
       preferredColor: selectedRequestedSpecification?.color || '',
@@ -1098,9 +1171,17 @@ export default function WigRequestPage({ userProfile }) {
       requestSpecBackImageCandidates: selectedRequestedSpecification?.backImageCandidates || [],
       requestSpecPrimaryImageCandidates: selectedRequestedSpecification?.primaryImageCandidates || [],
       specialNote: form.specialNoteTemplate,
+      hasKnownAllergies: yesNoValue(form.hasKnownAllergies),
+      allergyDetails: form.allergyDetails || selectedPatientProfile.allergiesMedications,
+      hasSensitiveScalp: yesNoValue(form.hasSensitiveScalp),
+      hasScalpIrritation: yesNoValue(form.hasScalpIrritation),
+      hasOpenScalpWounds: yesNoValue(form.hasOpenScalpWounds),
+      hasMedicalRestriction: yesNoValue(form.hasMedicalRestriction),
+      medicalRestrictionDetails: form.medicalRestrictionDetails,
+      informationConfirmed: form.informationConfirmed ? 'Yes' : 'No',
       statusOnSubmit: REQUEST_STATUS.pending,
     };
-  }, [hospitalId, selectedPatientProfile, selectedRequestedSpecification, form.specialNoteTemplate]);
+  }, [hospitalId, selectedPatientProfile, selectedRequestedSpecification, form]);
 
   const selectedSubmittedRequestPreviewUrl = useMemo(() => {
     if (!selectedSubmittedRequest) {
@@ -1150,8 +1231,6 @@ export default function WigRequestPage({ userProfile }) {
 
     return nextCandidates;
   }, [previewLogoUrl, previewLogoPath]);
-  const previewLogoResolvedUrl = previewLogoCandidates[0] || '';
-
   const resolveAssignedHospital = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
       setNotice({
@@ -1311,6 +1390,7 @@ export default function WigRequestPage({ userProfile }) {
     if (!isSupabaseConfigured || !supabase || !hospitalId) {
       setWigRequests([]);
       setCurrentReleaseSchedules([]);
+      setSafetyAssessmentsByReqId({});
       return;
     }
 
@@ -1334,19 +1414,32 @@ export default function WigRequestPage({ userProfile }) {
 
       if (requestIds.length === 0) {
         setCurrentReleaseSchedules([]);
+        setSafetyAssessmentsByReqId({});
       } else {
-        const { data: scheduleRows, error: scheduleError } = await supabase
-          .from(RELEASE_SCHEDULES_TABLE)
-          .select('Req_ID, Hospital_Decision, Is_Current')
-          .in('Req_ID', requestIds)
-          .eq('Is_Current', true);
+        const [scheduleResult, safetyResult] = await Promise.all([
+          supabase
+            .from(RELEASE_SCHEDULES_TABLE)
+            .select('Req_ID, Hospital_Decision, Is_Current')
+            .in('Req_ID', requestIds)
+            .eq('Is_Current', true),
+          supabase
+            .from(SAFETY_ASSESSMENTS_TABLE)
+            .select('*')
+            .in('req_id', requestIds),
+        ]);
 
-        if (scheduleError) throw scheduleError;
-        setCurrentReleaseSchedules(scheduleRows || []);
+        if (scheduleResult.error) throw scheduleResult.error;
+        if (safetyResult.error) throw safetyResult.error;
+        setCurrentReleaseSchedules(scheduleResult.data || []);
+        setSafetyAssessmentsByReqId((safetyResult.data || []).reduce((accumulator, row) => {
+          accumulator[Number(row.req_id)] = row;
+          return accumulator;
+        }, {}));
       }
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to load submitted wig requests.' });
       setCurrentReleaseSchedules([]);
+      setSafetyAssessmentsByReqId({});
     } finally {
       setIsLoadingSubmitted(false);
     }
@@ -1592,11 +1685,18 @@ export default function WigRequestPage({ userProfile }) {
       return;
     }
 
+    const clinicalAllergyText = String(patient.Allergies_Current_Medications || '').trim();
+    const clinicalAllergyKey = normalizeSearchText(clinicalAllergyText);
+    const hasUsefulAllergyText = Boolean(clinicalAllergyText)
+      && !['n/a', 'na', 'none', 'no known allergies', 'no known allergy'].includes(clinicalAllergyKey);
+
     setForm((prev) => ({
       ...prev,
       patientId: String(selectedPatientId),
       patientCode: String(patient.Patient_Code || ''),
       medicalCondition: String(patient.Medical_Condition || ''),
+      hasKnownAllergies: hasUsefulAllergyText ? 'yes' : prev.hasKnownAllergies,
+      allergyDetails: hasUsefulAllergyText ? clinicalAllergyText : prev.allergyDetails,
     }));
 
     setPatientSearchTerm(getPatientFullName(patient, userDetailsByUserId[Number(patient.User_ID || 0)] || null));
@@ -1630,10 +1730,12 @@ export default function WigRequestPage({ userProfile }) {
   };
 
   const handleFieldChange = (event) => {
-    const { name, value } = event.target;
+    const { name, value, type, checked } = event.target;
     setForm((prev) => ({
       ...prev,
-      [name]: value,
+      [name]: type === 'checkbox' ? checked : value,
+      ...(name === 'hasKnownAllergies' && value === 'no' ? { allergyDetails: '' } : {}),
+      ...(name === 'hasMedicalRestriction' && value === 'no' ? { medicalRestrictionDetails: '' } : {}),
     }));
   };
 
@@ -1795,6 +1897,34 @@ export default function WigRequestPage({ userProfile }) {
 
     addDivider();
 
+    addSectionTitle('Clinical & Guardian Information');
+    addField('Condition Category', previewPayload.conditionCategory);
+    addField('Stage / Severity', previewPayload.conditionStage);
+    addField('Attending Physician / Oncologist', previewPayload.attendingPhysician);
+    addField('Physician Contact', previewPayload.attendingPhysicianContact);
+    addField('Treatment Hospital / Clinic', previewPayload.treatmentHospitalClinic);
+    addField('Treatment Plan', previewPayload.treatmentPlan);
+    addField('Current Treatment Status', previewPayload.treatmentStatus);
+    addField('Allergies & Medications', previewPayload.allergiesMedications);
+    addField('Insurance / PhilHealth', previewPayload.insurancePhilHealth);
+    addField('Clinical Special Note', previewPayload.clinicalSpecialNote);
+    addField('Primary Guardian', `${safePreviewValue(previewPayload.guardian)} | ${safePreviewValue(previewPayload.guardianRelationship)} | ${safePreviewValue(previewPayload.guardianContact)}`);
+    addField('Secondary Guardian', `${safePreviewValue(previewPayload.secondaryGuardian)} | ${safePreviewValue(previewPayload.secondaryGuardianRelationship)} | ${safePreviewValue(previewPayload.secondaryGuardianContact)}`);
+
+    addDivider();
+
+    addSectionTitle('Wig Safety Assessment');
+    addField('Known Allergies', previewPayload.hasKnownAllergies);
+    addField('Allergy Details', previewPayload.allergyDetails);
+    addField('Sensitive Scalp', previewPayload.hasSensitiveScalp);
+    addField('Scalp Irritation', previewPayload.hasScalpIrritation);
+    addField('Open Scalp Wounds', previewPayload.hasOpenScalpWounds);
+    addField('Medical Restriction', previewPayload.hasMedicalRestriction);
+    addField('Restriction Details', previewPayload.medicalRestrictionDetails);
+    addField('Information Confirmed', previewPayload.informationConfirmed);
+
+    addDivider();
+
     addSectionTitle('Wig Specifications');
     addField('Wig Specification ID', previewPayload.wigSpecificationId);
     addField('Wig Name', previewPayload.wigName);
@@ -1873,6 +2003,44 @@ export default function WigRequestPage({ userProfile }) {
     return doc;
   }, [previewPayload, previewBrandName, previewLogoCandidates]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!selectedPatient || !selectedRequestedSpecification) {
+      if (livePdfPreviewUrlRef.current) URL.revokeObjectURL(livePdfPreviewUrlRef.current);
+      livePdfPreviewUrlRef.current = '';
+      setLiveRequestPdfPreviewUrl('');
+      setIsBuildingLivePdfPreview(false);
+      return undefined;
+    }
+
+    setIsBuildingLivePdfPreview(true);
+
+    Promise.resolve().then(async () => {
+      try {
+        const previewDocument = await buildPreviewPdfDocument();
+        if (cancelled) return;
+        const nextObjectUrl = URL.createObjectURL(previewDocument.output('blob'));
+        const previousObjectUrl = livePdfPreviewUrlRef.current;
+        livePdfPreviewUrlRef.current = nextObjectUrl;
+        setLiveRequestPdfPreviewUrl(nextObjectUrl);
+        if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
+      } catch {
+        // Keep the last valid preview visible if a refresh fails.
+      } finally {
+        if (!cancelled) setIsBuildingLivePdfPreview(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [buildPreviewPdfDocument, selectedPatient, selectedRequestedSpecification]);
+
+  useEffect(() => () => {
+    if (livePdfPreviewUrlRef.current) URL.revokeObjectURL(livePdfPreviewUrlRef.current);
+  }, []);
+
   const uploadPreviewPdfForRequest = useCallback(async (reqIdValue) => {
     if (!supabase) {
       throw new Error('Supabase client is unavailable for preview upload.');
@@ -1915,29 +2083,18 @@ export default function WigRequestPage({ userProfile }) {
     return urlData?.publicUrl || filePath;
   }, [buildPreviewFileName, buildPreviewPdfDocument]);
 
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-
+  const validateRequestForConfirmation = () => {
     if (!isSupabaseConfigured || !supabase) {
-      setNotice({
-        kind: 'error',
-        text: 'Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.',
-      });
-      return;
+      return 'Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.';
     }
 
     if (!hospitalId) {
-      setNotice({
-        kind: 'error',
-        text: 'You are not assigned to any hospital. Ask Admin to assign your account first.',
-      });
-      return;
+      return 'You are not assigned to any hospital. Ask Admin to assign your account first.';
     }
 
     const selectedPatientId = Number(form.patientId || 0);
     if (!selectedPatientId) {
-      setNotice({ kind: 'error', text: 'Please choose an existing patient first.' });
-      return;
+      return 'Please choose an existing patient first.';
     }
 
     const selectedSpecId = normalizeSpecNumber(form.wigSpecificationId);
@@ -1945,9 +2102,46 @@ export default function WigRequestPage({ userProfile }) {
       ? (wigSpecifications.find((row) => normalizeSpecNumber(row.specificationId) === selectedSpecId) || null)
       : null;
     if (!selectedSpec) {
-      setNotice({ kind: 'error', text: 'Please select a target wig specification.' });
+      return 'Please select a target wig specification.';
+    }
+
+    const unansweredSafetyField = [
+      form.hasKnownAllergies,
+      form.hasSensitiveScalp,
+      form.hasScalpIrritation,
+      form.hasOpenScalpWounds,
+      form.hasMedicalRestriction,
+    ].some((value) => !['yes', 'no'].includes(value));
+    if (unansweredSafetyField) return 'Answer every Yes/No field in the wig safety assessment.';
+    if (form.hasKnownAllergies === 'yes' && !String(form.allergyDetails || '').trim()) return 'Enter the patient allergy details.';
+    if (form.hasMedicalRestriction === 'yes' && !String(form.medicalRestrictionDetails || '').trim()) return 'Enter the medical restriction details.';
+    if (!form.informationConfirmed) return 'Confirm that the wig safety information was reviewed with the patient or guardian.';
+    return '';
+  };
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    const validationError = validateRequestForConfirmation();
+    if (validationError) {
+      setNotice({ kind: 'error', text: validationError });
       return;
     }
+    setNotice({ kind: '', text: '' });
+    setRequestConfirmationOpen(true);
+  };
+
+  const submitRequestNow = async () => {
+    const validationError = validateRequestForConfirmation();
+    if (validationError) {
+      setRequestConfirmationOpen(false);
+      setNotice({ kind: 'error', text: validationError });
+      return;
+    }
+
+    const selectedPatientId = Number(form.patientId || 0);
+    const selectedSpecId = normalizeSpecNumber(form.wigSpecificationId);
+    const selectedSpec = wigSpecifications.find((row) => normalizeSpecNumber(row.specificationId) === selectedSpecId) || null;
+    let createdRequestId = 0;
 
     try {
       setIsSubmitting(true);
@@ -1979,56 +2173,78 @@ export default function WigRequestPage({ userProfile }) {
       if (!newReqId) {
         throw new Error('Unable to resolve the saved wig request ID.');
       }
+      createdRequestId = newReqId;
+
+      const safetyResult = await supabase.rpc('save_wig_request_safety_assessment', {
+        p_req_id: newReqId,
+        p_has_known_allergies: toNullableBoolean(form.hasKnownAllergies),
+        p_allergy_details: String(form.allergyDetails || '').trim() || null,
+        p_has_sensitive_scalp: toNullableBoolean(form.hasSensitiveScalp),
+        p_has_scalp_irritation: toNullableBoolean(form.hasScalpIrritation),
+        p_has_open_scalp_wounds: toNullableBoolean(form.hasOpenScalpWounds),
+        p_has_medical_restriction: toNullableBoolean(form.hasMedicalRestriction),
+        p_medical_restriction_details: String(form.medicalRestrictionDetails || '').trim() || null,
+        p_information_confirmed: Boolean(form.informationConfirmed),
+      });
+      if (safetyResult.error) {
+        await supabase.from(WIG_REQUESTS_TABLE).delete().eq('Req_ID', newReqId);
+        createdRequestId = 0;
+        throw safetyResult.error;
+      }
 
       try {
         setIsUploadingPreview(true);
         const previewPdfUrl = await uploadPreviewPdfForRequest(newReqId);
 
-        if (previewPdfUrl) {
-          const { error: savePreviewUrlError } = await supabase
-            .from(WIG_REQUESTS_TABLE)
-            .update({
-              Pdf_Url: previewPdfUrl,
-              Updated_At: new Date().toISOString(),
-            })
-            .eq('Req_ID', newReqId);
+        if (!previewPdfUrl) {
+          throw new Error('The request PDF could not be saved. Please retry.');
+        }
 
-          if (savePreviewUrlError) {
-            const lowerSaveError = String(savePreviewUrlError.message || '').toLowerCase();
+        const { error: savePreviewUrlError } = await supabase
+          .from(WIG_REQUESTS_TABLE)
+          .update({
+            Pdf_Url: previewPdfUrl,
+            Updated_At: new Date().toISOString(),
+          })
+          .eq('Req_ID', newReqId);
 
-            // Backward compatibility for environments that still use Preview_Pdf_Url.
-            if (lowerSaveError.includes('pdf_url') && lowerSaveError.includes('column')) {
-              const { error: legacySaveError } = await supabase
-                .from(WIG_REQUESTS_TABLE)
-                .update({
-                  Preview_Pdf_Url: previewPdfUrl,
-                  Updated_At: new Date().toISOString(),
-                })
-                .eq('Req_ID', newReqId);
+        if (savePreviewUrlError) {
+          const lowerSaveError = String(savePreviewUrlError.message || '').toLowerCase();
 
-              if (legacySaveError) {
-                throw legacySaveError;
-              }
-            } else {
-              throw savePreviewUrlError;
+          // Backward compatibility for environments that still use Preview_Pdf_Url.
+          if (lowerSaveError.includes('pdf_url') && lowerSaveError.includes('column')) {
+            const { error: legacySaveError } = await supabase
+              .from(WIG_REQUESTS_TABLE)
+              .update({
+                Preview_Pdf_Url: previewPdfUrl,
+                Updated_At: new Date().toISOString(),
+              })
+              .eq('Req_ID', newReqId);
+
+            if (legacySaveError) {
+              throw legacySaveError;
             }
+          } else {
+            throw savePreviewUrlError;
           }
         }
-      } catch (_previewError) {
-        // Non-blocking: request row is already saved.
       } finally {
         setIsUploadingPreview(false);
       }
 
-      setNotice({
-        kind: 'success',
-        text: selectedSpec.isAvailable
-          ? 'Wig request submitted successfully. Stock was available when requested.'
-          : 'Wish request submitted successfully. The specialist team can now open a linked production draft; fulfillment is not guaranteed until completed.',
+      setRequestConfirmationOpen(false);
+      setRequestSuccessModal({
+        open: true,
+        requestCode: formatRequestCode(newReqId),
+        isWish: !selectedSpec.isAvailable,
       });
       resetForm();
       void fetchSubmittedRequests();
     } catch (error) {
+      if (createdRequestId) {
+        await supabase.from(WIG_REQUESTS_TABLE).delete().eq('Req_ID', createdRequestId);
+      }
+      setRequestConfirmationOpen(false);
       setNotice({ kind: 'error', text: mapWigRequestInsertError(error.message) });
     } finally {
       setIsUploadingPreview(false);
@@ -2447,6 +2663,47 @@ export default function WigRequestPage({ userProfile }) {
                     placeholder="Write special notes as a list or comment (one per line)."
                   />
                 </div>
+
+                <div className="md:col-span-2 rounded-xl border border-sky-200 bg-sky-50/60 p-4">
+                  <div>
+                    <p className="text-sm font-bold text-slate-900">Wig Safety Assessment</p>
+                    <p className="mt-1 text-xs text-slate-600">Confirm the patient’s current scalp condition and restrictions. These answers appear in the PDF and Staff review.</p>
+                    {selectedPatientProfile.allergiesMedications && selectedPatientProfile.allergiesMedications !== 'N/A' ? (
+                      <p className="mt-2 rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs text-slate-700"><span className="font-bold">Saved clinical allergy/medication record:</span> {selectedPatientProfile.allergiesMedications}</p>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    {[
+                      ['hasKnownAllergies', 'Known allergies?'],
+                      ['hasSensitiveScalp', 'Sensitive scalp?'],
+                      ['hasScalpIrritation', 'Current scalp irritation?'],
+                      ['hasOpenScalpWounds', 'Open scalp wounds?'],
+                      ['hasMedicalRestriction', 'Medical restriction for wig use?'],
+                    ].map(([name, label]) => (
+                      <div key={name}>
+                        <label className={LABEL_CLASS}>{label}</label>
+                        <select name={name} value={form[name]} onChange={handleFieldChange} className={INPUT_CLASS} required>
+                          <option value="">Select Yes or No</option>
+                          <option value="yes">Yes</option>
+                          <option value="no">No</option>
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+
+                  {form.hasKnownAllergies === 'yes' ? (
+                    <div className="mt-3"><label className={LABEL_CLASS}>Allergy Details (required)</label><textarea name="allergyDetails" value={form.allergyDetails} onChange={handleFieldChange} rows={3} className={INPUT_CLASS} placeholder="Allergen, reaction, medication, or material to avoid" /></div>
+                  ) : null}
+                  {form.hasMedicalRestriction === 'yes' ? (
+                    <div className="mt-3"><label className={LABEL_CLASS}>Medical Restriction Details (required)</label><textarea name="medicalRestrictionDetails" value={form.medicalRestrictionDetails} onChange={handleFieldChange} rows={3} className={INPUT_CLASS} placeholder="Describe the restriction or required clearance" /></div>
+                  ) : null}
+
+                  <label className="mt-4 flex items-start gap-2 rounded-lg border border-sky-200 bg-white px-3 py-2.5 text-xs text-slate-700">
+                    <input type="checkbox" name="informationConfirmed" checked={form.informationConfirmed} onChange={handleFieldChange} className="mt-0.5" />
+                    <span>I confirm that these safety details were reviewed with the patient or guardian and are accurate.</span>
+                  </label>
+                </div>
               </section>
             </form>
 
@@ -2461,104 +2718,38 @@ export default function WigRequestPage({ userProfile }) {
 
                 <div className="p-3">
                   <p className="mb-2 text-xs font-bold text-slate-900">PDF Preview</p>
-                  <div className="space-y-2 rounded-lg border border-slate-300 bg-white p-3 shadow-sm">
-                    <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
-                      {previewLogoResolvedUrl ? (
-                        <img
-                          src={previewLogoResolvedUrl}
-                          alt={`${previewBrandName} logo`}
-                          className="h-8 w-8 rounded border border-slate-200 object-cover"
+                  <div className="relative overflow-hidden rounded-lg border border-slate-300 bg-slate-100 shadow-sm">
+                    {liveRequestPdfPreviewUrl ? (
+                      <>
+                        <iframe
+                          title="Exact wig request PDF preview"
+                          src={`${liveRequestPdfPreviewUrl}#toolbar=0&navpanes=0&scrollbar=1&view=FitH`}
+                          className="aspect-[210/297] w-full bg-white"
                         />
-                      ) : (
-                        <div className="flex h-8 w-8 items-center justify-center rounded bg-slate-900 text-[9px] font-bold text-white">
-                          {getAvatarInitials(previewBrandName)}
+                        {isBuildingLivePdfPreview ? (
+                          <div className="absolute right-2 top-2 inline-flex items-center gap-1.5 rounded-full bg-slate-900/85 px-2.5 py-1 text-[10px] font-bold text-white shadow">
+                            <Loader2 size={11} className="animate-spin" /> Updating PDF
+                          </div>
+                        ) : null}
+                      </>
+                    ) : isBuildingLivePdfPreview ? (
+                      <div className="flex aspect-[210/297] items-center justify-center bg-white px-4 text-center">
+                        <p className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500"><Loader2 size={14} className="animate-spin" /> Building the A4 PDF preview...</p>
+                      </div>
+                    ) : (
+                      <div className="flex aspect-[210/297] items-center justify-center bg-white px-5 text-center">
+                        <div>
+                          <FileText size={28} className="mx-auto text-slate-300" />
+                          <p className="mt-2 text-xs font-semibold text-slate-600">Select a patient and wig to generate the PDF preview.</p>
                         </div>
-                      )}
-                      <div>
-                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-900">{previewBrandName}</p>
-                        <p className="text-[9px] text-slate-500">Wig Request Form</p>
                       </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
-                      <AvatarCircle
-                        photoUrl={selectedPatientProfile.photoUrl}
-                        name={selectedPatientProfile.fullName}
-                        sizeClass="h-12 w-12"
-                      />
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-semibold text-slate-900">
-                          {selectedPatientProfile.fullName || 'No patient selected'}
-                        </p>
-                        <p className="truncate text-[11px] text-slate-500">
-                          {selectedPatientProfile.patientCode || 'Patient code not selected'}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
-                      <div className="h-14 w-12 shrink-0 overflow-hidden rounded-md bg-slate-100">
-                        <WigPreviewImage
-                          label={selectedWigFamily?.wigName || 'Selected wig'}
-                          candidates={selectedWigFamily?.primaryImageCandidates || []}
-                          imageClassName="h-14"
-                          showLabel={false}
-                          containerClassName="border-0 bg-transparent p-0"
-                        />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-bold text-slate-900">{selectedWigFamily?.wigName || 'No wig selected'}</p>
-                        <p className="mt-0.5 truncate text-[10px] text-slate-500">
-                          {selectedRequestedSpecification
-                            ? `${selectedRequestedSpecification.style || 'Style N/A'} / ${selectedRequestedSpecification.color || 'Color N/A'}`
-                            : 'Choose a wig from the catalog'}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1 border-b border-slate-100 pb-2">
-                      <PreviewRow label="Cap Size" value={selectedRequestedSpecification?.capSizeLabel || selectedRequestedSpecification?.capSize || ''} />
-                      <PreviewRow label="Style" value={selectedRequestedSpecification?.style || ''} />
-                      <PreviewRow label="Color" value={selectedRequestedSpecification?.color || ''} />
-                      <PreviewRow label="Status" value={REQUEST_STATUS.pending} />
-                    </div>
-
-                    <div className={`rounded-lg border px-2.5 py-2 ${
-                      selectedRequestedSpecification?.isAvailable
-                        ? 'border-emerald-200 bg-emerald-50'
-                        : selectedRequestedSpecification
-                          ? 'border-amber-200 bg-amber-50'
-                          : 'border-slate-200 bg-slate-50'
-                    }`}>
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Stock</p>
-                      <p className={`mt-0.5 text-xs font-bold ${
-                        selectedRequestedSpecification?.isAvailable
-                          ? 'text-emerald-700'
-                          : selectedRequestedSpecification
-                            ? 'text-amber-800'
-                            : 'text-slate-500'
-                      }`}>
-                        {selectedRequestedSpecification?.isAvailable
-                          ? `${selectedRequestedSpecification.stockCount} available`
-                          : selectedRequestedSpecification
-                            ? 'Out of stock - wish request allowed'
-                            : 'Waiting for wig selection'}
-                      </p>
-                    </div>
-
-                    {form.specialNoteTemplate ? (
-                      <div className="border-t border-slate-100 pt-2">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Special Note</p>
-                        <p className="mt-1 whitespace-pre-line break-words text-xs text-slate-700">{form.specialNoteTemplate}</p>
-                      </div>
-                    ) : null}
-
+                    )}
                   </div>
 
                   <div className="mt-3 space-y-2">
 
                     <div className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] text-slate-600">
-                      A clean request PDF will be generated and attached automatically after submission.
+                      This is the exact A4 PDF that will be saved. It updates automatically as the patient, wig, cap size, or note changes.
                     </div>
 
                     <button
@@ -2597,6 +2788,71 @@ export default function WigRequestPage({ userProfile }) {
             </aside>
           </div>
         </section>
+      )}
+
+      {requestConfirmationOpen && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[10020] flex items-center justify-center bg-slate-950/70 p-3 backdrop-blur-sm sm:p-6">
+          <section role="dialog" aria-modal="true" aria-labelledby="wig-request-confirmation-title" className="flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+              <div><p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Final Review</p><h2 id="wig-request-confirmation-title" className="mt-1 text-xl font-bold text-slate-950">Confirm Wig Request</h2><p className="mt-1 text-sm text-slate-600">Check every detail and the exact PDF before continuing.</p></div>
+              <button type="button" disabled={isSubmitting || isUploadingPreview} onClick={() => setRequestConfirmationOpen(false)} className="rounded-full border border-slate-200 p-2 text-slate-500"><X size={18} /></button>
+            </header>
+            <div className="grid flex-1 overflow-y-auto bg-slate-100 lg:grid-cols-[minmax(300px,0.8fr),minmax(440px,1.2fr)]">
+              <div className="space-y-4 p-4 sm:p-5">
+                <section className="rounded-xl border border-slate-200 bg-white p-4">
+                  <h3 className="text-sm font-bold text-slate-900">Patient & Request</h3>
+                  <dl className="mt-3 space-y-2 text-sm text-slate-700">
+                    <PatientDetailRow label="Patient" value={selectedPatientProfile.fullName} />
+                    <PatientDetailRow label="Patient Code" value={selectedPatientProfile.patientCode} />
+                    <PatientDetailRow label="Medical Condition" value={selectedPatientProfile.medicalCondition} />
+                    <PatientDetailRow label="Wig" value={selectedRequestedSpecification?.wigName} />
+                    <PatientDetailRow label="Cap Size" value={selectedRequestedSpecification?.capSizeLabel || selectedRequestedSpecification?.capSize} />
+                    <PatientDetailRow label="Stock" value={selectedRequestedSpecification?.isAvailable ? `${selectedRequestedSpecification.stockCount} available` : 'No stock — production request if accepted'} />
+                    <PatientDetailRow label="Special Note" value={form.specialNoteTemplate || 'N/A'} />
+                  </dl>
+                  <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <WigPreviewImage label={selectedRequestedSpecification?.wigName || 'Selected wig'} candidates={selectedRequestedSpecification?.primaryImageCandidates || []} imageClassName="h-44" showLabel={false} containerClassName="border-0 bg-transparent p-0" />
+                  </div>
+                </section>
+                <section className="rounded-xl border border-sky-200 bg-white p-4">
+                  <h3 className="text-sm font-bold text-slate-900">Safety Assessment</h3>
+                  <dl className="mt-3 space-y-2 text-sm text-slate-700">
+                    <PatientDetailRow label="Known Allergies" value={yesNoValue(form.hasKnownAllergies)} />
+                    <PatientDetailRow label="Allergy Details" value={form.allergyDetails || 'N/A'} />
+                    <PatientDetailRow label="Sensitive Scalp" value={yesNoValue(form.hasSensitiveScalp)} />
+                    <PatientDetailRow label="Scalp Irritation" value={yesNoValue(form.hasScalpIrritation)} />
+                    <PatientDetailRow label="Open Scalp Wounds" value={yesNoValue(form.hasOpenScalpWounds)} />
+                    <PatientDetailRow label="Medical Restriction" value={yesNoValue(form.hasMedicalRestriction)} />
+                    <PatientDetailRow label="Restriction Details" value={form.medicalRestrictionDetails || 'N/A'} />
+                  </dl>
+                </section>
+              </div>
+              <div className="p-4 sm:p-5">
+                <div className="overflow-hidden rounded-xl border border-slate-300 bg-white shadow-sm">
+                  {liveRequestPdfPreviewUrl ? <iframe title="Final wig request PDF" src={`${liveRequestPdfPreviewUrl}#toolbar=0&navpanes=0&view=FitH`} className="h-[68vh] min-h-[560px] w-full bg-white" /> : <div className="flex min-h-[560px] items-center justify-center text-sm text-slate-500">Preparing PDF preview...</div>}
+                </div>
+              </div>
+            </div>
+            <footer className="flex justify-end gap-2 border-t border-slate-200 bg-white px-5 py-4">
+              <button type="button" disabled={isSubmitting || isUploadingPreview} onClick={() => setRequestConfirmationOpen(false)} className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-bold text-slate-700 disabled:opacity-50">Cancel</button>
+              <button type="button" disabled={isSubmitting || isUploadingPreview || isBuildingLivePdfPreview} onClick={() => void submitRequestNow()} className="inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50" style={{ backgroundColor: theme.primaryColor }}>{isSubmitting || isUploadingPreview ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Continue & Submit</button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {requestSuccessModal.open && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[10030] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+          <section role="dialog" aria-modal="true" className="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"><CheckCircle2 size={29} /></div>
+            <h2 className="mt-4 text-xl font-bold text-slate-950">Request Submitted</h2>
+            <p className="mt-2 text-sm text-slate-600"><span className="font-bold">{requestSuccessModal.requestCode}</span> was saved successfully with its safety assessment and PDF.</p>
+            <p className={`mt-4 rounded-xl border px-4 py-3 text-sm ${requestSuccessModal.isWish ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>{requestSuccessModal.isWish ? 'This cap size is currently out of stock. Staff must accept it for priority production before it appears in Specialist Bundling.' : 'Matching stock is currently available, subject to Staff review and immediate allocation.'}</p>
+            <button type="button" onClick={() => setRequestSuccessModal({ open: false, requestCode: '', isWish: false })} className="mt-5 w-full rounded-lg px-4 py-2.5 text-sm font-bold text-white" style={{ backgroundColor: theme.primaryColor }}>Done</button>
+          </section>
+        </div>,
+        document.body,
       )}
 
       {activeTab === 'submitted' && (
@@ -2775,7 +3031,7 @@ export default function WigRequestPage({ userProfile }) {
       )}
 
       {selectedSubmittedRequest && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 z-[90] m-0 p-0">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6">
           <button
             type="button"
             aria-label="Close request preview panel"
@@ -2783,13 +3039,10 @@ export default function WigRequestPage({ userProfile }) {
             onClick={handleCloseSubmittedRequestPreview}
           />
 
-          <aside
-            className="absolute right-0 top-0 h-full w-full max-w-3xl overflow-y-auto border-l border-slate-200 bg-white shadow-2xl"
-            style={{ animation: 'submittedRequestPreviewSlideIn 0.25s ease-out' }}
-          >
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
+          <section className="relative flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="z-10 flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
               <div>
-                <h3 className="text-lg font-semibold text-slate-900">Request PDF Preview</h3>
+                <h3 className="text-lg font-semibold text-slate-900">Wig Request Details</h3>
                 <p className="mt-0.5 text-xs text-slate-500">
                   {selectedSubmittedRequest.requestId} | {selectedSubmittedRequest.patient}
                 </p>
@@ -2799,12 +3052,25 @@ export default function WigRequestPage({ userProfile }) {
               </button>
             </div>
 
-            <div className="space-y-4 p-5">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                <p><span className="font-semibold text-slate-900">Medical Condition:</span> {selectedSubmittedRequest.medicalCondition}</p>
-                <p className="mt-1"><span className="font-semibold text-slate-900">Request Date:</span> {formatRequestDateTime(selectedSubmittedRequest.requestDate)}</p>
-                <p className="mt-1"><span className="font-semibold text-slate-900">Status:</span> {selectedSubmittedRequest.statusLabel || getStatusLabel(selectedSubmittedRequest.status)}</p>
-                <p className="mt-1"><span className="font-semibold text-slate-900">Last Updated:</span> {formatRequestDateTime(selectedSubmittedRequest.updatedAt || selectedSubmittedRequest.requestDate)}</p>
+            <div className="space-y-4 overflow-y-auto bg-slate-100 p-5">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
+                  <div className="flex min-w-0 items-center gap-3">
+                    {selectedSubmittedRequest.patientPhotoUrl ? (
+                      <img src={selectedSubmittedRequest.patientPhotoUrl} alt={selectedSubmittedRequest.patient} className="h-16 w-16 shrink-0 rounded-full border border-slate-200 object-cover" />
+                    ) : (
+                      <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-slate-900 text-lg font-bold text-white">{String(selectedSubmittedRequest.patient || 'P').charAt(0).toUpperCase()}</div>
+                    )}
+                    <div className="min-w-0"><p className="truncate text-lg font-bold text-slate-900">{selectedSubmittedRequest.patient}</p><p className="text-xs text-slate-500">{selectedSubmittedRequest.patientCode}</p></div>
+                  </div>
+                  <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass(selectedSubmittedRequest.status)}`}>{selectedSubmittedRequest.statusLabel || getStatusLabel(selectedSubmittedRequest.status)}</span>
+                </div>
+                <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+                  <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Personal Information</p><div className="mt-2 space-y-1.5"><p><span className="font-semibold text-slate-900">Age:</span> {selectedSubmittedRequest.patientAge}</p><p><span className="font-semibold text-slate-900">Birthdate:</span> {selectedSubmittedRequest.patientBirthdate}</p><p><span className="font-semibold text-slate-900">Gender:</span> {selectedSubmittedRequest.patientGender}</p><p><span className="font-semibold text-slate-900">Email:</span> {selectedSubmittedRequest.patientEmail}</p><p><span className="font-semibold text-slate-900">Contact:</span> {selectedSubmittedRequest.patientContact}</p><p><span className="font-semibold text-slate-900">Address:</span> {selectedSubmittedRequest.patientAddress}</p></div></section>
+                  <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Clinical Information</p><div className="mt-2 space-y-1.5"><p><span className="font-semibold text-slate-900">Condition:</span> {selectedSubmittedRequest.medicalCondition}</p><p><span className="font-semibold text-slate-900">Category / Stage:</span> {selectedSubmittedRequest.conditionCategory} / {selectedSubmittedRequest.conditionStage}</p><p><span className="font-semibold text-slate-900">Physician:</span> {selectedSubmittedRequest.attendingPhysician}</p><p><span className="font-semibold text-slate-900">Treatment:</span> {selectedSubmittedRequest.treatmentPlan}</p><p><span className="font-semibold text-slate-900">Current Status:</span> {selectedSubmittedRequest.treatmentStatus}</p></div></section>
+                  <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Emergency Contacts</p><div className="mt-2 space-y-1.5"><p className="font-semibold text-slate-900">Primary</p><p>{selectedSubmittedRequest.guardianName} · {selectedSubmittedRequest.guardianRelationship}</p><p>{selectedSubmittedRequest.guardianContact}</p>{selectedSubmittedRequest.secondaryGuardianName || selectedSubmittedRequest.secondaryGuardianRelationship || selectedSubmittedRequest.secondaryGuardianContact ? <div className="border-t border-slate-100 pt-2"><p className="font-semibold text-slate-900">Secondary</p><p>{selectedSubmittedRequest.secondaryGuardianName || 'N/A'} · {selectedSubmittedRequest.secondaryGuardianRelationship || 'N/A'}</p><p>{selectedSubmittedRequest.secondaryGuardianContact || 'N/A'}</p></div> : null}</div></section>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1 border-t border-slate-200 pt-3 text-xs"><p><span className="font-semibold text-slate-900">Request Date:</span> {formatRequestDateTime(selectedSubmittedRequest.requestDate)}</p><p><span className="font-semibold text-slate-900">Last Updated:</span> {formatRequestDateTime(selectedSubmittedRequest.updatedAt || selectedSubmittedRequest.requestDate)}</p></div>
                 {selectedSubmittedRequest.isWishRequest ? (
                   <p className="mt-1">
                     <span className="font-semibold text-slate-900">No-stock fulfillment:</span>{' '}
@@ -2821,25 +3087,36 @@ export default function WigRequestPage({ userProfile }) {
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
                 <p className="text-sm font-semibold text-slate-900">Requested Wig Preference</p>
-                <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-700 sm:grid-cols-2">
-                  <p><span className="font-semibold text-slate-900">Spec ID:</span> {selectedSubmittedRequest.requestSpecId || 'N/A'}</p>
-                  <p><span className="font-semibold text-slate-900">Wig Name:</span> {selectedSubmittedRequest.requestSpecWigName}</p>
-                  <p><span className="font-semibold text-slate-900">Color:</span> {selectedSubmittedRequest.requestSpecColor}</p>
-                  <p><span className="font-semibold text-slate-900">Length:</span> {selectedSubmittedRequest.requestSpecLength}</p>
-                  <p><span className="font-semibold text-slate-900">Density:</span> {selectedSubmittedRequest.requestSpecDensity}</p>
-                  <p><span className="font-semibold text-slate-900">Style:</span> {selectedSubmittedRequest.requestSpecStyle}</p>
-                  <p><span className="font-semibold text-slate-900">Texture:</span> {selectedSubmittedRequest.requestSpecTexture}</p>
-                  <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedSubmittedRequest.requestSpecCapSize}</p>
-                </div>
-                <p className="mt-2 text-sm text-slate-700">
-                  <span className="font-semibold text-slate-900">Special Note:</span> {selectedSubmittedRequest.requestSpecSpecialNote}
-                </p>
-                <div className="mt-3 max-w-sm">
+                <div className="mt-3 flex flex-col gap-4 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:flex-row">
+                  <div className="w-full shrink-0 sm:w-40">
                   <WigPreviewImage
                     label="Primary catalog image"
                     candidates={selectedSubmittedRequest.requestSpecPrimaryImageCandidates || []}
+                    imageClassName="h-40 !object-contain"
+                    showLabel={false}
+                    containerClassName="border-0 bg-transparent p-0"
                   />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-base font-bold text-slate-900">{selectedSubmittedRequest.requestSpecWigName}</p>
+                    <p className="mt-0.5 text-xs text-slate-500">Specification #{selectedSubmittedRequest.requestSpecId || 'N/A'}</p>
+                    <div className="mt-3 grid grid-cols-2 gap-x-5 gap-y-2 text-sm text-slate-700 md:grid-cols-3">
+                      <p><span className="font-semibold text-slate-900">Style:</span> {selectedSubmittedRequest.requestSpecStyle}</p><p><span className="font-semibold text-slate-900">Color:</span> {selectedSubmittedRequest.requestSpecColor}</p><p><span className="font-semibold text-slate-900">Length:</span> {selectedSubmittedRequest.requestSpecLength}</p><p><span className="font-semibold text-slate-900">Density:</span> {selectedSubmittedRequest.requestSpecDensity}</p><p><span className="font-semibold text-slate-900">Texture:</span> {selectedSubmittedRequest.requestSpecTexture}</p><p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedSubmittedRequest.requestSpecCapSize}</p>
+                    </div>
+                    <p className="mt-3 text-sm text-slate-700"><span className="font-semibold text-slate-900">Special Note:</span> {selectedSubmittedRequest.requestSpecSpecialNote}</p>
+                  </div>
                 </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <p className="text-sm font-semibold text-slate-900">Wig Safety Assessment</p>
+                {selectedSubmittedRequest.safetyAssessment ? (
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-3">
+                    <p><span className="font-semibold text-slate-900">Known allergies:</span> {selectedSubmittedRequest.safetyAssessment.has_known_allergies ? 'Yes' : 'No'}</p><p><span className="font-semibold text-slate-900">Sensitive scalp:</span> {selectedSubmittedRequest.safetyAssessment.has_sensitive_scalp ? 'Yes' : 'No'}</p><p><span className="font-semibold text-slate-900">Scalp irritation:</span> {selectedSubmittedRequest.safetyAssessment.has_scalp_irritation ? 'Yes' : 'No'}</p><p><span className="font-semibold text-slate-900">Open wounds:</span> {selectedSubmittedRequest.safetyAssessment.has_open_scalp_wounds ? 'Yes' : 'No'}</p><p><span className="font-semibold text-slate-900">Medical restriction:</span> {selectedSubmittedRequest.safetyAssessment.has_medical_restriction ? 'Yes' : 'No'}</p><p><span className="font-semibold text-slate-900">Review:</span> {selectedSubmittedRequest.safetyAssessment.review_status || 'Pending'}</p>
+                    {selectedSubmittedRequest.safetyAssessment.allergy_details ? <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Allergy details:</span> {selectedSubmittedRequest.safetyAssessment.allergy_details}</p> : null}
+                    <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Clinical allergies/current medications:</span> {selectedSubmittedRequest.clinicalAllergiesMedications}</p>
+                  </div>
+                ) : <p className="mt-2 text-sm text-slate-500">No safety assessment was saved for this request.</p>}
               </div>
 
               {selectedSubmittedRequestJourney && (
@@ -2904,21 +3181,10 @@ export default function WigRequestPage({ userProfile }) {
                 </div>
               )}
             </div>
-          </aside>
+          </section>
         </div>,
         document.body,
       )}
-
-      <style>{`
-        @keyframes submittedRequestPreviewSlideIn {
-          from {
-            transform: translateX(100%);
-          }
-          to {
-            transform: translateX(0);
-          }
-        }
-      `}</style>
     </div>
   );
 }

@@ -92,6 +92,43 @@ Deno.serve(async (request) => {
       return jsonResponse({ authorized: true, hospitalId }, 200, allowedOrigin || null);
     }
 
+    if (action === 'set-active') {
+      const patientId = Number(payload?.patientId || 0);
+      const isActive = payload?.isActive;
+      if (!patientId || typeof isActive !== 'boolean') {
+        return jsonResponse({ error: 'Patient and active status are required.' }, 400, allowedOrigin || null);
+      }
+
+      const { data: patient, error: patientError } = await admin
+        .from('Patients')
+        .select('Patient_ID, User_ID, Hospital_ID')
+        .eq('Patient_ID', patientId)
+        .eq('Hospital_ID', hospitalId)
+        .maybeSingle();
+      if (patientError) throw patientError;
+      if (!patient?.User_ID) {
+        return jsonResponse({ error: 'Patient was not found in your hospital.' }, 404, allowedOrigin || null);
+      }
+
+      const { data: targetUser, error: targetUserError } = await admin
+        .from('users')
+        .select('user_id, role')
+        .eq('user_id', patient.User_ID)
+        .maybeSingle();
+      if (targetUserError) throw targetUserError;
+      if (!targetUser || normalizeRole(targetUser.role) !== 'patient') {
+        return jsonResponse({ error: 'The linked patient account was not found.' }, 404, allowedOrigin || null);
+      }
+
+      const { error: updateError } = await admin
+        .from('users')
+        .update({ is_active: isActive, updated_at: new Date().toISOString() })
+        .eq('user_id', patient.User_ID);
+      if (updateError) throw updateError;
+
+      return jsonResponse({ updated: true, patientId, isActive }, 200, allowedOrigin || null);
+    }
+
     if (action === 'delete') {
       const authUserId = String(payload?.authUserId || '').trim();
       if (!authUserId) return jsonResponse({ error: 'Auth user id is required.' }, 400, allowedOrigin || null);

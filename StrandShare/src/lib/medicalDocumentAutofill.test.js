@@ -24,7 +24,7 @@ describe('parseMedicalDocumentFields', () => {
       birthdate: '2012-02-14',
       gender: 'Female',
       dateOfDiagnosis: '2025-04-03',
-      medicalCondition: 'Alopecia areata',
+      conditionCategory: 'Alopecia',
       guardian: 'Ana Reyes',
       guardianContactNumber: '+63 917 123 4567',
       guardianRelationship: 'Mother',
