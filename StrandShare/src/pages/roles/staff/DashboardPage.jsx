@@ -4,6 +4,7 @@ import {
   ArrowRight,
   CalendarClock,
   CheckCircle2,
+  HelpCircle,
   Package,
   RefreshCw,
   Settings2,
@@ -35,19 +36,6 @@ const LEGAL_DOCUMENTS_TABLE = 'legal_documents';
 
 function normalizeKey(value) {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
-}
-
-function formatRelativeShort(value) {
-  if (!value) return 'N/A';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'N/A';
-  return date.toLocaleString('en-PH', {
-    timeZone: 'Asia/Manila',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }
 
 function formatShortDate(value) {
@@ -188,7 +176,8 @@ export default function DashboardPage({ onNavigate, userProfile }) {
   const [isLoading, setIsLoading] = useState(false);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [warnings, setWarnings] = useState([]);
-  const [lastSyncedAt, setLastSyncedAt] = useState('');
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
   const [staffUserId, setStaffUserId] = useState(userProfile?.user_id || null);
   const [dashboard, setDashboard] = useState({
     kpis: {
@@ -485,7 +474,6 @@ export default function DashboardPage({ onNavigate, userProfile }) {
         systemChecks,
       });
 
-      setLastSyncedAt(new Date().toISOString());
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to load staff dashboard data.' });
     } finally {
@@ -495,6 +483,34 @@ export default function DashboardPage({ onNavigate, userProfile }) {
 
   useEffect(() => {
     loadDashboard();
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return undefined;
+
+    let refreshTimer = null;
+    const scheduleRefresh = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => void loadDashboard(), 250);
+    };
+    const fallbackInterval = setInterval(() => void loadDashboard(), 30000);
+    const channel = supabase
+      .channel('public:staff-dashboard-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_APPLICATIONS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_REQUESTS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_ATTENDEES_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUIREMENTS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: LOGISTICS_SETTINGS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: LEGAL_DOCUMENTS_TABLE }, scheduleRefresh)
+      .subscribe((status) => setIsRealtimeActive(status === 'SUBSCRIBED'));
+
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      clearInterval(fallbackInterval);
+      setIsRealtimeActive(false);
+      supabase.removeChannel(channel);
+    };
   }, [loadDashboard]);
 
   const topMetrics = useMemo(() => ([
@@ -555,8 +571,30 @@ export default function DashboardPage({ onNavigate, userProfile }) {
             Intake workload, assigned operations, and wig workflow at a glance.
           </p>
         </div>
-        <div className="flex items-center gap-3 text-xs text-slate-500">
-          <span>Last synced: <strong className="font-semibold text-slate-700">{lastSyncedAt ? formatRelativeShort(lastSyncedAt) : '—'}</strong></span>
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span className="hidden items-center gap-1.5 rounded-full border border-emerald-200 px-2.5 py-1 text-[10px] font-semibold text-emerald-700 sm:inline-flex">
+            <span className={`h-2 w-2 rounded-full ${isRealtimeActive ? 'bg-emerald-600' : 'bg-slate-400'}`} />
+            {isRealtimeActive ? 'Live' : 'Connecting'}
+          </span>
+          <div className="relative">
+            <button
+              type="button"
+              aria-label="About the staff dashboard"
+              aria-expanded={isInfoOpen}
+              onClick={() => setIsInfoOpen((open) => !open)}
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-700 transition hover:bg-slate-100"
+            >
+              <HelpCircle size={14} />
+            </button>
+            {isInfoOpen && (
+              <div className="absolute right-0 top-10 z-30 w-72 rounded-xl border border-slate-200 bg-white p-3 text-left shadow-xl">
+                <p className="text-xs font-bold text-slate-800">About this dashboard</p>
+                <p className="mt-1 text-[10px] leading-relaxed text-slate-600">
+                  Live staff-only workload: event intake, assigned operations, attendee waybills, and wig-request stages.
+                </p>
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={loadDashboard}

@@ -4,6 +4,7 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock3,
+  HelpCircle,
   Loader2,
   Package,
   PackagePlus,
@@ -136,6 +137,7 @@ function actionLabelFor(submission) {
 export default function DashboardPage({ onNavigate }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0275d8';
+  const secondaryColor = theme?.secondaryColor || '#64748b';
   const tertiaryColor = theme?.tertiaryColor || '#10b981';
   const primaryTextColor = theme?.primaryTextColor || '#0f172a';
   const secondaryTextColor = theme?.secondaryTextColor || '#64748b';
@@ -145,6 +147,7 @@ export default function DashboardPage({ onNavigate }) {
 
   const rootStyle = { color: primaryTextColor, fontFamily: `${bodyFont}, sans-serif` };
   const headingStyle = { color: primaryTextColor, fontFamily: `${headingFont}, sans-serif` };
+  const panelBorder = withColorAlpha(secondaryColor, 0.24);
 
   const [submissions, setSubmissions] = useState([]);
   const [bundles, setBundles] = useState([]);
@@ -154,8 +157,8 @@ export default function DashboardPage({ onNavigate }) {
 
   const [isLoading, setIsLoading] = useState(false);
   const [notice, setNotice] = useState({ kind: '', text: '' });
-  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
   const [isRealtimeActive, setIsRealtimeActive] = useState(false);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
 
   const loadData = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -263,7 +266,6 @@ export default function DashboardPage({ onNavigate }) {
         setDrivesById({});
       }
 
-      setLastUpdatedAt(new Date());
     } catch (error) {
       setNotice({ kind: 'error', text: error?.message || 'Unable to load dashboard data.' });
     } finally {
@@ -280,6 +282,7 @@ export default function DashboardPage({ onNavigate }) {
 
     let isMounted = true;
     let refreshTimer = null;
+    const fallbackInterval = setInterval(() => void loadData(), 30000);
 
     const scheduleRefresh = () => {
       if (!isMounted) return;
@@ -302,6 +305,7 @@ export default function DashboardPage({ onNavigate }) {
     return () => {
       isMounted = false;
       if (refreshTimer) clearTimeout(refreshTimer);
+      clearInterval(fallbackInterval);
       supabase.removeChannel(channel);
     };
   }, [loadData]);
@@ -518,10 +522,10 @@ export default function DashboardPage({ onNavigate }) {
   };
 
   return (
-    <div className="space-y-6" style={rootStyle}>
+    <div className="space-y-4" style={rootStyle}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold mb-2" style={headingStyle}>Dashboard</h1>
+          <h1 className="mb-1 text-2xl font-bold" style={headingStyle}>Specialist Dashboard</h1>
           <p style={{ color: secondaryTextColor }}>
             Live QA queue, bundling progress, and finished wig output - synced in realtime from the database.
           </p>
@@ -541,6 +545,26 @@ export default function DashboardPage({ onNavigate }) {
             />
             {isRealtimeActive ? 'Live' : 'Offline'}
           </span>
+          <div className="relative">
+            <button
+              type="button"
+              aria-label="About the specialist dashboard"
+              aria-expanded={isInfoOpen}
+              onClick={() => setIsInfoOpen((open) => !open)}
+              className="flex h-9 w-9 items-center justify-center rounded-xl border bg-white"
+              style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
+            >
+              <HelpCircle size={16} />
+            </button>
+            {isInfoOpen && (
+              <div className="absolute right-0 top-11 z-30 w-72 rounded-xl border bg-white p-3 text-left shadow-xl" style={{ borderColor: withColorAlpha(primaryColor, 0.25) }}>
+                <p className="text-xs font-bold" style={headingStyle}>About this dashboard</p>
+                <p className="mt-1 text-[10px] leading-relaxed" style={{ color: secondaryTextColor }}>
+                  Live specialist-only workflow: hair quality review, production bundles, and completed wig inventory.
+                </p>
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={() => loadData()}
@@ -561,36 +585,27 @@ export default function DashboardPage({ onNavigate }) {
         </div>
       ) : null}
 
-      {lastUpdatedAt ? (
-        <p className="text-xs" style={{ color: tertiaryTextColor }}>
-          Last synced {formatRelative(lastUpdatedAt)} {isLoading ? '- refreshing...' : ''}
-        </p>
-      ) : null}
-
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-        {topCards.map(({ key, label, value, sub, icon: Icon, pageId, accent }) => (
+        {topCards.map(({ key, label, value, sub, pageId, accent }) => (
           <button
             key={key}
             type="button"
             onClick={() => handleNavigate(pageId)}
-            className="rounded-xl border bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-sm"
-            style={{ borderColor: '#e2e8f0' }}
+            className="flex min-h-[124px] flex-col rounded-xl border bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-sm"
+            style={{ borderColor: panelBorder }}
           >
-            <div
-              className="inline-flex items-center justify-center w-9 h-9 rounded-lg"
-              style={{ backgroundColor: withColorAlpha(accent, 0.12), color: accent }}
-            >
-              <Icon size={18} />
+            <div className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: accent }} />
+              <p className="text-[11px] font-bold uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{label}</p>
             </div>
-            <p className="text-sm mt-3" style={{ color: secondaryTextColor }}>{label}</p>
-            <p className="text-2xl font-bold mt-1" style={{ color: primaryTextColor }}>{value}</p>
-            <p className="text-xs mt-1" style={{ color: tertiaryTextColor }}>{sub}</p>
+            <p className="mt-3 text-3xl font-bold leading-none" style={{ color: primaryTextColor }}>{value}</p>
+            <p className="mt-auto pt-3 text-[11px]" style={{ color: secondaryTextColor }}>{sub}</p>
           </button>
         ))}
       </div>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-        <div className="xl:col-span-2 rounded-xl border bg-white p-5" style={{ borderColor: '#e2e8f0' }}>
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+        <div className="xl:col-span-2 rounded-xl border bg-white p-5" style={{ borderColor: panelBorder }}>
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <div>
               <h2 className="text-lg font-semibold" style={headingStyle}>QA Throughput (Last 7 days)</h2>
@@ -621,7 +636,7 @@ export default function DashboardPage({ onNavigate }) {
           </div>
         </div>
 
-        <div className="rounded-xl border bg-white p-5" style={{ borderColor: '#e2e8f0' }}>
+        <div className="rounded-xl border bg-white p-5" style={{ borderColor: panelBorder }}>
           <h2 className="text-lg font-semibold mb-1" style={headingStyle}>QA Queue Mix</h2>
           <p className="text-xs mb-3" style={{ color: tertiaryTextColor }}>Current hair submissions by status</p>
 
@@ -645,11 +660,11 @@ export default function DashboardPage({ onNavigate }) {
                 </ResponsiveContainer>
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-lg border p-2" style={{ borderColor: '#e2e8f0' }}>
+                <div className="rounded-lg border p-2" style={{ borderColor: panelBorder }}>
                   <p style={{ color: secondaryTextColor }}>Approval rate</p>
                   <p className="text-lg font-bold" style={{ color: tertiaryColor }}>{stats.approvalRate}%</p>
                 </div>
-                <div className="rounded-lg border p-2" style={{ borderColor: '#e2e8f0' }}>
+                <div className="rounded-lg border p-2" style={{ borderColor: panelBorder }}>
                   <p style={{ color: secondaryTextColor }}>Total processed</p>
                   <p className="text-lg font-bold" style={{ color: primaryTextColor }}>{stats.approvedTotal + stats.rejectedTotal}</p>
                 </div>
@@ -659,9 +674,9 @@ export default function DashboardPage({ onNavigate }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-        <div className="xl:col-span-2 rounded-xl border bg-white overflow-hidden" style={{ borderColor: '#e2e8f0' }}>
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3" style={{ borderColor: '#e2e8f0' }}>
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+        <div className="xl:col-span-2 rounded-xl border bg-white overflow-hidden" style={{ borderColor: panelBorder }}>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3" style={{ borderColor: panelBorder }}>
             <div className="flex items-center gap-2">
               <Clock3 size={16} style={{ color: primaryColor }} />
               <h2 className="text-lg font-semibold" style={headingStyle}>Recent Activity</h2>
@@ -701,7 +716,7 @@ export default function DashboardPage({ onNavigate }) {
                 </thead>
                 <tbody>
                   {recentActivity.map((row) => (
-                    <tr key={row.id} className="border-t" style={{ borderColor: '#e2e8f0' }}>
+                    <tr key={row.id} className="border-t" style={{ borderColor: panelBorder }}>
                       <td className="px-4 py-3 font-mono text-xs" style={{ color: primaryTextColor }}>{row.code}</td>
                       <td className="px-4 py-3">
                         <span className="inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold" style={statusBadgeStyle(row.status, primaryColor, tertiaryColor)}>
@@ -718,7 +733,7 @@ export default function DashboardPage({ onNavigate }) {
           )}
         </div>
 
-        <div className="rounded-xl border bg-white p-5 space-y-4" style={{ borderColor: '#e2e8f0' }}>
+        <div className="rounded-xl border bg-white p-5 space-y-4" style={{ borderColor: panelBorder }}>
           <h2 className="text-lg font-semibold" style={headingStyle}>Quick Jump</h2>
           {[
             { id: 'quality-check', label: 'Quality Check', icon: ScanLine, accent: primaryColor, hint: `${stats.pendingQa + stats.awaitingIntake} in queue` },
@@ -731,7 +746,7 @@ export default function DashboardPage({ onNavigate }) {
               type="button"
               onClick={() => handleNavigate(id)}
               className="flex w-full items-center justify-between gap-3 rounded-xl border bg-white px-3 py-2.5 text-left text-sm transition hover:bg-slate-50"
-              style={{ borderColor: '#e2e8f0' }}
+              style={{ borderColor: panelBorder }}
             >
               <div className="flex min-w-0 items-center gap-3">
                 <span

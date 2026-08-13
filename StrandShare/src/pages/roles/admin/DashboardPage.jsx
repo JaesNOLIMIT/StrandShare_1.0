@@ -2,19 +2,21 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
+  BadgeCheck,
   Building2,
   CalendarClock,
   CheckCircle2,
+  Clock3,
+  HelpCircle,
   RefreshCw,
   Settings2,
   Users,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
   Tooltip,
+  LineChart,
+  Line,
   BarChart,
   Bar,
   CartesianGrid,
@@ -31,6 +33,13 @@ const USERS_TABLE = 'users';
 const WIG_REQUIREMENTS_TABLE = 'wig_requirements';
 const LOGISTICS_SETTINGS_TABLE = 'Logistics_Settings';
 const LEGAL_DOCUMENTS_TABLE = 'legal_documents';
+const SUCCESS_COLOR = '#15803d';
+const DANGER_COLOR = '#dc2626';
+const PERFORMANCE_RANGES = {
+  weekly: { label: 'Weekly', days: 7, bucket: 'day' },
+  monthly: { label: 'Monthly', days: 30, bucket: 'day' },
+  threeMonths: { label: '3 Months', days: 91, bucket: 'week' },
+};
 
 function normalizeKey(value) {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -39,6 +48,7 @@ function normalizeKey(value) {
 function toManilaParts(value) {
   const date = value ? new Date(value) : new Date();
   if (Number.isNaN(date.getTime())) return null;
+
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Manila',
     year: 'numeric',
@@ -49,30 +59,16 @@ function toManilaParts(value) {
     second: '2-digit',
     hour12: false,
   });
-  const parts = formatter.formatToParts(date).reduce((acc, part) => {
-    if (part.type !== 'literal') acc[part.type] = part.value;
-    return acc;
+
+  return formatter.formatToParts(date).reduce((parts, part) => {
+    if (part.type !== 'literal') parts[part.type] = part.value;
+    return parts;
   }, {});
-  return parts;
 }
 
 function toManilaDayKey(value) {
   const parts = toManilaParts(value);
-  if (!parts) return '';
-  return `${parts.year}-${parts.month}-${parts.day}`;
-}
-
-function formatRelativeShort(value) {
-  if (!value) return 'N/A';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'N/A';
-  return date.toLocaleString('en-PH', {
-    timeZone: 'Asia/Manila',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return parts ? `${parts.year}-${parts.month}-${parts.day}` : '';
 }
 
 function formatShortDate(value) {
@@ -88,9 +84,7 @@ function formatShortDate(value) {
 
 function formatHospitalStatus(hospital) {
   const key = normalizeKey(hospital?.Approval_Status);
-  if (key === 'approved') return 'approved';
-  if (key === 'rejected') return 'rejected';
-  if (key === 'pending') return 'pending';
+  if (key === 'approved' || key === 'rejected' || key === 'pending') return key;
   return hospital?.Is_Approved ? 'approved' : 'pending';
 }
 
@@ -105,18 +99,88 @@ function applicantName(row) {
     .join(' ') || 'Unknown applicant';
 }
 
-function buildSevenDaySeries() {
+function formatRoleLabel(value) {
+  const key = normalizeKey(value);
+  const labels = {
+    admin: 'Admins',
+    staff: 'Staff',
+    specialist: 'Specialists',
+    hrepresentative: 'H-Reps',
+    hospitalrepresentative: 'H-Reps',
+    patient: 'Patients',
+  };
+  return labels[key] || String(value || 'Other').replace(/[_-]+/g, ' ');
+}
+
+function getRangeStart(rangeId) {
+  const range = PERFORMANCE_RANGES[rangeId] || PERFORMANCE_RANGES.weekly;
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - (range.days - 1));
+  return start;
+}
+
+function filterRowsByRange(rows, rangeId) {
+  const startTime = getRangeStart(rangeId).getTime();
+  return rows.filter((row) => {
+    const createdAt = new Date(row?.Created_At || 0).getTime();
+    return Number.isFinite(createdAt) && createdAt >= startTime;
+  });
+}
+
+function buildPerformanceSeries(rangeId, applicationRows, requestRows, hospitalRows) {
+  const range = PERFORMANCE_RANGES[rangeId] || PERFORMANCE_RANGES.weekly;
+  const start = getRangeStart(rangeId);
   const rows = [];
-  for (let offset = 6; offset >= 0; offset -= 1) {
-    const base = new Date();
-    base.setDate(base.getDate() - offset);
+
+  if (range.bucket === 'week') {
+    const weekMs = 7 * 24 * 60 * 60 * 1000;
+    for (let index = 0; index < 13; index += 1) {
+      const bucketStart = new Date(start.getTime() + (index * weekMs));
+      rows.push({
+        bucketStart: bucketStart.getTime(),
+        label: formatShortDate(bucketStart),
+        applications: 0,
+        requests: 0,
+        hospitalApplications: 0,
+      });
+    }
+
+    const addToWeeklyBucket = (sourceRows, key) => {
+      sourceRows.forEach((row) => {
+        const timestamp = new Date(row?.Created_At || 0).getTime();
+        const index = Math.floor((timestamp - start.getTime()) / weekMs);
+        if (index >= 0 && index < rows.length) rows[index][key] += 1;
+      });
+    };
+    addToWeeklyBucket(applicationRows, 'applications');
+    addToWeeklyBucket(requestRows, 'requests');
+    addToWeeklyBucket(hospitalRows, 'hospitalApplications');
+    return rows;
+  }
+
+  for (let offset = 0; offset < range.days; offset += 1) {
+    const date = new Date(start);
+    date.setDate(start.getDate() + offset);
     rows.push({
-      dayKey: toManilaDayKey(base),
-      label: formatShortDate(base),
+      dayKey: toManilaDayKey(date),
+      label: formatShortDate(date),
       applications: 0,
       requests: 0,
+      hospitalApplications: 0,
     });
   }
+
+  const byDay = new Map(rows.map((row) => [row.dayKey, row]));
+  const addToDailyBucket = (sourceRows, key) => {
+    sourceRows.forEach((row) => {
+      const bucket = byDay.get(toManilaDayKey(row?.Created_At));
+      if (bucket) bucket[key] += 1;
+    });
+  };
+  addToDailyBucket(applicationRows, 'applications');
+  addToDailyBucket(requestRows, 'requests');
+  addToDailyBucket(hospitalRows, 'hospitalApplications');
   return rows;
 }
 
@@ -135,35 +199,112 @@ function extractQueryResult(result) {
   return { data: result.value?.data || [], error: null };
 }
 
-function MetricTile({ label, value, accentColor, helper, onClick }) {
+function hexToRgb(value) {
+  const match = String(value || '').trim().match(/^#([0-9a-f]{6})$/i);
+  if (!match) return null;
+  return {
+    r: parseInt(match[1].slice(0, 2), 16),
+    g: parseInt(match[1].slice(2, 4), 16),
+    b: parseInt(match[1].slice(4, 6), 16),
+  };
+}
+
+function withAlpha(value, alpha, fallback = '#64748b') {
+  const rgb = hexToRgb(value) || hexToRgb(fallback);
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
+}
+
+function rotateHue(value, degrees, fallback = '#2563eb') {
+  const rgb = hexToRgb(value) || hexToRgb(fallback);
+  const red = rgb.r / 255;
+  const green = rgb.g / 255;
+  const blue = rgb.b / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  let hue = 0;
+
+  if (delta > 0) {
+    if (max === red) hue = 60 * (((green - blue) / delta) % 6);
+    else if (max === green) hue = 60 * (((blue - red) / delta) + 2);
+    else hue = 60 * (((red - green) / delta) + 4);
+  }
+
+  const lightness = (max + min) / 2;
+  const saturation = delta === 0 ? 0 : delta / (1 - Math.abs((2 * lightness) - 1));
+  const nextHue = (hue + degrees + 360) % 360;
+  return `hsl(${Math.round(nextHue)} ${Math.round(Math.max(saturation, 0.45) * 100)}% ${Math.round(Math.max(lightness, 0.34) * 100)}%)`;
+}
+
+function MetricTile({ label, value, accentColor, helper, onClick, palette }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="group flex h-full flex-col rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow"
+      className="group flex min-h-[136px] w-full flex-col rounded-xl border p-5 text-left transition duration-200 hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus-visible:ring-2"
+      style={{
+        backgroundColor: palette.surface,
+        borderColor: palette.border,
+        '--tw-ring-color': accentColor,
+      }}
     >
-      <div className="flex items-center gap-1.5">
-        <span className="h-2 w-2 flex-none rounded-full" style={{ backgroundColor: accentColor }} />
-        <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">{label}</p>
-      </div>
-      <p className="mt-2 text-3xl font-bold leading-none text-slate-900">{value}</p>
-      <p className="mt-auto pt-2 text-[11px] text-slate-500">{helper}</p>
+      <span className="flex items-center gap-1.5">
+        <span className="h-2.5 w-2.5 flex-none rounded-full" style={{ backgroundColor: accentColor }} />
+        <span className="block truncate text-[11px] font-bold uppercase tracking-[0.06em]" style={{ color: palette.mutedText }}>
+          {label}
+        </span>
+      </span>
+      <span className="mt-3 block text-3xl font-bold leading-none" style={{ color: palette.heading }}>{value}</span>
+      <span className="mt-auto block truncate pt-3 text-xs" style={{ color: palette.mutedText }}>{helper}</span>
     </button>
   );
 }
 
-function ProgressRow({ label, value, total, accentColor }) {
-  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+function StatusPill({ label, color }) {
+  return (
+    <span
+      className="inline-flex w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+      style={{ backgroundColor: withAlpha(color, 0.1), borderColor: withAlpha(color, 0.28), color }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function StatusRow({ entry, total, palette }) {
+  const percentage = total > 0 ? Math.round((entry.value / total) * 100) : 0;
+  return (
+    <div className="grid grid-cols-[1fr_48px_60px] items-center gap-2 border-b py-1.5 last:border-b-0" style={{ borderColor: palette.divider }}>
+      <StatusPill label={entry.name} color={entry.color} />
+      <span className="text-right text-xs font-semibold" style={{ color: palette.heading }}>{entry.value}</span>
+      <span className="text-right text-[11px]" style={{ color: palette.bodyText }}>{percentage}%</span>
+    </div>
+  );
+}
+
+function StatusTable({ data, total, palette }) {
   return (
     <div>
-      <div className="mb-1 flex items-center justify-between text-xs">
-        <span className="font-semibold text-slate-700">{label}</span>
-        <span className="font-bold text-slate-900">{value}<span className="ml-1 font-normal text-slate-400">· {pct}%</span></span>
+      <div className="grid grid-cols-[1fr_48px_60px] gap-2 border-b pb-1.5 text-[9px] font-bold uppercase tracking-wide" style={{ borderColor: palette.divider, color: palette.mutedText }}>
+        <span>Status</span>
+        <span className="text-right">Count</span>
+        <span className="text-right">Percent</span>
       </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-        <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(pct, value > 0 ? 2 : 0)}%`, backgroundColor: accentColor }} />
-      </div>
+      {data.map((entry) => (
+        <StatusRow key={entry.name} entry={entry} total={total} palette={palette} />
+      ))}
     </div>
+  );
+}
+
+function Panel({ children, palette, className = '' }) {
+  return (
+    <section
+      className={`overflow-hidden rounded-2xl border ${className}`}
+      style={{ backgroundColor: palette.surface, borderColor: palette.border }}
+    >
+      {children}
+    </section>
   );
 }
 
@@ -171,16 +312,30 @@ export default function DashboardPage({ onNavigate }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0f766e';
   const secondaryColor = theme?.secondaryColor || '#64748b';
-  const tertiaryColor = theme?.tertiaryColor || '#10b981';
   const primaryTextColor = theme?.primaryTextColor || '#0f172a';
   const secondaryTextColor = theme?.secondaryTextColor || '#475569';
+  const tertiaryTextColor = theme?.tertiaryTextColor || '#94a3b8';
   const fontFamily = theme?.fontFamily || 'Poppins';
   const headingFontFamily = theme?.secondaryFontFamily || theme?.fontFamily || 'Poppins';
+
+  // The ThemeProvider maps these values from the latest UI_Settings row.
+  const palette = useMemo(() => ({
+    surface: 'var(--color-surface)',
+    subtleSurface: 'var(--color-card-background)',
+    border: withAlpha(secondaryColor, 0.26),
+    divider: withAlpha(secondaryColor, 0.16),
+    heading: primaryTextColor,
+    bodyText: secondaryTextColor,
+    mutedText: tertiaryTextColor,
+  }), [primaryTextColor, secondaryColor, secondaryTextColor, tertiaryTextColor]);
 
   const [isLoading, setIsLoading] = useState(false);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [warnings, setWarnings] = useState([]);
-  const [lastSyncedAt, setLastSyncedAt] = useState('');
+  const [activePerformanceTab, setActivePerformanceTab] = useState('events');
+  const [performanceRange, setPerformanceRange] = useState('weekly');
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
   const [dashboard, setDashboard] = useState({
     kpis: {
       pendingAdminDecision: 0,
@@ -192,9 +347,14 @@ export default function DashboardPage({ onNavigate }) {
       systemAlerts: 0,
       adminUsers: 0,
       staffUsers: 0,
+      totalActiveUsers: 0,
     },
-    requestStatusData: [],
-    trendData: buildSevenDaySeries(),
+    userRoleData: [],
+    sourceRows: {
+      requests: [],
+      applications: [],
+      hospitals: [],
+    },
     actionItems: [],
     pendingAdminRows: [],
     pendingHospitalRows: [],
@@ -279,7 +439,6 @@ export default function DashboardPage({ onNavigate }) {
       const applicationRows = applicationResult.data;
       const hospitalRows = hospitalResult.data;
       const userRows = usersResult.data;
-
       const applicationById = new Map(
         applicationRows.map((row) => [safeNumber(row.Event_Application_ID), row]),
       );
@@ -288,31 +447,38 @@ export default function DashboardPage({ onNavigate }) {
         .filter((row) => normalizeKey(row.Status) === 'pendingadminapproval')
         .slice()
         .sort((a, b) => new Date(a.Created_At || 0).getTime() - new Date(b.Created_At || 0).getTime());
-
       const approvedWithoutAssignedStaff = requestRows.filter(
         (row) => normalizeKey(row.Status) === 'approved' && !safeNumber(row.Assigned_Staff_User_ID),
       );
-
       const pendingStaffReviewRows = applicationRows.filter(
         (row) => normalizeKey(row.Status) === 'pendingstaffreview',
       );
-
       const appealedRows = applicationRows.filter(
         (row) => normalizeKey(row.Status) === 'appealed',
       );
-
       const pendingHospitalRows = hospitalRows
         .filter((row) => formatHospitalStatus(row) === 'pending')
         .slice()
         .sort((a, b) => new Date(a.Created_At || 0).getTime() - new Date(b.Created_At || 0).getTime());
 
-      const roleCounts = userRows.reduce((acc, row) => {
-        if (row?.is_active === false) return acc;
-        const key = normalizeKey(row.role);
-        if (key === 'admin') acc.admin += 1;
-        if (key === 'staff') acc.staff += 1;
-        return acc;
+      const roleCounts = userRows.reduce((counts, row) => {
+        if (row?.is_active === false) return counts;
+        const role = normalizeKey(row.role);
+        if (role === 'admin') counts.admin += 1;
+        if (role === 'staff') counts.staff += 1;
+        return counts;
       }, { admin: 0, staff: 0 });
+
+      const userRolesByName = userRows.reduce((counts, row) => {
+        if (row?.is_active === false) return counts;
+        const key = normalizeKey(row.role) || 'other';
+        const current = counts.get(key) || { name: formatRoleLabel(row.role), value: 0 };
+        current.value += 1;
+        counts.set(key, current);
+        return counts;
+      }, new Map());
+      const userRoleData = Array.from(userRolesByName.values())
+        .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name));
 
       const statusBreakdown = {
         pendingadminapproval: 0,
@@ -321,28 +487,8 @@ export default function DashboardPage({ onNavigate }) {
         cancelled: 0,
       };
       requestRows.forEach((row) => {
-        const key = normalizeKey(row.Status);
-        if (key in statusBreakdown) statusBreakdown[key] += 1;
-      });
-
-      const requestStatusData = [
-        { name: 'Pending Admin', value: statusBreakdown.pendingadminapproval, color: '#f59e0b' },
-        { name: 'Approved', value: statusBreakdown.approved, color: tertiaryColor },
-        { name: 'Rejected', value: statusBreakdown.rejected, color: '#e11d48' },
-        { name: 'Cancelled', value: statusBreakdown.cancelled, color: secondaryColor },
-      ];
-
-      const trendData = buildSevenDaySeries();
-      const trendByDay = new Map(trendData.map((row) => [row.dayKey, row]));
-      applicationRows.forEach((row) => {
-        const key = toManilaDayKey(row.Created_At);
-        if (!trendByDay.has(key)) return;
-        trendByDay.get(key).applications += 1;
-      });
-      requestRows.forEach((row) => {
-        const key = toManilaDayKey(row.Created_At);
-        if (!trendByDay.has(key)) return;
-        trendByDay.get(key).requests += 1;
+        const status = normalizeKey(row.Status);
+        if (status in statusBreakdown) statusBreakdown[status] += 1;
       });
 
       const activeLegalRow = legalResult.data.find((row) => Boolean(row.is_active)) || null;
@@ -413,9 +559,14 @@ export default function DashboardPage({ onNavigate }) {
             + (!systemChecks.legalReady ? 1 : 0),
           adminUsers: roleCounts.admin,
           staffUsers: roleCounts.staff,
+          totalActiveUsers: userRows.filter((row) => row?.is_active !== false).length,
         },
-        requestStatusData,
-        trendData,
+        userRoleData,
+        sourceRows: {
+          requests: requestRows,
+          applications: applicationRows,
+          hospitals: hospitalRows,
+        },
         actionItems,
         pendingAdminRows: pendingAdminRows.slice(0, 5).map((row) => ({
           ...row,
@@ -424,17 +575,43 @@ export default function DashboardPage({ onNavigate }) {
         pendingHospitalRows: pendingHospitalRows.slice(0, 5),
         systemChecks,
       });
-
-      setLastSyncedAt(new Date().toISOString());
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to load dashboard data.' });
     } finally {
       setIsLoading(false);
     }
-  }, [tertiaryColor, secondaryColor]);
+  }, []);
 
   useEffect(() => {
     loadDashboard();
+  }, [loadDashboard]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return undefined;
+
+    let refreshTimer = null;
+    const scheduleRefresh = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => void loadDashboard(), 250);
+    };
+    const fallbackInterval = setInterval(() => void loadDashboard(), 30000);
+    const channel = supabase
+      .channel('public:admin-dashboard-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_REQUESTS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_APPLICATIONS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUIREMENTS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: LOGISTICS_SETTINGS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: LEGAL_DOCUMENTS_TABLE }, scheduleRefresh)
+      .subscribe((status) => setIsRealtimeActive(status === 'SUBSCRIBED'));
+
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      clearInterval(fallbackInterval);
+      setIsRealtimeActive(false);
+      supabase.removeChannel(channel);
+    };
   }, [loadDashboard]);
 
   const topMetrics = useMemo(() => ([
@@ -442,366 +619,616 @@ export default function DashboardPage({ onNavigate }) {
       key: 'pendingAdmin',
       label: 'Pending Admin',
       value: dashboard.kpis.pendingAdminDecision,
-      accentColor: '#f59e0b',
-      helper: 'Event requests waiting for your decision',
+      accentColor: secondaryColor,
+      helper: 'Requests waiting',
       page: 'manage-event-applications',
+      icon: Clock3,
     },
     {
       key: 'approved',
       label: 'Approved Events',
       value: dashboard.kpis.approvedRequests,
-      accentColor: tertiaryColor,
-      helper: 'Live approved event requests',
+      accentColor: SUCCESS_COLOR,
+      helper: 'Approved requests',
       page: 'manage-event-applications',
+      icon: BadgeCheck,
     },
     {
       key: 'hospitals',
       label: 'Hospital Apps',
       value: dashboard.kpis.pendingHospitalApplications,
       accentColor: primaryColor,
-      helper: 'Partnership applications pending review',
+      helper: 'Pending review',
       page: 'manage-hospital-accounts',
+      icon: Building2,
     },
     {
       key: 'alerts',
       label: 'System Alerts',
       value: dashboard.kpis.systemAlerts,
-      accentColor: '#e11d48',
-      helper: 'Configuration items needing attention',
+      accentColor: DANGER_COLOR,
+      helper: 'Items needing attention',
       page: 'manage-requirements',
+      icon: AlertTriangle,
     },
-  ]), [dashboard.kpis, tertiaryColor, primaryColor]);
+  ]), [dashboard.kpis, primaryColor, secondaryColor]);
+
+  const overviewData = useMemo(() => {
+    const filteredRequests = filterRowsByRange(dashboard.sourceRows.requests, performanceRange);
+    const filteredApplications = filterRowsByRange(dashboard.sourceRows.applications, performanceRange);
+    const filteredHospitals = filterRowsByRange(dashboard.sourceRows.hospitals, performanceRange);
+    const requestCounts = { pendingadminapproval: 0, approved: 0, rejected: 0, cancelled: 0 };
+    const hospitalCounts = { pending: 0, approved: 0, rejected: 0 };
+
+    filteredRequests.forEach((row) => {
+      const status = normalizeKey(row.Status);
+      if (status in requestCounts) requestCounts[status] += 1;
+    });
+    filteredHospitals.forEach((row) => {
+      const status = formatHospitalStatus(row);
+      if (status in hospitalCounts) hospitalCounts[status] += 1;
+    });
+
+    return {
+      trendData: buildPerformanceSeries(
+        performanceRange,
+        filteredApplications,
+        filteredRequests,
+        filteredHospitals,
+      ),
+      requestStatusData: [
+        { name: 'Pending Admin', value: requestCounts.pendingadminapproval, color: secondaryColor },
+        { name: 'Approved', value: requestCounts.approved, color: SUCCESS_COLOR },
+        { name: 'Rejected', value: requestCounts.rejected, color: DANGER_COLOR },
+        { name: 'Cancelled', value: requestCounts.cancelled, color: tertiaryTextColor },
+      ],
+      hospitalStatusData: [
+        { name: 'Pending', value: hospitalCounts.pending, color: secondaryColor },
+        { name: 'Approved', value: hospitalCounts.approved, color: SUCCESS_COLOR },
+        { name: 'Rejected', value: hospitalCounts.rejected, color: DANGER_COLOR },
+      ],
+    };
+  }, [dashboard.sourceRows, performanceRange, secondaryColor, tertiaryTextColor]);
 
   const totalRequests = useMemo(
-    () => dashboard.requestStatusData.reduce((sum, entry) => sum + safeNumber(entry.value), 0),
-    [dashboard.requestStatusData],
+    () => overviewData.requestStatusData.reduce((sum, entry) => sum + safeNumber(entry.value), 0),
+    [overviewData.requestStatusData],
   );
+
+  const totalHospitals = useMemo(
+    () => overviewData.hospitalStatusData.reduce((sum, entry) => sum + safeNumber(entry.value), 0),
+    [overviewData.hospitalStatusData],
+  );
+
+  const activeUsers = useMemo(
+    () => dashboard.userRoleData.reduce((sum, entry) => sum + safeNumber(entry.value), 0),
+    [dashboard.userRoleData],
+  );
+
+  const systemHealthItems = [
+    { label: 'Wig Requirements', ready: dashboard.systemChecks.wigRequirementsReady },
+    { label: 'Logistics Destination', ready: dashboard.systemChecks.logisticsReady },
+    {
+      label: 'Legal Consent PDF',
+      ready: dashboard.systemChecks.legalReady,
+      detail: dashboard.systemChecks.legalVersion ? `v${dashboard.systemChecks.legalVersion}` : '',
+    },
+  ];
+
+  const noticeColor = notice.kind === 'error' ? DANGER_COLOR : SUCCESS_COLOR;
+  const healthySystemChecks = systemHealthItems.filter((item) => item.ready).length;
+  const chartPrimaryColor = primaryColor;
+  const chartSecondaryColor = rotateHue(primaryColor, 165, secondaryColor);
+  const chartTertiaryColor = rotateHue(primaryColor, 215, secondaryColor);
+  const performanceTabs = [
+    { id: 'events', label: 'Events' },
+    { id: 'hospitals', label: 'Hospital Applications' },
+    { id: 'users', label: 'Users' },
+    { id: 'health', label: 'System Health' },
+  ];
 
   return (
     <div
-      className="space-y-4"
-      style={{ fontFamily: `${fontFamily}, sans-serif`, color: primaryTextColor }}
+      className="space-y-3"
+      style={{ fontFamily: `${fontFamily}, sans-serif`, color: palette.bodyText }}
     >
-      {/* Plain title row */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1
-            className="text-2xl font-bold"
-            style={{ fontFamily: `${headingFontFamily}, sans-serif`, color: primaryTextColor }}
-          >
-            Admin Dashboard
-          </h1>
-          <p className="text-sm" style={{ color: secondaryTextColor }}>
-            One-look view of approvals, backlogs, and configuration health.
-          </p>
-        </div>
-        <div className="flex items-center gap-3 text-xs text-slate-500">
-          <span>Last synced: <strong className="font-semibold text-slate-700">{lastSyncedAt ? formatRelativeShort(lastSyncedAt) : '—'}</strong></span>
-          <button
-            type="button"
-            onClick={loadDashboard}
-            disabled={isLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
-          >
-            <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-        </div>
-      </div>
-
       {notice.text && (
-        <div className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${notice.kind === 'error' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+        <div
+          className="flex items-start gap-2 rounded-lg border px-3 py-2 text-xs"
+          style={{ backgroundColor: withAlpha(noticeColor, 0.08), borderColor: withAlpha(noticeColor, 0.25), color: noticeColor }}
+        >
           {notice.kind === 'error' ? <AlertTriangle size={14} className="mt-0.5 flex-none" /> : <CheckCircle2 size={14} className="mt-0.5 flex-none" />}
           <span>{notice.text}</span>
         </div>
       )}
 
       {warnings.length > 0 && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+        <div
+          className="rounded-lg border px-3 py-2 text-xs"
+          style={{ backgroundColor: withAlpha(DANGER_COLOR, 0.07), borderColor: withAlpha(DANGER_COLOR, 0.22), color: DANGER_COLOR }}
+        >
           <p className="font-semibold">Partial data warnings</p>
-          <div className="mt-1 space-y-0.5">
-            {warnings.map((warning) => <p key={warning}>{warning}</p>)}
-          </div>
+          {warnings.map((warning) => <p key={warning} className="mt-0.5">{warning}</p>)}
         </div>
       )}
 
-      {/* Top metric tiles — 4 tiles, equal weight */}
-      <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1
+            className="text-2xl font-bold leading-tight"
+            style={{ color: palette.heading, fontFamily: `${headingFontFamily}, sans-serif` }}
+          >
+            Admin Dashboard
+          </h1>
+          <p className="text-xs sm:text-sm" style={{ color: palette.bodyText }}>
+            Approvals, activity, and system readiness at a glance.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span
+            className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold sm:inline-flex"
+            style={{ borderColor: withAlpha(isRealtimeActive ? SUCCESS_COLOR : secondaryColor, 0.28), color: isRealtimeActive ? SUCCESS_COLOR : palette.bodyText }}
+          >
+            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: isRealtimeActive ? SUCCESS_COLOR : secondaryColor }} />
+            {isRealtimeActive ? 'Live' : 'Connecting'}
+          </span>
+          <div className="relative">
+            <button
+              type="button"
+              aria-label="About this dashboard"
+              aria-expanded={isInfoOpen}
+              aria-controls="admin-dashboard-info"
+              onClick={() => setIsInfoOpen((open) => !open)}
+              className="flex h-9 w-9 items-center justify-center rounded-lg border transition hover:shadow-sm"
+              style={{ backgroundColor: palette.surface, borderColor: palette.border, color: primaryColor }}
+            >
+              <HelpCircle size={17} />
+            </button>
+            {isInfoOpen && (
+              <div
+                id="admin-dashboard-info"
+                role="dialog"
+                aria-label="Dashboard information"
+                className="absolute right-0 top-11 z-30 w-72 rounded-xl border p-3 text-left shadow-xl"
+                style={{ backgroundColor: palette.surface, borderColor: palette.border }}
+              >
+                <p className="text-xs font-bold" style={{ color: palette.heading }}>About this dashboard</p>
+                <p className="mt-1 text-[10px] leading-relaxed" style={{ color: palette.bodyText }}>
+                  Metrics use live event, hospital, user, and configuration records. Green means approved or healthy; red means rejected, missing, or requiring attention.
+                </p>
+                <p className="mt-2 text-[9px]" style={{ color: palette.mutedText }}>
+                  Use the Performance Overview tabs to compare each operational area.
+                </p>
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={loadDashboard}
+            disabled={isLoading}
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+            style={{ backgroundColor: palette.surface, borderColor: palette.border, color: primaryColor }}
+          >
+            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {topMetrics.map((metric) => (
           <MetricTile
             key={metric.key}
-            label={metric.label}
-            value={metric.value}
-            accentColor={metric.accentColor}
-            helper={metric.helper}
+            {...metric}
+            palette={palette}
             onClick={() => typeof onNavigate === 'function' && onNavigate(metric.page)}
           />
         ))}
       </section>
 
-      {/* Row: Donut (with center total) + Bar chart + Progress-bar breakdown */}
-      <section className="grid grid-cols-1 gap-3 xl:grid-cols-12">
-        {/* Donut with big center number */}
-        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-4">
-          <h3 className="text-sm font-bold text-slate-800">Event Request Status</h3>
-          <p className="text-xs text-slate-500">Lifetime distribution</p>
-          <div className="relative mt-2 h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={dashboard.requestStatusData}
-                  dataKey="value"
-                  nameKey="name"
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={82}
-                  innerRadius={58}
-                  paddingAngle={2}
-                  stroke="none"
-                >
-                  {dashboard.requestStatusData.map((entry) => (
-                    <Cell key={entry.name} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-              <p className="text-4xl font-bold leading-none text-slate-900">{totalRequests}</p>
-              <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">Total</p>
-            </div>
+      <Panel palette={palette}>
+        <div className="flex flex-col gap-2 border-b px-4 py-3 lg:flex-row lg:items-center lg:justify-between" style={{ borderColor: palette.divider }}>
+          <div className="flex-none">
+            <h2 className="text-sm font-bold" style={{ color: palette.heading, fontFamily: `${headingFontFamily}, sans-serif` }}>
+              Performance Overview
+            </h2>
+            <p className="text-[10px]" style={{ color: palette.mutedText }}>Switch views to compare each operational area.</p>
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
-            {dashboard.requestStatusData.map((entry) => (
-              <div key={entry.name} className="flex items-center gap-1.5">
-                <span className="h-2 w-2 flex-none rounded-full" style={{ backgroundColor: entry.color }} />
-                <span className="flex-1 truncate text-slate-600">{entry.name}</span>
-                <span className="font-bold text-slate-800">{entry.value}</span>
+          <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
+            {(activePerformanceTab === 'events' || activePerformanceTab === 'hospitals') && (
+              <div className="flex gap-1 rounded-lg border p-1" style={{ backgroundColor: palette.surface, borderColor: palette.divider }} aria-label="Performance date range">
+                {Object.entries(PERFORMANCE_RANGES).map(([rangeId, range]) => {
+                  const isActive = performanceRange === rangeId;
+                  return (
+                    <button
+                      key={rangeId}
+                      type="button"
+                      aria-pressed={isActive}
+                      onClick={() => setPerformanceRange(rangeId)}
+                      className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[10px] font-semibold transition"
+                      style={{ backgroundColor: isActive ? withAlpha(primaryColor, 0.12) : 'transparent', color: isActive ? primaryColor : palette.bodyText }}
+                    >
+                      {range.label}
+                    </button>
+                  );
+                })}
               </div>
-            ))}
-          </div>
-        </article>
-
-        {/* 7-day pipeline */}
-        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-sm font-bold text-slate-800">7-Day Pipeline</h3>
-              <p className="text-xs text-slate-500">Applications vs. Requests created daily</p>
+            )}
+            <div className="flex max-w-full gap-1 overflow-x-auto rounded-lg p-1" style={{ backgroundColor: palette.subtleSurface }} role="tablist" aria-label="Performance views">
+              {performanceTabs.map((tab) => {
+                const isActive = activePerformanceTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={isActive}
+                    onClick={() => setActivePerformanceTab(tab.id)}
+                    className="whitespace-nowrap rounded-md px-3 py-1.5 text-[10px] font-semibold transition"
+                    style={{
+                      backgroundColor: isActive ? palette.surface : 'transparent',
+                      color: isActive ? primaryColor : palette.bodyText,
+                      boxShadow: isActive ? `0 1px 3px ${withAlpha(secondaryColor, 0.18)}` : 'none',
+                    }}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
             </div>
-            <div className="flex items-center gap-3 text-[11px]">
-              <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ backgroundColor: secondaryColor }} />Apps</span>
-              <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ backgroundColor: primaryColor }} />Requests</span>
+          </div>
+        </div>
+
+        {activePerformanceTab === 'events' && (
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,1fr)]">
+            <div className="border-b p-4 xl:border-b-0 xl:border-r" style={{ borderColor: palette.divider }}>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h3 className="text-xs font-bold" style={{ color: palette.heading }}>{PERFORMANCE_RANGES[performanceRange].label} event activity</h3>
+                  <p className="text-[10px]" style={{ color: palette.mutedText }}>Applications and requests created {PERFORMANCE_RANGES[performanceRange].bucket === 'week' ? 'weekly' : 'daily'}</p>
+                </div>
+                <div className="flex items-center gap-3 text-[10px]" style={{ color: palette.bodyText }}>
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm" style={{ backgroundColor: chartSecondaryColor }} />Applications</span>
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm" style={{ backgroundColor: chartPrimaryColor }} />Requests</span>
+                </div>
+              </div>
+              <div className="mt-2 h-36">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={overviewData.trendData} margin={{ top: 8, right: 12, left: -24, bottom: 0 }} barGap={4}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={palette.divider} vertical={false} />
+                    <XAxis dataKey="label" interval={performanceRange === 'monthly' ? 4 : performanceRange === 'threeMonths' ? 1 : 0} minTickGap={12} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
+                    <Tooltip contentStyle={{ backgroundColor: palette.surface, borderColor: palette.border, borderRadius: 8, color: palette.heading, fontSize: 11 }} />
+                    <Bar dataKey="applications" name="Applications" fill={chartSecondaryColor} radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="requests" name="Requests" fill={chartPrimaryColor} radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="p-4">
+              <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Event Status</h3>
+              <p className="mb-3 text-[10px]" style={{ color: palette.mutedText }}>Share of all event requests</p>
+              <StatusTable data={overviewData.requestStatusData} total={totalRequests} palette={palette} />
             </div>
           </div>
-          <div className="mt-2 h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={dashboard.trendData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-                <XAxis dataKey="label" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
-                <Tooltip />
-                <Bar dataKey="applications" name="Applications" fill={secondaryColor} radius={[4, 4, 0, 0]} />
-                <Bar dataKey="requests" name="Requests" fill={primaryColor} radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </article>
+        )}
 
-        {/* Horizontal progress bars */}
-        <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-3">
-          <h3 className="text-sm font-bold text-slate-800">Status Breakdown</h3>
-          <p className="text-xs text-slate-500">Share of all event requests</p>
-          <div className="mt-4 space-y-3">
-            {dashboard.requestStatusData.map((entry) => (
-              <ProgressRow
-                key={entry.name}
-                label={entry.name}
-                value={entry.value}
-                total={totalRequests}
-                accentColor={entry.color}
-              />
-            ))}
+        {activePerformanceTab === 'hospitals' && (
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,1fr)]">
+            <div className="border-b p-4 xl:border-b-0 xl:border-r" style={{ borderColor: palette.divider }}>
+              <h3 className="text-xs font-bold" style={{ color: palette.heading }}>{PERFORMANCE_RANGES[performanceRange].label} hospital applications</h3>
+              <p className="text-[10px]" style={{ color: palette.mutedText }}>New partnership applications created {PERFORMANCE_RANGES[performanceRange].bucket === 'week' ? 'weekly' : 'daily'}</p>
+              <div className="mt-2 h-36">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={overviewData.trendData} margin={{ top: 8, right: 12, left: -24, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={palette.divider} vertical={false} />
+                    <XAxis dataKey="label" interval={performanceRange === 'monthly' ? 4 : performanceRange === 'threeMonths' ? 1 : 0} minTickGap={12} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
+                    <Tooltip contentStyle={{ backgroundColor: palette.surface, borderColor: palette.border, borderRadius: 8, color: palette.heading, fontSize: 11 }} />
+                    <Line type="monotone" dataKey="hospitalApplications" name="Hospital Applications" stroke={chartSecondaryColor} strokeWidth={2.75} dot={{ r: 3, fill: palette.surface, strokeWidth: 2 }} activeDot={{ r: 4 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="p-4">
+              <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Hospital Status</h3>
+              <p className="mb-3 text-[10px]" style={{ color: palette.mutedText }}>{totalHospitals} partnership applications</p>
+              <StatusTable data={overviewData.hospitalStatusData} total={totalHospitals} palette={palette} />
+            </div>
           </div>
-        </article>
-      </section>
+        )}
 
-      {/* Row: Action items + Pending queue (left) + Hospital list + Health + Roles (right) */}
-      <section className="grid grid-cols-1 gap-3 xl:grid-cols-12">
-        <div className="space-y-3 xl:col-span-7">
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center gap-1.5">
+        {activePerformanceTab === 'users' && (
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,1fr)]">
+            <div className="border-b p-4 xl:border-b-0 xl:border-r" style={{ borderColor: palette.divider }}>
+              <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Active users by role</h3>
+              <p className="text-[10px]" style={{ color: palette.mutedText }}>Current enabled user accounts</p>
+              <div className="mt-2 h-36">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={dashboard.userRoleData} margin={{ top: 8, right: 12, left: -24, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={palette.divider} vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
+                    <Tooltip contentStyle={{ backgroundColor: palette.surface, borderColor: palette.border, borderRadius: 8, color: palette.heading, fontSize: 11 }} />
+                    <Bar dataKey="value" name="Active Users" fill={chartTertiaryColor} radius={[5, 5, 0, 0]} maxBarSize={48} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="p-4">
+              <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Role Summary</h3>
+              <p className="mb-3 text-[10px]" style={{ color: palette.mutedText }}>{activeUsers} active accounts</p>
+              <div className="space-y-1.5">
+                {dashboard.userRoleData.map((role) => (
+                  <div key={role.name} className="flex items-center justify-between rounded-lg border px-3 py-2" style={{ backgroundColor: palette.subtleSurface, borderColor: palette.divider }}>
+                    <span className="text-[10px] font-semibold" style={{ color: palette.bodyText }}>{role.name}</span>
+                    <span className="text-sm font-bold" style={{ color: palette.heading }}>{role.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activePerformanceTab === 'health' && (
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,1fr)]">
+            <div className="border-b p-4 xl:border-b-0 xl:border-r" style={{ borderColor: palette.divider }}>
+              <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Configuration readiness</h3>
+              <p className="text-[10px]" style={{ color: palette.mutedText }}>Required services and documents</p>
+              <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {systemHealthItems.map((item) => {
+                  const stateColor = item.ready ? SUCCESS_COLOR : DANGER_COLOR;
+                  return (
+                    <div key={item.label} className="rounded-xl border p-3" style={{ backgroundColor: withAlpha(stateColor, 0.07), borderColor: withAlpha(stateColor, 0.22) }}>
+                      <div className="flex items-center gap-2" style={{ color: stateColor }}>
+                        {item.ready ? <CheckCircle2 size={17} /> : <AlertTriangle size={17} />}
+                        <span className="text-[10px] font-bold">{item.ready ? 'Ready' : 'Missing'}</span>
+                      </div>
+                      <p className="mt-3 text-xs font-semibold" style={{ color: palette.heading }}>{item.label}</p>
+                      <p className="mt-0.5 text-[9px]" style={{ color: palette.mutedText }}>{item.detail || (item.ready ? 'Configured' : 'Needs attention')}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="p-4">
+              <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Readiness Score</h3>
+              <p className="text-[10px]" style={{ color: palette.mutedText }}>Overall configuration health</p>
+              <div className="mt-4 rounded-xl border p-4" style={{ backgroundColor: palette.subtleSurface, borderColor: palette.divider }}>
+                <div className="flex items-end justify-between">
+                  <span className="text-3xl font-bold" style={{ color: healthySystemChecks === systemHealthItems.length ? SUCCESS_COLOR : DANGER_COLOR }}>{healthySystemChecks}/{systemHealthItems.length}</span>
+                  <span className="text-[10px] font-semibold" style={{ color: palette.bodyText }}>checks ready</span>
+                </div>
+                <div className="mt-3 h-2 overflow-hidden rounded-full" style={{ backgroundColor: withAlpha(secondaryColor, 0.14) }}>
+                  <div className="h-full rounded-full transition-all" style={{ width: `${(healthySystemChecks / systemHealthItems.length) * 100}%`, backgroundColor: healthySystemChecks === systemHealthItems.length ? SUCCESS_COLOR : DANGER_COLOR }} />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </Panel>
+
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,1fr)]">
+        <Panel palette={palette}>
+          <div className="border-b px-3.5 py-2" style={{ borderColor: palette.divider }}>
+            <h2 className="text-sm font-bold" style={{ color: palette.heading, fontFamily: `${headingFontFamily}, sans-serif` }}>Action Items</h2>
+          </div>
+
+          <div className="p-3">
+            <div className="flex items-center gap-2">
               <CalendarClock size={14} style={{ color: primaryColor }} />
-              <h2 className="text-sm font-bold text-slate-800">Needs Action Now</h2>
-              <span className="ml-auto rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-700">
+              <div>
+                <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Needs Action Now</h3>
+                <p className="text-[10px]" style={{ color: palette.mutedText }}>Awaiting your review</p>
+              </div>
+              <span
+                className="ml-auto rounded-full px-2 py-0.5 text-[10px] font-bold"
+                style={{ backgroundColor: withAlpha(primaryColor, 0.1), color: primaryColor }}
+              >
                 {dashboard.actionItems.length}
               </span>
             </div>
-            {dashboard.actionItems.length === 0 ? (
-              <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-                <CheckCircle2 size={13} />
-                No high-priority blockers right now.
-              </div>
-            ) : (
-              <ul className="space-y-1.5">
-                {dashboard.actionItems.map((item) => (
-                  <li key={`${item.title}-${item.page}`}>
-                    <button
-                      type="button"
-                      onClick={() => typeof onNavigate === 'function' && onNavigate(item.page)}
-                      className="flex w-full items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-left transition hover:border-slate-300 hover:bg-white"
-                    >
-                      <span
-                        className="flex h-7 w-7 flex-none items-center justify-center rounded-md text-xs font-bold text-white"
-                        style={{ backgroundColor: primaryColor }}
-                      >
-                        {item.count}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs font-bold text-slate-900">{item.title}</p>
-                        <p className="truncate text-[11px] text-slate-500">{item.detail}</p>
-                      </div>
-                      <ArrowRight size={13} className="text-slate-400" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </article>
 
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mt-2">
+              {dashboard.actionItems.length === 0 ? (
+                <div
+                  className="flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
+                  style={{ backgroundColor: withAlpha(SUCCESS_COLOR, 0.08), borderColor: withAlpha(SUCCESS_COLOR, 0.24), color: SUCCESS_COLOR }}
+                >
+                  <CheckCircle2 size={13} />
+                  No high-priority blockers right now.
+                </div>
+              ) : (
+                <ul className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  {dashboard.actionItems.map((item) => (
+                    <li key={`${item.title}-${item.page}`}>
+                      <button
+                        type="button"
+                        onClick={() => typeof onNavigate === 'function' && onNavigate(item.page)}
+                        className="flex w-full items-center gap-2 rounded-lg border px-2 py-1.5 text-left transition hover:shadow-sm"
+                        style={{ backgroundColor: withAlpha(primaryColor, 0.055), borderColor: withAlpha(primaryColor, 0.2) }}
+                      >
+                        <span
+                          className="flex h-6 min-w-6 flex-none items-center justify-center rounded-md px-1 text-[10px] font-bold"
+                          style={{ backgroundColor: withAlpha(primaryColor, 0.14), color: primaryColor }}
+                        >
+                          {item.count}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[11px] font-bold" style={{ color: palette.heading }}>{item.title}</span>
+                          <span className="block truncate text-[10px]" style={{ color: palette.bodyText }}>{item.detail}</span>
+                        </span>
+                        <ArrowRight size={13} style={{ color: primaryColor }} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="mt-3 flex items-center justify-between gap-3 border-t pt-2" style={{ borderColor: palette.divider }}>
               <div>
-                <h3 className="text-sm font-bold text-slate-800">Oldest Pending Admin Decisions</h3>
-                <p className="text-xs text-slate-500">First-in-first-out review queue</p>
+                <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Oldest Pending Admin Decisions</h3>
+                <p className="text-[10px]" style={{ color: palette.mutedText }}>First-in-first-out review queue</p>
               </div>
               <button
                 type="button"
                 onClick={() => typeof onNavigate === 'function' && onNavigate('manage-event-applications')}
-                className="inline-flex items-center gap-1 text-[11px] font-semibold hover:underline"
+                className="inline-flex flex-none items-center gap-1 text-[10px] font-semibold hover:underline"
                 style={{ color: primaryColor }}
               >
                 Open queue <ArrowRight size={11} />
               </button>
             </div>
+
             {dashboard.pendingAdminRows.length === 0 ? (
-              <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+              <p
+                className="mt-2 rounded-lg border px-3 py-2 text-[11px]"
+                style={{ backgroundColor: withAlpha(SUCCESS_COLOR, 0.06), borderColor: withAlpha(SUCCESS_COLOR, 0.2), color: SUCCESS_COLOR }}
+              >
                 No pending admin requests.
               </p>
             ) : (
-              <ul className="divide-y divide-slate-100">
-                {dashboard.pendingAdminRows.map((row) => (
-                  <li key={row.Event_Request_ID} className="flex items-center justify-between gap-2 py-2 text-xs">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-semibold text-slate-900">{row.Event_Name || 'Untitled Event'}</p>
-                      <p className="truncate text-[11px] text-slate-500">
-                        ER-{row.Event_Request_ID} · {applicantName(row.application)}
-                      </p>
-                    </div>
-                    <span className="flex-none rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
-                      {formatShortDate(row.Created_At)}
+              <>
+                <ul className="mt-1 divide-y" style={{ borderColor: palette.divider }}>
+                  {dashboard.pendingAdminRows.slice(0, 2).map((row) => (
+                  <li key={row.Event_Request_ID} className="flex items-center gap-2 py-1.5 text-xs">
+                    <span
+                      className="flex h-6 w-6 flex-none items-center justify-center rounded-md"
+                      style={{ backgroundColor: withAlpha(primaryColor, 0.1), color: primaryColor }}
+                    >
+                      <CalendarClock size={13} />
                     </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[11px] font-semibold" style={{ color: palette.heading }}>{row.Event_Name || 'Untitled Event'}</span>
+                      <span className="block truncate text-[10px]" style={{ color: palette.bodyText }}>
+                        ER-{row.Event_Request_ID} · {applicantName(row.application)}
+                      </span>
+                    </span>
+                    <span className="flex-none text-[10px] font-semibold" style={{ color: palette.bodyText }}>{formatShortDate(row.Created_At)}</span>
+                    <ArrowRight size={11} style={{ color: palette.mutedText }} />
                   </li>
-                ))}
-              </ul>
+                  ))}
+                </ul>
+                {dashboard.pendingAdminRows.length > 2 && (
+                  <p className="text-right text-[9px] font-semibold" style={{ color: primaryColor }}>
+                    +{dashboard.pendingAdminRows.length - 2} more in the queue
+                  </p>
+                )}
+              </>
             )}
-          </article>
-        </div>
+          </div>
+        </Panel>
 
-        <div className="space-y-3 xl:col-span-5">
-          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-bold text-slate-800">Pending Hospital Apps</h3>
-                <p className="text-xs text-slate-500">Awaiting your approval</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => typeof onNavigate === 'function' && onNavigate('manage-hospital-accounts')}
-                className="inline-flex items-center gap-1 text-[11px] font-semibold hover:underline"
-                style={{ color: primaryColor }}
-              >
-                Open <ArrowRight size={11} />
-              </button>
+        <Panel palette={palette}>
+          <div className="flex items-center justify-between gap-3 border-b px-3.5 py-2" style={{ borderColor: palette.divider }}>
+            <div>
+              <h2 className="text-sm font-bold" style={{ color: palette.heading, fontFamily: `${headingFontFamily}, sans-serif` }}>System Health &amp; Active Roles</h2>
+              <p className="text-[10px]" style={{ color: palette.mutedText }}>Configuration and pending hospital reviews</p>
             </div>
+            <button
+              type="button"
+              onClick={() => typeof onNavigate === 'function' && onNavigate('manage-hospital-accounts')}
+              className="inline-flex flex-none items-center gap-1 text-[10px] font-semibold hover:underline"
+              style={{ color: primaryColor }}
+            >
+              Open <ArrowRight size={11} />
+            </button>
+          </div>
+
+          <div className="p-3">
+            <div>
+              <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Pending Hospital Apps</h3>
+              <p className="text-[10px]" style={{ color: palette.mutedText }}>Awaiting your approval</p>
+            </div>
+
             {dashboard.pendingHospitalRows.length === 0 ? (
-              <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+              <p
+                className="mt-2 rounded-lg border px-3 py-2 text-[11px]"
+                style={{ backgroundColor: withAlpha(SUCCESS_COLOR, 0.06), borderColor: withAlpha(SUCCESS_COLOR, 0.2), color: SUCCESS_COLOR }}
+              >
                 No pending hospital applications.
               </p>
             ) : (
-              <ul className="divide-y divide-slate-100">
-                {dashboard.pendingHospitalRows.map((row) => (
-                  <li key={row.Hospital_ID} className="flex items-center justify-between gap-2 py-2 text-xs">
-                    <div className="flex min-w-0 flex-1 items-center gap-2">
-                      <span className="flex h-7 w-7 flex-none items-center justify-center rounded-md bg-sky-100 text-sky-700">
-                        <Building2 size={13} />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-semibold text-slate-900">{row.Hospital_Name || `Hospital #${row.Hospital_ID}`}</p>
-                        <p className="truncate text-[11px] text-slate-500">{row.Hospital_Head_Name || 'No head info'}</p>
-                      </div>
-                    </div>
-                    <span className="flex-none text-[11px] text-slate-500">{formatShortDate(row.Created_At)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </article>
-
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center gap-1.5">
-                <Settings2 size={13} style={{ color: primaryColor }} />
-                <h3 className="text-sm font-bold text-slate-800">System Health</h3>
-              </div>
-              <div className="space-y-1.5">
-                {[
-                  { label: 'Wig Requirements', ready: dashboard.systemChecks.wigRequirementsReady },
-                  { label: 'Logistics Destination', ready: dashboard.systemChecks.logisticsReady },
-                  { label: 'Legal Consent PDF', ready: dashboard.systemChecks.legalReady, detail: dashboard.systemChecks.legalVersion ? `v${dashboard.systemChecks.legalVersion}` : undefined },
-                ].map((item) => (
-                  <div
-                    key={item.label}
-                    className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold ${
-                      item.ready
-                        ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                        : 'border-rose-200 bg-rose-50 text-rose-800'
-                    }`}
-                  >
-                    {item.ready ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
-                    <span className="flex-1 truncate">{item.label}</span>
-                    <span className="text-[10px] font-bold uppercase">
-                      {item.ready ? (item.detail || 'OK') : 'Missing'}
+              <>
+                <ul className="mt-1 divide-y" style={{ borderColor: palette.divider }}>
+                  {dashboard.pendingHospitalRows.slice(0, 2).map((row) => (
+                  <li key={row.Hospital_ID} className="flex items-center gap-2 py-1.5">
+                    <span
+                      className="flex h-6 w-6 flex-none items-center justify-center rounded-md"
+                      style={{ backgroundColor: withAlpha(primaryColor, 0.1), color: primaryColor }}
+                    >
+                      <Building2 size={13} />
                     </span>
-                  </div>
-                ))}
-              </div>
-            </article>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[11px] font-semibold" style={{ color: palette.heading }}>{row.Hospital_Name || `Hospital #${row.Hospital_ID}`}</span>
+                      <span className="block truncate text-[10px]" style={{ color: palette.bodyText }}>{row.Hospital_Head_Name || 'No head information'}</span>
+                    </span>
+                    <span className="text-[10px]" style={{ color: palette.bodyText }}>{formatShortDate(row.Created_At)}</span>
+                  </li>
+                  ))}
+                </ul>
+                {dashboard.pendingHospitalRows.length > 2 && (
+                  <p className="text-right text-[9px] font-semibold" style={{ color: primaryColor }}>
+                    +{dashboard.pendingHospitalRows.length - 2} more applications
+                  </p>
+                )}
+              </>
+            )}
 
-            <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center gap-1.5">
-                <Users size={13} style={{ color: primaryColor }} />
-                <h3 className="text-sm font-bold text-slate-800">Active Roles</h3>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Admins</p>
-                  <p className="text-xl font-bold leading-tight text-slate-900">{dashboard.kpis.adminUsers}</p>
+            <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="rounded-lg border p-2.5" style={{ backgroundColor: palette.subtleSurface, borderColor: palette.divider }}>
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <Settings2 size={13} style={{ color: primaryColor }} />
+                  <h3 className="text-xs font-bold" style={{ color: palette.heading }}>System Health</h3>
                 </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Staff</p>
-                  <p className="text-xl font-bold leading-tight text-slate-900">{dashboard.kpis.staffUsers}</p>
+                <div className="space-y-1.5">
+                  {systemHealthItems.map((item) => {
+                    const stateColor = item.ready ? SUCCESS_COLOR : DANGER_COLOR;
+                    return (
+                      <div
+                        key={item.label}
+                        className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-[9px] font-semibold"
+                        style={{ backgroundColor: withAlpha(stateColor, 0.08), borderColor: withAlpha(stateColor, 0.24), color: stateColor }}
+                      >
+                        {item.ready ? <CheckCircle2 size={11} /> : <AlertTriangle size={11} />}
+                        <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                        <span className="flex-none uppercase">{item.ready ? (item.detail || 'OK') : 'Missing'}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-              <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Needs Staff</p>
-                <p className="text-xl font-bold leading-tight text-slate-900">{dashboard.kpis.approvedWithoutAssignedStaff}</p>
-                <p className="text-[10px] text-slate-500">Approved events unassigned</p>
+
+              <div className="rounded-lg border p-2.5" style={{ backgroundColor: palette.subtleSurface, borderColor: palette.divider }}>
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <Users size={13} style={{ color: primaryColor }} />
+                  <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Active Roles</h3>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {[
+                    { label: 'Admins', value: dashboard.kpis.adminUsers },
+                    { label: 'Staff', value: dashboard.kpis.staffUsers },
+                  ].map((role) => (
+                    <div key={role.label} className="rounded-md border px-2 py-1.5" style={{ backgroundColor: withAlpha(primaryColor, 0.07), borderColor: withAlpha(primaryColor, 0.2) }}>
+                      <p className="text-[8px] font-bold uppercase tracking-wide" style={{ color: palette.bodyText }}>{role.label}</p>
+                      <p className="text-lg font-bold leading-tight" style={{ color: palette.heading }}>{role.value}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-1.5 rounded-md border px-2 py-1.5" style={{ backgroundColor: withAlpha(secondaryColor, 0.07), borderColor: withAlpha(secondaryColor, 0.2) }}>
+                  <p className="text-[8px] font-bold uppercase tracking-wide" style={{ color: palette.bodyText }}>Needs Staff</p>
+                  <div className="flex items-end justify-between gap-2">
+                    <p className="text-lg font-bold leading-tight" style={{ color: palette.heading }}>{dashboard.kpis.approvedWithoutAssignedStaff}</p>
+                    <p className="truncate text-[8px]" style={{ color: palette.mutedText }}>Approved events unassigned</p>
+                  </div>
+                </div>
               </div>
-            </article>
+            </div>
           </div>
-        </div>
-      </section>
+        </Panel>
+      </div>
     </div>
   );
 }
