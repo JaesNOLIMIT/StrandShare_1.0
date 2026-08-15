@@ -382,7 +382,7 @@ export default function LegalDocumentsPage({ userProfile }) {
     <div className="space-y-6" style={rootStyle}>
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Legal Documents</h1>
+          <h1 className="role-page-title text-3xl font-bold text-gray-900">Legal Documents</h1>
           <p className="mt-1 text-sm text-gray-600">
             Manage and publish the latest PDF consent form for minors with version history.
           </p>

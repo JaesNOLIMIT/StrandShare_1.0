@@ -8,6 +8,7 @@ import {
   ExternalLink,
   FileText,
   Globe2,
+  HelpCircle,
   Image as ImageIcon,
   Inbox,
   Info,
@@ -355,7 +356,7 @@ function PortalModal({ open, children }) {
   );
 }
 
-export default function ManageEventRequestsPage() {
+export default function ManageEventRequestsPage({ isActivePage = false }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0f766e';
 
@@ -371,6 +372,7 @@ export default function ManageEventRequestsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCalendarDate, setSelectedCalendarDate] = useState('');
   const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
+  const [isWorkflowModalOpen, setIsWorkflowModalOpen] = useState(false);
 
   const [isApproveModalOpen, setIsApproveModalOpen] = useState(false);
   const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
@@ -426,7 +428,7 @@ export default function ManageEventRequestsPage() {
       setSelectedId((current) => (
         mergedRows.some((row) => Number(row.Event_Request_ID) === Number(current))
           ? current
-          : (mergedRows[0]?.Event_Request_ID || null)
+          : null
       ));
     } catch (error) {
       if (!silent) {
@@ -588,9 +590,21 @@ export default function ManageEventRequestsPage() {
       (row) => Number(row.Event_Request_ID || 0) === Number(selectedId || 0),
     );
     if (!selectedIsVisible) {
-      setSelectedId(visibleRows[0]?.Event_Request_ID || null);
+      setSelectedId(null);
     }
   }, [selectedId, visibleRows]);
+
+  useEffect(() => {
+    if (isActivePage) {
+      setSelectedId(null);
+      setPrivateIdUrl('');
+      setIsApproveModalOpen(false);
+      setIsRejectModalOpen(false);
+      setIsResultModalOpen(false);
+      setIsWorkflowModalOpen(false);
+      setIsCalendarModalOpen(false);
+    }
+  }, [isActivePage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -787,6 +801,7 @@ export default function ManageEventRequestsPage() {
         ],
       });
       setIsApproveModalOpen(false);
+      setSelectedId(null);
       setIsResultModalOpen(true);
     } catch (error) {
       const raw = String(error?.message || '').trim();
@@ -849,6 +864,7 @@ export default function ManageEventRequestsPage() {
         ],
       });
       setIsRejectModalOpen(false);
+      setSelectedId(null);
       setIsResultModalOpen(true);
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to reject event request.' });
@@ -860,54 +876,13 @@ export default function ManageEventRequestsPage() {
   return (
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <div
-            className="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-white shadow-sm"
-            style={{ backgroundColor: primaryColor }}
-          >
-            <Inbox size={20} />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">Manage Program Applications</h1>
-            <p className="text-sm text-slate-600">Review complete staff-endorsed applications, assign one staff member, and finalize the admin decision.</p>
-          </div>
+        <div>
+          <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Program Applications</h1>
+          <p className="text-sm text-slate-600">Review complete staff-endorsed applications, assign one staff member, and finalize the admin decision.</p>
         </div>
-        <button
-          type="button"
-          onClick={loadRows}
-          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-          disabled={isLoading}
-        >
-          <RefreshCw size={15} className={isLoading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
-      </div>
-
-      <div className="rounded-xl border border-slate-200 bg-white px-5 py-4">
-        <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Workflow</p>
-        <div className="grid grid-cols-1 gap-y-3 sm:grid-cols-3 sm:gap-y-0">
-          {[
-            { step: 1, title: 'Review Request', body: 'Check applicant, venue, schedule, and staff notes.' },
-            { step: 2, title: 'Decision Modal', body: 'Approve with assigned staff or reject with reason.' },
-            { step: 3, title: 'Result Confirmation', body: 'Success modal confirms decision and email delivery.' },
-          ].map((stepRow, index) => (
-            <div
-              key={stepRow.step}
-              className={`flex items-start gap-2.5 ${index > 0 ? 'sm:border-l sm:border-slate-100 sm:pl-5' : ''} ${index < 2 ? 'sm:pr-5' : ''}`}
-            >
-              <span
-                className="flex h-5 w-5 flex-none items-center justify-center rounded-full text-[10px] font-bold text-white"
-                style={{ backgroundColor: primaryColor }}
-                aria-hidden
-              >
-                {stepRow.step}
-              </span>
-              <div className="min-w-0">
-                <p className="text-xs font-semibold text-slate-800">{stepRow.title}</p>
-                <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{stepRow.body}</p>
-              </div>
-            </div>
-          ))}
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setIsWorkflowModalOpen(true)} aria-label="Open workflow guide" title="Workflow guide" className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"><HelpCircle size={17} /></button>
+          <button type="button" onClick={loadRows} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100" disabled={isLoading}><RefreshCw size={15} className={isLoading ? 'animate-spin' : ''} />Refresh</button>
         </div>
       </div>
 
@@ -1171,6 +1146,22 @@ export default function ManageEventRequestsPage() {
         ]}
         showOpenDates
       />
+
+      <PortalModal open={isWorkflowModalOpen}>
+        <section role="dialog" aria-modal="true" aria-labelledby="admin-workflow-title" className="w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+          <header className="flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-6 py-5">
+            <div><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Workflow</p><h2 id="admin-workflow-title" className="mt-1 text-xl font-bold text-slate-900">Manage Program Applications</h2></div>
+            <button type="button" onClick={() => setIsWorkflowModalOpen(false)} aria-label="Close workflow guide" className="rounded-lg border border-slate-300 bg-white p-2 text-slate-500 hover:bg-slate-50"><X size={17} /></button>
+          </header>
+          <div className="space-y-3 bg-white p-6">
+            {[
+              { step: 1, title: 'Review Request', body: 'Select a program from the queue and check the applicant, venue, schedule, valid ID, contact information, and staff notes.' },
+              { step: 2, title: 'Make a Decision', body: 'Approve the program after assigning one Staff account, or reject it with a clear reason for the applicant and staff.' },
+              { step: 3, title: 'Confirm Delivery', body: 'The result popup confirms the saved decision and reports the applicant email delivery status.' },
+            ].map((item) => <div key={item.step} className="flex gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4"><span className="grid h-7 w-7 flex-none place-items-center rounded-full text-xs font-bold text-white" style={{ backgroundColor: primaryColor }}>{item.step}</span><div><h3 className="text-sm font-bold text-slate-900">{item.title}</h3><p className="mt-1 text-sm leading-6 text-slate-600">{item.body}</p></div></div>)}
+          </div>
+        </section>
+      </PortalModal>
 
       <PortalModal open={isApproveModalOpen}>
           <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 opacity-100 shadow-2xl">

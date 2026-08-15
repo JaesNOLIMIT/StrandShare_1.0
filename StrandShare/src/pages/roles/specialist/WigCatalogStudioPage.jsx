@@ -2,13 +2,11 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
-  Boxes,
   CheckCircle2,
   History,
   Loader2,
   PackagePlus,
   PlusCircle,
-  Sparkles,
   X,
 } from 'lucide-react';
 
@@ -18,7 +16,7 @@ import { logAuditAction } from '../../../lib/auditLogger';
 import AddWigTab from './wigCatalog/AddWigTab';
 import BundleCompletionScanner from './wigCatalog/BundleCompletionScanner';
 import WigInventoryTab from './wigCatalog/WigInventoryTab';
-import { normalizeInventory, withAlpha } from './wigCatalog/wigCatalogUtils';
+import { normalizeInventory } from './wigCatalog/wigCatalogUtils';
 
 const TAB_INVENTORY = 'inventory';
 const TAB_ADD = 'add';
@@ -67,7 +65,7 @@ function StockAdjustmentModal({ state, setState, onClose, onSubmit }) {
   const nextStock = Number(row.stockCount || 0) + signedChange;
   return (
     <ModalFrame
-      title={`Adjust stock · ${row.wigCode || row.wigName}`}
+      title={`Adjust stock Â· ${row.wigCode || row.wigName}`}
       icon={<PackagePlus size={17} className="text-slate-700" />}
       onClose={state.saving ? undefined : onClose}
     >
@@ -159,7 +157,7 @@ function StockHistoryModal({ state, onClose }) {
   if (!state.open || !state.row) return null;
   return (
     <ModalFrame
-      title={`Stock history · ${state.row.wigCode || state.row.wigName}`}
+      title={`Stock history Â· ${state.row.wigCode || state.row.wigName}`}
       icon={<History size={17} className="text-slate-700" />}
       onClose={onClose}
       width="max-w-2xl"
@@ -194,7 +192,7 @@ function StockHistoryModal({ state, onClose }) {
                       {Number(item.Quantity_Change) > 0 ? '+' : ''}{item.Quantity_Change}
                     </td>
                     <td className="px-4 py-3 text-slate-700">
-                      {item.Previous_Stock} → {item.New_Stock}
+                      {item.Previous_Stock} â†’ {item.New_Stock}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{item.Reason || 'Inventory adjustment'}</td>
                   </tr>
@@ -296,6 +294,25 @@ export default function WigCatalogStudioPage({ userProfile }) {
 
   useEffect(() => {
     void loadInventory();
+  }, [loadInventory]);
+
+  useEffect(() => {
+    if (!supabase) {
+      return undefined;
+    }
+
+    const refreshInventory = () => void loadInventory();
+    const channel = supabase
+      .channel('specialist-wig-catalog-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Wigs' }, refreshInventory)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Wig_Specifications' }, refreshInventory)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Wig_AI_Filters' }, refreshInventory)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Wig_Stock_History' }, refreshInventory)
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
   }, [loadInventory]);
 
   const openStockModal = (row) => {
@@ -400,9 +417,16 @@ export default function WigCatalogStudioPage({ userProfile }) {
     }));
 
     try {
-      const result = await supabase.rpc('complete_wig_stock_from_bundle_scan', {
+      let result = await supabase.rpc('complete_wig_request_or_stock_from_bundle_scan', {
         p_waybill_payload: payload,
       });
+      const missingWorkflowFunction = result.error
+        && String(result.error.message || '').toLowerCase().includes('complete_wig_request_or_stock_from_bundle_scan');
+      if (missingWorkflowFunction) {
+        result = await supabase.rpc('complete_wig_stock_from_bundle_scan', {
+          p_waybill_payload: payload,
+        });
+      }
       if (result.error) throw result.error;
 
       const data = result.data || {};
@@ -416,10 +440,12 @@ export default function WigCatalogStudioPage({ userProfile }) {
       const previousStock = Number(data.previous_stock ?? 0);
       const nextStock = Number(data.next_stock ?? previousStock + 1);
       const memberCount = Number(data.member_count || 0);
+      const directToRequest = Boolean(data.direct_to_request);
+      const request = data.request || {};
 
       void logAuditAction({
         action: 'wig_catalog_bundle_scan_completed',
-        description: `bundle_id=${bundle.Bundle_ID} bundle_code=${bundleCode} wig_id=${wig.Wig_ID} stock:${previousStock}->${nextStock} members=${memberCount}`,
+        description: `bundle_id=${bundle.Bundle_ID} bundle_code=${bundleCode} wig_id=${wig.Wig_ID} stock:${previousStock}->${nextStock} members=${memberCount} direct_to_request=${directToRequest}`,
         resource: 'wig_catalog_studio',
         userProfile,
       });
@@ -429,7 +455,9 @@ export default function WigCatalogStudioPage({ userProfile }) {
         manualCode: '',
         saving: false,
         error: '',
-        success: `Bundle ${bundleCode} completed. ${wigLabel}${capLabel} stock increased from ${previousStock} to ${nextStock}; ${memberCount} linked submission${memberCount === 1 ? '' : 's'} now show Wig Created.`,
+        success: directToRequest
+          ? `Bundle ${bundleCode} completed and was reserved directly for ${request.Request_Code || `request #${request.Req_ID}`}. It was not added to general stock; the request is now Accepted - Wig Allocated and ready for staff release scheduling.`
+          : `Bundle ${bundleCode} completed. ${wigLabel}${capLabel} stock increased from ${previousStock} to ${nextStock}; ${memberCount} linked submission${memberCount === 1 ? '' : 's'} now show Wig Created.`,
       }));
       await loadInventory();
       return true;
@@ -455,45 +483,47 @@ export default function WigCatalogStudioPage({ userProfile }) {
 
   return (
     <div className="space-y-5">
-      <header className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-start gap-3">
-            <span
-              className="rounded-xl p-3"
-              style={{ color: accent, backgroundColor: withAlpha(accent, 0.09) }}
-            >
-              <Sparkles size={23} />
-            </span>
-            <div>
-              <h1 className="text-xl font-semibold text-slate-950">Wig Catalog Studio</h1>
-              <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-500">
-                Add catalog-ready wigs with private local AI, review similar styles,
-                confirm the photo try-on, and monitor inventory from one workspace.
-              </p>
-            </div>
+      <header>
+        <div className="flex flex-col gap-5 pb-7 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h1 className="role-page-title text-2xl font-semibold tracking-tight text-slate-700 sm:text-3xl">
+              Wig Catalog Studio
+            </h1>
+            <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-600">
+              Add catalog-ready wigs with private local AI, review similar styles,
+              confirm photo try-on, and monitor inventory from one workspace.
+            </p>
           </div>
-          <div className="inline-flex self-start rounded-xl border border-slate-200 bg-slate-50 p-1">
-            <button
-              type="button"
-              onClick={() => setTab(TAB_INVENTORY)}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition ${
-                tab === TAB_INVENTORY ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Boxes size={14} /> Inventory
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab(TAB_ADD)}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition ${
-                tab === TAB_ADD ? 'text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'
-              }`}
-              style={tab === TAB_ADD ? { backgroundColor: accent } : undefined}
-            >
-              <PlusCircle size={14} /> Add New Wig
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setTab(TAB_ADD)}
+            className="inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-lg px-5 py-3 text-sm font-semibold text-white shadow-sm"
+            style={{ backgroundColor: accent }}
+          >
+            <PlusCircle size={17} /> Add New Wig
+          </button>
         </div>
+
+        <nav className="flex gap-7 border-b border-slate-300" aria-label="Wig catalog sections">
+          {[
+            [TAB_INVENTORY, 'Wig Inventory'],
+            [TAB_ADD, 'Add Wig'],
+          ].map(([tabKey, label]) => (
+            <button
+              key={tabKey}
+              type="button"
+              onClick={() => setTab(tabKey)}
+              className={`-mb-px border-b-2 px-1 pb-3 text-sm font-semibold transition ${
+                tab === tabKey
+                  ? 'text-slate-950'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+              style={tab === tabKey ? { borderBottomColor: accent } : undefined}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
       </header>
 
       {notice.message ? (
@@ -512,7 +542,7 @@ export default function WigCatalogStudioPage({ userProfile }) {
         </div>
       ) : null}
 
-      {tab === TAB_INVENTORY ? (
+      <div className={tab === TAB_INVENTORY ? 'block' : 'hidden'}>
         <WigInventoryTab
           rows={inventory}
           loading={loading}
@@ -522,13 +552,15 @@ export default function WigCatalogStudioPage({ userProfile }) {
           onOpenBundleScanner={openBundleScanner}
           primaryColor={accent}
         />
-      ) : (
+      </div>
+      <div className={tab === TAB_ADD ? 'block' : 'hidden'}>
         <AddWigTab
           authUserId={authUserId}
           userIdInt={userIdInt}
           userProfile={userProfile}
           inventory={inventory}
           primaryColor={accent}
+          onCancel={() => setTab(TAB_INVENTORY)}
           onCreated={async (created) => {
             await loadInventory();
             setTab(TAB_INVENTORY);
@@ -538,7 +570,7 @@ export default function WigCatalogStudioPage({ userProfile }) {
             });
           }}
         />
-      )}
+      </div>
 
       <StockAdjustmentModal
         state={stockModal}

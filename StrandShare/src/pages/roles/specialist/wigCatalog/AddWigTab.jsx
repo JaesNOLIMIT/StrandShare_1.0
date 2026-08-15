@@ -117,6 +117,7 @@ function WigDetailsForm({
   suggestions = {},
   primaryColor,
   showWigCode = false,
+  requireAllDetails = false,
 }) {
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -156,7 +157,7 @@ function WigDetailsForm({
 
       <FieldShell
         label="Hair length"
-        required
+        required={requireAllDetails}
         suggestion={suggestions.hairLength}
         onApplySuggestion={() => setField('hairLength', suggestions.hairLength?.value || '')}
         hint="Approximate inches; verify before submission"
@@ -178,7 +179,7 @@ function WigDetailsForm({
 
       <FieldShell
         label="Hair color"
-        required
+        required={requireAllDetails}
         suggestion={suggestions.hairColor}
         onApplySuggestion={() => setField('hairColor', suggestions.hairColor?.value || '')}
       >
@@ -194,7 +195,7 @@ function WigDetailsForm({
 
       <FieldShell
         label="Hair texture"
-        required
+        required={requireAllDetails}
         suggestion={suggestions.hairTexture}
         onApplySuggestion={() => setField('hairTexture', suggestions.hairTexture?.value || '')}
         hint="Wavy, curly, and coily use C in the code"
@@ -242,7 +243,7 @@ function WigDetailsForm({
 
       <FieldShell
         label="Style"
-        required
+        required={requireAllDetails}
         suggestion={suggestions.style}
         onApplySuggestion={() => setField('style', suggestions.style?.value || '')}
       >
@@ -298,12 +299,14 @@ export default function AddWigTab({
   inventory,
   primaryColor,
   onCreated,
+  onCancel,
 }) {
   const fileInputRef = useRef(null);
   const appliedSuggestionsRef = useRef(null);
   const codeRequestRef = useRef(0);
   const [form, setForm] = useState({ ...EMPTY_WIG_FORM });
   const [wigPhoto, setWigPhoto] = useState(null);
+  const [isPhotoDragging, setIsPhotoDragging] = useState(false);
   const [currentFilter, setCurrentFilter] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
@@ -377,6 +380,31 @@ export default function AddWigTab({
     setDetailsConfirmed(false);
     if (field !== 'wigCode') setDuplicateConfirmed(false);
   }, []);
+
+  const selectWigPhoto = useCallback((file) => {
+    if (!file) return;
+    const normalizedType = String(file.type || '').toLowerCase();
+    const normalizedName = String(file.name || '').toLowerCase();
+    const hasAllowedType = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'].includes(normalizedType);
+    const hasAllowedExtension = /\.(png|jpe?g|webp)$/.test(normalizedName);
+    if (!hasAllowedType && !hasAllowedExtension) {
+      setNotice({ kind: 'error', message: 'Use a PNG, JPG, or WebP wig photo.' });
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      setNotice({ kind: 'error', message: 'Use a wig photo smaller than 15 MB.' });
+      return;
+    }
+    setWigPhoto(file);
+    setNotice({ kind: '', message: '' });
+  }, []);
+
+  const handlePhotoDrop = useCallback((event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsPhotoDragging(false);
+    selectWigPhoto(event.dataTransfer?.files?.[0]);
+  }, [selectWigPhoto]);
 
   useEffect(() => {
     if (!isProcessing || !currentFilter?.Filter_ID || !supabase) return undefined;
@@ -458,6 +486,13 @@ export default function AddWigTab({
   const needsDuplicateConfirmation =
     warningMatches.length > 0
     || (currentFilter?.Duplicate_Matches || []).some((match) => Number(match.score) >= DUPLICATE_WARNING_THRESHOLD);
+  const stepOneMissing = [
+    ['wigName', 'Wig name'],
+    ['hairDensity', 'Hair density'],
+    ['capSize', 'Cap size'],
+  ].filter(([field]) => !String(form[field] || '').trim());
+  const parsedStartingStock = Number.parseInt(form.stockCount, 10);
+  const startingStockValid = Number.isFinite(parsedStartingStock) && parsedStartingStock >= 0;
 
   const handleAnalyze = async () => {
     if (!wigPhoto || !supabase || submitting) return;
@@ -467,6 +502,15 @@ export default function AddWigTab({
     }
     if (wigPhoto.size > 15 * 1024 * 1024) {
       setNotice({ kind: 'error', message: 'Use a wig photo smaller than 15 MB.' });
+      return;
+    }
+    if (stepOneMissing.length || !startingStockValid) {
+      const missingLabels = stepOneMissing.map(([, label]) => label);
+      if (!startingStockValid) missingLabels.push('Starting stock');
+      setNotice({
+        kind: 'error',
+        message: `Complete the required Step 1 fields: ${missingLabels.join(', ')}.`,
+      });
       return;
     }
 
@@ -583,6 +627,8 @@ export default function AddWigTab({
   const reset = useCallback(() => {
     setForm({ ...EMPTY_WIG_FORM });
     setWigPhoto(null);
+    setIsPhotoDragging(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setCurrentFilter(null);
     setSubmitting(false);
     setFinalizing(false);
@@ -627,9 +673,14 @@ export default function AddWigTab({
     reset();
   };
 
+  const handleCancel = async () => {
+    await handleRedo();
+    onCancel?.();
+  };
+
   const missing = requiredDetailsMissing(form);
-  const stockCount = Number.parseInt(form.stockCount, 10);
-  const stockValid = Number.isFinite(stockCount) && stockCount >= 0;
+  const stockCount = parsedStartingStock;
+  const stockValid = startingStockValid;
   const codeMatchesDetails = Boolean(
     codeKey
     && form.wigCode
@@ -793,7 +844,25 @@ export default function AddWigTab({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="group relative flex min-h-[300px] items-center justify-center overflow-hidden rounded-xl border-2 border-dashed border-slate-300 transition hover:border-slate-500"
+                onDragEnter={(event) => {
+                  event.preventDefault();
+                  setIsPhotoDragging(true);
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'copy';
+                  setIsPhotoDragging(true);
+                }}
+                onDragLeave={(event) => {
+                  event.preventDefault();
+                  if (!event.currentTarget.contains(event.relatedTarget)) setIsPhotoDragging(false);
+                }}
+                onDrop={handlePhotoDrop}
+                className={`group relative flex min-h-[300px] items-center justify-center overflow-hidden rounded-xl border-2 border-dashed transition ${
+                  isPhotoDragging
+                    ? 'border-emerald-500 bg-emerald-50 ring-4 ring-emerald-100'
+                    : 'border-slate-300 hover:border-slate-500'
+                }`}
                 style={wigPhoto ? checkerboardStyle() : undefined}
               >
                 {wigPhotoUrl ? (
@@ -808,7 +877,9 @@ export default function AddWigTab({
                     <span className="rounded-full bg-slate-100 p-4 text-slate-500 group-hover:bg-slate-200">
                       <Upload size={25} />
                     </span>
-                    <span className="mt-3 text-sm font-semibold text-slate-700">Choose wig photo</span>
+                    <span className="mt-3 text-sm font-semibold text-slate-700">
+                      {isPhotoDragging ? 'Drop the wig photo here' : 'Drag and drop or choose a wig photo'}
+                    </span>
                     <span className="mt-1 text-xs text-slate-500">PNG, JPG, or WebP · maximum 15 MB</span>
                   </span>
                 )}
@@ -818,7 +889,10 @@ export default function AddWigTab({
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
                 className="hidden"
-                onChange={(event) => setWigPhoto(event.target.files?.[0] || null)}
+                onChange={(event) => {
+                  selectWigPhoto(event.target.files?.[0]);
+                  event.target.value = '';
+                }}
               />
 
               <div className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -965,6 +1039,7 @@ export default function AddWigTab({
                 suggestions={suggestions}
                 primaryColor={primaryColor}
                 showWigCode
+                requireAllDetails
               />
             </div>
           </section>
@@ -1043,6 +1118,28 @@ export default function AddWigTab({
                 </span>
               </label>
             ) : null}
+
+            <div className="mt-4 flex flex-col gap-3 border-t border-slate-200/80 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-[11px] text-slate-500">
+                Restart this entry or cancel it before continuing to try-on.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleRedo}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <RefreshCw size={13} /> Start again
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50"
+                >
+                  <X size={13} /> Cancel adding wig
+                </button>
+              </div>
+            </div>
           </section>
 
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

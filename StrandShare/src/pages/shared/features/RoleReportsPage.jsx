@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Building2,
+  Boxes,
   Calendar,
   CheckCircle2,
   ClipboardList,
@@ -157,6 +158,11 @@ function labelFromKey(key) {
   if (key === 'rejected') return 'Rejected';
   if (key === 'appealed') return 'Appealed';
   if (key === 'cancelled') return 'Cancelled';
+  if (key === 'ended') return 'Ended';
+  if (key === 'cut') return 'Cut';
+  if (key === 'bundling') return 'Bundling';
+  if (key === 'wigcreated') return 'Wig Created';
+  if (key === 'rejectedcut') return 'Rejected Cut';
   if (key === 'pendingadminapproval') return 'Pending Admin Approval';
   if (key === 'acceptedallocatedwig') return 'Accepted - Wig Allocated';
   if (key === 'acceptednowigavailable') return 'Accepted - No Wig Available';
@@ -197,13 +203,13 @@ function rejectedLikeStatus(statusKey) {
 // distinct hues to the semantic states.
 function buildStatusPalette(theme) {
   return {
-    pendingStaff: theme?.primaryColorLight || '#0a8ef5',     // light primary  — in progress
-    pendingAdmin: theme?.secondaryColor || '#6B7280',         // secondary      — awaiting decision
-    approved: theme?.tertiaryColor || '#10b981',              // tertiary       — success
-    rejected: theme?.primaryColorDark || '#025aa3',           // dark primary   — halted / rejected
-    appealed: theme?.tertiaryColorLight || '#34d399',         // light tertiary — appeal
-    neutral: theme?.secondaryColorLight || '#9CA3AF',         // light secondary — neutral / withdrawn
-    primary: theme?.primaryColor || '#0275d8',                // primary brand  — total / main
+    pendingStaff: theme?.primaryColorLight || '#0a8ef5',     // light primary  â€” in progress
+    pendingAdmin: theme?.secondaryColor || '#6B7280',         // secondary      â€” awaiting decision
+    approved: theme?.tertiaryColor || '#10b981',              // tertiary       â€” success
+    rejected: theme?.primaryColorDark || '#025aa3',           // dark primary   â€” halted / rejected
+    appealed: theme?.tertiaryColorLight || '#34d399',         // light tertiary â€” appeal
+    neutral: theme?.secondaryColorLight || '#9CA3AF',         // light secondary â€” neutral / withdrawn
+    primary: theme?.primaryColor || '#0275d8',                // primary brand  â€” total / main
   };
 }
 
@@ -319,6 +325,46 @@ function templateCatalogForRole(roleKey, theme) {
         { key: 'statusReason', label: 'Status Reason' },
         { key: 'requestDateLabel', label: 'Request Date' },
         { key: 'updatedAtLabel', label: 'Updated At' },
+      ],
+    },
+    {
+      id: 'cut_hair_inventory',
+      name: 'Cut Hair Inventory',
+      shortName: 'Hair Inventory',
+      description: 'Approved cut hair tracked through bundling and wig creation.',
+      icon: Boxes,
+      accent: tertiary,
+      page: 'cut-hair-inventory',
+      exportPrefix: 'cut_hair_inventory',
+      columns: [
+        { key: 'recordId', label: 'Inventory ID' },
+        { key: 'submissionId', label: 'Submission' },
+        { key: 'eventName', label: 'Event / Source' },
+        { key: 'statusLabel', label: 'Inventory Status' },
+        { key: 'bundleLabel', label: 'Bundle' },
+        { key: 'wigLabel', label: 'Wig' },
+        { key: 'createdAtLabel', label: 'Approved At' },
+      ],
+    },
+    {
+      id: 'ai_hair_accuracy',
+      name: 'AI Hair Scan Accuracy',
+      shortName: 'AI Accuracy',
+      description: 'AI predictions compared with final staff observations and corrections.',
+      icon: AlertTriangle,
+      accent: secondary,
+      page: 'reports',
+      exportPrefix: 'ai_hair_accuracy',
+      columns: [
+        { key: 'recordId', label: 'Comparison ID' },
+        { key: 'submissionId', label: 'Submission' },
+        { key: 'eventName', label: 'Event' },
+        { key: 'sourceLabel', label: 'Scan Source' },
+        { key: 'statusLabel', label: 'Final Decision' },
+        { key: 'accuracyLabel', label: 'AI Accuracy' },
+        { key: 'criticalChanges', label: 'Critical Corrections' },
+        { key: 'minorChanges', label: 'Minor Corrections' },
+        { key: 'createdAtLabel', label: 'Reviewed At' },
       ],
     },
   ];
@@ -582,6 +628,85 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               .toLowerCase(),
           };
         });
+      } else if (selectedTemplate.id === 'cut_hair_inventory') {
+        const result = await supabase
+          .from('Cut_Hair_Inventory')
+          .select('Inventory_ID,Submission_ID,Event_Request_ID,Source_Type,Status,Bundle_ID,Wig_ID,Approved_At,Updated_At')
+          .order('Approved_At', { ascending: false })
+          .limit(3000);
+        if (result.error) throw result.error;
+        const inventoryRows = result.data || [];
+        const eventIds = [...new Set(inventoryRows.map((row) => Number(row.Event_Request_ID || 0)).filter(Boolean))];
+        let eventsById = new Map();
+        if (eventIds.length) {
+          const eventResult = await supabase
+            .from(EVENT_REQUESTS_TABLE)
+            .select('Event_Request_ID,Event_Name')
+            .in('Event_Request_ID', eventIds);
+          if (eventResult.error) throw eventResult.error;
+          eventsById = new Map((eventResult.data || []).map((row) => [Number(row.Event_Request_ID), row]));
+        }
+        mappedRows = inventoryRows.map((row) => {
+          const statusKey = normalizeKey(row.Status);
+          const eventName = eventsById.get(Number(row.Event_Request_ID))?.Event_Name
+            || (row.Source_Type === 'Non-Event' ? 'Non-event donation' : `Event #${row.Event_Request_ID || 'N/A'}`);
+          return {
+            recordId: `CHI-${String(row.Inventory_ID).padStart(6, '0')}`,
+            submissionId: `Submission #${row.Submission_ID}`,
+            eventName,
+            statusKey,
+            statusLabel: labelFromKey(statusKey),
+            bundleLabel: row.Bundle_ID ? `Bundle #${row.Bundle_ID}` : 'Not bundled',
+            wigLabel: row.Wig_ID ? `Wig #${row.Wig_ID}` : 'No wig yet',
+            createdAt: row.Approved_At,
+            updatedAt: row.Updated_At,
+            createdAtLabel: formatDateTime(row.Approved_At),
+            updatedAtLabel: formatDateTime(row.Updated_At),
+            searchText: [row.Inventory_ID, row.Submission_ID, eventName, row.Source_Type, row.Status, row.Bundle_ID, row.Wig_ID].filter(Boolean).join(' ').toLowerCase(),
+          };
+        });
+      } else if (selectedTemplate.id === 'ai_hair_accuracy') {
+        const result = await supabase
+          .from('Hair_AI_Review_Comparisons')
+          .select('Comparison_ID,Submission_ID,Event_Request_ID,Is_AI_Source,Changed_Fields,Critical_Changed_Fields,Minor_Changed_Fields,AI_Accuracy_Percent,Final_Decision,Reviewed_At,Updated_At')
+          .order('Reviewed_At', { ascending: false, nullsFirst: false })
+          .limit(3000);
+        if (result.error) throw result.error;
+        const comparisonRows = result.data || [];
+        const eventIds = [...new Set(comparisonRows.map((row) => Number(row.Event_Request_ID || 0)).filter(Boolean))];
+        let eventsById = new Map();
+        if (eventIds.length) {
+          const eventResult = await supabase
+            .from(EVENT_REQUESTS_TABLE)
+            .select('Event_Request_ID,Event_Name')
+            .in('Event_Request_ID', eventIds);
+          if (eventResult.error) throw eventResult.error;
+          eventsById = new Map((eventResult.data || []).map((row) => [Number(row.Event_Request_ID), row]));
+        }
+        mappedRows = comparisonRows.map((row) => {
+          const statusKey = normalizeKey(row.Final_Decision || 'Pending');
+          const eventName = eventsById.get(Number(row.Event_Request_ID))?.Event_Name || `Event #${row.Event_Request_ID || 'N/A'}`;
+          const critical = Array.isArray(row.Critical_Changed_Fields) ? row.Critical_Changed_Fields : [];
+          const minor = Array.isArray(row.Minor_Changed_Fields) ? row.Minor_Changed_Fields : [];
+          return {
+            recordId: `AI-${String(row.Comparison_ID).padStart(6, '0')}`,
+            submissionId: `Submission #${row.Submission_ID}`,
+            eventName,
+            sourceLabel: row.Is_AI_Source ? 'AI Analysis' : 'Manual',
+            statusKey,
+            statusLabel: labelFromKey(statusKey),
+            accuracyLabel: row.Is_AI_Source
+              ? (row.AI_Accuracy_Percent == null ? 'Pending' : `${row.AI_Accuracy_Percent}%`)
+              : 'Manual source',
+            criticalChanges: critical.length ? critical.join(', ') : 'None',
+            minorChanges: minor.length ? minor.join(', ') : 'None',
+            createdAt: row.Reviewed_At,
+            updatedAt: row.Updated_At,
+            createdAtLabel: formatDateTime(row.Reviewed_At),
+            updatedAtLabel: formatDateTime(row.Updated_At),
+            searchText: [row.Comparison_ID, row.Submission_ID, eventName, row.Final_Decision, ...critical, ...minor].filter(Boolean).join(' ').toLowerCase(),
+          };
+        });
       } else if (selectedTemplate.id === 'user_accounts' && isAdmin) {
         const result = await supabase
           .from(USERS_TABLE)
@@ -633,6 +758,28 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     setSearchTerm('');
     void loadTemplateRows();
   }, [loadTemplateRows, selectedTemplateId]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      return undefined;
+    }
+
+    const refreshReport = () => void loadTemplateRows();
+    const channel = supabase
+      .channel(`role-reports-live-${roleKey || 'unknown'}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_APPLICATIONS_TABLE }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_REQUESTS_TABLE }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Cut_Hair_Inventory' }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Hair_AI_Review_Comparisons' }, refreshReport)
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [loadTemplateRows, roleKey]);
 
   const statusOptions = useMemo(() => {
     const unique = [...new Set(rawRows.map((row) => row.statusLabel).filter(Boolean))];
@@ -831,7 +978,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1
-            className="text-2xl font-bold"
+            className="role-page-title text-2xl font-bold"
             style={{ fontFamily: `${headingFontFamily}, sans-serif`, color: primaryTextColor }}
           >
             {isAdmin ? 'Admin Reports' : 'Staff Reports'}
@@ -841,7 +988,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-slate-500">
-          <span className="hidden sm:inline">Last refreshed: <strong className="font-semibold text-slate-700">{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : '—'}</strong></span>
+          <span className="hidden sm:inline">Last refreshed: <strong className="font-semibold text-slate-700">{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : 'â€”'}</strong></span>
           <button
             type="button"
             onClick={() => loadTemplateRows()}
@@ -880,7 +1027,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
         </div>
       )}
 
-      {/* Template selector — underlined tabs */}
+      {/* Template selector â€” underlined tabs */}
       <div className="border-b border-slate-200">
         <nav className="-mb-px flex flex-wrap gap-x-5 gap-y-1" aria-label="Report templates">
           {templates.map((template) => {

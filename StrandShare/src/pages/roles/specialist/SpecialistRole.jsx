@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   LayoutDashboard,
+  Boxes,
   ScanLine,
   Package,
   Wand2,
@@ -14,10 +15,12 @@ import BundlingPage from './BundlingPage';
 import WigCatalogStudioPage from './WigCatalogStudioPage';
 import GenerateReportsPage from './GenerateReportsPage';
 import SettingsPage from './SettingsPage';
+import CutHairInventoryPage from '../../shared/features/CutHairInventoryPage';
 
 const specialistNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'quality-check', label: 'Quality Check', icon: ScanLine },
+  { id: 'cut-hair-inventory', label: 'Cut Hair Inventory', icon: Boxes },
   { id: 'bundling', label: 'Bundling', icon: Package },
   { id: 'wig-ai-studio', label: 'Wig Catalog Studio', icon: Wand2 },
   { id: 'reports', label: 'Reports', icon: FileBarChart2 },
@@ -27,6 +30,7 @@ const specialistNavItems = [
 const specialistPageComponents = {
   dashboard: DashboardPage,
   'quality-check': QualityCheckPage,
+  'cut-hair-inventory': CutHairInventoryPage,
   bundling: BundlingPage,
   'wig-ai-studio': WigCatalogStudioPage,
   reports: GenerateReportsPage,

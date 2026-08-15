@@ -8,7 +8,6 @@ import {
   Loader2,
   MapPin,
   Pencil,
-  Plus,
   RefreshCw,
   Save,
   Search,
@@ -612,6 +611,25 @@ export default function ManageHospitalAccountsPage() {
     fetchHospitals();
     loadRegions();
   }, [fetchHospitals, loadRegions]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      return undefined;
+    }
+
+    const refreshHospitals = () => void fetchHospitals();
+    const channel = supabase
+      .channel('admin-hospital-accounts-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, refreshHospitals)
+      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITAL_STAFF_TABLE }, refreshHospitals)
+      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshHospitals)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_details' }, refreshHospitals)
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [fetchHospitals]);
 
   const openHospitalDetails = (hospital) => {
     setDetailsHospitalId(Number(hospital.Hospital_ID));
@@ -1328,28 +1346,13 @@ export default function ManageHospitalAccountsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div>
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Manage H-Representative Accounts</h1>
+          <h1 className="role-page-title text-3xl font-bold text-gray-900">Manage H-Representative Accounts</h1>
           <p className="text-sm text-gray-600 mt-1">
-            Add and maintain hospital records used by H-Representative, patients, and wig request routing.
+            Review and maintain hospital records used by H-Representatives, patients, and wig request routing.
           </p>
         </div>
-
-        {activeTab !== 'applications' && (
-          <button
-            type="button"
-            onClick={() => {
-              resetForm();
-              setIsModalOpen(true);
-            }}
-            className="text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm"
-            style={{ backgroundColor: theme.primaryColor }}
-          >
-            <Plus size={18} />
-            Add H-Representative
-          </button>
-        )}
       </div>
 
       <div className="border-b border-gray-200">
@@ -2453,5 +2456,3 @@ export default function ManageHospitalAccountsPage() {
     </div>
   );
 }
-
-

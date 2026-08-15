@@ -39,13 +39,13 @@ export default function ManageRequirementsPage({ userProfile }) {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-bold text-slate-900">Manage Requirements</h1>
+        <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Requirements</h1>
         <p className="mt-1 text-sm text-slate-600">
           All requirement-related pages grouped in one place. Pick a section below.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+      <div className="inline-flex w-full flex-col gap-1 rounded-xl border border-slate-200 bg-white p-1.5 shadow-sm sm:flex-row">
         {TABS.map((tab) => {
           const Icon = tab.icon;
           const isActive = tab.id === active.id;
@@ -54,7 +54,7 @@ export default function ManageRequirementsPage({ userProfile }) {
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
-              className={`group relative flex items-start gap-3 rounded-xl border px-4 py-3 text-left transition ${
+              className={`group flex flex-1 items-center gap-3 rounded-lg border px-4 py-3 text-left transition ${
                 isActive
                   ? 'border-transparent text-white shadow-md'
                   : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
@@ -74,9 +74,6 @@ export default function ManageRequirementsPage({ userProfile }) {
                   {tab.description}
                 </p>
               </div>
-              {isActive && (
-                <span className="absolute -bottom-1.5 left-1/2 h-2.5 w-2.5 -translate-x-1/2 rotate-45 rounded-sm" style={{ backgroundColor: primaryColor }} />
-              )}
             </button>
           );
         })}

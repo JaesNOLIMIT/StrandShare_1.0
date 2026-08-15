@@ -4,8 +4,6 @@ import { createClient } from '@supabase/supabase-js';
 import {
   Plus,
   Search,
-  Edit2,
-  Trash2,
   Info,
   Shield,
   X,
@@ -14,6 +12,7 @@ import {
   Mail,
   CheckCircle,
   AlertTriangle,
+  Power,
 } from 'lucide-react';
 import Select from 'react-select';
 import { useTheme } from '../../../context/ThemeContext';
@@ -23,6 +22,7 @@ import {
   isSupabaseConfigured,
 } from '../../../lib/supabaseClient';
 import { toCanonicalRole, toRoleLabel } from '../../../lib/roleUtils';
+import UserAccountDetailsModal from './UserAccountDetailsModal';
 
 const DEFAULT_ROLES = ['admin', 'staff', 'specialist', 'h_representative'];
 const ADMIN_CREATABLE_ROLES = ['staff', 'specialist'];
@@ -71,6 +71,12 @@ function formatDateTime(value) {
   const hh = pad(d.getHours());
   const mi = pad(d.getMinutes());
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+}
+
+function toDateTimeLocalValue(value) {
+  if (!value) return '';
+  const normalized = String(value).trim().replace(' ', 'T');
+  return normalized.length >= 16 ? normalized.slice(0, 16) : '';
 }
 
 function normalizeRoleSlug(roleValue) {
@@ -226,11 +232,6 @@ function getInitialFormData() {
 export default function ManageUserAccountsPage() {
   const { theme } = useTheme();
   const tableHeaderTextColor = theme?.primaryTextColor || '#000000';
-  const primaryTextColor = theme?.primaryTextColor || '#111827';
-  const secondaryTextColor = theme?.secondaryTextColor || '#6b7280';
-  const headingFont = theme?.secondaryFontFamily || theme?.fontFamily || 'Poppins';
-  const bodyFont = theme?.fontFamily || 'Poppins';
-
   const [users, setUsers] = useState([]);
   const [allRoles, setAllRoles] = useState([]);
   const [roleFilter, setRoleFilter] = useState([]);
@@ -247,6 +248,11 @@ export default function ManageUserAccountsPage() {
   const [errorMessage, setErrorMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const [detailsUserId, setDetailsUserId] = useState(null);
+  const [isEditingDetails, setIsEditingDetails] = useState(false);
+  const [isSavingDetails, setIsSavingDetails] = useState(false);
+  const [togglingUserId, setTogglingUserId] = useState(null);
+  const [detailsNotice, setDetailsNotice] = useState({ kind: '', text: '' });
+  const [detailsForm, setDetailsForm] = useState(getInitialFormData());
 
   const [formData, setFormData] = useState(getInitialFormData());
 
@@ -267,9 +273,13 @@ export default function ManageUserAccountsPage() {
         fetchUsers();
       })
       .subscribe();
+    const fallbackInterval = window.setInterval(() => {
+      void fetchUsers();
+    }, 30000);
 
     return () => {
-      supabase.removeChannel(subscription);
+      window.clearInterval(fallbackInterval);
+      void supabase.removeChannel(subscription);
     };
   }, []);
 
@@ -279,7 +289,7 @@ export default function ManageUserAccountsPage() {
       const { data, error } = await supabase
         .from('users')
         .select(`
-          user_id, email, role, access_start, access_end, is_active,
+          user_id, email, role, access_start, access_end, is_active, created_at, updated_at,
           user_details:user_details (
             photo_path, first_name, middle_name, last_name, suffix, birthdate, gender,
             street, region, barangay, city, province, country, contact_number, joined_date
@@ -298,10 +308,14 @@ export default function ManageUserAccountsPage() {
           role: canonicalRole || 'N/A',
           accessStart: formatDateTime(user.access_start),
           accessEnd: formatDateTime(user.access_end),
+          rawAccessStart: user.access_start || '',
+          rawAccessEnd: user.access_end || '',
+          createdAt: user.created_at || '',
+          updatedAt: user.updated_at || '',
           status: user.is_active ? 'Active' : 'Inactive',
           firstName: details?.first_name || 'N/A',
           lastName: details?.last_name || '',
-          joinedDate: details?.joined_date || '',
+          joinedDate: details?.joined_date || user.created_at || '',
           details: details || {},
         };
       });
@@ -642,10 +656,145 @@ export default function ManageUserAccountsPage() {
 
   const openUserDetails = (user) => {
     setDetailsUserId(user?.id || null);
+    setIsEditingDetails(false);
+    setDetailsNotice({ kind: '', text: '' });
   };
 
   const closeUserDetails = () => {
+    if (isSavingDetails) return;
     setDetailsUserId(null);
+    setIsEditingDetails(false);
+    setDetailsNotice({ kind: '', text: '' });
+  };
+
+  const beginEditingDetails = () => {
+    if (!detailsUser) return;
+    const profile = detailsUser.details || {};
+    setDetailsForm({
+      firstName: profile.first_name || '',
+      middleName: profile.middle_name || '',
+      lastName: profile.last_name || '',
+      suffix: profile.suffix || '',
+      birthdate: profile.birthdate || '',
+      gender: profile.gender || '',
+      contactNumber: profile.contact_number || '',
+      street: profile.street || '',
+      region: profile.region || '',
+      barangay: profile.barangay || '',
+      city: profile.city || '',
+      province: profile.province || '',
+      country: profile.country || 'Philippines',
+      email: detailsUser.email || '',
+      role: detailsUser.role || '',
+      accessStart: toDateTimeLocalValue(detailsUser.rawAccessStart),
+      accessEnd: toDateTimeLocalValue(detailsUser.rawAccessEnd),
+    });
+    setDetailsNotice({ kind: '', text: '' });
+    setIsEditingDetails(true);
+  };
+
+  const handleDetailsInputChange = (event) => {
+    const { name, value } = event.target;
+    setDetailsForm((current) => ({
+      ...current,
+      [name]: name === 'contactNumber' ? formatPhilippineContactNumber(value) : value,
+    }));
+  };
+
+  const saveUserDetails = async () => {
+    if (!detailsUser || !supabase) return;
+    const canChangeRole = ADMIN_CREATABLE_ROLES.includes(detailsUser.role);
+    const nextRole = canChangeRole ? toCanonicalRole(detailsForm.role) : detailsUser.role;
+    const accessStart = toPhilippineSqlTimestampOrNull(detailsForm.accessStart);
+    const accessEnd = toPhilippineSqlTimestampOrNull(detailsForm.accessEnd);
+
+    if (!String(detailsForm.firstName || '').trim() || !String(detailsForm.lastName || '').trim()) {
+      setDetailsNotice({ kind: 'error', text: 'First name and last name are required.' });
+      return;
+    }
+    if (canChangeRole && !ADMIN_CREATABLE_ROLES.includes(nextRole)) {
+      setDetailsNotice({ kind: 'error', text: 'This account can only be Staff or Specialist.' });
+      return;
+    }
+    if ((detailsForm.accessStart && !accessStart) || (detailsForm.accessEnd && !accessEnd)) {
+      setDetailsNotice({ kind: 'error', text: 'Enter a valid access date and time.' });
+      return;
+    }
+    if ((accessStart && !accessEnd) || (!accessStart && accessEnd)) {
+      setDetailsNotice({ kind: 'error', text: 'Access start and end must both be provided, or both left empty.' });
+      return;
+    }
+    if (accessStart && accessEnd && new Date(`${accessEnd.replace(' ', 'T')}+08:00`) <= new Date(`${accessStart.replace(' ', 'T')}+08:00`)) {
+      setDetailsNotice({ kind: 'error', text: 'Access end must be later than access start.' });
+      return;
+    }
+    if (detailsForm.contactNumber && !isValidPhilippineContactNumber(detailsForm.contactNumber)) {
+      setDetailsNotice({ kind: 'error', text: 'Contact number must follow +63 912 345 6789.' });
+      return;
+    }
+
+    setIsSavingDetails(true);
+    setDetailsNotice({ kind: '', text: '' });
+    try {
+      const accountUpdate = {
+        access_start: accessStart,
+        access_end: accessEnd,
+        updated_at: getPhilippineSqlTimestamp(),
+      };
+      if (canChangeRole) accountUpdate.role = nextRole;
+
+      const [accountResult, profileResult] = await Promise.all([
+        supabase.from('users').update(accountUpdate).eq('user_id', detailsUser.id),
+        supabase.from('user_details').update({
+          first_name: String(detailsForm.firstName || '').trim(),
+          middle_name: String(detailsForm.middleName || '').trim() || null,
+          last_name: String(detailsForm.lastName || '').trim(),
+          suffix: String(detailsForm.suffix || '').trim() || null,
+          birthdate: toPhilippineDateOrNull(detailsForm.birthdate),
+          gender: String(detailsForm.gender || '').trim() || null,
+          contact_number: detailsForm.contactNumber || null,
+          street: String(detailsForm.street || '').trim() || null,
+          barangay: String(detailsForm.barangay || '').trim() || null,
+          city: String(detailsForm.city || '').trim() || null,
+          province: String(detailsForm.province || '').trim() || null,
+          region: String(detailsForm.region || '').trim() || null,
+          country: String(detailsForm.country || '').trim() || 'Philippines',
+          updated_at: getPhilippineSqlTimestamp(),
+        }).eq('user_id', detailsUser.id),
+      ]);
+      if (accountResult.error) throw accountResult.error;
+      if (profileResult.error) throw profileResult.error;
+
+      await fetchUsers();
+      setIsEditingDetails(false);
+      setDetailsNotice({ kind: 'success', text: 'User account details saved successfully.' });
+    } catch (error) {
+      setDetailsNotice({ kind: 'error', text: error.message || 'Unable to save user details.' });
+    } finally {
+      setIsSavingDetails(false);
+    }
+  };
+
+  const toggleUserStatus = async (user) => {
+    if (!user || !supabase) return;
+    const nextActive = user.status !== 'Active';
+    setTogglingUserId(user.id);
+    try {
+      const result = await supabase
+        .from('users')
+        .update({ is_active: nextActive, updated_at: getPhilippineSqlTimestamp() })
+        .eq('user_id', user.id);
+      if (result.error) throw result.error;
+      await fetchUsers();
+      if (Number(detailsUserId) === Number(user.id)) {
+        setDetailsNotice({ kind: 'success', text: `Account ${nextActive ? 'activated' : 'deactivated'} successfully.` });
+      }
+    } catch (error) {
+      setErrorMessage(error.message || 'Unable to update account status.');
+      setShowErrorModal(true);
+    } finally {
+      setTogglingUserId(null);
+    }
   };
 
   const roleOptions = allRoles.map((role) => ({ value: role, label: toRoleLabel(role) }));
@@ -704,7 +853,7 @@ export default function ManageUserAccountsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Manage User Accounts</h1>
+          <h1 className="role-page-title text-3xl font-bold text-gray-900">Manage User Accounts</h1>
           <p className="mt-1 text-sm text-gray-600">Add and manage staff/specialist web accounts and monitor account access windows.</p>
         </div>
         <button
@@ -803,7 +952,7 @@ export default function ManageUserAccountsPage() {
                             day: 'numeric',
                             year: 'numeric',
                           })
-                        : '—'}
+                        : 'â€”'}
                     </td>
                     <td className="p-4 text-gray-600 text-sm">
                       <div className="flex items-center gap-2">
@@ -831,21 +980,16 @@ export default function ManageUserAccountsPage() {
 
                         <button
                           type="button"
-                          className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-semibold"
-                          style={{
-                            borderColor: `${theme.primaryColor}33`,
-                            backgroundColor: `${theme.primaryColor}12`,
-                            color: theme.primaryColor,
-                          }}
+                          onClick={() => void toggleUserStatus(user)}
+                          disabled={togglingUserId === user.id}
+                          className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-semibold disabled:cursor-wait disabled:opacity-60 ${
+                            user.status === 'Active'
+                              ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                              : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                          }`}
                         >
-                          <Edit2 size={13} /> Edit
-                        </button>
-
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
-                        >
-                          <Trash2 size={13} /> Delete
+                          {togglingUserId === user.id ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
+                          {user.status === 'Active' ? 'Deactivate' : 'Activate'}
                         </button>
                       </div>
                     </td>
@@ -858,142 +1002,22 @@ export default function ManageUserAccountsPage() {
         </div>
       </section>
 
-      {detailsUser && typeof document !== 'undefined'
-        ? createPortal(
-            <div className="fixed inset-0 z-[70]">
-              <button
-                type="button"
-                aria-label="Close user details panel"
-                className="absolute inset-0 m-0 border-0 bg-black bg-opacity-50 p-0 backdrop-blur-sm"
-                onClick={closeUserDetails}
-              />
-
-              <aside
-                className="absolute right-0 top-0 h-full w-full max-w-md overflow-y-auto border-l bg-white shadow-2xl"
-                style={{
-                  animation: 'manageUsersInfoSlideIn 0.25s ease-out',
-                  borderColor: `${theme.secondaryColor}35`,
-                  backgroundColor: '#ffffff',
-                  opacity: 1,
-                  backdropFilter: 'none',
-                  color: primaryTextColor,
-                  fontFamily: `${bodyFont}, sans-serif`,
-                }}
-              >
-                <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-gray-200 bg-white px-5 py-4">
-                  <div>
-                    <h3 className="text-lg font-semibold" style={{ color: primaryTextColor, fontFamily: `${headingFont}, sans-serif` }}>
-                      User Account Details
-                    </h3>
-                    <p className="mt-0.5 text-xs" style={{ color: secondaryTextColor }}>
-                      View account role, access, and profile details.
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={closeUserDetails}
-                    aria-label="Close user details panel"
-                    className="rounded-md border p-1"
-                    style={{ borderColor: `${theme.secondaryColor}44`, color: secondaryTextColor }}
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-
-                <div className="space-y-4 p-5">
-                  <section className="rounded-xl border bg-slate-50 p-3" style={{ borderColor: `${theme.secondaryColor}30` }}>
-            <div className="flex items-start gap-3">
-              <div
-                className="grid h-14 w-14 place-items-center rounded-full border bg-white text-lg font-semibold"
-                style={{ borderColor: `${theme.secondaryColor}30`, color: theme.primaryColor }}
-              >
-                {`${String(detailsUser.firstName || '').charAt(0)}${String(detailsUser.lastName || '').charAt(0)}`.trim() || 'U'}
-              </div>
-
-              <div className="min-w-0">
-                <p className="text-sm font-semibold break-words" style={{ color: primaryTextColor }}>
-                  {detailsUser.firstName} {detailsUser.lastName}
-                </p>
-                <p className="mt-1 text-xs break-all" style={{ color: secondaryTextColor }}>
-                  {detailsUser.email || 'N/A'}
-                </p>
-                <p className="mt-2 text-xs" style={{ color: secondaryTextColor }}>
-                  User ID: {detailsUser.id}
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap gap-2">
-              <span
-                className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium"
-                style={{
-                  backgroundColor: `${theme.primaryColor}18`,
-                  color: theme.primaryColor,
-                  borderColor: `${theme.primaryColor}33`,
-                }}
-              >
-                <Shield size={12} /> {toRoleLabel(detailsUser.role)}
-              </span>
-              <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${detailsUser.status === 'Active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                {detailsUser.status}
-              </span>
-            </div>
-                  </section>
-
-                  <section className="rounded-xl border bg-slate-50 p-3" style={{ borderColor: `${theme.secondaryColor}30` }}>
-            <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: secondaryTextColor }}>Role Access Window</p>
-            <div className="mt-2 overflow-hidden rounded-lg border bg-white" style={{ borderColor: `${theme.secondaryColor}24` }}>
-              <div className="grid grid-cols-[110px_1fr] gap-3 border-b px-3 py-2" style={{ borderColor: `${theme.secondaryColor}20` }}>
-                <p className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: secondaryTextColor }}>Access Start</p>
-                <p style={{ color: primaryTextColor }}>{detailsUser.accessStart || 'N/A'}</p>
-              </div>
-              <div className="grid grid-cols-[110px_1fr] gap-3 px-3 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: secondaryTextColor }}>Access End</p>
-                <p style={{ color: primaryTextColor }}>{detailsUser.accessEnd || 'N/A'}</p>
-              </div>
-            </div>
-                  </section>
-
-                  <section className="rounded-xl border bg-slate-50 p-3" style={{ borderColor: `${theme.secondaryColor}30` }}>
-            <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: secondaryTextColor }}>Profile Metadata</p>
-            <div className="mt-2 overflow-hidden rounded-lg border bg-white" style={{ borderColor: `${theme.secondaryColor}24` }}>
-              <div className="grid grid-cols-[110px_1fr] gap-3 border-b px-3 py-2" style={{ borderColor: `${theme.secondaryColor}20` }}>
-                <p className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: secondaryTextColor }}>Joined Date</p>
-                <p style={{ color: primaryTextColor }}>
-                  {detailsUser.joinedDate
-                    ? new Date(detailsUser.joinedDate).toLocaleDateString('en-US', {
-                        timeZone: 'Asia/Manila',
-                        month: 'long',
-                        day: 'numeric',
-                        year: 'numeric',
-                      })
-                    : 'N/A'}
-                </p>
-              </div>
-              <div className="grid grid-cols-[110px_1fr] gap-3 px-3 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: secondaryTextColor }}>Raw Role</p>
-                <p style={{ color: primaryTextColor }}>{detailsUser.role || 'N/A'}</p>
-              </div>
-            </div>
-                  </section>
-                </div>
-              </aside>
-
-              <style>{`
-                @keyframes manageUsersInfoSlideIn {
-                  from {
-                    transform: translateX(100%);
-                  }
-                  to {
-                    transform: translateX(0);
-                  }
-                }
-              `}</style>
-            </div>,
-            document.body,
-          )
-        : null}
+      <UserAccountDetailsModal
+        open={Boolean(detailsUser)}
+        user={detailsUser}
+        theme={theme}
+        editing={isEditingDetails}
+        form={detailsForm}
+        notice={detailsNotice}
+        saving={isSavingDetails}
+        toggling={togglingUserId === detailsUser?.id}
+        onClose={closeUserDetails}
+        onBeginEdit={beginEditingDetails}
+        onCancelEdit={() => setIsEditingDetails(false)}
+        onChange={handleDetailsInputChange}
+        onSave={() => void saveUserDetails()}
+        onToggleStatus={() => void toggleUserStatus(detailsUser)}
+      />
 
       {showSuccessModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] backdrop-blur-sm">
@@ -1230,4 +1254,3 @@ export default function ManageUserAccountsPage() {
     </div>
   );
 }
-

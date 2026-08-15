@@ -414,23 +414,13 @@ export default function WigRequirementsPage({ userProfile }) {
 
   return (
     <div className="space-y-5 pb-24">
-      {/* Hero */}
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="h-1.5 w-full" style={{ background: `linear-gradient(90deg, ${primaryColor}, ${primaryColor}99)` }} />
         <div className="flex flex-wrap items-start justify-between gap-4 px-5 py-4">
-          <div className="flex items-start gap-3">
-            <div
-              className="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-white shadow-sm"
-              style={{ backgroundColor: primaryColor }}
-            >
-              <ShieldCheck size={20} />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-slate-900">Wig Requirements</h1>
-              <p className="mt-0.5 text-sm text-slate-600">
-                Global qualification standards for hair donations. Updates apply to the single shared rule set.
-              </p>
-            </div>
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">Wig Requirements</h2>
+            <p className="mt-0.5 text-sm text-slate-600">
+              Global qualification standards for hair donations. Updates apply to the shared rule set.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             {isDirty && (

@@ -15,9 +15,18 @@ import SpecialistRole from './pages/roles/specialist/SpecialistRole';
 import { isSupabaseConfigured, supabase } from './lib/supabaseClient';
 import { logAuditAction } from './lib/auditLogger';
 import { toCanonicalRole } from './lib/roleUtils';
+import {
+  clearLoginSessionPersistence,
+  getLoginSessionPersistenceStatus,
+} from './lib/sessionPersistence';
 
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
+const AUTH_FLOW_PATHS = new Set(['/complete-account', '/reset-password', '/confirmation-complete']);
+
+function shouldEnforceLoginPersistence() {
+  return !AUTH_FLOW_PATHS.has(window.location.pathname);
+}
 
 function resolveDashboardByRole(roleValue) {
   const normalizedRole = toCanonicalRole(roleValue);
@@ -38,7 +47,7 @@ function resolveDashboardByRole(roleValue) {
     return SpecialistRole;
   }
 
-  return StaffRole;
+  return null;
 }
 
 export default function App() {
@@ -167,6 +176,25 @@ export default function App() {
 
       const existingSession = data?.session ?? null;
 
+      if (
+        existingSession?.user?.id &&
+        shouldEnforceLoginPersistence() &&
+        !getLoginSessionPersistenceStatus().isValid
+      ) {
+        await supabase.auth.signOut({ scope: 'local' });
+        clearLoginSessionPersistence();
+        localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+        setSession(null);
+        setUserProfile(null);
+        setIsHydratingProfile(false);
+        setIsLoadingAuth(false);
+        setAuthNotice('Your login session ended. Please sign in again.');
+        if (window.location.pathname !== '/login') {
+          window.location.replace('/login');
+        }
+        return;
+      }
+
       if (existingSession?.user?.id) {
         const storedProfile = getStoredProfileForUser(existingSession.user.id);
         if (storedProfile) {
@@ -190,6 +218,7 @@ export default function App() {
           setIsHydratingProfile(false);
         }
       } else {
+        localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
         setUserProfile(null);
         setIsHydratingProfile(false);
       }
@@ -209,6 +238,7 @@ export default function App() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (event === 'SIGNED_OUT') {
+        clearLoginSessionPersistence();
         localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
         setSession(null);
         setUserProfile(null);
@@ -246,32 +276,58 @@ export default function App() {
       }
     });
 
+    const persistenceCheckInterval = window.setInterval(async () => {
+      if (!shouldEnforceLoginPersistence() || getLoginSessionPersistenceStatus().isValid) {
+        return;
+      }
+
+      const { data } = await supabase.auth.getSession();
+      if (!data?.session) {
+        return;
+      }
+
+      await supabase.auth.signOut({ scope: 'local' });
+      clearLoginSessionPersistence();
+      localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+      if (window.location.pathname !== '/login') {
+        window.location.replace('/login');
+      }
+    }, 60 * 1000);
+
     return () => {
       isMounted = false;
       window.removeEventListener(USER_PROFILE_READY_EVENT, handleProfileReady);
       window.removeEventListener('storage', handleProfileStorageSync);
       subscription.unsubscribe();
+      window.clearInterval(persistenceCheckInterval);
     };
   }, []);
 
   const handleSignOut = async () => {
     const platform = navigator.platform || 'Unknown platform';
 
-    await logAuditAction({
-      action: 'auth.sign_out',
-      description: 'User signed out.',
-      resource: `auth/session:${platform}`,
-      status: 'success',
-      userProfile,
-    });
-
-    if (isSupabaseConfigured) {
-      await supabase.auth.signOut();
+    try {
+      await logAuditAction({
+        action: 'auth.sign_out',
+        description: 'User signed out.',
+        resource: `auth/session:${platform}`,
+        status: 'success',
+        userProfile,
+      });
+    } finally {
+      try {
+        if (isSupabaseConfigured) {
+          await supabase.auth.signOut();
+        }
+      } finally {
+        localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+        clearLoginSessionPersistence();
+        setSession(null);
+        setUserProfile(null);
+        setIsHydratingProfile(false);
+        window.location.replace('/login');
+      }
     }
-    localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-    setSession(null);
-    setUserProfile(null);
-    setIsHydratingProfile(false);
   };
 
   const activeRole = userProfile?.role || null;
@@ -291,9 +347,19 @@ export default function App() {
   const showEventApplicationPage = !isLoadingAuth && !session && isEventApplicationRoute;
   const showEventApplicationSuccessPage = !isLoadingAuth && !session && isEventApplicationSuccessRoute;
   const showLoginPage = !isLoadingAuth && !session && !isLandingRoute && !isPartnershipApplicationRoute && !isEventApplicationRoute && !isEventApplicationSuccessRoute;
-  const showDashboard = !isLoadingAuth && Boolean(session) && Boolean(activeRole);
+  const showDashboard =
+    !isLoadingAuth &&
+    Boolean(session) &&
+    Boolean(activeRole) &&
+    Boolean(ActiveDashboard);
   const showHydratingScreen =
     !isLoadingAuth && Boolean(session) && !showDashboard && isHydratingProfile;
+  const showUnsupportedRole =
+    !isLoadingAuth &&
+    Boolean(session) &&
+    Boolean(activeRole) &&
+    !ActiveDashboard &&
+    !isHydratingProfile;
 
   return (
     <ThemeProvider>
@@ -346,6 +412,20 @@ export default function App() {
         {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showHydratingScreen && (
           <div className="min-h-screen flex items-center justify-center">
             Finalizing your account access...
+          </div>
+        )}
+
+        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showUnsupportedRole && (
+          <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+              <h1 className="text-xl font-semibold text-slate-900">Management access only</h1>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                This account is not assigned to an authorized management role.
+              </p>
+              <button type="button" onClick={handleSignOut} className="mt-5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
+                Sign out
+              </button>
+            </div>
           </div>
         )}
       </div>

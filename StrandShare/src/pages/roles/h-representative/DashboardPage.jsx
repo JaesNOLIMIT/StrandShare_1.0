@@ -3,13 +3,9 @@ import {
   AlertTriangle,
   CalendarClock,
   ClipboardList,
-  FileBarChart,
+  HelpCircle,
   Loader2,
-  PackagePlus,
   RefreshCw,
-  Settings,
-  Sparkles,
-  Users,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -44,39 +40,6 @@ const STATUS_LABELS = {
   rejected: 'Rejected',
   cancelled: 'Cancelled',
 };
-
-const DASHBOARD_SHORTCUTS = [
-  {
-    id: 'wig-request',
-    label: 'New Wig Request',
-    description: 'Open the request form and submit a new case quickly.',
-    icon: PackagePlus,
-  },
-  {
-    id: 'manage-patients',
-    label: 'Manage Patients',
-    description: 'View patient records, linked accounts, and profile details.',
-    icon: Users,
-  },
-  {
-    id: 'fitting-release',
-    label: 'Release Approvals',
-    description: 'Approve release schedules or request reschedule notes.',
-    icon: CalendarClock,
-  },
-  {
-    id: 'reports',
-    label: 'Generate Reports',
-    description: 'Produce snapshots for operations and event coordination.',
-    icon: FileBarChart,
-  },
-  {
-    id: 'settings',
-    label: 'Open Settings',
-    description: 'Adjust profile and page-level preferences.',
-    icon: Settings,
-  },
-];
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
@@ -267,7 +230,7 @@ function statusBadgeClass(statusKey) {
   return 'bg-amber-100 text-amber-700';
 }
 
-export default function DashboardPage({ userProfile, onNavigate }) {
+export default function DashboardPage({ userProfile }) {
   const { theme } = useTheme();
 
   const [hospitalId, setHospitalId] = useState(null);
@@ -281,9 +244,10 @@ export default function DashboardPage({ userProfile, onNavigate }) {
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [isReleaseWorkflowAvailable, setIsReleaseWorkflowAvailable] = useState(true);
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
 
   const panelBorder = hexToRgba(theme.secondaryColor, 0.24);
-  const softPanelBg = hexToRgba(theme.primaryColor, 0.05);
 
   const resolveAssignedHospital = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -468,6 +432,31 @@ export default function DashboardPage({ userProfile, onNavigate }) {
     loadDashboard();
   }, [hospitalId, loadDashboard]);
 
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase || !hospitalId) return undefined;
+
+    let refreshTimer = null;
+    const scheduleRefresh = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => void loadDashboard(), 250);
+    };
+    const fallbackInterval = setInterval(() => void loadDashboard(), 30000);
+    const channel = supabase
+      .channel(`public:h-representative-dashboard-live:${hospitalId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: PATIENTS_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: RELEASE_SCHEDULES_TABLE }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITAL_STAFF_TABLE }, scheduleRefresh)
+      .subscribe((status) => setIsRealtimeActive(status === 'SUBSCRIBED'));
+
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      clearInterval(fallbackInterval);
+      setIsRealtimeActive(false);
+      supabase.removeChannel(channel);
+    };
+  }, [hospitalId, loadDashboard]);
+
   const patientById = useMemo(() => {
     return new Map(patients.map((row) => [Number(row.Patient_ID || 0), row]));
   }, [patients]);
@@ -542,17 +531,13 @@ export default function DashboardPage({ userProfile, onNavigate }) {
     }).length;
 
     return [
-      { label: 'Total Patients', value: String(patients.length) },
-      { label: 'Total Requests', value: String(requestRows.length) },
-      { label: 'Pending Review', value: String(requestRows.filter((row) => row.statusKey === 'pending').length) },
-      { label: 'Pending Approval', value: String(pendingApproval) },
-      { label: 'To Be Release', value: String(requestRows.filter((row) => row.statusKey === 'to_be_release').length) },
-      { label: 'Releasing', value: String(activeReleasing) },
-      { label: 'Completed', value: String(requestRows.filter((row) => row.statusKey === 'completed').length) },
-      { label: 'Overdue Releases', value: String(overdueReleases) },
-      { label: 'Requested This Week', value: String(requestedThisWeek) },
+      { label: 'Total Patients', value: String(patients.length), helper: `${requestRows.length} wig requests`, accent: theme.primaryColor },
+      { label: 'Pending Review', value: String(requestRows.filter((row) => row.statusKey === 'pending').length), helper: `${requestedThisWeek} requested this week`, accent: '#f59e0b' },
+      { label: 'Pending Approval', value: String(pendingApproval), helper: 'Release decisions needed', accent: theme.secondaryColor },
+      { label: 'Ready For Release', value: String(requestRows.filter((row) => row.statusKey === 'to_be_release').length), helper: `${activeReleasing} currently releasing`, accent: theme.primaryColor },
+      { label: 'Completed', value: String(requestRows.filter((row) => row.statusKey === 'completed').length), helper: overdueReleases > 0 ? `${overdueReleases} overdue releases` : 'No overdue releases', accent: overdueReleases > 0 ? '#dc2626' : '#15803d' },
     ];
-  }, [requestRows, patients.length, nowDate]);
+  }, [requestRows, patients.length, nowDate, theme.primaryColor, theme.secondaryColor]);
 
   const weeklyTrend = useMemo(() => {
     const buckets = [];
@@ -644,7 +629,7 @@ export default function DashboardPage({ userProfile, onNavigate }) {
   const recentUpdates = useMemo(() => {
     const requestEvents = requestRows.map((row) => ({
       time: row.updatedAt || row.requestDate,
-      title: `${row.requestId} · ${row.statusLabel}`,
+      title: `${row.requestId} Â· ${row.statusLabel}`,
       subtitle: row.patientName,
       source: 'Request Status',
     }));
@@ -658,7 +643,7 @@ export default function DashboardPage({ userProfile, onNavigate }) {
 
         return {
           time: row.Updated_At || row.Created_At,
-          title: `${formatRequestCode(reqId)} · ${decisionKey ? decisionKey.replace(/_/g, ' ') : 'decision updated'}`,
+          title: `${formatRequestCode(reqId)} Â· ${decisionKey ? decisionKey.replace(/_/g, ' ') : 'decision updated'}`,
           subtitle: requestRow?.patientName || 'Release workflow activity',
           source: 'Release Approval',
         };
@@ -684,24 +669,45 @@ export default function DashboardPage({ userProfile, onNavigate }) {
 
   return (
     <div className="space-y-4">
-      <header className="rounded-2xl border p-4 md:p-5" style={{ borderColor: panelBorder, backgroundColor: softPanelBg }}>
+      <header>
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <p className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]" style={{ backgroundColor: hexToRgba(theme.primaryColor, 0.14), color: theme.primaryColor }}>
-              <Sparkles size={12} /> Command Overview
-            </p>
-            <h1 className="mt-2 text-2xl font-extrabold tracking-tight" style={{ color: theme.primaryTextColor }}>
+            <h1 className="role-page-title text-2xl font-bold" style={{ color: theme.primaryTextColor }}>
               H-Representative Dashboard
             </h1>
-            <p className="mt-1 text-sm" style={{ color: theme.secondaryTextColor }}>
-              One-look operations snapshot across patients, requests, approvals, releases, and activity.
+            <p className="text-sm" style={{ color: theme.secondaryTextColor }}>
+              Patient requests, hospital approvals, and wig releases at a glance.
             </p>
             <p className="mt-1 text-xs" style={{ color: theme.tertiaryTextColor }}>
-              Scope: {hospitalName || (hospitalId ? `H-Representative #${hospitalId}` : 'Not assigned')}
+              {hospitalName || (hospitalId ? `Hospital #${hospitalId}` : 'No hospital assigned')}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold sm:inline-flex" style={{ borderColor: hexToRgba(isRealtimeActive ? '#15803d' : theme.secondaryColor, 0.3), color: isRealtimeActive ? '#15803d' : theme.secondaryTextColor }}>
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: isRealtimeActive ? '#15803d' : theme.secondaryColor }} />
+              {isRealtimeActive ? 'Live' : 'Connecting'}
+            </span>
+            <div className="relative">
+              <button
+                type="button"
+                aria-label="About the H-Representative dashboard"
+                aria-expanded={isInfoOpen}
+                onClick={() => setIsInfoOpen((open) => !open)}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border bg-white transition hover:shadow-sm"
+                style={{ borderColor: panelBorder, color: theme.primaryColor }}
+              >
+                <HelpCircle size={16} />
+              </button>
+              {isInfoOpen && (
+                <div className="absolute right-0 top-11 z-30 w-72 rounded-xl border bg-white p-3 text-left shadow-xl" style={{ borderColor: panelBorder }}>
+                  <p className="text-xs font-bold" style={{ color: theme.primaryTextColor }}>About this dashboard</p>
+                  <p className="mt-1 text-[10px] leading-relaxed" style={{ color: theme.secondaryTextColor }}>
+                    Live data for your assigned hospital only: patients, wig requests, release approvals, and schedules.
+                  </p>
+                </div>
+              )}
+            </div>
             <button
               type="button"
               onClick={loadDashboard}
@@ -711,9 +717,6 @@ export default function DashboardPage({ userProfile, onNavigate }) {
               {(isResolvingHospital || isLoading) ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
               Refresh
             </button>
-            <span className="text-[11px]" style={{ color: theme.tertiaryTextColor }}>
-              Updated: {formatDateTime(lastRefreshedAt)}
-            </span>
           </div>
         </div>
 
@@ -730,32 +733,15 @@ export default function DashboardPage({ userProfile, onNavigate }) {
         )}
       </header>
 
-      <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-        {DASHBOARD_SHORTCUTS.map((shortcut) => {
-          const Icon = shortcut.icon;
-          return (
-            <button
-              key={shortcut.id}
-              type="button"
-              onClick={() => onNavigate?.(shortcut.id)}
-              className="rounded-xl border bg-white p-3 text-left transition hover:-translate-y-0.5 hover:shadow-sm"
-              style={{ borderColor: panelBorder }}
-            >
-              <div className="inline-flex rounded-lg p-2" style={{ backgroundColor: hexToRgba(theme.primaryColor, 0.12), color: theme.primaryColor }}>
-                <Icon size={16} />
-              </div>
-              <p className="mt-2 text-sm font-bold" style={{ color: theme.primaryTextColor }}>{shortcut.label}</p>
-              <p className="mt-1 text-xs leading-relaxed" style={{ color: theme.secondaryTextColor }}>{shortcut.description}</p>
-            </button>
-          );
-        })}
-      </section>
-
-      <section className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {kpiCards.map((card) => (
-          <article key={card.label} className="rounded-xl border bg-white px-3 py-2.5" style={{ borderColor: panelBorder }}>
-            <p className="text-[11px] leading-tight" style={{ color: theme.secondaryTextColor }}>{card.label}</p>
-            <p className="mt-1 text-2xl font-extrabold" style={{ color: theme.primaryTextColor }}>{card.value}</p>
+          <article key={card.label} className="flex min-h-[124px] flex-col rounded-xl border bg-white p-4" style={{ borderColor: panelBorder }}>
+            <div className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: card.accent }} />
+              <p className="text-[11px] font-bold uppercase tracking-wide" style={{ color: theme.tertiaryTextColor }}>{card.label}</p>
+            </div>
+            <p className="mt-3 text-3xl font-bold leading-none" style={{ color: theme.primaryTextColor }}>{card.value}</p>
+            <p className="mt-auto pt-3 text-[11px]" style={{ color: theme.secondaryTextColor }}>{card.helper}</p>
           </article>
         ))}
       </section>
@@ -834,7 +820,7 @@ export default function DashboardPage({ userProfile, onNavigate }) {
             ) : (
               pendingApprovals.map((row) => (
                 <li key={`pending-${row.reqId}`} className="rounded-lg border px-3 py-2" style={{ borderColor: hexToRgba(theme.secondaryColor, 0.25), backgroundColor: hexToRgba(theme.secondaryColor, 0.06) }}>
-                  <p className="text-xs font-semibold" style={{ color: theme.primaryTextColor }}>{row.requestId} · {row.patientName}</p>
+                  <p className="text-xs font-semibold" style={{ color: theme.primaryTextColor }}>{row.requestId} Â· {row.patientName}</p>
                   <p className="mt-0.5 text-[11px]" style={{ color: theme.secondaryTextColor }}>
                     Proposed release: {formatDateTime(row.releaseDate)}
                   </p>
@@ -869,7 +855,7 @@ export default function DashboardPage({ userProfile, onNavigate }) {
                     </span>
                   </div>
                   <p className="mt-0.5 text-[11px]" style={{ color: theme.secondaryTextColor }}>
-                    {row.patientName} · {formatShortDate(row.releaseDate)}
+                    {row.patientName} Â· {formatShortDate(row.releaseDate)}
                   </p>
                 </li>
               ))
@@ -890,7 +876,7 @@ export default function DashboardPage({ userProfile, onNavigate }) {
               recentUpdates.map((item) => (
                 <li key={`${item.time}-${item.title}`} className="rounded-lg border px-3 py-2" style={{ borderColor: hexToRgba(theme.tertiaryColor, 0.25), backgroundColor: hexToRgba(theme.tertiaryColor, 0.07) }}>
                   <p className="text-[10px] font-semibold uppercase" style={{ color: theme.secondaryTextColor }}>
-                    {formatDateTime(item.time)} · {item.source}
+                    {formatDateTime(item.time)} Â· {item.source}
                   </p>
                   <p className="mt-0.5 text-[11px] font-semibold" style={{ color: theme.primaryTextColor }}>{item.title}</p>
                   <p className="text-[11px]" style={{ color: theme.tertiaryTextColor }}>{item.subtitle}</p>

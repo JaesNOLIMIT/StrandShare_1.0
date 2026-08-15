@@ -46,7 +46,7 @@ export default function HairstyleMakingPage() {
   return (
     <div className="space-y-6" style={rootStyle}>
       <div>
-        <h1 className="text-3xl font-bold mb-2" style={headingStyle}>Hairstyle Making</h1>
+        <h1 className="role-page-title text-3xl font-bold mb-2" style={headingStyle}>Hairstyle Making</h1>
         <p style={{ color: secondaryTextColor }}>
           Generate AI hairstyle previews for the wig catalog. Configure attributes, then generate and save to the gallery.
         </p>
