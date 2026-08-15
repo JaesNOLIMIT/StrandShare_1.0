@@ -1099,7 +1099,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className={`${embedded ? 'text-xl' : 'mb-2 text-3xl'} font-bold text-gray-900`}>Release Date Approval</h1>
+        <h1 className={`role-page-title ${embedded ? '' : 'mb-2'} text-gray-900`}>Release Date Approval</h1>
         <p className="text-gray-600">
           Review proposed release dates from staff, approve or request reschedule, and finalize releases.
         </p>
@@ -1844,4 +1844,3 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
     </div>
   );
 }
-

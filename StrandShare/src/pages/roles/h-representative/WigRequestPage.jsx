@@ -2264,7 +2264,7 @@ export default function WigRequestPage({ userProfile }) {
     <div className="space-y-4">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">H-Representative Workflow</p>
-        <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900 md:text-3xl">Wig Requests Workspace</h1>
+        <h1 className="role-page-title mt-1 text-2xl font-extrabold tracking-tight text-slate-900 md:text-3xl">Wig Requests Workspace</h1>
         <p className="mt-1 text-sm text-slate-600">
           Submit visual wig preferences, track stock and production, and complete release approvals in one place.
         </p>
@@ -2333,7 +2333,7 @@ export default function WigRequestPage({ userProfile }) {
                   <div className="mt-2 max-h-44 overflow-auto rounded-lg border border-slate-200 bg-white">
                     {filteredPatientOptions.length === 0 ? (
                       <div className="px-3 py-3 text-xs text-slate-500">
-                        <p>No patients match “{patientSearchTerm.trim()}”.</p>
+                        <p>No patients match â€œ{patientSearchTerm.trim()}â€.</p>
                         {patientSearchTerm.trim() && patients.length > 0 ? (
                           <button
                             type="button"
@@ -2462,7 +2462,7 @@ export default function WigRequestPage({ userProfile }) {
                                 <span className="block truncate text-xs font-bold text-slate-900">{patientName}</span>
                                 <span className="block truncate text-[11px] text-slate-500">
                                   {patient.Patient_Code || `Patient #${patient.Patient_ID}`}
-                                  {patient.Medical_Condition ? ` · ${patient.Medical_Condition}` : ''}
+                                  {patient.Medical_Condition ? ` Â· ${patient.Medical_Condition}` : ''}
                                 </span>
                               </span>
                             </button>
@@ -2523,12 +2523,12 @@ export default function WigRequestPage({ userProfile }) {
                             <div className="flex items-start justify-between gap-2">
                               <div>
                                 <p className="line-clamp-2 text-xs font-bold text-slate-900">{family.wigName || 'Catalog wig'}</p>
-                                <p className="mt-0.5 text-xs text-slate-500">{family.style || 'Style not labeled'} · {family.color || 'Color N/A'}</p>
+                                <p className="mt-0.5 text-xs text-slate-500">{family.style || 'Style not labeled'} Â· {family.color || 'Color N/A'}</p>
                               </div>
                               {isSelected ? <CheckCircle2 size={16} className="shrink-0 text-blue-600" /> : null}
                             </div>
                             <p className="mt-2 text-[11px] text-slate-500">
-                              {family.hairLength ? `${family.hairLength} in · ` : ''}{family.texture || 'Texture N/A'} · {family.density || 'Density N/A'}
+                              {family.hairLength ? `${family.hairLength} in Â· ` : ''}{family.texture || 'Texture N/A'} Â· {family.density || 'Density N/A'}
                             </p>
                           </div>
                         </button>
@@ -2585,7 +2585,7 @@ export default function WigRequestPage({ userProfile }) {
                     <option value="">Select a wig first</option>
                     {(selectedWigFamily?.variants || []).map((variant) => (
                       <option key={variant.specificationId} value={String(variant.specificationId)}>
-                        {variant.capSizeLabel || variant.capSize || 'Cap size N/A'} — {variant.stockCount > 0 ? `${variant.stockCount} in stock` : 'No stock (wish request)'}
+                        {variant.capSizeLabel || variant.capSize || 'Cap size N/A'} â€” {variant.stockCount > 0 ? `${variant.stockCount} in stock` : 'No stock (wish request)'}
                       </option>
                     ))}
                   </select>
@@ -2667,7 +2667,7 @@ export default function WigRequestPage({ userProfile }) {
                 <div className="md:col-span-2 rounded-xl border border-sky-200 bg-sky-50/60 p-4">
                   <div>
                     <p className="text-sm font-bold text-slate-900">Wig Safety Assessment</p>
-                    <p className="mt-1 text-xs text-slate-600">Confirm the patient’s current scalp condition and restrictions. These answers appear in the PDF and Staff review.</p>
+                    <p className="mt-1 text-xs text-slate-600">Confirm the patientâ€™s current scalp condition and restrictions. These answers appear in the PDF and Staff review.</p>
                     {selectedPatientProfile.allergiesMedications && selectedPatientProfile.allergiesMedications !== 'N/A' ? (
                       <p className="mt-2 rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs text-slate-700"><span className="font-bold">Saved clinical allergy/medication record:</span> {selectedPatientProfile.allergiesMedications}</p>
                     ) : null}
@@ -2807,7 +2807,7 @@ export default function WigRequestPage({ userProfile }) {
                     <PatientDetailRow label="Medical Condition" value={selectedPatientProfile.medicalCondition} />
                     <PatientDetailRow label="Wig" value={selectedRequestedSpecification?.wigName} />
                     <PatientDetailRow label="Cap Size" value={selectedRequestedSpecification?.capSizeLabel || selectedRequestedSpecification?.capSize} />
-                    <PatientDetailRow label="Stock" value={selectedRequestedSpecification?.isAvailable ? `${selectedRequestedSpecification.stockCount} available` : 'No stock — production request if accepted'} />
+                    <PatientDetailRow label="Stock" value={selectedRequestedSpecification?.isAvailable ? `${selectedRequestedSpecification.stockCount} available` : 'No stock â€” production request if accepted'} />
                     <PatientDetailRow label="Special Note" value={form.specialNoteTemplate || 'N/A'} />
                   </dl>
                   <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 p-2">
@@ -2861,7 +2861,7 @@ export default function WigRequestPage({ userProfile }) {
             {submittedQuickStats.map((item) => (
               <article key={item.label} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{item.label}</p>
-                <p className="mt-1 text-xl font-bold text-slate-900">{isLoadingSubmitted ? '—' : item.value}</p>
+                <p className="mt-1 text-xl font-bold text-slate-900">{isLoadingSubmitted ? 'â€”' : item.value}</p>
               </article>
             ))}
           </div>
@@ -2958,9 +2958,9 @@ export default function WigRequestPage({ userProfile }) {
                               type="button"
                               onClick={() => handleOpenSubmittedRequestPreview(row)}
                               className={`block w-full truncate rounded px-1.5 py-1 text-left text-[10px] font-semibold ${statusClass(row.status)}`}
-                              title={`${row.requestId} · ${row.patient} · ${row.statusLabel}`}
+                              title={`${row.requestId} Â· ${row.patient} Â· ${row.statusLabel}`}
                             >
-                              {row.requestId} · {row.patient}
+                              {row.requestId} Â· {row.patient}
                             </button>
                           ))}
                           {day.rows.length > 3 ? <p className="text-[10px] text-slate-500">+{day.rows.length - 3} more</p> : null}
@@ -3068,14 +3068,14 @@ export default function WigRequestPage({ userProfile }) {
                 <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
                   <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Personal Information</p><div className="mt-2 space-y-1.5"><p><span className="font-semibold text-slate-900">Age:</span> {selectedSubmittedRequest.patientAge}</p><p><span className="font-semibold text-slate-900">Birthdate:</span> {selectedSubmittedRequest.patientBirthdate}</p><p><span className="font-semibold text-slate-900">Gender:</span> {selectedSubmittedRequest.patientGender}</p><p><span className="font-semibold text-slate-900">Email:</span> {selectedSubmittedRequest.patientEmail}</p><p><span className="font-semibold text-slate-900">Contact:</span> {selectedSubmittedRequest.patientContact}</p><p><span className="font-semibold text-slate-900">Address:</span> {selectedSubmittedRequest.patientAddress}</p></div></section>
                   <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Clinical Information</p><div className="mt-2 space-y-1.5"><p><span className="font-semibold text-slate-900">Condition:</span> {selectedSubmittedRequest.medicalCondition}</p><p><span className="font-semibold text-slate-900">Category / Stage:</span> {selectedSubmittedRequest.conditionCategory} / {selectedSubmittedRequest.conditionStage}</p><p><span className="font-semibold text-slate-900">Physician:</span> {selectedSubmittedRequest.attendingPhysician}</p><p><span className="font-semibold text-slate-900">Treatment:</span> {selectedSubmittedRequest.treatmentPlan}</p><p><span className="font-semibold text-slate-900">Current Status:</span> {selectedSubmittedRequest.treatmentStatus}</p></div></section>
-                  <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Emergency Contacts</p><div className="mt-2 space-y-1.5"><p className="font-semibold text-slate-900">Primary</p><p>{selectedSubmittedRequest.guardianName} · {selectedSubmittedRequest.guardianRelationship}</p><p>{selectedSubmittedRequest.guardianContact}</p>{selectedSubmittedRequest.secondaryGuardianName || selectedSubmittedRequest.secondaryGuardianRelationship || selectedSubmittedRequest.secondaryGuardianContact ? <div className="border-t border-slate-100 pt-2"><p className="font-semibold text-slate-900">Secondary</p><p>{selectedSubmittedRequest.secondaryGuardianName || 'N/A'} · {selectedSubmittedRequest.secondaryGuardianRelationship || 'N/A'}</p><p>{selectedSubmittedRequest.secondaryGuardianContact || 'N/A'}</p></div> : null}</div></section>
+                  <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Emergency Contacts</p><div className="mt-2 space-y-1.5"><p className="font-semibold text-slate-900">Primary</p><p>{selectedSubmittedRequest.guardianName} Â· {selectedSubmittedRequest.guardianRelationship}</p><p>{selectedSubmittedRequest.guardianContact}</p>{selectedSubmittedRequest.secondaryGuardianName || selectedSubmittedRequest.secondaryGuardianRelationship || selectedSubmittedRequest.secondaryGuardianContact ? <div className="border-t border-slate-100 pt-2"><p className="font-semibold text-slate-900">Secondary</p><p>{selectedSubmittedRequest.secondaryGuardianName || 'N/A'} Â· {selectedSubmittedRequest.secondaryGuardianRelationship || 'N/A'}</p><p>{selectedSubmittedRequest.secondaryGuardianContact || 'N/A'}</p></div> : null}</div></section>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1 border-t border-slate-200 pt-3 text-xs"><p><span className="font-semibold text-slate-900">Request Date:</span> {formatRequestDateTime(selectedSubmittedRequest.requestDate)}</p><p><span className="font-semibold text-slate-900">Last Updated:</span> {formatRequestDateTime(selectedSubmittedRequest.updatedAt || selectedSubmittedRequest.requestDate)}</p></div>
                 {selectedSubmittedRequest.isWishRequest ? (
                   <p className="mt-1">
                     <span className="font-semibold text-slate-900">No-stock fulfillment:</span>{' '}
                     {String(selectedSubmittedRequest.fulfillmentStatus || 'Awaiting review').replace(/_/g, ' ')}
-                    {selectedSubmittedRequest.fulfillmentBundleId ? ` · Bundle #${selectedSubmittedRequest.fulfillmentBundleId}` : ''}
+                    {selectedSubmittedRequest.fulfillmentBundleId ? ` Â· Bundle #${selectedSubmittedRequest.fulfillmentBundleId}` : ''}
                   </p>
                 ) : null}
                 {selectedSubmittedRequest.statusReason && (
@@ -3188,5 +3188,3 @@ export default function WigRequestPage({ userProfile }) {
     </div>
   );
 }
-
-

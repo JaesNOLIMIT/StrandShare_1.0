@@ -636,7 +636,7 @@ export default function UploadWigStocksPage({ userProfile }) {
     <div className="space-y-6" style={rootStyle}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold mb-2" style={headingStyle}>Upload Wig Stocks</h1>
+          <h1 className="role-page-title text-3xl font-bold mb-2" style={headingStyle}>Upload Wig Stocks</h1>
           <p style={{ color: secondaryTextColor }}>
             Scan a wig bundle waybill to register completed wigs and manage live stock availability by specification.
           </p>

@@ -1008,7 +1008,7 @@ export default function GenerateReportsPage({ userProfile }) {
     <div className="space-y-6" style={rootStyle}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold mb-2" style={headingStyle}>Reports</h1>
+          <h1 className="role-page-title text-3xl font-bold mb-2" style={headingStyle}>Reports</h1>
           <p style={{ color: secondaryTextColor }}>
             Generate QA, bundling, and wig inventory reports. Filter by date, status, or event, then export to CSV or PDF.
           </p>
@@ -1328,4 +1328,3 @@ export default function GenerateReportsPage({ userProfile }) {
     </div>
   );
 }
-

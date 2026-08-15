@@ -85,7 +85,7 @@ export default function TrackRequestedWigPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="mb-2 text-3xl font-bold text-gray-900">Track Status</h1>
+        <h1 className="role-page-title mb-2 text-3xl font-bold text-gray-900">Track Status</h1>
         <p className="text-gray-600">Monitor each requested wig from intake to release, with map visibility for delivered or in-transit cases.</p>
       </div>
 
@@ -201,4 +201,3 @@ export default function TrackRequestedWigPage() {
     </div>
   );
 }
-

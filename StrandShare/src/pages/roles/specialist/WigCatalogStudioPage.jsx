@@ -65,7 +65,7 @@ function StockAdjustmentModal({ state, setState, onClose, onSubmit }) {
   const nextStock = Number(row.stockCount || 0) + signedChange;
   return (
     <ModalFrame
-      title={`Adjust stock · ${row.wigCode || row.wigName}`}
+      title={`Adjust stock Â· ${row.wigCode || row.wigName}`}
       icon={<PackagePlus size={17} className="text-slate-700" />}
       onClose={state.saving ? undefined : onClose}
     >
@@ -157,7 +157,7 @@ function StockHistoryModal({ state, onClose }) {
   if (!state.open || !state.row) return null;
   return (
     <ModalFrame
-      title={`Stock history · ${state.row.wigCode || state.row.wigName}`}
+      title={`Stock history Â· ${state.row.wigCode || state.row.wigName}`}
       icon={<History size={17} className="text-slate-700" />}
       onClose={onClose}
       width="max-w-2xl"
@@ -192,7 +192,7 @@ function StockHistoryModal({ state, onClose }) {
                       {Number(item.Quantity_Change) > 0 ? '+' : ''}{item.Quantity_Change}
                     </td>
                     <td className="px-4 py-3 text-slate-700">
-                      {item.Previous_Stock} → {item.New_Stock}
+                      {item.Previous_Stock} â†’ {item.New_Stock}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{item.Reason || 'Inventory adjustment'}</td>
                   </tr>
@@ -294,6 +294,25 @@ export default function WigCatalogStudioPage({ userProfile }) {
 
   useEffect(() => {
     void loadInventory();
+  }, [loadInventory]);
+
+  useEffect(() => {
+    if (!supabase) {
+      return undefined;
+    }
+
+    const refreshInventory = () => void loadInventory();
+    const channel = supabase
+      .channel('specialist-wig-catalog-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Wigs' }, refreshInventory)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Wig_Specifications' }, refreshInventory)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Wig_AI_Filters' }, refreshInventory)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Wig_Stock_History' }, refreshInventory)
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
   }, [loadInventory]);
 
   const openStockModal = (row) => {
@@ -467,7 +486,7 @@ export default function WigCatalogStudioPage({ userProfile }) {
       <header>
         <div className="flex flex-col gap-5 pb-7 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-700 sm:text-3xl">
+            <h1 className="role-page-title text-2xl font-semibold tracking-tight text-slate-700 sm:text-3xl">
               Wig Catalog Studio
             </h1>
             <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-600">

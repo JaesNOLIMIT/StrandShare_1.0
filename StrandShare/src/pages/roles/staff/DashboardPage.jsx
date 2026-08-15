@@ -155,7 +155,7 @@ function ProgressRow({ label, value, total, accentColor }) {
     <div>
       <div className="mb-1 flex items-center justify-between text-xs">
         <span className="font-semibold text-slate-700">{label}</span>
-        <span className="font-bold text-slate-900">{value}<span className="ml-1 font-normal text-slate-400">· {pct}%</span></span>
+        <span className="font-bold text-slate-900">{value}<span className="ml-1 font-normal text-slate-400">Â· {pct}%</span></span>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
         <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(pct, value > 0 ? 2 : 0)}%`, backgroundColor: accentColor }} />
@@ -562,7 +562,7 @@ export default function DashboardPage({ onNavigate, userProfile }) {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1
-            className="text-2xl font-bold"
+            className="role-page-title text-2xl font-bold"
             style={{ fontFamily: `${headingFontFamily}, sans-serif`, color: primaryTextColor }}
           >
             Staff Dashboard
@@ -789,7 +789,7 @@ export default function DashboardPage({ onNavigate, userProfile }) {
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-semibold text-slate-900">{row.Event_Name || 'Untitled Event'}</p>
                       <p className="truncate text-[11px] text-slate-500">
-                        EA-{row.Event_Application_ID} · {applicantName(row)}
+                        EA-{row.Event_Application_ID} Â· {applicantName(row)}
                       </p>
                     </div>
                     <span className="flex-none rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
@@ -833,7 +833,7 @@ export default function DashboardPage({ onNavigate, userProfile }) {
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-semibold text-slate-900">{row.Event_Name || 'Untitled Event'}</p>
                         <p className="truncate text-[11px] text-slate-500">
-                          ER-{row.Event_Request_ID} · {formatShortDate(row.Start_Date)}
+                          ER-{row.Event_Request_ID} Â· {formatShortDate(row.Start_Date)}
                         </p>
                       </div>
                     </div>

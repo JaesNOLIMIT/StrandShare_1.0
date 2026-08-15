@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   Camera,
@@ -1461,7 +1462,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Manage Assigned Events</h1>
+          <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Assigned Events</h1>
           <p className="text-sm text-slate-600">View events admin assigned to you, search attendees, and print waybills.</p>
           <p className="mt-1 text-xs text-emerald-700">
             Live updates are active. Data also refreshes every 30 seconds automatically.
@@ -1471,20 +1472,21 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => { void handleRefreshAll(); }}
-            disabled={isLoadingEvents || isLoadingAttendees || isSaving}
-            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+            onClick={() => setShowHowToModal(true)}
+            aria-label="Open workflow guide"
+            title="Workflow guide"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 transition hover:bg-slate-100"
           >
-            {(isLoadingEvents || isLoadingAttendees || isSaving) ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-            Refresh
+            <HelpCircle size={14} />
           </button>
           <button
             type="button"
-            onClick={() => setShowHowToModal(true)}
+            onClick={() => { void handleRefreshAll(); }}
+            disabled={isLoadingEvents || isLoadingAttendees || isSaving}
             className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
           >
-            <HelpCircle size={12} />
-            How to use
+            {(isLoadingEvents || isLoadingAttendees || isSaving) ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            Refresh
           </button>
         </div>
       </div>
@@ -1669,7 +1671,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Schedule</p>
                         <p className="text-sm text-slate-800">
-                          {formatDateTime(selectedEvent.Start_Date)} — {formatDateTime(selectedEvent.End_Date)}
+                          {formatDateTime(selectedEvent.Start_Date)} â€” {formatDateTime(selectedEvent.End_Date)}
                         </p>
                       </div>
                     </div>
@@ -2260,23 +2262,25 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         showOpenDates={false}
       />
 
-      {showHowToModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-4">
-          <div className="w-full max-w-xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
-            <div className="flex items-start justify-between gap-3 px-5 py-4">
+      {showHowToModal && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4">
+          <button type="button" aria-label="Close workflow guide" onClick={() => setShowHowToModal(false)} className="absolute inset-0 border-0 bg-slate-950/60 backdrop-blur-[3px]" />
+          <section role="dialog" aria-modal="true" aria-labelledby="assigned-events-guide-title" className="relative z-10 w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-white px-6 py-5">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Guide</p>
-                <h3 className="text-lg font-bold text-slate-900">How to Use Manage Assigned Events</h3>
+                <h3 id="assigned-events-guide-title" className="text-xl font-bold text-slate-900">Manage Assigned Events Workflow</h3>
               </div>
               <button
                 type="button"
                 onClick={() => setShowHowToModal(false)}
-                className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                aria-label="Close workflow guide"
+                className="rounded-lg border border-slate-300 bg-white p-2 text-slate-500 hover:bg-slate-50"
               >
-                Close
+                <X size={17} />
               </button>
             </div>
-            <div className="px-5 pb-5 text-sm text-slate-700">
+            <div className="bg-white p-6 text-sm text-slate-700">
               <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
                 Always print all waybills before going to the event.
               </p>
@@ -2288,8 +2292,9 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 <p>5. Use <strong>Refresh</strong> anytime if you want an immediate sync; live updates are already active.</p>
               </div>
             </div>
-          </div>
-        </div>
+          </section>
+        </div>,
+        document.body,
       )}
     </div>
   );

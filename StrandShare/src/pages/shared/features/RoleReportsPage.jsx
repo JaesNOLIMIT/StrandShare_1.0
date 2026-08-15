@@ -203,13 +203,13 @@ function rejectedLikeStatus(statusKey) {
 // distinct hues to the semantic states.
 function buildStatusPalette(theme) {
   return {
-    pendingStaff: theme?.primaryColorLight || '#0a8ef5',     // light primary  — in progress
-    pendingAdmin: theme?.secondaryColor || '#6B7280',         // secondary      — awaiting decision
-    approved: theme?.tertiaryColor || '#10b981',              // tertiary       — success
-    rejected: theme?.primaryColorDark || '#025aa3',           // dark primary   — halted / rejected
-    appealed: theme?.tertiaryColorLight || '#34d399',         // light tertiary — appeal
-    neutral: theme?.secondaryColorLight || '#9CA3AF',         // light secondary — neutral / withdrawn
-    primary: theme?.primaryColor || '#0275d8',                // primary brand  — total / main
+    pendingStaff: theme?.primaryColorLight || '#0a8ef5',     // light primary  â€” in progress
+    pendingAdmin: theme?.secondaryColor || '#6B7280',         // secondary      â€” awaiting decision
+    approved: theme?.tertiaryColor || '#10b981',              // tertiary       â€” success
+    rejected: theme?.primaryColorDark || '#025aa3',           // dark primary   â€” halted / rejected
+    appealed: theme?.tertiaryColorLight || '#34d399',         // light tertiary â€” appeal
+    neutral: theme?.secondaryColorLight || '#9CA3AF',         // light secondary â€” neutral / withdrawn
+    primary: theme?.primaryColor || '#0275d8',                // primary brand  â€” total / main
   };
 }
 
@@ -759,6 +759,28 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     void loadTemplateRows();
   }, [loadTemplateRows, selectedTemplateId]);
 
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      return undefined;
+    }
+
+    const refreshReport = () => void loadTemplateRows();
+    const channel = supabase
+      .channel(`role-reports-live-${roleKey || 'unknown'}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_APPLICATIONS_TABLE }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_REQUESTS_TABLE }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Cut_Hair_Inventory' }, refreshReport)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'Hair_AI_Review_Comparisons' }, refreshReport)
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [loadTemplateRows, roleKey]);
+
   const statusOptions = useMemo(() => {
     const unique = [...new Set(rawRows.map((row) => row.statusLabel).filter(Boolean))];
     return ['all', ...unique];
@@ -956,7 +978,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1
-            className="text-2xl font-bold"
+            className="role-page-title text-2xl font-bold"
             style={{ fontFamily: `${headingFontFamily}, sans-serif`, color: primaryTextColor }}
           >
             {isAdmin ? 'Admin Reports' : 'Staff Reports'}
@@ -966,7 +988,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-slate-500">
-          <span className="hidden sm:inline">Last refreshed: <strong className="font-semibold text-slate-700">{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : '—'}</strong></span>
+          <span className="hidden sm:inline">Last refreshed: <strong className="font-semibold text-slate-700">{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : 'â€”'}</strong></span>
           <button
             type="button"
             onClick={() => loadTemplateRows()}
@@ -1005,7 +1027,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
         </div>
       )}
 
-      {/* Template selector — underlined tabs */}
+      {/* Template selector â€” underlined tabs */}
       <div className="border-b border-slate-200">
         <nav className="-mb-px flex flex-wrap gap-x-5 gap-y-1" aria-label="Report templates">
           {templates.map((template) => {

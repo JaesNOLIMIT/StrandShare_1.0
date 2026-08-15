@@ -325,6 +325,27 @@ export default function SalonSchedulePage() {
   }, [loadPage]);
 
   useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      return undefined;
+    }
+
+    const refreshSchedule = () => void loadPage();
+    const channel = supabase
+      .channel('staff-salon-schedule-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: APPOINTMENTS_TABLE }, refreshSchedule)
+      .on('postgres_changes', { event: '*', schema: 'public', table: HOURS_TABLE }, refreshSchedule)
+      .on('postgres_changes', { event: '*', schema: 'public', table: OVERRIDES_TABLE }, refreshSchedule)
+      .on('postgres_changes', { event: '*', schema: 'public', table: HISTORY_TABLE }, refreshSchedule)
+      .on('postgres_changes', { event: '*', schema: 'public', table: LOGISTICS_TABLE }, refreshSchedule)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'guardian_consents' }, refreshSchedule)
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [loadPage]);
+
+  useEffect(() => {
     void loadSlots(selectedDate);
   }, [selectedDate, loadSlots]);
 
@@ -503,7 +524,7 @@ export default function SalonSchedulePage() {
     <div className="min-w-0 space-y-5" style={{ color: primaryTextColor }}>
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-300 pb-5">
         <div>
-          <h1 className="text-3xl font-bold" style={{ fontFamily: `${headingFont}, sans-serif` }}>Salon Schedule</h1>
+          <h1 className="role-page-title text-3xl font-bold" style={{ fontFamily: `${headingFont}, sans-serif` }}>Salon Schedule</h1>
           <p className="mt-1 max-w-3xl text-sm" style={{ color: secondaryTextColor }}>
             Review automatically confirmed salon donations, manage capacity and closures, and complete on-site hair intake.
           </p>
@@ -624,7 +645,7 @@ export default function SalonSchedulePage() {
                     <h2 className="text-lg font-semibold">{formatDate(selectedDate, { weekday: 'long' })}</h2>
                     <p className="mt-0.5 text-xs text-slate-500">
                       {selectedOverride?.Is_Closed
-                        ? `Closed${selectedOverride.Reason ? ` — ${selectedOverride.Reason}` : ''}`
+                        ? `Closed${selectedOverride.Reason ? ` â€” ${selectedOverride.Reason}` : ''}`
                         : `${selectedDayAppointments.length} appointment${selectedDayAppointments.length === 1 ? '' : 's'}`}
                     </p>
                   </div>
@@ -644,7 +665,7 @@ export default function SalonSchedulePage() {
                             onClick={() => selectAppointment(row)}
                             className="rounded-lg border border-amber-200 bg-white px-3 py-2"
                           >
-                            <p className="truncate text-xs font-semibold text-slate-800">{formatTime(row.Appointment_Start_At)} · {row.Contact_Name}</p>
+                            <p className="truncate text-xs font-semibold text-slate-800">{formatTime(row.Appointment_Start_At)} Â· {row.Contact_Name}</p>
                             <p className="mt-1 text-[10px] text-amber-700">Existing appointment outside the current schedule</p>
                           </button>
                         ))}
@@ -660,7 +681,7 @@ export default function SalonSchedulePage() {
                         <div key={slot.Slot_Start_At} className="rounded-xl border border-slate-200">
                           <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-4 py-2.5">
                             <div>
-                              <p className="text-sm font-semibold">{formatTime(slot.Slot_Start_At)}–{formatTime(slot.Slot_End_At)}</p>
+                              <p className="text-sm font-semibold">{formatTime(slot.Slot_Start_At)}â€“{formatTime(slot.Slot_End_At)}</p>
                               <p className="text-[10px] text-slate-500">{slot.Late_Grace_Minutes}-minute arrival grace period</p>
                             </div>
                             <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${
@@ -726,7 +747,7 @@ export default function SalonSchedulePage() {
                         <option value="">No consent selected</option>
                         {selectedGuardians.map((row) => (
                           <option key={row.guardian_consent_id} value={row.guardian_consent_id}>
-                            {row.guardian_full_name} — {row.consent_status}
+                            {row.guardian_full_name} â€” {row.consent_status}
                           </option>
                         ))}
                       </select>
@@ -786,7 +807,7 @@ export default function SalonSchedulePage() {
                           <select value={rescheduleStart} onChange={(event) => setRescheduleStart(event.target.value)} disabled={!rescheduleDate} className={inputClass}>
                             <option value="">Select an available time</option>
                             {rescheduleSlots.filter((slot) => slot.Remaining_Capacity > 0).map((slot) => (
-                              <option key={slot.Slot_Start_At} value={slot.Slot_Start_At}>{formatTime(slot.Slot_Start_At)} — {slot.Remaining_Capacity} places left</option>
+                              <option key={slot.Slot_Start_At} value={slot.Slot_Start_At}>{formatTime(slot.Slot_Start_At)} â€” {slot.Remaining_Capacity} places left</option>
                             ))}
                           </select>
                           <button type="button" onClick={() => void rescheduleAppointment()} disabled={!rescheduleStart || isActioning} className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-50">Confirm new time</button>
@@ -830,7 +851,7 @@ export default function SalonSchedulePage() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="font-semibold text-slate-800">{row.Day_Group}</p>
-                      <p className="text-xs text-slate-500">{row.Day_Group === 'Weekday' ? 'Monday–Friday' : 'Saturday–Sunday'}</p>
+                      <p className="text-xs text-slate-500">{row.Day_Group === 'Weekday' ? 'Mondayâ€“Friday' : 'Saturdayâ€“Sunday'}</p>
                     </div>
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
                       <input type="checkbox" checked={Boolean(row.Is_Open)} onChange={(event) => updateHoursDraft(row.Operating_Hours_ID, 'Is_Open', event.target.checked)} />
@@ -903,8 +924,8 @@ export default function SalonSchedulePage() {
                       <div>
                         <p className="text-sm font-semibold text-slate-800">{formatDate(row.Override_Date)}</p>
                         <p className="text-xs text-slate-500">
-                          {row.Is_Closed ? 'Closed all day' : `${formatTime(row.Opening_Time)}–${formatTime(row.Closing_Time)}`}
-                          {row.Reason ? ` — ${row.Reason}` : ''}
+                          {row.Is_Closed ? 'Closed all day' : `${formatTime(row.Opening_Time)}â€“${formatTime(row.Closing_Time)}`}
+                          {row.Reason ? ` â€” ${row.Reason}` : ''}
                         </p>
                       </div>
                       <button type="button" onClick={() => void deleteOverride(row.Schedule_Override_ID)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1.5 text-xs font-semibold text-rose-700"><XCircle size={13} /> Remove</button>

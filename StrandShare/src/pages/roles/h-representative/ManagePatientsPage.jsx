@@ -869,6 +869,29 @@ export default function ManagePatientsPage({ userProfile }) {
   }, [hospitalId, fetchPatients, fetchTransferData]);
 
   useEffect(() => {
+    if (!isSupabaseConfigured || !supabase || !hospitalId) {
+      return undefined;
+    }
+
+    const refreshPatients = () => {
+      void fetchPatients();
+      void fetchTransferData();
+    };
+    const channel = supabase
+      .channel(`hospital-patients-live-${hospitalId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: PATIENTS_TABLE }, refreshPatients)
+      .on('postgres_changes', { event: '*', schema: 'public', table: TRANSFER_REQUESTS_TABLE }, refreshPatients)
+      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, refreshPatients)
+      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshPatients)
+      .on('postgres_changes', { event: '*', schema: 'public', table: USER_DETAILS_TABLE }, refreshPatients)
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [hospitalId, fetchPatients, fetchTransferData]);
+
+  useEffect(() => {
     if (!patientPictureFile) {
       setPatientPicturePreviewUrl('');
       return undefined;
@@ -1947,7 +1970,7 @@ export default function ManagePatientsPage({ userProfile }) {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Manage Patients</h1>
+          <h1 className="role-page-title text-3xl font-bold text-gray-900">Manage Patients</h1>
           <p className="mt-1 text-sm text-gray-600">
             Create patient account, user details, and patient record in one flow with invite email credential delivery.
           </p>
@@ -3134,5 +3157,3 @@ function DrawerRow({ label, value }) {
     </div>
   );
 }
-
-

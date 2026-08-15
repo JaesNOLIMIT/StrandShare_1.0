@@ -525,7 +525,7 @@ export default function DashboardPage({ onNavigate }) {
     <div className="space-y-4" style={rootStyle}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="mb-1 text-2xl font-bold" style={headingStyle}>Specialist Dashboard</h1>
+          <h1 className="role-page-title mb-1 text-2xl font-bold" style={headingStyle}>Specialist Dashboard</h1>
           <p style={{ color: secondaryTextColor }}>
             Live QA queue, bundling progress, and finished wig output - synced in realtime from the database.
           </p>

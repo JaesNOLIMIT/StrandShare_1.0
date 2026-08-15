@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ShieldAlert, Search } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
@@ -21,7 +21,7 @@ export default function AuditTrailsPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
 
-  const loadAuditLogs = async () => {
+  const loadAuditLogs = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
       setLoadError('Supabase is not configured.');
       return;
@@ -71,11 +71,25 @@ export default function AuditTrailsPage() {
 
     setLogs(normalized);
     setIsLoading(false);
-  };
+  }, []);
 
   useEffect(() => {
-    loadAuditLogs();
-  }, []);
+    void loadAuditLogs();
+
+    if (!isSupabaseConfigured || !supabase) {
+      return undefined;
+    }
+
+    const channel = supabase
+      .channel('admin-audit-trails-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => void loadAuditLogs())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_details' }, () => void loadAuditLogs())
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [loadAuditLogs]);
 
   const filteredLogs = useMemo(() => {
     if (!searchQuery.trim()) {
@@ -103,7 +117,7 @@ export default function AuditTrailsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Audit Trails</h1>
+        <h1 className="role-page-title text-3xl font-bold text-gray-900 mb-2">Audit Trails</h1>
         <p className="text-gray-600">Track account and security-sensitive actions across the platform.</p>
       </div>
 

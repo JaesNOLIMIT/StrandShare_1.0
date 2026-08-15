@@ -755,7 +755,7 @@ export default function DashboardPage({ onNavigate }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1
-            className="text-2xl font-bold leading-tight"
+            className="role-page-title text-2xl font-bold leading-tight"
             style={{ color: palette.heading, fontFamily: `${headingFontFamily}, sans-serif` }}
           >
             Admin Dashboard
@@ -1103,7 +1103,7 @@ export default function DashboardPage({ onNavigate }) {
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[11px] font-semibold" style={{ color: palette.heading }}>{row.Event_Name || 'Untitled Event'}</span>
                       <span className="block truncate text-[10px]" style={{ color: palette.bodyText }}>
-                        ER-{row.Event_Request_ID} · {applicantName(row.application)}
+                        ER-{row.Event_Request_ID} Â· {applicantName(row.application)}
                       </span>
                     </span>
                     <span className="flex-none text-[10px] font-semibold" style={{ color: palette.bodyText }}>{formatShortDate(row.Created_At)}</span>

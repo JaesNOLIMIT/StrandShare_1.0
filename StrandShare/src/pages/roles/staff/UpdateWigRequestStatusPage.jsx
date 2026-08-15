@@ -1073,6 +1073,30 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     loadReviewRows();
   }, [loadReviewRows]);
 
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      return undefined;
+    }
+
+    const refreshRequests = () => void loadReviewRows();
+    const channel = supabase
+      .channel('staff-wig-requests-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, refreshRequests)
+      .on('postgres_changes', { event: '*', schema: 'public', table: WIGS_TABLE }, refreshRequests)
+      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_SPECS_TABLE }, refreshRequests)
+      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_FILTERS_TABLE }, refreshRequests)
+      .on('postgres_changes', { event: '*', schema: 'public', table: PATIENTS_TABLE }, refreshRequests)
+      .on('postgres_changes', { event: '*', schema: 'public', table: RELEASE_SCHEDULES_TABLE }, refreshRequests)
+      .on('postgres_changes', { event: '*', schema: 'public', table: SAFETY_ASSESSMENTS_TABLE }, refreshRequests)
+      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, refreshRequests)
+      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshRequests)
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [loadReviewRows]);
+
   const filteredRows = useMemo(() => {
     const activeStatusSet = new Set(ACTIVE_REQUEST_STATUS_KEYS);
 
@@ -1359,7 +1383,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     <div className="space-y-5">
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Staff Workflow</p>
-        <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900 md:text-3xl">Manage Wig Request</h1>
+        <h1 className="role-page-title mt-1 text-2xl font-extrabold tracking-tight text-slate-900 md:text-3xl">Manage Wig Request</h1>
         <p className="mt-1 text-sm text-slate-600">
           Review all incoming wig requests, inspect full specifications, and process status transitions up to release scheduling.
         </p>
@@ -1595,12 +1619,12 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                     <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Emergency Contacts</p>
                     <div className="mt-2 space-y-1.5">
                       <p className="font-semibold text-slate-900">Primary</p>
-                      <p>{selectedRow.guardianName} · {selectedRow.guardianRelationship}</p>
+                      <p>{selectedRow.guardianName} Â· {selectedRow.guardianRelationship}</p>
                       <p>{selectedRow.guardianContact}</p>
                       {selectedRow.secondaryGuardianName || selectedRow.secondaryGuardianRelationship || selectedRow.secondaryGuardianContact ? (
                         <div className="border-t border-slate-100 pt-2">
                           <p className="font-semibold text-slate-900">Secondary</p>
-                          <p>{selectedRow.secondaryGuardianName || 'N/A'} · {selectedRow.secondaryGuardianRelationship || 'N/A'}</p>
+                          <p>{selectedRow.secondaryGuardianName || 'N/A'} Â· {selectedRow.secondaryGuardianRelationship || 'N/A'}</p>
                           <p>{selectedRow.secondaryGuardianContact || 'N/A'}</p>
                         </div>
                       ) : null}

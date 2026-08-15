@@ -120,7 +120,7 @@ function formatAnswerValue(value) {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (Array.isArray(value)) return value.length ? value.map(formatAnswerValue).join(', ') : 'None';
   if (typeof value === 'object') return 'Recorded';
-  return humanizeLabel(value).replace(/(\d)\s+(\d)/g, '$1–$2');
+  return humanizeLabel(value).replace(/(\d)\s+(\d)/g, '$1â€“$2');
 }
 
 function splitLeadingJson(rawValue) {
@@ -987,7 +987,7 @@ export default function QualityCheckPage() {
     <div className="min-w-0 space-y-6 overflow-x-hidden" style={rootStyle}>
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-300 pb-5">
         <div>
-          <h1 className="text-3xl font-bold" style={headingStyle}>Hair Quality Check</h1>
+          <h1 className="role-page-title text-3xl font-bold" style={headingStyle}>Hair Quality Check</h1>
           <p className="mt-1 text-sm" style={{ color: secondaryTextColor }}>
             Scan a waybill, compare the received hair with the submitted details, then approve or reject.
           </p>
@@ -1189,7 +1189,7 @@ export default function QualityCheckPage() {
                     <p className="mb-4 mt-0.5 text-xs" style={{ color: secondaryTextColor }}>
                       {canDecide
                         ? 'Correct any donor-declared values. Changes save when you approve or reject.'
-                        : 'This review is complete — inspection details are read-only.'}
+                        : 'This review is complete â€” inspection details are read-only.'}
                     </p>
 
                     {!activeDetailRow ? (

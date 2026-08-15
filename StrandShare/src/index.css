@@ -53,6 +53,24 @@ h6 {
   font-family: var(--font-family);
 }
 
+/* Keep every role workspace title aligned with the Admin Dashboard heading. */
+.role-page-title {
+  margin: 0 !important;
+  font-family: var(--font-family-secondary) !important;
+  font-size: 1.5rem !important;
+  font-weight: 700 !important;
+  line-height: 1.25 !important;
+  letter-spacing: normal !important;
+}
+
+/* Modal content is always opaque; blur belongs only to the outside backdrop. */
+.app-modal-surface,
+[role='dialog'] {
+  background-color: #ffffff !important;
+  opacity: 1 !important;
+  backdrop-filter: none !important;
+}
+
 p,
 span,
 label,

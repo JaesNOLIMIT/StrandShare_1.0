@@ -1164,19 +1164,11 @@ export default function BundlingPage() {
   return (
     <div className="space-y-6" style={rootStyle}>
       <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <span
-            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl"
-            style={{ backgroundColor: withColorAlpha(primaryColor, 0.12), color: primaryColor }}
-          >
-            <Package size={22} />
-          </span>
-          <div>
-            <h1 className="text-2xl font-bold md:text-3xl" style={headingStyle}>Bundling</h1>
+        <div>
+            <h1 className="role-page-title text-2xl font-bold md:text-3xl" style={headingStyle}>Bundling</h1>
             <p className="text-sm" style={{ color: secondaryTextColor }}>
               Open a draft, scan {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX} donor waybills, then close it to print the bundle waybill.
             </p>
-          </div>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -1238,11 +1230,11 @@ export default function BundlingPage() {
                       <p className="font-mono text-xs font-bold text-slate-900">{requestRow.Request_Code || `WR-${requestRow.Req_ID}`}</p>
                       <p className="mt-1 text-sm font-semibold text-slate-900">{specification.wigName || `Wig #${requestRow.Requested_Wig_ID}`}</p>
                       <p className="mt-0.5 text-xs text-slate-600">
-                        {requestRow.patientCode} · Cap {requestRow.Requested_Cap_Size || specification.capSize || 'N/A'}
+                        {requestRow.patientCode} Â· Cap {requestRow.Requested_Cap_Size || specification.capSize || 'N/A'}
                       </p>
                       <p className="mt-1 text-[11px] text-slate-500">
                         {specification.style || specification.hairTexture || 'Style N/A'}
-                        {requestRow.medicalCondition ? ` · ${requestRow.medicalCondition}` : ''}
+                        {requestRow.medicalCondition ? ` Â· ${requestRow.medicalCondition}` : ''}
                       </p>
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1.5">
@@ -1803,4 +1795,3 @@ export default function BundlingPage() {
     </div>
   );
 }
-

@@ -180,7 +180,7 @@ export default function CutHairInventoryPage() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Cut Hair Inventory</h1>
+          <h1 className="role-page-title text-2xl font-bold text-slate-900">Cut Hair Inventory</h1>
           <p className="text-sm text-slate-600">Only quality-approved cut hair appears here and can proceed to bundling.</p>
           <p className="mt-1 text-xs text-emerald-700">Inventory status updates live from Cut to Bundling to Wig Created.</p>
         </div>
@@ -271,8 +271,8 @@ export default function CutHairInventoryPage() {
                       {row.event && <p className="mt-1 inline-flex items-center gap-1 text-xs text-slate-600"><CalendarDays size={11} />{row.event.Event_Name}</p>}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-700">
-                      <p>{row.detail?.Declared_Length ?? 'N/A'} in · {row.detail?.Declared_Color || 'No color'}</p>
-                      <p>{row.detail?.Declared_Texture || 'No texture'} · {row.detail?.Declared_Density || 'No density'}</p>
+                      <p>{row.detail?.Declared_Length ?? 'N/A'} in Â· {row.detail?.Declared_Color || 'No color'}</p>
+                      <p>{row.detail?.Declared_Texture || 'No texture'} Â· {row.detail?.Declared_Density || 'No density'}</p>
                       <p className="text-slate-500">{row.detail?.Declared_Condition || 'No condition'}</p>
                     </td>
                     <td className="px-4 py-3">

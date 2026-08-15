@@ -1650,7 +1650,7 @@ export default function SettingsPage() {
       <div className="w-full rounded-xl border border-slate-200 bg-white p-6 md:p-8">
         <div className="mb-8">
           <div>
-            <h2 className="text-4xl font-bold tracking-tight text-slate-900">System Settings</h2>
+            <h1 className="role-page-title text-slate-900">System Settings</h1>
             <p className="text-slate-500 mt-1">Configure global platform parameters and visual identity.</p>
           </div>
         </div>
@@ -2767,4 +2767,3 @@ export default function SettingsPage() {
     </div>
   );
 }
-
