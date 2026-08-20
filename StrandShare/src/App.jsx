@@ -127,12 +127,20 @@ export default function App() {
       }
 
       if (isSupabaseConfigured && supabase) {
-        supabase.auth.getSession().then(({ data }) => {
-          const nextSession = data?.session ?? null;
-          if (nextSession?.user?.id === authUserId) {
-            setSession(nextSession);
-          }
-        });
+        supabase.auth.getSession()
+          .then(({ data, error }) => {
+            if (error) {
+              throw error;
+            }
+
+            const nextSession = data?.session ?? null;
+            if (nextSession?.user?.id === authUserId) {
+              setSession(nextSession);
+            }
+          })
+          .catch((error) => {
+            console.error('Could not synchronize the completed login session:', error);
+          });
       }
 
       setUserProfile(profile);
@@ -165,65 +173,78 @@ export default function App() {
         return;
       }
 
-      const { data, error } = await supabase.auth.getSession();
-      if (!isMounted) {
-        return;
-      }
-
-      if (error) {
-        setAuthNotice('Could not load your current session. Please log in again.');
-      }
-
-      const existingSession = data?.session ?? null;
-
-      if (
-        existingSession?.user?.id &&
-        shouldEnforceLoginPersistence() &&
-        !getLoginSessionPersistenceStatus().isValid
-      ) {
-        await supabase.auth.signOut({ scope: 'local' });
-        clearLoginSessionPersistence();
-        localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-        setSession(null);
-        setUserProfile(null);
-        setIsHydratingProfile(false);
-        setIsLoadingAuth(false);
-        setAuthNotice('Your login session ended. Please sign in again.');
-        if (window.location.pathname !== '/login') {
-          window.location.replace('/login');
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (!isMounted) {
+          return;
         }
-        return;
-      }
 
-      if (existingSession?.user?.id) {
-        const storedProfile = getStoredProfileForUser(existingSession.user.id);
-        if (storedProfile) {
-          setSession(existingSession);
-          setUserProfile(storedProfile);
+        if (error) {
+          throw error;
+        }
 
-          const hydratedProfile = await hydrateProfileDetails(existingSession.user.id, storedProfile);
-          if (hydratedProfile) {
-            setUserProfile(hydratedProfile);
-            try {
-              localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(hydratedProfile));
-            } catch {
-              // ignore storage write errors
-            }
-          }
-          setIsHydratingProfile(false);
-        } else {
-          // Keep the user on LoginPage so MFA/profile sync can complete there.
+        const existingSession = data?.session ?? null;
+
+        if (
+          existingSession?.user?.id &&
+          shouldEnforceLoginPersistence() &&
+          !getLoginSessionPersistenceStatus().isValid
+        ) {
+          await supabase.auth.signOut({ scope: 'local' });
+          clearLoginSessionPersistence();
+          localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
           setSession(null);
           setUserProfile(null);
           setIsHydratingProfile(false);
+          setAuthNotice('Your login session ended. Please sign in again.');
+          if (window.location.pathname !== '/login') {
+            window.location.replace('/login');
+          }
+          return;
         }
-      } else {
-        localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+
+        if (existingSession?.user?.id) {
+          const storedProfile = getStoredProfileForUser(existingSession.user.id);
+          if (storedProfile) {
+            setSession(existingSession);
+            setUserProfile(storedProfile);
+
+            const hydratedProfile = await hydrateProfileDetails(existingSession.user.id, storedProfile);
+            if (hydratedProfile) {
+              setUserProfile(hydratedProfile);
+              try {
+                localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(hydratedProfile));
+              } catch {
+                // ignore storage write errors
+              }
+            }
+            setIsHydratingProfile(false);
+          } else {
+            // Keep the user on LoginPage so MFA/profile sync can complete there.
+            setSession(null);
+            setUserProfile(null);
+            setIsHydratingProfile(false);
+          }
+        } else {
+          localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+          setUserProfile(null);
+          setIsHydratingProfile(false);
+        }
+      } catch (error) {
+        if (!isMounted) {
+          return;
+        }
+
+        console.error('Failed to initialize authentication:', error);
+        setSession(null);
         setUserProfile(null);
         setIsHydratingProfile(false);
+        setAuthNotice('Could not connect to the database. Check your connection, then try again.');
+      } finally {
+        if (isMounted) {
+          setIsLoadingAuth(false);
+        }
       }
-
-      setIsLoadingAuth(false);
     };
 
     bootstrapSession();
@@ -255,18 +276,22 @@ export default function App() {
         setSession(nextSession);
         setUserProfile(storedProfile);
 
-        hydrateProfileDetails(nextSession.user.id, storedProfile).then((hydratedProfile) => {
-          if (!hydratedProfile) {
-            return;
-          }
+        hydrateProfileDetails(nextSession.user.id, storedProfile)
+          .then((hydratedProfile) => {
+            if (!hydratedProfile) {
+              return;
+            }
 
-          setUserProfile(hydratedProfile);
-          try {
-            localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(hydratedProfile));
-          } catch {
-            // ignore storage write errors
-          }
-        });
+            setUserProfile(hydratedProfile);
+            try {
+              localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(hydratedProfile));
+            } catch {
+              // ignore storage write errors
+            }
+          })
+          .catch((error) => {
+            console.error('Could not refresh the signed-in user profile:', error);
+          });
         setIsHydratingProfile(false);
       } else {
         // During login we wait for LoginPage MFA to publish USER_PROFILE_READY_EVENT.
@@ -277,20 +302,27 @@ export default function App() {
     });
 
     const persistenceCheckInterval = window.setInterval(async () => {
-      if (!shouldEnforceLoginPersistence() || getLoginSessionPersistenceStatus().isValid) {
-        return;
-      }
+      try {
+        if (!shouldEnforceLoginPersistence() || getLoginSessionPersistenceStatus().isValid) {
+          return;
+        }
 
-      const { data } = await supabase.auth.getSession();
-      if (!data?.session) {
-        return;
-      }
+        const { data, error } = await supabase.auth.getSession();
+        if (error) {
+          throw error;
+        }
+        if (!data?.session) {
+          return;
+        }
 
-      await supabase.auth.signOut({ scope: 'local' });
-      clearLoginSessionPersistence();
-      localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-      if (window.location.pathname !== '/login') {
-        window.location.replace('/login');
+        await supabase.auth.signOut({ scope: 'local' });
+        clearLoginSessionPersistence();
+        localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+        if (window.location.pathname !== '/login') {
+          window.location.replace('/login');
+        }
+      } catch (error) {
+        console.error('Could not validate login persistence:', error);
       }
     }, 60 * 1000);
 
@@ -360,10 +392,24 @@ export default function App() {
     Boolean(activeRole) &&
     !ActiveDashboard &&
     !isHydratingProfile;
+  const showAuthLoadingScreen =
+    isLoadingAuth &&
+    !isCompleteAccountRoute &&
+    !isResetPasswordRoute &&
+    !isConfirmationCompleteRoute;
 
   return (
     <ThemeProvider>
       <div className="min-h-screen">
+        {showAuthLoadingScreen && (
+          <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+            <div className="text-center" role="status" aria-live="polite">
+              <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-slate-200 border-t-blue-600" />
+              <p className="mt-4 text-sm font-medium text-slate-700">Connecting to Donivra...</p>
+            </div>
+          </div>
+        )}
+
         {isCompleteAccountRoute && <CompleteAccountPage />}
         {isResetPasswordRoute && <ResetPasswordPage />}
         {isConfirmationCompleteRoute && <ConfirmationCompletePage />}
