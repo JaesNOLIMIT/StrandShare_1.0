@@ -12,7 +12,11 @@ import EventApplicationSuccessPage from './pages/public/EventApplicationSuccessP
 import PartnershipApplicationPage from './pages/public/PartnershipApplicationPage';
 import StaffRole from './pages/roles/staff/StaffRole';
 import SpecialistRole from './pages/roles/specialist/SpecialistRole';
-import { isSupabaseConfigured, supabase } from './lib/supabaseClient';
+import {
+  clearLocalSupabaseSession,
+  isSupabaseConfigured,
+  supabase,
+} from './lib/supabaseClient';
 import { logAuditAction } from './lib/auditLogger';
 import { toCanonicalRole } from './lib/roleUtils';
 import {
@@ -23,6 +27,18 @@ import {
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
 const AUTH_FLOW_PATHS = new Set(['/complete-account', '/reset-password', '/confirmation-complete']);
+const AUTH_BOOTSTRAP_TIMEOUT_MS = 22000;
+
+function withTimeout(promise, timeoutMs, message) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    window.clearTimeout(timeoutId);
+  });
+}
 
 function shouldEnforceLoginPersistence() {
   return !AUTH_FLOW_PATHS.has(window.location.pathname);
@@ -56,6 +72,7 @@ export default function App() {
   const [isLoadingAuth, setIsLoadingAuth] = useState(true);
   const [isHydratingProfile, setIsHydratingProfile] = useState(false);
   const [authNotice, setAuthNotice] = useState('');
+  const [authRecoveryRequired, setAuthRecoveryRequired] = useState(false);
 
   const getStoredProfileForUser = (authUserId) => {
     try {
@@ -174,7 +191,12 @@ export default function App() {
       }
 
       try {
-        const { data, error } = await supabase.auth.getSession();
+        setAuthRecoveryRequired(false);
+        const { data, error } = await withTimeout(
+          supabase.auth.getSession(),
+          AUTH_BOOTSTRAP_TIMEOUT_MS,
+          'Session initialization timed out.',
+        );
         if (!isMounted) {
           return;
         }
@@ -239,7 +261,8 @@ export default function App() {
         setSession(null);
         setUserProfile(null);
         setIsHydratingProfile(false);
-        setAuthNotice('Could not connect to the database. Check your connection, then try again.');
+        setAuthRecoveryRequired(true);
+        setAuthNotice('Your saved session could not be restored. Retry or sign in again on this device.');
       } finally {
         if (isMounted) {
           setIsLoadingAuth(false);
@@ -362,6 +385,19 @@ export default function App() {
     }
   };
 
+  const handleRetryAuth = () => {
+    setAuthRecoveryRequired(false);
+    setIsLoadingAuth(true);
+    window.location.reload();
+  };
+
+  const handleUseAnotherAccount = () => {
+    clearLocalSupabaseSession();
+    localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+    clearLoginSessionPersistence();
+    window.location.replace('/login');
+  };
+
   const activeRole = userProfile?.role || null;
   const canonicalActiveRole = toCanonicalRole(activeRole);
   const ActiveDashboard = resolveDashboardByRole(activeRole);
@@ -374,19 +410,22 @@ export default function App() {
   const isCompleteAccountRoute = currentPath === '/complete-account';
   const isResetPasswordRoute = currentPath === '/reset-password';
   const isConfirmationCompleteRoute = currentPath === '/confirmation-complete';
-  const showLandingPage = !isLoadingAuth && !session && isLandingRoute;
-  const showPartnershipApplicationPage = !isLoadingAuth && !session && isPartnershipApplicationRoute;
-  const showEventApplicationPage = !isLoadingAuth && !session && isEventApplicationRoute;
-  const showEventApplicationSuccessPage = !isLoadingAuth && !session && isEventApplicationSuccessRoute;
-  const showLoginPage = !isLoadingAuth && !session && !isLandingRoute && !isPartnershipApplicationRoute && !isEventApplicationRoute && !isEventApplicationSuccessRoute;
+  const canRenderMainRoutes = !authRecoveryRequired;
+  const showLandingPage = canRenderMainRoutes && !isLoadingAuth && !session && isLandingRoute;
+  const showPartnershipApplicationPage = canRenderMainRoutes && !isLoadingAuth && !session && isPartnershipApplicationRoute;
+  const showEventApplicationPage = canRenderMainRoutes && !isLoadingAuth && !session && isEventApplicationRoute;
+  const showEventApplicationSuccessPage = canRenderMainRoutes && !isLoadingAuth && !session && isEventApplicationSuccessRoute;
+  const showLoginPage = canRenderMainRoutes && !isLoadingAuth && !session && !isLandingRoute && !isPartnershipApplicationRoute && !isEventApplicationRoute && !isEventApplicationSuccessRoute;
   const showDashboard =
+    canRenderMainRoutes &&
     !isLoadingAuth &&
     Boolean(session) &&
     Boolean(activeRole) &&
     Boolean(ActiveDashboard);
   const showHydratingScreen =
-    !isLoadingAuth && Boolean(session) && !showDashboard && isHydratingProfile;
+    canRenderMainRoutes && !isLoadingAuth && Boolean(session) && !showDashboard && isHydratingProfile;
   const showUnsupportedRole =
+    canRenderMainRoutes &&
     !isLoadingAuth &&
     Boolean(session) &&
     Boolean(activeRole) &&
@@ -406,6 +445,33 @@ export default function App() {
             <div className="text-center" role="status" aria-live="polite">
               <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-slate-200 border-t-blue-600" />
               <p className="mt-4 text-sm font-medium text-slate-700">Connecting to Donivra...</p>
+            </div>
+          </div>
+        )}
+
+        {authRecoveryRequired && !isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && (
+          <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+              <h1 className="text-xl font-semibold text-slate-900">We could not restore this browser session</h1>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                The saved sign-in may be stale, or the authentication service did not respond in time. An account open on another device does not prevent you from signing in here.
+              </p>
+              <div className="mt-5 flex flex-col justify-center gap-3 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={handleRetryAuth}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Try again
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUseAnotherAccount}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                >
+                  Sign in again
+                </button>
+              </div>
             </div>
           </div>
         )}
