@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, ChevronUp, HeartPulse, Mail, MapPin, Phone } from 'lucide-react';
-import { createClient } from '@supabase/supabase-js';
 import { motion, useAnimation, useScroll, useSpring, useTransform } from 'framer-motion';
 import { useTheme } from '../../context/ThemeContext';
 import { TransitionFlipExit } from '../../components/transitions/TransitionFlip';
-import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from '../../lib/supabaseClient';
+import { isSupabaseConfigured, supabase } from '../../lib/supabaseClient';
 import './landing-scroll.css';
 
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
@@ -182,17 +181,6 @@ function setupCtaCanvas(canvas, getThemeRgb) {
 /*  component  */
 export default function LandingPage() {
   const { theme } = useTheme();
-  const publicMetricsClient = useMemo(() => {
-    if (!isSupabaseConfigured || !supabaseUrl || !supabaseAnonKey) return null;
-    return createClient(supabaseUrl, supabaseAnonKey, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-        detectSessionInUrl: false,
-        storageKey: 'Donivra-landing-public-metrics',
-      },
-    });
-  }, []);
 
   /* theme tokens */
   const primaryColor   = String(theme?.primaryColor   || '#b8955a').trim();
@@ -265,20 +253,19 @@ export default function LandingPage() {
 
   useEffect(() => {
     let isCancelled = false;
-    const metricsClient = publicMetricsClient || supabase;
 
     const fetchLandingMetrics = async () => {
-      if (!isSupabaseConfigured || !metricsClient) {
+      if (!isSupabaseConfigured || !supabase) {
         return;
       }
 
       const flowTasks = await Promise.allSettled([
-        metricsClient
+        supabase
           .from(EVENT_REQUESTS_TABLE)
           .select('Event_Request_ID,Event_Name,Status,Updated_At')
           .order('Updated_At', { ascending: false })
           .limit(3),
-        metricsClient
+        supabase
           .from(WIG_REQUESTS_TABLE)
           .select('Req_ID,Status,Updated_At')
           .order('Updated_At', { ascending: false })
@@ -322,7 +309,7 @@ export default function LandingPage() {
     return () => {
       isCancelled = true;
     };
-  }, [publicMetricsClient]);
+  }, []);
 
   useEffect(() => {
     if (isReturningFromLogin) {
