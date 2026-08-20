@@ -461,7 +461,12 @@ async function readEdgeFunctionError(error, fallbackMessage) {
     }
   }
 
-  return String(error?.message || fallbackMessage);
+  const clientMessage = String(error?.message || '').trim();
+  if (clientMessage.toLowerCase().includes('failed to send a request to the edge function')) {
+    return 'The ID verification service could not be reached from this site. Ask the administrator to allow this exact site origin in DIDIT_ALLOWED_ORIGINS and redeploy the didit-verification Edge Function.';
+  }
+
+  return clientMessage || fallbackMessage;
 }
 
 function normalizePreferredContactLabel(value) {

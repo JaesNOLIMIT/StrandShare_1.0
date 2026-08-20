@@ -4,6 +4,7 @@ const DIDIT_API_BASE_URL = 'https://verification.didit.me/v3';
 const PRIVATE_ID_BUCKET = 'event_application_private_ids';
 const MAX_ID_IMAGE_SIZE_BYTES = 12 * 1024 * 1024;
 const LOCAL_ORIGINS = new Set(['http://localhost:3000', 'http://127.0.0.1:3000']);
+const PRODUCTION_ORIGINS = new Set(['https://donivra.vercel.app']);
 
 function jsonResponse(body: unknown, status: number, origin: string | null) {
   return new Response(JSON.stringify(body), {
@@ -27,7 +28,7 @@ function getAllowedOrigin(request: Request) {
     .map((value) => value.trim())
     .filter(Boolean);
 
-  if (LOCAL_ORIGINS.has(origin) || configured.includes(origin)) return origin;
+  if (LOCAL_ORIGINS.has(origin) || PRODUCTION_ORIGINS.has(origin) || configured.includes(origin)) return origin;
   return '';
 }
 

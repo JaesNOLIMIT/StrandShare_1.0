@@ -60,7 +60,7 @@ Replace the placeholders and use the exact deployed site origin. Do not add a tr
 ```powershell
 npx supabase secrets set DIDIT_API_KEY="YOUR_DIDIT_API_KEY"
 npx supabase secrets set DIDIT_WORKFLOW_ID="YOUR_PUBLISHED_WORKFLOW_UUID"
-npx supabase secrets set DIDIT_ALLOWED_ORIGINS="https://your-production-domain.com,http://localhost:3000"
+npx supabase secrets set DIDIT_ALLOWED_ORIGINS="https://donivra.vercel.app,http://localhost:3000"
 ```
 
 For a Vercel preview that you intentionally want to test, add its exact origin to the comma-separated `DIDIT_ALLOWED_ORIGINS` value. Avoid broad wildcard origins because anyone reaching the function could consume your Didit verification quota.

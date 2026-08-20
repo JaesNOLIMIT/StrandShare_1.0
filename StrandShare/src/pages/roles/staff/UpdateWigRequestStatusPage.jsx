@@ -412,6 +412,10 @@ function mapLoadError(rawMessage) {
     return 'Data access is blocked by database policy. Verify your staff role permissions.';
   }
 
+  if (lowerMessage.includes('lock broken') && lowerMessage.includes('steal')) {
+    return 'Your account session was interrupted while another tab synchronized it. Refresh this page once; opening normal browser tabs will no longer sign out the account.';
+  }
+
   return message;
 }
 
@@ -443,6 +447,10 @@ function mapActionError(rawMessage) {
 
   if (lowerMessage.includes('row-level security')) {
     return 'Status update is blocked by database policy. Verify your staff role permissions.';
+  }
+
+  if (lowerMessage.includes('lock broken') && lowerMessage.includes('steal')) {
+    return 'Your account session was interrupted while another tab synchronized it. Refresh and retry the action once.';
   }
 
   if (lowerMessage.includes('out of stock') || lowerMessage.includes('stock')) {
