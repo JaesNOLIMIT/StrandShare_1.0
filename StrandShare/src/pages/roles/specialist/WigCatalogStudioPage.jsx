@@ -456,7 +456,9 @@ export default function WigCatalogStudioPage({ userProfile }) {
         saving: false,
         error: '',
         success: directToRequest
-          ? `Bundle ${bundleCode} completed and was reserved directly for ${request.Request_Code || `request #${request.Req_ID}`}. It was not added to general stock; the request is now Accepted - Wig Allocated and ready for staff release scheduling.`
+          ? request.Hospital_ID
+            ? `Bundle ${bundleCode} completed and was reserved directly for ${request.Request_Code || `request #${request.Req_ID}`}. It was not added to general stock; the request is now Accepted - Wig Allocated and ready for staff release scheduling.`
+            : `Bundle ${bundleCode} completed and was reserved directly for ${request.Request_Code || `request #${request.Req_ID}`}. It was not added to general stock; the request is now Ready for Pick-up.`
           : `Bundle ${bundleCode} completed. ${wigLabel}${capLabel} stock increased from ${previousStock} to ${nextStock}; ${memberCount} linked submission${memberCount === 1 ? '' : 's'} now show Wig Created.`,
       }));
       await loadInventory();
