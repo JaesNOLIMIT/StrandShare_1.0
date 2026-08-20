@@ -272,13 +272,11 @@ export default function ManageUserAccountsPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
         fetchUsers();
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => {
+        fetchUsers();
+      })
       .subscribe();
-    const fallbackInterval = window.setInterval(() => {
-      void fetchUsers();
-    }, 30000);
-
     return () => {
-      window.clearInterval(fallbackInterval);
       void supabase.removeChannel(subscription);
     };
   }, []);

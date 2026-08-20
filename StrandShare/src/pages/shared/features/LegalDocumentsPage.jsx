@@ -10,6 +10,7 @@ import {
 import { useTheme } from '../../../context/ThemeContext';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 
 const LEGAL_DOCUMENTS_TABLE = 'legal_documents';
 const LEGAL_DOCUMENTS_BUCKET = 'legal-documents';
@@ -201,6 +202,12 @@ export default function LegalDocumentsPage({ userProfile }) {
   useEffect(() => {
     void loadDocuments();
   }, [loadDocuments]);
+
+  useRealtimeRefresh({
+    channelName: 'requirements-legal-documents-live',
+    tables: [LEGAL_DOCUMENTS_TABLE],
+    onChange: () => void loadDocuments(),
+  });
 
   useEffect(() => {
     let isMounted = true;

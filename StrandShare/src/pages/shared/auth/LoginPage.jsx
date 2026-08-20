@@ -3,6 +3,7 @@ import { motion, useAnimation } from 'framer-motion';
 import { useTheme } from '../../../context/ThemeContext';
 import { ArrowLeft, ArrowRight, Coins, Eye, EyeOff, Heart, Lock, Mail, QrCode, ShieldCheck } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import { getPasswordRecoveryRedirectUrl } from '../../../lib/passwordRecovery';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { toCanonicalRole } from '../../../lib/roleUtils';
 import {
@@ -504,7 +505,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
 
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-        redirectTo: `${window.location.origin}/reset-password`,
+        redirectTo: getPasswordRecoveryRedirectUrl(),
       });
 
       if (error) {

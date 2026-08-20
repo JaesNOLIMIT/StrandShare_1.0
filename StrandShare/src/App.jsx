@@ -23,6 +23,7 @@ import {
   clearLoginSessionPersistence,
   getLoginSessionPersistenceStatus,
 } from './lib/sessionPersistence';
+import { ensurePasswordRecoveryRoute } from './lib/passwordRecovery';
 
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
@@ -401,7 +402,7 @@ export default function App() {
   const activeRole = userProfile?.role || null;
   const canonicalActiveRole = toCanonicalRole(activeRole);
   const ActiveDashboard = resolveDashboardByRole(activeRole);
-  const currentPath = window.location.pathname;
+  const currentPath = ensurePasswordRecoveryRoute();
   const isLandingRoute = currentPath === '/';
   const isWigAiStudioRoute = currentPath === '/wig-ai-studio';
   const isPartnershipApplicationRoute = currentPath === '/apply-partnership';
@@ -411,11 +412,11 @@ export default function App() {
   const isResetPasswordRoute = currentPath === '/reset-password';
   const isConfirmationCompleteRoute = currentPath === '/confirmation-complete';
   const canRenderMainRoutes = !authRecoveryRequired;
-  const showLandingPage = canRenderMainRoutes && !isLoadingAuth && !session && isLandingRoute;
-  const showPartnershipApplicationPage = canRenderMainRoutes && !isLoadingAuth && !session && isPartnershipApplicationRoute;
-  const showEventApplicationPage = canRenderMainRoutes && !isLoadingAuth && !session && isEventApplicationRoute;
-  const showEventApplicationSuccessPage = canRenderMainRoutes && !isLoadingAuth && !session && isEventApplicationSuccessRoute;
-  const showLoginPage = canRenderMainRoutes && !isLoadingAuth && !session && !isLandingRoute && !isPartnershipApplicationRoute && !isEventApplicationRoute && !isEventApplicationSuccessRoute;
+  const showLandingPage = canRenderMainRoutes && !session && isLandingRoute;
+  const showPartnershipApplicationPage = canRenderMainRoutes && !session && isPartnershipApplicationRoute;
+  const showEventApplicationPage = canRenderMainRoutes && !session && isEventApplicationRoute;
+  const showEventApplicationSuccessPage = canRenderMainRoutes && !session && isEventApplicationSuccessRoute;
+  const showLoginPage = canRenderMainRoutes && !session && !isLandingRoute && !isPartnershipApplicationRoute && !isEventApplicationRoute && !isEventApplicationSuccessRoute;
   const showDashboard =
     canRenderMainRoutes &&
     !isLoadingAuth &&
@@ -431,24 +432,9 @@ export default function App() {
     Boolean(activeRole) &&
     !ActiveDashboard &&
     !isHydratingProfile;
-  const showAuthLoadingScreen =
-    isLoadingAuth &&
-    !isCompleteAccountRoute &&
-    !isResetPasswordRoute &&
-    !isConfirmationCompleteRoute;
-
   return (
     <ThemeProvider>
       <div className="min-h-screen">
-        {showAuthLoadingScreen && (
-          <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
-            <div className="text-center" role="status" aria-live="polite">
-              <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-slate-200 border-t-blue-600" />
-              <p className="mt-4 text-sm font-medium text-slate-700">Connecting to Donivra...</p>
-            </div>
-          </div>
-        )}
-
         {authRecoveryRequired && !isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && (
           <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
             <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">

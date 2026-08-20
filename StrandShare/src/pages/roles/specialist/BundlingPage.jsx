@@ -31,6 +31,7 @@ import {
   deleteBundleDraft,
 } from '../../../lib/hairSubmissionWorkflow';
 import WigSpecificationPicker from './wigCatalog/WigSpecificationPicker';
+import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
@@ -438,6 +439,19 @@ export default function BundlingPage() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useRealtimeRefresh({
+    channelName: 'specialist-bundling-live',
+    tables: [
+      HAIR_SUBMISSIONS_TABLE,
+      HAIR_SUBMISSION_BUNDLES_TABLE,
+      HAIR_SUBMISSION_DETAILS_TABLE,
+      EVENT_ATTENDEES_TABLE,
+      WIG_SPECIFICATIONS_TABLE,
+      WIGS_TABLE,
+    ],
+    onChange: () => void loadData(),
+  });
 
   const drafts = useMemo(() => bundles.filter((b) => String(b.Status || '').toLowerCase() === HAIR_BUNDLE_STATUS.DRAFT.toLowerCase()), [bundles]);
   const activeBundles = useMemo(() => bundles.filter((b) => String(b.Status || '').toLowerCase() !== HAIR_BUNDLE_STATUS.DRAFT.toLowerCase()), [bundles]);

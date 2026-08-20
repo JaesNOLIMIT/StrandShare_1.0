@@ -440,7 +440,6 @@ export default function DashboardPage({ userProfile }) {
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => void loadDashboard(), 250);
     };
-    const fallbackInterval = setInterval(() => void loadDashboard(), 30000);
     const channel = supabase
       .channel(`public:h-representative-dashboard-live:${hospitalId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, scheduleRefresh)
@@ -451,7 +450,6 @@ export default function DashboardPage({ userProfile }) {
 
     return () => {
       if (refreshTimer) clearTimeout(refreshTimer);
-      clearInterval(fallbackInterval);
       setIsRealtimeActive(false);
       supabase.removeChannel(channel);
     };

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { AlertTriangle, CalendarDays, Check, Info, Loader2, RefreshCw, Search, X } from 'lucide-react';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
 const HOSPITALS_TABLE = 'Hospitals';
@@ -755,6 +756,20 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
 
     loadReleaseRows();
   }, [hospitalId, loadReleaseRows]);
+
+  useRealtimeRefresh({
+    channelName: `hrep-release-approval-live-${hospitalId || 'pending'}`,
+    tables: [
+      WIG_REQUESTS_TABLE,
+      RELEASE_SCHEDULES_TABLE,
+      WIGS_TABLE,
+      WIG_SPECIFICATIONS_TABLE,
+      WIG_FILTERS_TABLE,
+      PATIENTS_TABLE,
+    ],
+    enabled: Boolean(hospitalId),
+    onChange: () => void loadReleaseRows(selectedRow?.reqId || null),
+  });
 
   useEffect(() => {
     setRescheduleReason('');

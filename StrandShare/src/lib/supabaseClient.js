@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { trackDataRequest } from './dataRequestTracker';
 
 export const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
 export const supabaseAnonKey = process.env.REACT_APP_SUPABASE_ANON_KEY;
@@ -14,9 +15,18 @@ function isAuthRequest(input) {
   return Boolean(supabaseUrl && requestUrl.startsWith(`${supabaseUrl}/auth/v1/`));
 }
 
+function isDataRequest(input) {
+  const requestUrl = typeof Request !== 'undefined' && input instanceof Request
+    ? input.url
+    : String(input || '');
+
+  return Boolean(supabaseUrl && requestUrl.startsWith(`${supabaseUrl}/rest/v1/`));
+}
+
 function fetchWithAuthTimeout(input, init = {}) {
   if (!isAuthRequest(input)) {
-    return fetch(input, init);
+    const request = fetch(input, init);
+    return isDataRequest(input) ? trackDataRequest(request) : request;
   }
 
   const controller = new AbortController();

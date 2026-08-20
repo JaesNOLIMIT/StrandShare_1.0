@@ -624,6 +624,7 @@ export default function ManageHospitalAccountsPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITAL_STAFF_TABLE }, refreshHospitals)
       .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshHospitals)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'user_details' }, refreshHospitals)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, refreshHospitals)
       .subscribe();
 
     return () => {
