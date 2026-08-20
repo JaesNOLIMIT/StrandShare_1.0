@@ -25,6 +25,7 @@ const REQUEST_STATUS = {
   pending: 'Pending',
   acceptedAllocated: 'Accepted - Wig Allocated',
   acceptedInProduction: 'Accepted - In Production',
+  readyForPickup: 'Ready for Pick-up',
   toBeRelease: 'To Be Release',
   releasing: 'Releasing',
   released: 'Released',
@@ -37,12 +38,13 @@ const STATUS_FILTERS = [
   { id: 'pending', label: 'Pending' },
   { id: 'accepted_allocated', label: 'Accepted - Wig Allocated' },
   { id: 'accepted_in_production', label: 'Accepted - In Production' },
+  { id: 'ready_for_pickup', label: 'Ready for Pick-up' },
   { id: 'to_be_release', label: 'To Be Release' },
   { id: 'releasing', label: 'Releasing' },
   { id: 'released', label: 'Released' },
 ];
 
-const ACTIVE_REQUEST_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_in_production', 'to_be_release', 'releasing'];
+const ACTIVE_REQUEST_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_in_production', 'ready_for_pickup', 'to_be_release', 'releasing'];
 
 const ACTION_DEFINITIONS = {
   accept_allocated: {
@@ -130,6 +132,10 @@ function getCanonicalStatusKey(statusValue) {
     return 'accepted_in_production';
   }
 
+  if (['readyforpickup', 'readyforpick-up'].includes(key)) {
+    return 'ready_for_pickup';
+  }
+
   if (['readyforevent', 'readyforrelease', 'readyforfitting', 'readyforhandingover', 'toberelease'].includes(key)) {
     return 'to_be_release';
   }
@@ -162,6 +168,7 @@ function getStatusLabel(statusValue) {
 
   if (key === 'accepted_allocated') return REQUEST_STATUS.acceptedAllocated;
   if (key === 'accepted_in_production') return REQUEST_STATUS.acceptedInProduction;
+  if (key === 'ready_for_pickup') return REQUEST_STATUS.readyForPickup;
   if (key === 'to_be_release') return REQUEST_STATUS.toBeRelease;
   if (key === 'releasing') return REQUEST_STATUS.releasing;
   if (key === 'released') return REQUEST_STATUS.released;
@@ -175,6 +182,7 @@ function statusClass(statusValue) {
 
   if (key === 'accepted_allocated') return 'bg-emerald-100 text-emerald-700';
   if (key === 'accepted_in_production') return 'bg-lime-100 text-lime-700';
+  if (key === 'ready_for_pickup') return 'bg-cyan-100 text-cyan-800';
   if (key === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (key === 'releasing') return 'bg-teal-100 text-teal-700';
   if (key === 'released') return 'bg-green-100 text-green-700';
@@ -803,7 +811,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           requestId: formatRequestCode(requestRow.Request_Code, reqId),
           patientId,
           hospitalId,
-          hospitalName: String(hospital?.Hospital_Name || `H-Representative #${hospitalId || 'N/A'}`),
+          hospitalName: String(hospital?.Hospital_Name || 'N/A'),
           patientName: getPatientFullName(patient, linkedPatientUser),
           patientCode: String(patient?.Patient_Code || ''),
           medicalCondition: String(patient?.Medical_Condition || requestRow.Medical_Condition || '').trim() || 'N/A',
@@ -1134,6 +1142,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     const pendingCount = rows.filter((row) => row.statusKey === 'pending').length;
     const acceptedAllocatedCount = rows.filter((row) => row.statusKey === 'accepted_allocated').length;
     const acceptedInProductionCount = rows.filter((row) => row.statusKey === 'accepted_in_production').length;
+    const readyForPickupCount = rows.filter((row) => row.statusKey === 'ready_for_pickup').length;
     const toBeReleaseCount = rows.filter((row) => row.statusKey === 'to_be_release').length;
     const releasingCount = rows.filter((row) => row.statusKey === 'releasing').length;
     const releasedCount = rows.filter((row) => row.statusKey === 'released').length;
@@ -1143,6 +1152,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       { label: 'Pending Review', value: String(pendingCount) },
       { label: 'Accepted - Wig Allocated', value: String(acceptedAllocatedCount) },
       { label: 'Accepted - In Production', value: String(acceptedInProductionCount) },
+      { label: 'Ready for Pick-up', value: String(readyForPickupCount) },
       { label: 'To Be Release', value: String(toBeReleaseCount) },
       { label: 'Releasing', value: String(releasingCount) },
       { label: 'Released', value: String(releasedCount) },
@@ -1361,12 +1371,12 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
   };
 
   const handleOpenReleaseConfirmation = () => {
-    if (!selectedRow || selectedRow.statusKey !== 'releasing') return;
+    if (!selectedRow || !['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)) return;
     setReleaseConfirmationStep('confirm');
   };
 
   const handleConfirmRelease = async () => {
-    if (!selectedRow || selectedRow.statusKey !== 'releasing' || isApplyingAction) return;
+    if (!selectedRow || !['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey) || isApplyingAction) return;
 
     try {
       setIsApplyingAction(true);
@@ -1397,7 +1407,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-7">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-8">
         {quickStats.map((item) => (
           <article key={item.label} className="rounded-xl border border-slate-200 bg-white p-3">
             <p className="text-[11px] uppercase tracking-wide text-slate-500">{item.label}</p>
@@ -1765,15 +1775,17 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                     ? selectedRow.requestedStockAvailable
                       ? 'Matching stock is available, so this request can only be allocated or rejected.'
                       : 'No matching stock is available, so this request can only enter production or be rejected.'
-                    : selectedRow.statusKey === 'releasing'
+                    : ['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)
                       ? 'Complete the physical handover to move this request to its final Released status.'
                     : 'Select only the next valid step for this request.'}
                 </p>
 
-                {selectedRow.statusKey === 'releasing' ? (
+                {['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey) ? (
                   <div className="mt-3 space-y-3">
                     <div className="rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-900">
-                      The hospital approved the release schedule. Confirm only after the wig has been physically handed over to the patient or authorized recipient.
+                      {selectedRow.statusKey === 'ready_for_pickup'
+                        ? 'This patient has no hospital. Confirm only after the patient or authorized recipient has picked up the wig.'
+                        : 'The hospital approved the release schedule. Confirm only after the wig has been physically handed over to the patient or authorized recipient.'}
                     </div>
                     <button
                       type="button"
@@ -1781,7 +1793,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                       disabled={isApplyingAction}
                       className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
                     >
-                      <CheckCircle2 size={16} /> Release Wig
+                      <CheckCircle2 size={16} /> {selectedRow.statusKey === 'ready_for_pickup' ? 'Confirm Pick-up' : 'Release Wig'}
                     </button>
                   </div>
                 ) : selectedRow.statusKey === 'released' ? (
@@ -1969,11 +1981,11 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Patient</span>{selectedRow.patientName}</p>
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Hospital</span>{selectedRow.hospitalName}</p>
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Allocated Wig</span>{selectedRow.allocatedWigCode || selectedRow.specWigName}</p>
-                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Approved Release Date</span>{formatDateTime(selectedRow.releaseDate)}</p>
+                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">{selectedRow.statusKey === 'ready_for_pickup' ? 'Pickup Type' : 'Approved Release Date'}</span>{selectedRow.statusKey === 'ready_for_pickup' ? 'Direct patient pickup' : formatDateTime(selectedRow.releaseDate)}</p>
                     </div>
                   </div>
                   <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                    Continuing confirms the wig was handed over. The request will move permanently from <strong>Releasing</strong> to <strong>Released</strong>.
+                    Continuing confirms the wig was handed over. The request will move permanently from <strong>{selectedRow.statusLabel}</strong> to <strong>Released</strong>.
                   </div>
                 </div>
                 <div className="flex flex-col-reverse gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:justify-end">
@@ -1992,7 +2004,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                     className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
                   >
                     {isApplyingAction ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-                    {isApplyingAction ? 'Releasing...' : 'Confirm Release'}
+                    {isApplyingAction ? 'Completing...' : selectedRow.statusKey === 'ready_for_pickup' ? 'Confirm Pick-up' : 'Confirm Release'}
                   </button>
                 </div>
               </>

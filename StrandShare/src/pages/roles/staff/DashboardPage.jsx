@@ -85,6 +85,7 @@ function canonicalWigStatus(statusValue) {
   if (['acceptedallocatedwig', 'acceptedwithallocatedwig', 'acceptedwigallocated', 'allocated', 'allocatedwig'].includes(key)) return 'accepted_allocated';
   if (['acceptednowigavailable', 'acceptedbutnowigavailable', 'nowigavailable', 'findingmatchingwig', 'matching'].includes(key)) return 'accepted_no_wig';
   if (['inproduction', 'production', 'inprocess'].includes(key)) return 'in_production';
+  if (key === 'readyforpickup') return 'ready_for_pickup';
   if (['toberelease', 'readyforrelease', 'readyforevent'].includes(key)) return 'to_be_release';
   if (['releasing', 'forrelease'].includes(key)) return 'releasing';
   if (['released', 'completed', 'done'].includes(key)) return 'released';
@@ -98,6 +99,7 @@ function wigStatusLabel(statusKey) {
   if (statusKey === 'accepted_allocated') return 'Allocated';
   if (statusKey === 'accepted_no_wig') return 'No Wig';
   if (statusKey === 'in_production') return 'Production';
+  if (statusKey === 'ready_for_pickup') return 'Ready for Pick-up';
   if (statusKey === 'to_be_release') return 'Ready';
   if (statusKey === 'releasing') return 'Releasing';
   if (statusKey === 'released') return 'Released';
@@ -358,6 +360,7 @@ export default function DashboardPage({ onNavigate, userProfile }) {
         accepted_allocated: 0,
         accepted_no_wig: 0,
         in_production: 0,
+        ready_for_pickup: 0,
         to_be_release: 0,
         releasing: 0,
       };
