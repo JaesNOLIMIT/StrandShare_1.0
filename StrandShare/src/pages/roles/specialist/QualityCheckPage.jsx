@@ -15,6 +15,7 @@ import {
 import jsQR from 'jsqr';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 import {
   HAIR_SUBMISSION_STATUS,
   buildWaybillCode,
@@ -583,6 +584,17 @@ export default function QualityCheckPage() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useRealtimeRefresh({
+    channelName: 'specialist-quality-check-live',
+    tables: [HAIR_SUBMISSIONS_TABLE, HAIR_SUBMISSION_DETAILS_TABLE, HAIR_SUBMISSION_IMAGES_TABLE],
+    onChange: () => {
+      void loadQueue();
+      if (activeSubmissionId) {
+        void loadDetail(activeSubmissionId);
+      }
+    },
+  });
 
   useEffect(() => {
     if (activeSubmissionId) {

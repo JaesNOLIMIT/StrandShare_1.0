@@ -2,28 +2,16 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, Check, Eye, EyeOff, Lock, ShieldCheck } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import {
+  establishPasswordRecoverySession,
+  getPasswordRecoveryParameters,
+  getPasswordRecoveryRedirectUrl,
+  hasPasswordRecoveryCallback,
+  isUserRecoverySession,
+} from '../../../lib/passwordRecovery';
 
 const DEFAULT_LOGIN_BG =
   'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=1080&q=80';
-
-function getRecoveryParameters() {
-  const queryParams = new URLSearchParams(window.location.search);
-  const hash = String(window.location.hash || '');
-  const hashParams = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
-
-  return {
-    code: queryParams.get('code') || '',
-    accessToken: hashParams.get('access_token') || '',
-    refreshToken: hashParams.get('refresh_token') || '',
-    type: hashParams.get('type') || '',
-    errorDescription:
-      queryParams.get('error_description') ||
-      hashParams.get('error_description') ||
-      queryParams.get('error') ||
-      hashParams.get('error') ||
-      '',
-  };
-}
 
 function toRecoveryErrorMessage(error) {
   const message = String(error?.message || error || '').replace(/\+/g, ' ').trim();
@@ -73,6 +61,7 @@ export default function ResetPasswordPage() {
   const [mfaFactorId, setMfaFactorId] = useState('');
   const [mfaCode, setMfaCode] = useState('');
   const [isVerifyingMfa, setIsVerifyingMfa] = useState(false);
+  const [recoveryUserId, setRecoveryUserId] = useState('');
 
   useEffect(() => {
     let isMounted = true;
@@ -83,7 +72,21 @@ export default function ResetPasswordPage() {
       return undefined;
     }
 
-    const parameters = getRecoveryParameters();
+    const parameters = getPasswordRecoveryParameters();
+
+    const acceptRecoverySession = (nextSession) => {
+      if (!isUserRecoverySession(nextSession)) {
+        throw new Error('The password reset session is missing a valid user identity. Request a new link below.');
+      }
+
+      if (isMounted) {
+        setRecoveryEmail(nextSession.user.email || '');
+        setRecoveryUserId(nextSession.user.id);
+        setIsRecoveryReady(true);
+        setErrorMessage('');
+        setIsCheckingRecovery(false);
+      }
+    };
 
     const {
       data: { subscription },
@@ -93,9 +96,13 @@ export default function ResetPasswordPage() {
       }
 
       if (nextSession) {
-        setIsRecoveryReady(true);
-        setErrorMessage('');
-        setIsCheckingRecovery(false);
+        try {
+          acceptRecoverySession(nextSession);
+        } catch (error) {
+          setIsRecoveryReady(false);
+          setErrorMessage(toRecoveryErrorMessage(error));
+          setIsCheckingRecovery(false);
+        }
       }
     });
 
@@ -108,44 +115,31 @@ export default function ResetPasswordPage() {
         return;
       }
 
+      if (!hasPasswordRecoveryCallback(parameters)) {
+        if (isMounted) {
+          setErrorMessage('Open the password reset link from your email, or request a new link below.');
+          setIsCheckingRecovery(false);
+        }
+        return;
+      }
+
       try {
-        const { data: existingSessionData, error: existingSessionError } = await supabase.auth.getSession();
-        if (existingSessionError) {
-          throw existingSessionError;
-        }
-
-        let recoverySession = existingSessionData?.session || null;
-
-        // PKCE recovery links return ?code=... and need a one-time code exchange.
-        if (!recoverySession && parameters.code) {
-          const { data, error } = await supabase.auth.exchangeCodeForSession(parameters.code);
-          if (error) {
-            throw error;
-          }
-          recoverySession = data?.session || null;
-        }
-
-        // Implicit recovery links return the session tokens in the URL fragment.
-        if (!recoverySession && parameters.accessToken && parameters.refreshToken) {
-          const { data, error } = await supabase.auth.setSession({
-            access_token: parameters.accessToken,
-            refresh_token: parameters.refreshToken,
-          });
-          if (error) {
-            throw error;
-          }
-          recoverySession = data?.session || null;
-        }
+        // Recovery credentials must take precedence over any account already signed in
+        // on this browser. Otherwise the existing user's dashboard/session wins.
+        const recoverySession = await establishPasswordRecoverySession(supabase.auth, parameters);
 
         if (!recoverySession) {
           throw new Error('Auth session missing');
         }
 
-        if (isMounted) {
-          setRecoveryEmail(recoverySession.user?.email || '');
-          setIsRecoveryReady(true);
-          setErrorMessage('');
+        const { data: userData, error: userError } = await supabase.auth.getUser(
+          recoverySession.access_token,
+        );
+        if (userError || userData?.user?.id !== recoverySession.user?.id) {
+          throw userError || new Error('The recovery user could not be verified.');
         }
+
+        acceptRecoverySession(recoverySession);
       } catch (error) {
         if (isMounted) {
           setIsRecoveryReady(false);
@@ -197,6 +191,7 @@ export default function ResetPasswordPage() {
     setMfaRequired(false);
     setMfaFactorId('');
     setMfaCode('');
+    setRecoveryUserId('');
     setSuccessMessage(
       requiresAuthenticatorEnrollment
         ? 'Your password was updated successfully. Sign in with your new password to set up Google Authenticator.'
@@ -204,7 +199,30 @@ export default function ResetPasswordPage() {
     );
   };
 
+  const requireCurrentRecoverySession = async () => {
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    const currentSession = sessionData?.session || null;
+    if (
+      sessionError ||
+      !isUserRecoverySession(currentSession) ||
+      !recoveryUserId ||
+      currentSession.user.id !== recoveryUserId
+    ) {
+      throw sessionError || new Error('Auth session missing');
+    }
+
+    const { data: userData, error: userError } = await supabase.auth.getUser(
+      currentSession.access_token,
+    );
+    if (userError || userData?.user?.id !== recoveryUserId) {
+      throw userError || new Error('The recovery user could not be verified.');
+    }
+
+    return currentSession;
+  };
+
   const requireGoogleAuthenticator = async () => {
+    await requireCurrentRecoverySession();
     const { data: factorsData, error: factorsError } = await supabase.auth.mfa.listFactors();
     if (factorsError) {
       throw factorsError;
@@ -234,6 +252,7 @@ export default function ResetPasswordPage() {
 
     setIsVerifyingMfa(true);
     try {
+      await requireCurrentRecoverySession();
       const { data: challengeData, error: challengeError } = await supabase.auth.mfa.challenge({
         factorId: mfaFactorId,
       });
@@ -300,10 +319,7 @@ export default function ResetPasswordPage() {
     setIsSubmitting(true);
 
     try {
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !sessionData?.session) {
-        throw sessionError || new Error('Auth session missing');
-      }
+      await requireCurrentRecoverySession();
 
       const { data: assuranceData, error: assuranceError } =
         await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
@@ -366,7 +382,7 @@ export default function ResetPasswordPage() {
     setIsSendingRecoveryLink(true);
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-        redirectTo: `${window.location.origin}/reset-password`,
+        redirectTo: getPasswordRecoveryRedirectUrl(),
       });
 
       if (error) {

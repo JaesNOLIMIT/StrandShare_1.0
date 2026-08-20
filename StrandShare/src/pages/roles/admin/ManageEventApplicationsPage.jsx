@@ -489,9 +489,7 @@ export default function ManageEventRequestsPage({ isActivePage = false }) {
         { event: '*', schema: 'public', table: EVENT_REQUESTS_TABLE },
         scheduleRealtimeRefresh,
       )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') loadRows({ silent: true });
-      });
+      .subscribe();
 
     const applicationsChannel = supabase
       .channel('admin-event-applications-management-realtime')
@@ -500,32 +498,12 @@ export default function ManageEventRequestsPage({ isActivePage = false }) {
         { event: '*', schema: 'public', table: EVENT_APPLICATIONS_TABLE },
         scheduleRealtimeRefresh,
       )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') loadRows({ silent: true });
-      });
+      .subscribe();
 
     return () => {
       if (refreshTimer) window.clearTimeout(refreshTimer);
       supabase.removeChannel(requestsChannel);
       supabase.removeChannel(applicationsChannel);
-    };
-  }, [loadRows]);
-
-  useEffect(() => {
-    const syncVisiblePage = () => {
-      if (document.visibilityState === 'visible') {
-        loadRows({ silent: true });
-      }
-    };
-
-    const intervalId = window.setInterval(syncVisiblePage, 4000);
-    window.addEventListener('focus', syncVisiblePage);
-    document.addEventListener('visibilitychange', syncVisiblePage);
-
-    return () => {
-      window.clearInterval(intervalId);
-      window.removeEventListener('focus', syncVisiblePage);
-      document.removeEventListener('visibilitychange', syncVisiblePage);
     };
   }, [loadRows]);
 

@@ -4,6 +4,7 @@ import { Check, Eye, EyeOff, Plus, Save, ShieldCheck, Trash2, Upload, X } from '
 import { HexColorPicker } from 'react-colorful';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
+import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 
 const TAB_ITEMS = [
   { id: 'profile', label: 'Profile' },
@@ -836,6 +837,24 @@ export default function SettingsPage() {
     // Bootstrap should run once on mount for this page lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useRealtimeRefresh({
+    channelName: `account-settings-live-${authUserId || 'pending'}`,
+    // Account/profile tables intentionally stay outside the Realtime publication;
+    // their audited mutations trigger this safe refresh channel instead.
+    tables: ['audit_logs'],
+    enabled: Boolean(authUserId),
+    onChange: async () => {
+      try {
+        await hydrateProfileFromDb(authUserId, authEmail);
+      } catch {
+        // Keep the last usable cached profile when a background sync fails.
+      }
+      if (userId) {
+        void loadSecurityActivity(userId);
+      }
+    },
+  });
 
   const handleProfileImage = async (event) => {
     const file = event.target.files?.[0];

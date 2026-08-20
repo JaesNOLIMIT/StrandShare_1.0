@@ -516,20 +516,6 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     }
   }, [scanMode, selectedEventEnded]);
 
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
-    const intervalId = window.setInterval(() => {
-      void loadEvents({ silent: true });
-      if (selectedEvent?.Event_Request_ID) {
-        void loadAttendees(selectedEvent.Event_Request_ID, { silent: true });
-      }
-    }, 30000);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [loadEvents, loadAttendees, selectedEvent?.Event_Request_ID]);
-
   // Realtime: keep assigned events + attendees in sync
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return undefined;
@@ -1465,7 +1451,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Assigned Events</h1>
           <p className="text-sm text-slate-600">View events admin assigned to you, search attendees, and print waybills.</p>
           <p className="mt-1 text-xs text-emerald-700">
-            Live updates are active. Data also refreshes every 30 seconds automatically.
+            Live updates are active. Data refreshes only when a related database record changes.
           </p>
         </div>
 

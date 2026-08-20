@@ -31,6 +31,10 @@ export default function ManageRequirementsPage({ userProfile }) {
   const primaryColor = theme?.primaryColor || '#0f766e';
   const [activeTab, setActiveTab] = useState('wig-requirements');
 
+  const openTab = (tabId) => {
+    setActiveTab(tabId);
+  };
+
   const active = useMemo(
     () => TABS.find((tab) => tab.id === activeTab) || TABS[0],
     [activeTab],
@@ -53,7 +57,7 @@ export default function ManageRequirementsPage({ userProfile }) {
             <button
               key={tab.id}
               type="button"
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => openTab(tab.id)}
               className={`group flex flex-1 items-center gap-3 rounded-lg border px-4 py-3 text-left transition ${
                 isActive
                   ? 'border-transparent text-white shadow-md'
@@ -79,9 +83,15 @@ export default function ManageRequirementsPage({ userProfile }) {
         })}
       </div>
 
-      {active.id === 'wig-requirements' && <WigRequirementsPage userProfile={userProfile} />}
-      {active.id === 'logistics-destination-settings' && <LogisticsDestinationSettingsPage userProfile={userProfile} />}
-      {active.id === 'legal-documents' && <LegalDocumentsPage userProfile={userProfile} />}
+      <div className={active.id === 'wig-requirements' ? '' : 'hidden'}>
+        <WigRequirementsPage userProfile={userProfile} />
+      </div>
+      <div className={active.id === 'logistics-destination-settings' ? '' : 'hidden'}>
+        <LogisticsDestinationSettingsPage userProfile={userProfile} />
+      </div>
+      <div className={active.id === 'legal-documents' ? '' : 'hidden'}>
+        <LegalDocumentsPage userProfile={userProfile} />
+      </div>
     </div>
   );
 }

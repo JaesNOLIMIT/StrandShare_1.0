@@ -282,8 +282,6 @@ export default function DashboardPage({ onNavigate }) {
 
     let isMounted = true;
     let refreshTimer = null;
-    const fallbackInterval = setInterval(() => void loadData(), 30000);
-
     const scheduleRefresh = () => {
       if (!isMounted) return;
       if (refreshTimer) clearTimeout(refreshTimer);
@@ -305,7 +303,6 @@ export default function DashboardPage({ onNavigate }) {
     return () => {
       isMounted = false;
       if (refreshTimer) clearTimeout(refreshTimer);
-      clearInterval(fallbackInterval);
       supabase.removeChannel(channel);
     };
   }, [loadData]);

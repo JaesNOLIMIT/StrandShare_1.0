@@ -1,7 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2 } from 'lucide-react';
 import Sidebar from '../../components/Sidebar';
 import Header from '../../components/Header';
 import { logAuditAction } from '../../lib/auditLogger';
+import {
+  getDataRequestSnapshot,
+  subscribeToDataRequests,
+} from '../../lib/dataRequestTracker';
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'Donivra.sidebar.collapsed';
 
@@ -26,10 +31,15 @@ export default function RoleDashboardShell({
 }) {
   const initialPage = defaultPage || 'dashboard';
   const [currentPage, setCurrentPage] = useState(initialPage);
+  const [initialDataReady, setInitialDataReady] = useState(false);
+  const [requestSnapshot, setRequestSnapshot] = useState(getDataRequestSnapshot);
+  const [showPageLoader, setShowPageLoader] = useState(false);
+  const initialRequestBaselineRef = useRef(getDataRequestSnapshot().sequence);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(getInitialSidebarCollapsed);
 
   const navigateToPage = useCallback((pageId) => {
-    setCurrentPage(pageId || 'dashboard');
+    const nextPage = pageId || 'dashboard';
+    setCurrentPage(nextPage);
   }, []);
 
   useEffect(() => {
@@ -44,6 +54,36 @@ export default function RoleDashboardShell({
 
   const hasSettingsPage = Boolean(pageComponents.settings) || navItems.some((item) => item.id === 'settings');
   const pageWrapperClass = 'flex-1 overflow-auto bg-slate-50 p-6 md:p-8';
+
+  useEffect(() => {
+    return subscribeToDataRequests(setRequestSnapshot);
+  }, []);
+
+  useEffect(() => {
+    if (initialDataReady) {
+      return undefined;
+    }
+
+    const requestWasObserved = requestSnapshot.sequence > initialRequestBaselineRef.current;
+    if (requestSnapshot.pending > 0) {
+      return undefined;
+    }
+
+    const settleDelay = requestWasObserved ? 120 : 240;
+    const settleTimer = window.setTimeout(() => setInitialDataReady(true), settleDelay);
+
+    return () => window.clearTimeout(settleTimer);
+  }, [initialDataReady, requestSnapshot]);
+
+  useEffect(() => {
+    if (initialDataReady) {
+      setShowPageLoader(false);
+      return undefined;
+    }
+
+    const loaderTimer = window.setTimeout(() => setShowPageLoader(true), 120);
+    return () => window.clearTimeout(loaderTimer);
+  }, [initialDataReady]);
 
   useEffect(() => {
     try {
@@ -83,7 +123,7 @@ export default function RoleDashboardShell({
           userProfile={userProfile}
           pageTitle={pageTitle}
         />
-        <div className={pageWrapperClass}>
+        <div className={`${pageWrapperClass} relative`} aria-busy={!initialDataReady}>
           {!hasActivePage ? (
             <div className="p-8 text-slate-600">Page not available.</div>
           ) : (
@@ -105,6 +145,15 @@ export default function RoleDashboardShell({
                 </div>
               );
             })
+          )}
+          {hasActivePage && !initialDataReady && showPageLoader && (
+            <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-50/40">
+              <Loader2
+                size={34}
+                className="animate-spin text-blue-600 drop-shadow-sm"
+                aria-label="Loading data"
+              />
+            </div>
           )}
         </div>
       </div>

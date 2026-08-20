@@ -810,9 +810,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
           }
         },
       )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') loadRows({ silent: true });
-      });
+      .subscribe();
 
     const requestsChannel = supabase
       .channel('event-requests-intake-realtime')
@@ -834,31 +832,11 @@ export default function EventApplicationIntakePage({ userProfile }) {
           }
         },
       )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') loadRows({ silent: true });
-      });
+      .subscribe();
 
     return () => {
       supabase.removeChannel(applicationsChannel);
       supabase.removeChannel(requestsChannel);
-    };
-  }, [loadRows]);
-
-  useEffect(() => {
-    const syncVisiblePage = () => {
-      if (document.visibilityState === 'visible') {
-        loadRows({ silent: true });
-      }
-    };
-
-    const intervalId = window.setInterval(syncVisiblePage, 4000);
-    window.addEventListener('focus', syncVisiblePage);
-    document.addEventListener('visibilitychange', syncVisiblePage);
-
-    return () => {
-      window.clearInterval(intervalId);
-      window.removeEventListener('focus', syncVisiblePage);
-      document.removeEventListener('visibilitychange', syncVisiblePage);
     };
   }, [loadRows]);
 
@@ -931,7 +909,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
     setSavedContactNotes(nextContactNotes);
     setStaffRejectionReason(selectedRow.Staff_Rejection_Reason || '');
     setRequestDraft(createRequestDraftFromApplication(selectedRow));
-    // Realtime/polling refreshes replace the row object, but the ID guard above
+    // Realtime refreshes replace the row object, but the ID guard above
     // prevents them from erasing text currently being typed into staff forms.
   }, [selectedRow]);
 

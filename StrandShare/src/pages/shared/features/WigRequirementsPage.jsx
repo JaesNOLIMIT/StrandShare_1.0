@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 
 const WIG_REQUIREMENTS_TABLE = 'wig_requirements';
 const USERS_TABLE = 'users';
@@ -322,6 +323,12 @@ export default function WigRequirementsPage({ userProfile }) {
   useEffect(() => {
     void loadWigRequirements();
   }, [loadWigRequirements]);
+
+  useRealtimeRefresh({
+    channelName: 'requirements-wig-live',
+    tables: [WIG_REQUIREMENTS_TABLE],
+    onChange: () => void loadWigRequirements(),
+  });
 
   const handleFieldChange = (key) => (event) => {
     const value = event?.target?.type === 'checkbox' ? event.target.checked : event.target.value;

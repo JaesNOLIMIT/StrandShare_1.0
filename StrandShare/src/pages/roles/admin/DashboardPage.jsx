@@ -594,7 +594,6 @@ export default function DashboardPage({ onNavigate }) {
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => void loadDashboard(), 250);
     };
-    const fallbackInterval = setInterval(() => void loadDashboard(), 30000);
     const channel = supabase
       .channel('public:admin-dashboard-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_REQUESTS_TABLE }, scheduleRefresh)
@@ -608,7 +607,6 @@ export default function DashboardPage({ onNavigate }) {
 
     return () => {
       if (refreshTimer) clearTimeout(refreshTimer);
-      clearInterval(fallbackInterval);
       setIsRealtimeActive(false);
       supabase.removeChannel(channel);
     };
