@@ -54,6 +54,9 @@ const ACTION_DEFINITIONS = {
   accept_in_production: {
     label: 'Accept - In Production',
   },
+  mark_ready_for_pickup: {
+    label: 'Mark Ready for Pick-up',
+  },
   submit_release_date: {
     label: 'Submit Release Date (Move to To Be Release)',
     requiresReleaseDate: true,
@@ -515,7 +518,7 @@ function getAllowedActionsForRow(row) {
   }
 
   if (row.statusKey === 'accepted_allocated') {
-    return ['submit_release_date'];
+    return row.hospitalId ? ['submit_release_date'] : ['mark_ready_for_pickup'];
   }
 
   if (row.statusKey === 'to_be_release') {
@@ -1328,6 +1331,13 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
         if (transactionalResult.error) throw transactionalResult.error;
       }
 
+      if (selectedAction === 'mark_ready_for_pickup') {
+        const readyResult = await supabase.rpc('staff_mark_wig_ready_for_pickup', {
+          p_req_id: selectedRow.reqId,
+        });
+        if (readyResult.error) throw readyResult.error;
+      }
+
       if (selectedAction === 'submit_release_date' || selectedAction === 'resubmit_release_date') {
         const releaseDateIso = toIsoFromDateTimeLocal(actionReleaseDate);
         if (!releaseDateIso) {
@@ -1777,6 +1787,8 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                       : 'No matching stock is available, so this request can only enter production or be rejected.'
                     : ['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)
                       ? 'Complete the physical handover to move this request to its final Released status.'
+                    : selectedRow.statusKey === 'accepted_allocated' && !selectedRow.hospitalId
+                      ? 'The wig is allocated. Mark it Ready for Pick-up only when it is prepared for the patient.'
                     : 'Select only the next valid step for this request.'}
                 </p>
 
