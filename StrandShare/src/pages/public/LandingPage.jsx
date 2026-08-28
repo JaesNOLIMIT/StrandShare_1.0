@@ -235,6 +235,7 @@ export default function LandingPage() {
   const [openFaq,    setOpenFaq]    = useState(-1);
   const [liveFlowRows, setLiveFlowRows] = useState([]);
   const topHoverStateRef = useRef(false);
+  const lastScrollYRef = useRef(0);
 
   /* transitions */
   const [exitTransition, setExitTransition] = useState(null); // 'login' | 'apply' | null
@@ -374,11 +375,21 @@ export default function LandingPage() {
     const onScroll = () => {
       const currentY = window.scrollY || 0;
       const canHoverReveal = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+      const previousY = lastScrollYRef.current;
 
       setNavScrolled(currentY > 40);
       setShowBackToTop(currentY > 420);
 
-      setNavMinimized(canHoverReveal && currentY >= 100);
+      if (!canHoverReveal || currentY < 100) {
+        setNavMinimized(false);
+      } else if (currentY < previousY) {
+        // Bring navigation back immediately when the user starts scrolling up.
+        setNavMinimized(false);
+      } else if (currentY > previousY) {
+        setNavMinimized(true);
+      }
+
+      lastScrollYRef.current = currentY;
 
     };
 

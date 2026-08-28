@@ -17,7 +17,7 @@
   gap:1rem;
   overflow:hidden;
   will-change:transform;
-  transition:transform .35s var(--ease),height .35s var(--ease),padding .35s var(--ease),background .5s,backdrop-filter .5s,border-color .35s,box-shadow .35s;
+  transition:transform .22s var(--ease),height .22s var(--ease),padding .22s var(--ease),background .35s,backdrop-filter .35s,border-color .22s,box-shadow .22s;
 }
 .landing-scroll-root nav.scrolled{
   background:rgba(var(--color-bg-rgb, 245,240,232), 0.95);
@@ -570,10 +570,14 @@ footer{
   .nav-cta{padding:8px 16px;font-size:.68rem;letter-spacing:.06em}
 }
 @media(max-width:1024px){
-  .nav-login{display:none}
+  .nav-login{display:inline-flex}
 }
 @media(max-width:900px){
-  .landing-scroll-root nav{padding:0 1.5rem}
+  .landing-scroll-root nav{
+    padding:0 1.5rem;
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:.75rem;
+  }
   .landing-scroll-root nav.minimized{
     height:56px;
     padding:0 1.5rem;
@@ -607,6 +611,7 @@ footer{
   .landing-scroll-root nav.minimized:hover,
   .landing-scroll-root nav.minimized:focus-within{padding:0 1rem}
   .nav-actions{gap:.4rem}
+  .nav-login{padding:6px 8px;font-size:.65rem;letter-spacing:.06em}
   .nav-cta{padding:6px 10px;font-size:.58rem;letter-spacing:.04em}
   .back-to-top{
     right:.8rem;
@@ -617,6 +622,17 @@ footer{
   .about-grid,.impact-grid,.stats-grid{grid-template-columns:1fr}
   .steps-wrap{grid-template-columns:1fr}
   .footer-inner{flex-direction:column}
+}
+@media(max-width:420px){
+  .nav-logo-text{
+    max-width:70px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:1.1rem;
+  }
+  .nav-brand-image{height:30px;max-width:72px}
+  .landing-scroll-root nav{gap:.4rem}
 }
 
 /* Touch devices: keep nav visible (hover reveal is not reliable). */
