@@ -171,7 +171,7 @@ function buildMonthCells(monthDate) {
   return cells;
 }
 
-export default function SalonSchedulePage() {
+export default function SalonSchedulePage({ isActivePage = true }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#7c2d12';
   const primaryTextColor = theme?.primaryTextColor || '#0f172a';
@@ -325,7 +325,7 @@ export default function SalonSchedulePage() {
   }, [loadPage]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
+    if (!isActivePage || !isSupabaseConfigured || !supabase) {
       return undefined;
     }
 
@@ -343,7 +343,7 @@ export default function SalonSchedulePage() {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [loadPage]);
+  }, [isActivePage, loadPage]);
 
   useEffect(() => {
     void loadSlots(selectedDate);

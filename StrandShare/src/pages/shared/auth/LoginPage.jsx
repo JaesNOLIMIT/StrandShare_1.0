@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useAnimation } from 'framer-motion';
 import { useTheme } from '../../../context/ThemeContext';
-import { ArrowLeft, ArrowRight, Coins, Eye, EyeOff, Heart, Lock, Mail, QrCode, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Coins, Eye, EyeOff, Heart, Loader2, Lock, Mail, QrCode, ShieldCheck } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { getPasswordRecoveryRedirectUrl } from '../../../lib/passwordRecovery';
 import { logAuditAction } from '../../../lib/auditLogger';
@@ -15,6 +15,17 @@ const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
 const EMAIL_OTP_COOLDOWN_SECONDS = 60;
 const DEFAULT_LOGIN_BG = 'https://images.unsplash.com/photo-1560066984-138dadb4c035?auto=format&fit=crop&w=1080&q=80';
+const DASHBOARD_BUNDLE_LOADERS = {
+  admin: () => import('../../roles/admin/DashboardPage'),
+  staff: () => import('../../roles/staff/DashboardPage'),
+  specialist: () => import('../../roles/specialist/DashboardPage'),
+  h_representative: () => import('../../roles/h-representative/DashboardPage'),
+};
+
+function preloadDashboardBundle(roleValue) {
+  const loader = DASHBOARD_BUNDLE_LOADERS[toCanonicalRole(roleValue)];
+  return loader ? loader().catch(() => null) : Promise.resolve(null);
+}
 
 function getPasswordResetErrorMessage(error) {
   const code = String(error?.code || '').trim().toLowerCase();
@@ -43,6 +54,24 @@ function getPasswordResetErrorMessage(error) {
   }
 
   return message;
+}
+
+function getMfaVerificationErrorMessage(error) {
+  const code = String(error?.code || '').trim().toLowerCase();
+
+  if (code === 'mfa_verification_failed') {
+    return 'The authenticator code is incorrect. Wait for a new code and try again.';
+  }
+
+  if (code === 'mfa_challenge_expired') {
+    return 'The verification challenge expired. Enter the current authenticator code to try again.';
+  }
+
+  if (Number(error?.status) === 422) {
+    return 'The authenticator code could not be verified. Wait for a new code and try again.';
+  }
+
+  return error?.message || 'MFA verification failed. Please try again.';
 }
 
 function withAlpha(colorValue, alpha) {
@@ -106,6 +135,8 @@ export default function LoginPage({ authNotice, onClearNotice }) {
   const [emailOtpRequested, setEmailOtpRequested] = useState(false);
   const [emailOtpCooldown, setEmailOtpCooldown] = useState(0);
   const [isSendingEmailOtp, setIsSendingEmailOtp] = useState(false);
+  const [isCompletingLogin, setIsCompletingLogin] = useState(false);
+  const verificationInFlightRef = useRef(false);
 
   useEffect(() => {
     if (emailOtpCooldown <= 0) {
@@ -258,6 +289,9 @@ export default function LoginPage({ authNotice, onClearNotice }) {
       email: profile?.email || fallbackEmail,
     };
 
+    setIsCompletingLogin(true);
+    void preloadDashboardBundle(validatedProfile.role);
+
     localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(validatedProfile));
 
     window.dispatchEvent(
@@ -265,6 +299,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
         detail: {
           authUserId,
           profile: validatedProfile,
+          source: 'login',
         },
       }),
     );
@@ -372,6 +407,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
 
   const handleMfaVerify = async (e) => {
     e.preventDefault();
+    if (verificationInFlightRef.current || isCompletingLogin) return;
     clearMessages();
 
     if (!mfaFactorId || !mfaPendingAuthUserId || !mfaPendingProfile) {
@@ -385,7 +421,9 @@ export default function LoginPage({ authNotice, onClearNotice }) {
       return;
     }
 
+    verificationInFlightRef.current = true;
     setIsSubmitting(true);
+    let verificationCompleted = false;
 
     try {
       const { data: challengeData, error: challengeError } = await supabase.auth.mfa.challenge({
@@ -421,11 +459,14 @@ export default function LoginPage({ authNotice, onClearNotice }) {
         mfaPendingProfile.email || email,
       );
 
-      clearMfaState();
-      setSuccessMessage('MFA verified. Redirecting to your dashboard...');
+      verificationCompleted = true;
+      setSuccessMessage('');
     } catch (error) {
-      setErrorMessage(error.message || 'MFA verification failed. Please try again.');
+      setErrorMessage(getMfaVerificationErrorMessage(error));
     } finally {
+      if (!verificationCompleted) {
+        verificationInFlightRef.current = false;
+      }
       setIsSubmitting(false);
     }
   };
@@ -470,6 +511,11 @@ export default function LoginPage({ authNotice, onClearNotice }) {
         setIsSubmitting(false);
         return;
       }
+
+      // Download the correct dashboard code while the user completes MFA.
+      // Protected dashboard queries still wait until authentication is fully
+      // verified.
+      void preloadDashboardBundle(enrichedProfile.role);
 
       try {
         await beginMfaStep(enrichedProfile, authUserId, loginData?.user?.email || email);
@@ -572,6 +618,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
 
   const handleVerifyEmailOtp = async (event) => {
     event.preventDefault();
+    if (verificationInFlightRef.current || isCompletingLogin) return;
     clearMessages();
 
     if (!emailOtpRequested || !emailOtpTarget) {
@@ -584,7 +631,9 @@ export default function LoginPage({ authNotice, onClearNotice }) {
       return;
     }
 
+    verificationInFlightRef.current = true;
     setIsSubmitting(true);
+    let verificationCompleted = false;
 
     try {
       const { data: otpData, error: otpError } = await supabase.auth.verifyOtp({
@@ -612,6 +661,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
 
       const verifiedProfile = await getValidatedProfileByAuthUserId(verifiedAuthUserId);
       finalizeLoginProfile(verifiedProfile, verifiedAuthUserId, verifiedEmail);
+      verificationCompleted = true;
 
       void logAuditAction({
         action: 'auth.email_otp_fallback_sign_in',
@@ -621,11 +671,13 @@ export default function LoginPage({ authNotice, onClearNotice }) {
         userProfile: verifiedProfile,
       });
 
-      clearMfaState();
-      setSuccessMessage('Email code verified. Redirecting to your dashboard...');
+      setSuccessMessage('');
     } catch (otpError) {
       setErrorMessage(otpError?.message || 'Email OTP verification failed. Request a new code and try again.');
     } finally {
+      if (!verificationCompleted) {
+        verificationInFlightRef.current = false;
+      }
       setIsSubmitting(false);
     }
   };
@@ -883,7 +935,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                     backgroundColor: mfaMethod === 'authenticator' ? `${theme.primaryColor}12` : '#ffffff',
                     color: mfaMethod === 'authenticator' ? theme.primaryColor : '#4b5563',
                   }}
-                  disabled={isSubmitting || isSendingEmailOtp}
+                  disabled={isSubmitting || isSendingEmailOtp || isCompletingLogin}
                 >
                   Google Authenticator
                 </button>
@@ -896,7 +948,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                     backgroundColor: mfaMethod === 'email-otp' ? `${theme.primaryColor}12` : '#ffffff',
                     color: mfaMethod === 'email-otp' ? theme.primaryColor : '#4b5563',
                   }}
-                  disabled={isSubmitting || isSendingEmailOtp}
+                  disabled={isSubmitting || isSendingEmailOtp || isCompletingLogin}
                 >
                   Email OTP
                 </button>
@@ -945,6 +997,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                       onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
                       placeholder="123456"
                       className="w-full p-2.5 border border-gray-300 rounded-lg bg-white text-gray-900"
+                      disabled={isCompletingLogin}
                       required
                     />
                   </div>
@@ -953,9 +1006,14 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                     type="submit"
                     className="w-full py-2.5 rounded-lg text-white font-medium"
                     style={{ backgroundColor: theme.primaryColor }}
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || isCompletingLogin}
                   >
-                    {isSubmitting ? 'Verifying...' : 'Verify And Continue'}
+                    {isCompletingLogin ? (
+                      <span className="inline-flex items-center justify-center gap-2">
+                        <Loader2 size={17} className="animate-spin" />
+                        Preparing dashboard...
+                      </span>
+                    ) : isSubmitting ? 'Verifying...' : 'Verify And Continue'}
                   </button>
                 </form>
               )}
@@ -973,7 +1031,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                     type="button"
                     onClick={handleRequestEmailOtp}
                     className="w-full py-2.5 rounded-lg border border-gray-300 bg-white text-gray-700 font-medium disabled:opacity-60"
-                    disabled={isSubmitting || isSendingEmailOtp || emailOtpCooldown > 0}
+                    disabled={isSubmitting || isSendingEmailOtp || isCompletingLogin || emailOtpCooldown > 0}
                   >
                     {isSendingEmailOtp
                       ? 'Sending Code...'
@@ -997,6 +1055,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                           autoComplete="one-time-code"
                           placeholder="123456"
                           className="w-full p-2.5 border border-gray-300 rounded-lg bg-white text-gray-900 tracking-[0.3em]"
+                          disabled={isCompletingLogin}
                           required
                         />
                       </div>
@@ -1004,9 +1063,14 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                         type="submit"
                         className="w-full py-2.5 rounded-lg text-white font-medium disabled:opacity-60"
                         style={{ backgroundColor: theme.primaryColor }}
-                        disabled={isSubmitting || emailOtpCode.length !== 6}
+                        disabled={isSubmitting || isCompletingLogin || emailOtpCode.length !== 6}
                       >
-                        {isSubmitting ? 'Verifying Email Code...' : 'Verify Email And Continue'}
+                        {isCompletingLogin ? (
+                          <span className="inline-flex items-center justify-center gap-2">
+                            <Loader2 size={17} className="animate-spin" />
+                            Preparing dashboard...
+                          </span>
+                        ) : isSubmitting ? 'Verifying Email Code...' : 'Verify Email And Continue'}
                       </button>
                     </form>
                   )}
@@ -1021,7 +1085,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                   clearLoginSessionPersistence();
                 }}
                 className="w-full py-2.5 rounded-lg border border-gray-300 text-gray-700"
-                disabled={isSubmitting || isSendingEmailOtp}
+                disabled={isSubmitting || isSendingEmailOtp || isCompletingLogin}
               >
                 Cancel
               </button>

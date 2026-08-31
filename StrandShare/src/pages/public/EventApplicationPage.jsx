@@ -14,7 +14,9 @@ const WIG_REQUIREMENTS_TABLE = 'wig_requirements';
 const EVENT_APPLICATION_ASSETS_BUCKET = 'event_application_assets';
 const MAX_UPLOAD_FILE_SIZE_BYTES = 8 * 1024 * 1024;
 const PROGRAM_DATE_AVAILABILITY_CHANNEL = 'program-date-availability';
-const PROGRAM_DATE_REFRESH_INTERVAL_MS = 4000;
+// Realtime broadcasts and the final submit-time availability check provide the
+// fast path. Keep a low-frequency polling fallback for missed broadcasts.
+const PROGRAM_DATE_REFRESH_INTERVAL_MS = 60 * 1000;
 let isolatedAuthClient = null;
 
 const DEFAULT_COUNTRY = 'PHILIPPINES';

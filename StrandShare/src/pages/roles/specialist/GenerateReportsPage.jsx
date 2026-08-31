@@ -30,10 +30,7 @@ import {
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
-import {
-  HAIR_BUNDLE_STATUS,
-  HAIR_SUBMISSION_STATUS,
-} from '../../../lib/hairSubmissionWorkflow';
+import { HAIR_BUNDLE_STATUS } from '../../../lib/hairSubmissionWorkflow';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
@@ -435,32 +432,6 @@ export default function GenerateReportsPage({ userProfile }) {
     void loadAll();
   }, [loadAll]);
 
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
-    let isMounted = true;
-    let refreshTimer = null;
-    const scheduleRefresh = () => {
-      if (!isMounted) return;
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => {
-        if (isMounted) void loadAll();
-      }, 300);
-    };
-    const channel = supabase
-      .channel('public:qa-stylist-reports-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_SUBMISSIONS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_SUBMISSION_BUNDLES_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIGS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: CUT_HAIR_INVENTORY_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_AI_REVIEW_COMPARISONS_TABLE }, scheduleRefresh)
-      .subscribe();
-    return () => {
-      isMounted = false;
-      if (refreshTimer) clearTimeout(refreshTimer);
-      supabase.removeChannel(channel);
-    };
-  }, [loadAll]);
-
   const selectedTemplate = REPORT_TEMPLATES.find((t) => t.id === selectedTemplateId) || REPORT_TEMPLATES[0];
 
   const driveOptions = useMemo(() => {
@@ -603,8 +574,8 @@ export default function GenerateReportsPage({ userProfile }) {
         bucket.submitted += 1;
         if (row.User_ID) bucket.donors.add(Number(row.User_ID));
         const sk = statusKey(row._qualityStatus || row.Status);
-        if (sk === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()) bucket.approved += 1;
-        if (sk === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase() || sk === 'rejected cut') bucket.rejected += 1;
+        if (sk === 'approved') bucket.approved += 1;
+        if (sk === 'rejected' || sk === 'rejected cut') bucket.rejected += 1;
       });
       return Array.from(grouped.values())
         .sort((a, b) => b.submitted - a.submitted)
@@ -642,10 +613,10 @@ export default function GenerateReportsPage({ userProfile }) {
   const summary = useMemo(() => {
     if (selectedTemplateId === 'qa_decisions') {
       const total = filteredRows.length;
-      const approved = filteredRows.filter((r) => statusKey(r.status) === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()).length;
-      const rejected = filteredRows.filter((r) => statusKey(r.status) === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase()).length;
+      const approved = filteredRows.filter((r) => statusKey(r.status) === 'approved').length;
+      const rejected = filteredRows.filter((r) => statusKey(r.status) === 'rejected').length;
       const rejectedCut = filteredRows.filter((r) => statusKey(r.status) === 'rejected cut').length;
-      const received = filteredRows.filter((r) => statusKey(r.status) === HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase()).length;
+      const pending = filteredRows.filter((r) => statusKey(r.status) === 'pending').length;
       const decided = approved + rejected + rejectedCut;
       const rate = decided > 0 ? Math.round((approved / decided) * 100) : 0;
       return [
@@ -654,7 +625,7 @@ export default function GenerateReportsPage({ userProfile }) {
         { label: 'Rejected', value: rejected },
         { label: 'Rejected Cut', value: rejectedCut },
         { label: 'Approval rate', value: `${rate}%` },
-        { label: 'Awaiting decision', value: received },
+        { label: 'Awaiting decision', value: pending },
       ];
     }
     if (selectedTemplateId === 'bundle_production') {
@@ -732,10 +703,9 @@ export default function GenerateReportsPage({ userProfile }) {
   const previewChartData = useMemo(() => {
     if (selectedTemplateId === 'qa_decisions') {
       const buckets = [
-        { name: HAIR_SUBMISSION_STATUS.CUT_SHIPPED, color: '#b45309' },
-        { name: HAIR_SUBMISSION_STATUS.RECEIVED, color: primaryColor },
-        { name: HAIR_SUBMISSION_STATUS.APPROVED, color: tertiaryColor },
-        { name: HAIR_SUBMISSION_STATUS.REJECTED, color: '#dc2626' },
+        { name: 'Pending', color: primaryColor },
+        { name: 'Approved', color: tertiaryColor },
+        { name: 'Rejected', color: '#dc2626' },
         { name: 'Rejected Cut', color: '#d97706' },
       ].map((b) => ({
         ...b,
@@ -962,10 +932,9 @@ export default function GenerateReportsPage({ userProfile }) {
     if (selectedTemplateId === 'qa_decisions' || selectedTemplateId === 'donor_throughput') {
       return [
         { id: 'all', label: 'All statuses' },
-        { id: HAIR_SUBMISSION_STATUS.CUT_SHIPPED.toLowerCase(), label: 'Cut & Shipped' },
-        { id: HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase(), label: 'Received' },
-        { id: HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase(), label: 'Approved' },
-        { id: HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase(), label: 'Rejected' },
+        { id: 'pending', label: 'Pending' },
+        { id: 'approved', label: 'Approved' },
+        { id: 'rejected', label: 'Rejected' },
         { id: 'rejected cut', label: 'Rejected Cut' },
       ];
     }
@@ -1238,8 +1207,8 @@ export default function GenerateReportsPage({ userProfile }) {
               <ResponsiveContainer>
                 <PieChart>
                   <Pie data={previewChartData.data} dataKey="value" nameKey="name" innerRadius={48} outerRadius={80} paddingAngle={2}>
-                    {previewChartData.data.map((entry) => (
-                      <Cell key={entry.name} fill={entry.color} />
+                    {previewChartData.data.map((entry, index) => (
+                      <Cell key={`${entry.name}-${index}`} fill={entry.color} />
                     ))}
                   </Pie>
                   <Tooltip />

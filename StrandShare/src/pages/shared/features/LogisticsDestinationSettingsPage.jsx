@@ -3,7 +3,6 @@ import { Info, Loader2, RefreshCw, Save, MapPin, Search } from 'lucide-react';
 import maplibregl from 'maplibre-gl';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
-import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 import { logAuditAction } from '../../../lib/auditLogger';
 import philippineAddressOptions from '../../../data/philippineAddressOptions.json';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -259,6 +258,7 @@ function LogisticsLocationPinPicker({ latitude, longitude, onChange, disabled = 
   const onChangeRef = useRef(onChange);
   const initialLatitudeRef = useRef(latitude);
   const initialLongitudeRef = useRef(longitude);
+  const appliedMapViewRef = useRef('satellite');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchError, setSearchError] = useState('');
   const [isSearching, setIsSearching] = useState(false);
@@ -404,12 +404,24 @@ function LogisticsLocationPinPicker({ latitude, longitude, onChange, disabled = 
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) {
-      return;
+    if (!map || appliedMapViewRef.current === mapView) {
+      return undefined;
     }
 
     const nextStyle = mapView === 'street' ? MAP_STREET_STYLE : MAP_SATELLITE_STYLE;
-    map.setStyle(nextStyle);
+    const applyStyle = () => {
+      if (mapRef.current !== map || appliedMapViewRef.current === mapView) return;
+      map.setStyle(nextStyle);
+      appliedMapViewRef.current = mapView;
+    };
+
+    if (map.isStyleLoaded()) {
+      applyStyle();
+      return undefined;
+    }
+
+    map.once('style.load', applyStyle);
+    return () => map.off('style.load', applyStyle);
   }, [mapView]);
 
   return (
@@ -592,15 +604,6 @@ export default function LogisticsDestinationSettingsPage({ userProfile }) {
     void fetchUiSettings();
     void loadSettings();
   }, [fetchUiSettings, loadSettings]);
-
-  useRealtimeRefresh({
-    channelName: 'requirements-logistics-live',
-    tables: [UI_SETTINGS_TABLE, LOGISTICS_SETTINGS_TABLE],
-    onChange: () => {
-      void fetchUiSettings();
-      void loadSettings();
-    },
-  });
 
   const cards = useMemo(() => {
     const fullAddress = [form.street, form.barangay, form.city, form.province, form.region, form.country]

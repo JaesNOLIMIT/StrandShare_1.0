@@ -1,19 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
-import { trackDataRequest } from './dataRequestTracker';
 
 export const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
 export const supabaseAnonKey = process.env.REACT_APP_SUPABASE_ANON_KEY;
-const AUTH_FETCH_TIMEOUT_MS = 15000;
+const inFlightDataReads = new Map();
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
-
-function isAuthRequest(input) {
-  const requestUrl = typeof Request !== 'undefined' && input instanceof Request
-    ? input.url
-    : String(input || '');
-
-  return Boolean(supabaseUrl && requestUrl.startsWith(`${supabaseUrl}/auth/v1/`));
-}
 
 function isDataRequest(input) {
   const requestUrl = typeof Request !== 'undefined' && input instanceof Request
@@ -23,35 +14,73 @@ function isDataRequest(input) {
   return Boolean(supabaseUrl && requestUrl.startsWith(`${supabaseUrl}/rest/v1/`));
 }
 
-function fetchWithAuthTimeout(input, init = {}) {
-  if (!isAuthRequest(input)) {
-    const request = fetch(input, init);
-    return isDataRequest(input) ? trackDataRequest(request) : request;
+function requestMethod(input, init = {}) {
+  return String(
+    init.method
+      || (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET')
+      || 'GET',
+  ).toUpperCase();
+}
+
+function requestHeader(input, init, name) {
+  const initHeaders = new Headers(init?.headers || undefined);
+  const initValue = initHeaders.get(name);
+  if (initValue !== null) return initValue;
+  if (typeof Request !== 'undefined' && input instanceof Request) {
+    return input.headers.get(name) || '';
+  }
+  return '';
+}
+
+function dataReadKey(input, init = {}) {
+  const requestUrl = typeof Request !== 'undefined' && input instanceof Request
+    ? input.url
+    : String(input || '');
+  const varyingHeaders = [
+    'accept',
+    'accept-profile',
+    'authorization',
+    'content-profile',
+    'range',
+    'range-unit',
+    'prefer',
+  ].map((name) => `${name}:${requestHeader(input, init, name)}`).join('|');
+  return `${requestMethod(input, init)}|${requestUrl}|${varyingHeaders}`;
+}
+
+function fetchDataRequest(input, init = {}) {
+  const method = requestMethod(input, init);
+  if (method !== 'GET' && method !== 'HEAD') {
+    return fetch(input, init);
   }
 
-  const controller = new AbortController();
-  const inputSignal = init.signal
-    || (typeof Request !== 'undefined' && input instanceof Request ? input.signal : null);
-  const forwardAbort = () => controller.abort(inputSignal?.reason);
-
-  if (inputSignal?.aborted) {
-    forwardAbort();
-  } else {
-    inputSignal?.addEventListener('abort', forwardAbort, { once: true });
+  const key = dataReadKey(input, init);
+  let pending = inFlightDataReads.get(key);
+  if (!pending) {
+    pending = fetch(input, init).finally(() => {
+      inFlightDataReads.delete(key);
+    });
+    inFlightDataReads.set(key, pending);
   }
 
-  const timeoutId = window.setTimeout(() => controller.abort(), AUTH_FETCH_TIMEOUT_MS);
+  // A Response body can only be consumed once. Each Supabase caller receives
+  // an independent clone while the database executes the identical read once.
+  return pending.then((response) => response.clone());
+}
 
-  return fetch(input, { ...init, signal: controller.signal }).finally(() => {
-    window.clearTimeout(timeoutId);
-    inputSignal?.removeEventListener('abort', forwardAbort);
-  });
+function fetchWithRequestControls(input, init = {}) {
+  // Supabase Auth already owns its retry and cancellation lifecycle. Aborting
+  // those requests here turns a temporarily slow refresh into an
+  // AuthRetryableFetchError and can leave client initialization waiting on a
+  // retry. Only coalesce identical REST reads; pass auth and all other traffic
+  // through unchanged.
+  return isDataRequest(input) ? fetchDataRequest(input, init) : fetch(input, init);
 }
 
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey, {
       global: {
-        fetch: fetchWithAuthTimeout,
+        fetch: fetchWithRequestControls,
       },
     })
   : null;

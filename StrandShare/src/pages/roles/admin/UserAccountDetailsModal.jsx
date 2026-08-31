@@ -2,6 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { Edit2, Loader2, Power, Save, Shield, X } from 'lucide-react';
 import { toRoleLabel } from '../../../lib/roleUtils';
+import { PERSON_SUFFIX_OPTIONS } from '../../../lib/personIdentity';
 
 const EDITABLE_ROLES = ['staff', 'specialist'];
 const fieldClass = 'mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900';
@@ -10,11 +11,22 @@ function Detail({ label, children }) {
   return <div><dt className="font-semibold text-slate-500">{label}</dt><dd className="mt-0.5 text-slate-900">{children || 'N/A'}</dd></div>;
 }
 
-function Input({ label, name, value, onChange, type = 'text' }) {
+function Input({ label, name, value, onChange, type = 'text', required = false, autoComplete, max }) {
   return (
     <label className="block text-sm font-semibold text-slate-700">
       {label}
-      <input name={name} type={type} value={value || ''} onChange={onChange} className={fieldClass} />
+      <input required={required} autoComplete={autoComplete} max={max} name={name} type={type} value={value || ''} onChange={onChange} className={fieldClass} />
+    </label>
+  );
+}
+
+function SelectInput({ label, name, value, onChange, children, required = false, autoComplete }) {
+  return (
+    <label className="block text-sm font-semibold text-slate-700">
+      {label}
+      <select required={required} autoComplete={autoComplete} name={name} value={value || ''} onChange={onChange} className={fieldClass}>
+        {children}
+      </select>
     </label>
   );
 }
@@ -84,13 +96,21 @@ export default function UserAccountDetailsModal({
 
           {editing ? (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <Input label="First Name" name="firstName" value={form.firstName} onChange={onChange} />
-              <Input label="Middle Name" name="middleName" value={form.middleName} onChange={onChange} />
-              <Input label="Last Name" name="lastName" value={form.lastName} onChange={onChange} />
-              <Input label="Suffix" name="suffix" value={form.suffix} onChange={onChange} />
-              <Input label="Birthdate" name="birthdate" value={form.birthdate} onChange={onChange} type="date" />
-              <Input label="Gender" name="gender" value={form.gender} onChange={onChange} />
-              <Input label="Contact Number" name="contactNumber" value={form.contactNumber} onChange={onChange} />
+              <Input required autoComplete="given-name" label="First Name *" name="firstName" value={form.firstName} onChange={onChange} />
+              <Input autoComplete="additional-name" label="Middle Name" name="middleName" value={form.middleName} onChange={onChange} />
+              <Input required autoComplete="family-name" label="Last Name *" name="lastName" value={form.lastName} onChange={onChange} />
+              <SelectInput label="Suffix" name="suffix" value={form.suffix} onChange={onChange} autoComplete="honorific-suffix">
+                {PERSON_SUFFIX_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
+              </SelectInput>
+              <Input required autoComplete="bday" max={new Date().toISOString().slice(0, 10)} label="Birthdate *" name="birthdate" value={form.birthdate} onChange={onChange} type="date" />
+              <SelectInput required label="Gender *" name="gender" value={form.gender} onChange={onChange} autoComplete="sex">
+                <option value="">Select gender</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+                <option value="Other">Other</option>
+                <option value="Prefer not to say">Prefer not to say</option>
+              </SelectInput>
+              <Input autoComplete="tel" label="Contact Number" name="contactNumber" value={form.contactNumber} onChange={onChange} type="tel" />
               <Input label="Street" name="street" value={form.street} onChange={onChange} />
               <Input label="Barangay" name="barangay" value={form.barangay} onChange={onChange} />
               <Input label="City / Municipality" name="city" value={form.city} onChange={onChange} />

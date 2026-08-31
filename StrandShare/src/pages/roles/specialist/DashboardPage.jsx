@@ -1,14 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowRight,
   CheckCircle2,
   Clock3,
-  HelpCircle,
-  Loader2,
   Package,
   PackagePlus,
-  RefreshCw,
   ScanLine,
   ShieldCheck,
   XCircle,
@@ -26,6 +23,7 @@ import {
   Cell,
   Legend,
 } from 'recharts';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import {
@@ -40,7 +38,6 @@ const USER_DETAILS_TABLE = 'user_details';
 const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 
-const REALTIME_DEBOUNCE_MS = 250;
 const RECENT_LIMIT = 8;
 
 function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
@@ -101,16 +98,13 @@ function statusKey(value) {
 
 function statusBadgeStyle(value, primaryColor, tertiaryColor) {
   const key = statusKey(value);
-  if (key === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase() || key.includes('approved')) {
+  if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase() || key.includes('approved')) {
     return { backgroundColor: withColorAlpha(tertiaryColor, 0.16), color: tertiaryColor, borderColor: withColorAlpha(tertiaryColor, 0.4) };
   }
-  if (key === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase()) {
+  if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase() || key.includes('rejected')) {
     return { backgroundColor: '#fef2f2', color: '#b91c1c', borderColor: '#fecaca' };
   }
-  if (key === HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase()) {
-    return { backgroundColor: withColorAlpha(primaryColor, 0.14), color: primaryColor, borderColor: withColorAlpha(primaryColor, 0.4) };
-  }
-  if (key === HAIR_SUBMISSION_STATUS.CUT_SHIPPED.toLowerCase()) {
+  if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) {
     return { backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' };
   }
   if (key === HAIR_BUNDLE_STATUS.IN_PRODUCTION.toLowerCase()) {
@@ -127,14 +121,13 @@ function statusBadgeStyle(value, primaryColor, tertiaryColor) {
 
 function actionLabelFor(submission) {
   const key = statusKey(submission.Status);
-  if (key === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()) return 'Approved';
-  if (key === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase()) return 'Rejected';
-  if (key === HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase()) return 'Received';
-  if (key === HAIR_SUBMISSION_STATUS.CUT_SHIPPED.toLowerCase()) return 'Cut & Shipped';
+  if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()) return 'Approved / Cut';
+  if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) return 'Rejected / Cancelled';
+  if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) return 'Pending Quality Check';
   return submission.Status || 'Updated';
 }
 
-export default function DashboardPage({ onNavigate }) {
+export default function DashboardPage({ onNavigate, onInitialDataReady }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0275d8';
   const secondaryColor = theme?.secondaryColor || '#64748b';
@@ -156,9 +149,13 @@ export default function DashboardPage({ onNavigate }) {
   const [drivesById, setDrivesById] = useState({});
 
   const [isLoading, setIsLoading] = useState(false);
+  const initialDataReportedRef = useRef(false);
+  const reportInitialDataReady = useCallback(() => {
+    if (initialDataReportedRef.current) return;
+    initialDataReportedRef.current = true;
+    onInitialDataReady?.();
+  }, [onInitialDataReady]);
   const [notice, setNotice] = useState({ kind: '', text: '' });
-  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
-  const [isInfoOpen, setIsInfoOpen] = useState(false);
 
   const loadData = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -270,41 +267,12 @@ export default function DashboardPage({ onNavigate }) {
       setNotice({ kind: 'error', text: error?.message || 'Unable to load dashboard data.' });
     } finally {
       setIsLoading(false);
+      reportInitialDataReady();
     }
-  }, []);
+  }, [reportInitialDataReady]);
 
   useEffect(() => {
     void loadData();
-  }, [loadData]);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
-
-    let isMounted = true;
-    let refreshTimer = null;
-    const scheduleRefresh = () => {
-      if (!isMounted) return;
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => {
-        if (isMounted) void loadData();
-      }, REALTIME_DEBOUNCE_MS);
-    };
-
-    const channel = supabase
-      .channel('public:qa-stylist-dashboard-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_SUBMISSIONS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_SUBMISSION_BUNDLES_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIGS_TABLE }, scheduleRefresh)
-      .subscribe((status) => {
-        if (!isMounted) return;
-        setIsRealtimeActive(status === 'SUBSCRIBED');
-      });
-
-    return () => {
-      isMounted = false;
-      if (refreshTimer) clearTimeout(refreshTimer);
-      supabase.removeChannel(channel);
-    };
   }, [loadData]);
 
   const todayAnchor = useMemo(() => startOfToday(), []);
@@ -315,24 +283,19 @@ export default function DashboardPage({ onNavigate }) {
     let rejectedToday = 0;
     let approvedTotal = 0;
     let rejectedTotal = 0;
-    let receivedTotal = 0;
-    let awaitingIntake = 0;
+    const awaitingIntake = 0;
 
     submissions.forEach((row) => {
       const key = statusKey(row.Status);
       const updated = row.Updated_At || row.Created_At;
-      if (key === HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase()) {
+      if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) {
         pendingQa += 1;
-        receivedTotal += 1;
       }
-      if (key === HAIR_SUBMISSION_STATUS.CUT_SHIPPED.toLowerCase()) {
-        awaitingIntake += 1;
-      }
-      if (key === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()) {
+      if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()) {
         approvedTotal += 1;
         if (isSameDay(updated, todayAnchor)) approvedToday += 1;
       }
-      if (key === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase()) {
+      if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) {
         rejectedTotal += 1;
         if (isSameDay(updated, todayAnchor)) rejectedToday += 1;
       }
@@ -354,7 +317,6 @@ export default function DashboardPage({ onNavigate }) {
       rejectedToday,
       approvedTotal,
       rejectedTotal,
-      receivedTotal,
       draftBundles,
       inProductionBundles,
       completedBundles,
@@ -415,10 +377,11 @@ export default function DashboardPage({ onNavigate }) {
   const recentActivity = useMemo(() => {
     const submissionEvents = submissions
       .filter((row) => [
-        HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase(),
-        HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase(),
-        HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase(),
-        HAIR_SUBMISSION_STATUS.CUT_SHIPPED.toLowerCase(),
+        HAIR_SUBMISSION_STATUS.PENDING.toLowerCase(),
+        HAIR_SUBMISSION_STATUS.CUT.toLowerCase(),
+        HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase(),
+        HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION.toLowerCase(),
+        HAIR_SUBMISSION_STATUS.WIG_CREATED.toLowerCase(),
       ].includes(statusKey(row.Status)))
       .map((row) => {
         const donor = donorsById[Number(row.User_ID || 0)];
@@ -487,8 +450,8 @@ export default function DashboardPage({ onNavigate }) {
       if (Number.isNaN(ts.getTime())) return;
       const bucket = buckets.find((b) => isSameDay(ts, b.anchor));
       if (!bucket) return;
-      if (key === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()) bucket.approved += 1;
-      if (key === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase()) bucket.rejected += 1;
+      if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()) bucket.approved += 1;
+      if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) bucket.rejected += 1;
     });
 
     return buckets.map(({ label, approved, rejected }) => ({ label, Approved: approved, Rejected: rejected }));
@@ -496,20 +459,18 @@ export default function DashboardPage({ onNavigate }) {
 
   const queueBreakdown = useMemo(() => {
     const data = [
-      { name: 'Cut & Shipped', value: 0, color: '#b45309' },
-      { name: 'Received', value: 0, color: primaryColor },
-      { name: 'Approved', value: 0, color: tertiaryColor },
-      { name: 'Rejected', value: 0, color: '#dc2626' },
+      { name: 'Pending', value: 0, color: '#b45309' },
+      { name: 'Approved / Cut', value: 0, color: tertiaryColor },
+      { name: 'Rejected / Cancelled', value: 0, color: '#dc2626' },
     ];
     submissions.forEach((row) => {
       const key = statusKey(row.Status);
-      if (key === HAIR_SUBMISSION_STATUS.CUT_SHIPPED.toLowerCase()) data[0].value += 1;
-      else if (key === HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase()) data[1].value += 1;
-      else if (key === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()) data[2].value += 1;
-      else if (key === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase()) data[3].value += 1;
+      if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) data[0].value += 1;
+      else if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()) data[1].value += 1;
+      else if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) data[2].value += 1;
     });
     return data.filter((d) => d.value > 0);
-  }, [submissions, primaryColor, tertiaryColor]);
+  }, [submissions, tertiaryColor]);
 
   const queueTotal = queueBreakdown.reduce((sum, item) => sum + item.value, 0);
 
@@ -524,54 +485,27 @@ export default function DashboardPage({ onNavigate }) {
         <div>
           <h1 className="role-page-title mb-1 text-2xl font-bold" style={headingStyle}>Specialist Dashboard</h1>
           <p style={{ color: secondaryTextColor }}>
-            Live QA queue, bundling progress, and finished wig output - synced in realtime from the database.
+            Cached QA queue, bundling progress, and finished wig output. Refresh when you need the latest snapshot.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <span
             className="inline-flex items-center gap-1.5 rounded-full border bg-white px-2.5 py-1 text-xs font-semibold"
-            style={
-              isRealtimeActive
-                ? { borderColor: withColorAlpha(tertiaryColor, 0.4), color: tertiaryColor }
-                : { borderColor: '#fde68a', color: '#b45309' }
-            }
+            style={{ borderColor: withColorAlpha(primaryColor, 0.25), color: secondaryTextColor }}
           >
             <span
               className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: isRealtimeActive ? tertiaryColor : '#b45309' }}
+              style={{ backgroundColor: tertiaryTextColor }}
             />
-            {isRealtimeActive ? 'Live' : 'Offline'}
+            Cached
           </span>
-          <div className="relative">
-            <button
-              type="button"
-              aria-label="About the specialist dashboard"
-              aria-expanded={isInfoOpen}
-              onClick={() => setIsInfoOpen((open) => !open)}
-              className="flex h-9 w-9 items-center justify-center rounded-xl border bg-white"
-              style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-            >
-              <HelpCircle size={16} />
-            </button>
-            {isInfoOpen && (
-              <div className="absolute right-0 top-11 z-30 w-72 rounded-xl border bg-white p-3 text-left shadow-xl" style={{ borderColor: withColorAlpha(primaryColor, 0.25) }}>
-                <p className="text-xs font-bold" style={headingStyle}>About this dashboard</p>
-                <p className="mt-1 text-[10px] leading-relaxed" style={{ color: secondaryTextColor }}>
-                  Live specialist-only workflow: hair quality review, production bundles, and completed wig inventory.
-                </p>
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() => loadData()}
-            disabled={isLoading}
-            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3.5 py-2 text-sm font-semibold disabled:opacity-60"
-            style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-          >
-            {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            Refresh
-          </button>
+          <PageHeaderActions
+            onRefresh={() => loadData()}
+            refreshLoading={isLoading}
+            autoRefreshOnChanges={false}
+            helpTitle="About the Specialist Dashboard"
+            helpContent={<p>Review hair quality decisions, production bundles, and completed wig inventory from this overview.</p>}
+          />
         </div>
       </header>
 
@@ -647,8 +581,8 @@ export default function DashboardPage({ onNavigate }) {
                 <ResponsiveContainer>
                   <PieChart>
                     <Pie data={queueBreakdown} dataKey="value" nameKey="name" innerRadius={50} outerRadius={80} paddingAngle={2}>
-                      {queueBreakdown.map((entry) => (
-                        <Cell key={entry.name} fill={entry.color} />
+                      {queueBreakdown.map((entry, index) => (
+                        <Cell key={`${entry.name}-${index}`} fill={entry.color} />
                       ))}
                     </Pie>
                     <Tooltip />
@@ -677,15 +611,6 @@ export default function DashboardPage({ onNavigate }) {
             <div className="flex items-center gap-2">
               <Clock3 size={16} style={{ color: primaryColor }} />
               <h2 className="text-lg font-semibold" style={headingStyle}>Recent Activity</h2>
-              {isRealtimeActive ? (
-                <span
-                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
-                  style={{ backgroundColor: withColorAlpha(tertiaryColor, 0.12), color: tertiaryColor }}
-                >
-                  <span className="inline-block h-1.5 w-1.5 rounded-full animate-pulse" style={{ backgroundColor: tertiaryColor }} />
-                  Live feed
-                </span>
-              ) : null}
             </div>
             <button
               type="button"

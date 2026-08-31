@@ -239,6 +239,7 @@ export default function CompleteAccountPage() {
           detail: {
             authUserId,
             profile: upsertedUser,
+            source: 'account-completion',
           },
         }),
       );

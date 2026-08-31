@@ -16,19 +16,32 @@ import jsQR from 'jsqr';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
+import WaybillScanResult from '../../../components/scanning/WaybillScanResult';
 import {
   HAIR_SUBMISSION_STATUS,
+  WAYBILL_CODE_LENGTH,
   buildWaybillCode,
+  isValidWaybillCode,
+  normalizeWaybillCodeInput,
   parseWaybillQrPayload,
 } from '../../../lib/hairSubmissionWorkflow';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
 const HAIR_SUBMISSION_IMAGES_TABLE = 'Hair_Submission_Images';
+const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
 const USER_DETAILS_TABLE = 'user_details';
 const PROFILE_PICTURES_BUCKET = 'profile_pictures';
 const HAIR_SUBMISSIONS_BUCKET = 'hair-submissions';
 const SCAN_DEBOUNCE_MS = 2500;
+const QUALITY_SCAN_OUTCOMES = [
+  'Eligible non-event Cut hair: submission details load and await Approve or Reject.',
+  'Approved: hair remains Cut and becomes available for specialist Bundling.',
+  'Rejected: submission becomes Cancelled and is removed from the bundling workflow.',
+  'Already approved or rejected: the final locked result is shown without changing it.',
+  'Event waybill: redirected to Staff Assigned Event Operations; no specialist change is made.',
+  'Already bundled, cancelled, not Cut, unknown, or malformed waybill: scan is blocked with the exact reason.',
+];
 
 const EMPTY_DETAIL_DRAFT = Object.freeze({
   declaredLength: '',
@@ -367,6 +380,7 @@ export default function QualityCheckPage() {
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isStartingCamera, setIsStartingCamera] = useState(false);
   const [cameraStatus, setCameraStatus] = useState({ tone: 'info', message: 'Camera is off. Turn it on to scan a waybill.' });
+  const [manualWaybillCode, setManualWaybillCode] = useState('');
 
   const [queue, setQueue] = useState([]);
   const [activeSubmissionId, setActiveSubmissionId] = useState(null);
@@ -380,6 +394,7 @@ export default function QualityCheckPage() {
   const [decisionConfirmation, setDecisionConfirmation] = useState(null);
   const [imageUrlsByPath, setImageUrlsByPath] = useState({});
   const [detailDraft, setDetailDraft] = useState({ ...EMPTY_DETAIL_DRAFT });
+  const [scanOutcome, setScanOutcome] = useState(null);
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -616,6 +631,7 @@ export default function QualityCheckPage() {
       const waybill = parseWaybillQrPayload(decodedText);
       if (!waybill || (!waybill.submissionId && !waybill.waybillCode && !waybill.userId)) {
         setCameraStatus({ tone: 'error', message: 'Scan did not match a hair submission waybill.' });
+        setScanOutcome({ tone: 'error', title: 'Invalid waybill', action: 'No database change', status: 'Blocked', nextStep: 'Use an 8-character WB waybill or its QR code' });
         return;
       }
 
@@ -630,6 +646,25 @@ export default function QualityCheckPage() {
         const normalizedCode = String(waybill.waybillCode || '').trim().toUpperCase();
         const compact = normalizedCode.replace(/[^A-Z0-9]/g, '');
         if (/^WB[A-Z0-9]{6}$/.test(compact)) {
+          const attendeeLookup = await supabase
+            .from(EVENT_ATTENDEES_TABLE)
+            .select('Event_Attendee_ID')
+            .eq('Waybill_Code', compact)
+            .maybeSingle();
+          if (attendeeLookup.error) throw attendeeLookup.error;
+          if (attendeeLookup.data?.Event_Attendee_ID) {
+            setCameraStatus({
+              tone: 'warning',
+              message: `Waybill ${compact} belongs to an event donation. Use Assigned Event Operations.`,
+            });
+            setScanOutcome({
+              tone: 'warning', title: 'Event waybill detected', waybill: compact,
+              action: 'No specialist quality change', status: 'Use event workflow',
+              nextStep: 'Open Staff Assigned Event Operations',
+            });
+            return;
+          }
+
           const decodedId = Number.parseInt(compact.slice(2), 36);
           if (Number.isInteger(decodedId) && decodedId > 0) {
             lookup = await supabase
@@ -673,6 +708,10 @@ export default function QualityCheckPage() {
 
       if (!submission?.Submission_ID) {
         setCameraStatus({ tone: 'error', message: `No non-event submission found for ${waybill.waybillCode || waybill.submissionId || `user #${waybill.userId}`}.` });
+        setScanOutcome({
+          tone: 'error', title: 'Submission not found', waybill: waybill.waybillCode,
+          action: 'No database change', status: 'Blocked', nextStep: 'Check the waybill and scan again',
+        });
         return;
       }
 
@@ -682,6 +721,10 @@ export default function QualityCheckPage() {
           tone: 'warning',
           message: `Waybill ${submissionLabel} belongs to an event donation. Use Assigned Event Operations.`,
         });
+        setScanOutcome({
+          tone: 'warning', title: 'Event donation detected', waybill: submissionLabel,
+          action: 'No specialist quality change', status: 'Use event workflow', nextStep: 'Use Staff Assigned Event Operations',
+        });
         return;
       }
 
@@ -690,6 +733,10 @@ export default function QualityCheckPage() {
         setCameraStatus({
           tone: 'info',
           message: `Waybill ${submissionLabel} is already assigned to a bundle.`,
+        });
+        setScanOutcome({
+          tone: 'info', title: 'Hair is already bundled', waybill: submissionLabel,
+          action: 'Loaded current state only', status: 'Bundling', nextStep: 'Manage it from the Bundling page',
         });
         return;
       }
@@ -709,37 +756,44 @@ export default function QualityCheckPage() {
           tone: 'info',
           message: `Waybill ${submissionLabel} is Cancelled and cannot be bundled.`,
         });
+        setScanOutcome({ tone: 'warning', title: 'Cancelled hair', waybill: submissionLabel, action: 'No database change', status: 'Cancelled', nextStep: 'No further processing allowed' });
       } else if (statusKey === 'cut' && qualityStatusKey === 'pending') {
         setCameraStatus({
           tone: 'info',
           message: `Waybill ${submissionLabel} loaded. Inspect the hair and choose Approve or Reject below.`,
         });
+        setScanOutcome({ tone: 'success', title: 'Quality review loaded', waybill: submissionLabel, action: 'Loaded donor and hair details', status: 'Awaiting decision', nextStep: 'Inspect and choose Approve or Reject', statusChanges: [] });
       } else if (qualityStatusKey === 'approved') {
         setCameraStatus({
           tone: 'info',
           message: `Waybill ${submissionLabel} is already Approved and ready for Bundling.`,
         });
+        setScanOutcome({ tone: 'info', title: 'Quality review already complete', waybill: submissionLabel, action: 'Loaded locked result', status: 'Approved', nextStep: 'Scan this waybill into an open bundle' });
       } else if (qualityStatusKey === 'rejected') {
         setCameraStatus({
           tone: 'info',
           message: `Waybill ${submissionLabel} is Rejected and cannot be bundled.`,
         });
+        setScanOutcome({ tone: 'warning', title: 'Quality review already complete', waybill: submissionLabel, action: 'Loaded locked result', status: 'Rejected', nextStep: 'No further processing allowed' });
       } else if (statusKey !== 'cut') {
         setCameraStatus({
           tone: 'warning',
           message: `Waybill ${submissionLabel} has not reached Cut status and cannot be quality reviewed yet.`,
         });
+        setScanOutcome({ tone: 'warning', title: 'Hair is not ready for quality review', waybill: submissionLabel, action: 'No database change', status: submission.Status || 'Not ready', nextStep: 'Wait until the submission reaches Cut' });
       } else {
         setCameraStatus({
           tone: 'info',
           message: `Waybill ${submissionLabel} is already ${submission.Status}. Read-only.`,
         });
+        setScanOutcome({ tone: 'info', title: 'Current waybill state loaded', waybill: submissionLabel, action: 'Read-only lookup', status: submission.Status || 'Read-only', nextStep: 'No quality action is available' });
       }
 
       setActiveSubmissionId(submission.Submission_ID);
       await loadQueue();
     } catch (error) {
       setCameraStatus({ tone: 'error', message: error?.message || 'Unable to load scanned waybill.' });
+      setScanOutcome({ tone: 'error', title: 'Waybill could not be processed', action: 'No database change', status: 'Blocked', nextStep: error?.message || 'Try scanning again' });
     } finally {
       isScanProcessingRef.current = false;
     }
@@ -762,6 +816,7 @@ export default function QualityCheckPage() {
     setCameraStatus({ tone: 'info', message: 'Initializing camera...' });
 
     try {
+      stopCamera();
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -782,6 +837,19 @@ export default function QualityCheckPage() {
     } finally {
       setIsStartingCamera(false);
     }
+  };
+
+  const handleManualWaybillLookup = async () => {
+    const code = normalizeWaybillCodeInput(manualWaybillCode);
+    if (!isValidWaybillCode(code)) {
+      setCameraStatus({
+        tone: 'warning',
+        message: 'Enter a complete waybill: WB followed by 6 letters or numbers.',
+      });
+      return;
+    }
+
+    await handleScannedText(code);
   };
 
   useEffect(() => {
@@ -877,6 +945,16 @@ export default function QualityCheckPage() {
         tone: 'success',
         message: `Waybill ${activeQueueRow.submissionCode} quality result is now Approved.`,
       });
+      setScanOutcome({
+        tone: 'success', title: 'Quality review approved', waybill: activeQueueRow.submissionCode,
+        subject: activeQueueRow.donorName, action: 'Saved final quality decision', status: 'Approved / Cut',
+        nextStep: 'Hair is now available for Bundling',
+        statusChanges: [
+          { label: 'Quality detail', before: activeQualityStatus || 'Pending', after: 'Approved' },
+          { label: 'Hair submission', before: activeQueueRow.status || 'Cut', after: 'Cut' },
+          { label: 'Cut inventory', before: 'Not available', after: 'Cut / Available' },
+        ],
+      });
       setNotice({ kind: 'success', text: 'Quality review approved. The existing Cut status was not changed.' });
       await loadQueue();
       await loadDetail(activeQueueRow.submissionId);
@@ -919,6 +997,16 @@ export default function QualityCheckPage() {
       setCameraStatus({
         tone: 'warning',
         message: `Waybill ${activeQueueRow.submissionCode} quality result is now Rejected.`,
+      });
+      setScanOutcome({
+        tone: 'warning', title: 'Quality review rejected', waybill: activeQueueRow.submissionCode,
+        subject: activeQueueRow.donorName, action: 'Saved final quality decision', status: 'Rejected / Cancelled',
+        nextStep: 'No further bundling or production is allowed',
+        statusChanges: [
+          { label: 'Quality detail', before: activeQualityStatus || 'Pending', after: 'Rejected' },
+          { label: 'Hair submission', before: activeQueueRow.status || 'Cut', after: 'Cancelled' },
+          { label: 'Cut inventory', before: 'Not available', after: 'Not available' },
+        ],
       });
       setNotice({ kind: 'success', text: 'Quality review rejected. This Cut hair is no longer eligible for Bundling.' });
       setShowRejectionInput(false);
@@ -1036,7 +1124,7 @@ export default function QualityCheckPage() {
               <ScanLine size={20} style={{ color: primaryColor }} />
               <div>
                 <h2 className="text-base font-semibold" style={headingStyle}>QR waybill scanner</h2>
-                <p className="mt-0.5 text-[11px]" style={{ color: tertiaryTextColor }}>Camera scanning only</p>
+                <p className="mt-0.5 text-[11px]" style={{ color: tertiaryTextColor }}>Scan with camera or enter the code</p>
               </div>
             </div>
             <span
@@ -1093,6 +1181,53 @@ export default function QualityCheckPage() {
               : isCameraOn ? <CameraOff size={16} /> : <Camera size={16} />}
             {isStartingCamera ? 'Starting camera...' : isCameraOn ? 'Stop scanner' : 'Start QR scanner'}
           </button>
+
+          <div className="my-4 flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            <span className="h-px flex-1 bg-slate-200" />
+            No camera available?
+            <span className="h-px flex-1 bg-slate-200" />
+          </div>
+
+          <label htmlFor="quality-waybill-manual" className="block text-xs font-semibold text-slate-700">
+            Enter donor waybill
+          </label>
+          <div className="mt-1.5 flex gap-2">
+            <input
+              id="quality-waybill-manual"
+              type="text"
+              value={manualWaybillCode}
+              onChange={(event) => setManualWaybillCode(normalizeWaybillCodeInput(event.target.value))}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void handleManualWaybillLookup();
+                }
+              }}
+              placeholder="WBXXXXXX"
+              maxLength={WAYBILL_CODE_LENGTH}
+              autoCapitalize="characters"
+              autoComplete="off"
+              spellCheck={false}
+              className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 font-mono text-sm uppercase tracking-wider text-slate-900 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+            />
+            <button
+              type="button"
+              onClick={() => { void handleManualWaybillLookup(); }}
+              disabled={isScanProcessingRef.current || !isValidWaybillCode(manualWaybillCode)}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl px-3 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ backgroundColor: primaryColor }}
+            >
+              <ScanLine size={15} />
+              Find
+            </button>
+          </div>
+          <div className="mt-1.5 flex justify-between text-[11px] text-slate-500">
+            <span>WB + 6 uppercase letters or numbers</span>
+            <span className="font-mono">{manualWaybillCode.length}/{WAYBILL_CODE_LENGTH}</span>
+          </div>
+          <div className="mt-4">
+            <WaybillScanResult outcome={scanOutcome} possibleOutcomes={QUALITY_SCAN_OUTCOMES} />
+          </div>
         </aside>
 
         <div className="min-w-0 overflow-hidden rounded-2xl border bg-white p-5 shadow-sm" style={{ borderColor: '#e2e8f0' }}>

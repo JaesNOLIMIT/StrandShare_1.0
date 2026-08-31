@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { CalendarDays, CheckCircle2, Info, Loader2, RefreshCw, Search, X } from 'lucide-react';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const WIG_REQUESTS_TABLE = 'Wig_Requests';
 const WIGS_TABLE = 'Wigs';
@@ -563,7 +564,7 @@ function buildSearchBlob(row) {
     .join(' ');
 }
 
-export default function UpdateWigRequestStatusPage({ userProfile }) {
+export default function UpdateWigRequestStatusPage({ userProfile, isActivePage = true }) {
   const [rows, setRows] = useState([]);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [searchTerm, setSearchTerm] = useState('');
@@ -1093,7 +1094,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
   }, [loadReviewRows]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
+    if (!isActivePage || !isSupabaseConfigured || !supabase) {
       return undefined;
     }
 
@@ -1114,7 +1115,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [loadReviewRows]);
+  }, [isActivePage, loadReviewRows]);
 
   const filteredRows = useMemo(() => {
     const activeStatusSet = new Set(ACTIVE_REQUEST_STATUS_KEYS);
@@ -1409,12 +1410,24 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Staff Workflow</p>
-        <h1 className="role-page-title mt-1 text-2xl font-extrabold tracking-tight text-slate-900 md:text-3xl">Manage Wig Request</h1>
-        <p className="mt-1 text-sm text-slate-600">
-          Review all incoming wig requests, inspect full specifications, and process status transitions up to release scheduling.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Wig Request</h1>
+          <p className="text-sm text-slate-600">Review incoming requests, inspect specifications, and process each request through release scheduling.</p>
+          <p className="mt-1 text-xs text-emerald-700">While this page is open, related database changes update the list automatically.</p>
+        </div>
+        <PageHeaderActions
+          onRefresh={() => loadReviewRows(selectedRow?.reqId || null)}
+          refreshLoading={isLoading}
+          refreshDisabled={isApplyingAction}
+          helpTitle="About Manage Wig Request"
+          helpContent={(
+            <>
+              <p>Use the filters to find a request, then open it to review the patient, requested wig, safety assessment, allocation, and release workflow.</p>
+              <p>Status updates from other authorized users are applied automatically while this page is open.</p>
+            </>
+          )}
+        />
       </div>
 
       <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-8">
@@ -1427,7 +1440,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-6">
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
           <div className="relative xl:col-span-2">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
@@ -1468,15 +1481,6 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
             title="To date"
           />
 
-          <button
-            type="button"
-            onClick={() => loadReviewRows(selectedRow?.reqId || null)}
-            disabled={isLoading || isApplyingAction}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-          >
-            {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            Refresh
-          </button>
         </div>
       </div>
 

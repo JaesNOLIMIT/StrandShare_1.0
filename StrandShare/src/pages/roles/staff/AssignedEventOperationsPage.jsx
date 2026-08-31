@@ -6,12 +6,10 @@ import {
   CameraOff,
   Calendar,
   CheckCircle2,
-  HelpCircle,
   Inbox,
   Loader2,
   MapPin,
   Printer,
-  RefreshCw,
   ScanLine,
   Search,
   Users,
@@ -21,10 +19,18 @@ import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabaseClient';
 import { useTheme } from '../../../context/ThemeContext';
+import { useToast } from '../../../context/ToastContext';
 import ProgramScheduleCalendarModal, {
   formatScheduleDateLabel,
   toScheduleDateKey,
 } from '../../../components/events/ProgramScheduleCalendarModal';
+import WaybillScanResult from '../../../components/scanning/WaybillScanResult';
+import PageHeaderActions from '../../../components/PageHeaderActions';
+import {
+  WAYBILL_CODE_LENGTH,
+  isValidWaybillCode,
+  normalizeWaybillCodeInput,
+} from '../../../lib/hairSubmissionWorkflow';
 
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
@@ -33,10 +39,11 @@ const USERS_TABLE = 'users';
 const USER_DETAILS_TABLE = 'user_details';
 const SCAN_DEBOUNCE_MS = 2500;
 const EVENT_FILTERS = [
+  { id: 'all_active', label: 'All active events' },
   { id: 'today', label: 'Today' },
-  { id: 'this_week', label: 'This Week' },
-  { id: 'upcoming', label: 'Upcoming' },
-  { id: 'ended', label: 'Ended' },
+  { id: 'this_week', label: 'Next 7 days' },
+  { id: 'upcoming', label: 'Later events' },
+  { id: 'ended', label: 'Ended events' },
 ];
 const HAIR_COLOR_OPTIONS = ['Black', 'Dark Brown', 'Brown', 'Light Brown', 'Blonde', 'Gray', 'Red / Auburn', 'Other'];
 const HAIR_TEXTURE_OPTIONS = ['Straight', 'Wavy', 'Curly', 'Coily'];
@@ -44,6 +51,15 @@ const HAIR_DENSITY_OPTIONS = ['Thin', 'Medium', 'Thick'];
 const HAIR_CONDITION_OPTIONS = ['Healthy', 'Slightly Dry', 'Dry', 'Damaged'];
 const MANILA_OFFSET_MINUTES = 8 * 60;
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const EVENT_SCAN_OUTCOMES = [
+  'RSVP donor: attendance becomes Present; next step is Hair Intake & Review.',
+  'RSVP voluntary attendee: attendance becomes Present; their event process is complete.',
+  'Hair Intake donor: attendee and submitted hair details open for the final staff decision.',
+  'Hair Intake voluntary attendee: no hair review is required and no submission is created.',
+  'Approved hair: submission becomes Cut and appears in Cut Hair Inventory for bundling.',
+  'Rejected or Rejected Cut hair: submission becomes Cancelled and cannot enter bundling.',
+  'Cancelled, duplicate, wrong-event, or unknown waybill: no record changes; the reason is shown.',
+];
 
 function getManilaSqlTimestamp(dateValue = new Date()) {
   const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
@@ -126,6 +142,7 @@ function parseRsvpScanPayload(rawValue) {
     payloadType: '',
     waybillCode: '',
     userId: null,
+    attendeeId: null,
   };
 
   try {
@@ -150,6 +167,7 @@ function parseRsvpScanPayload(rawValue) {
         payloadType,
         waybillCode: match ? String(match).trim() : '',
         userId: Number.isFinite(userId) && userId > 0 ? userId : null,
+        attendeeId: Number(parsed.Event_Attendee_ID ?? parsed.event_attendee_id ?? parsed.data?.Event_Attendee_ID) || null,
       };
     }
   } catch {
@@ -161,6 +179,7 @@ function parseRsvpScanPayload(rawValue) {
     payloadType: '',
     waybillCode: raw,
     userId: null,
+    attendeeId: null,
   };
 }
 
@@ -236,8 +255,9 @@ function enrichAttendeeRowWithUserData(attendeeRow, userRow, detailRow, fallback
   };
 }
 
-export default function AssignedEventOperationsPage({ userProfile }) {
+export default function AssignedEventOperationsPage({ userProfile, isActivePage = true }) {
   const { theme } = useTheme();
+  const { showToast } = useToast();
   const primaryColor = theme?.primaryColor || '#0f766e';
   const tertiaryColor = theme?.tertiaryColor || '#10b981';
 
@@ -248,7 +268,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   const [notice, setNotice] = useState({ kind: '', text: '' });
 
   const [events, setEvents] = useState([]);
-  const [eventTimeFilter, setEventTimeFilter] = useState('this_week');
+  const [eventTimeFilter, setEventTimeFilter] = useState('all_active');
   const [selectedCalendarDate, setSelectedCalendarDate] = useState('');
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [selectedRequestId, setSelectedRequestId] = useState(null);
@@ -270,6 +290,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   const [isSavingDetail, setIsSavingDetail] = useState(false);
   const [eventSummary, setEventSummary] = useState(null);
   const [isLoadingSummary, setIsLoadingSummary] = useState(false);
+  const [scanOutcome, setScanOutcome] = useState(null);
 
   const videoRef = useRef(null);
   const cameraStreamRef = useRef(null);
@@ -278,6 +299,25 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   const lastScanRef = useRef({ raw: '', at: 0 });
   const attendeesCacheRef = useRef(new Map());
   const attendeeLoadSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (!notice.text) return;
+    showToast({
+      type: notice.kind || 'info',
+      title: notice.kind === 'error' ? 'Error' : undefined,
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
+
+  useEffect(() => {
+    if (cameraStatus.kind !== 'error' || !cameraStatus.message) return;
+    showToast({ type: 'error', title: 'Scanner error', message: cameraStatus.message });
+    setCameraStatus({
+      kind: 'info',
+      message: 'Scanner ready. Try again or enter the waybill manually.',
+    });
+  }, [cameraStatus, showToast]);
 
   const resolveStaffUserId = useCallback(async () => {
     if (staffUserId) return staffUserId;
@@ -436,6 +476,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       const ended = isEventEnded(row);
       if (eventTimeFilter === 'ended') return ended;
       if (ended) return false;
+      if (eventTimeFilter === 'all_active') return true;
       const eventDay = toManilaDayStartMs(row?.Start_Date || row?.Created_At || new Date());
       if (eventTimeFilter === 'today') {
         return eventDay === todayStart;
@@ -482,6 +523,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     setQualityReason('');
     setDetailDraft(createDetailDraft(null));
     setEventSummary(null);
+    setScanOutcome(null);
   }, [selectedEvent, loadAttendees]);
 
   useEffect(() => {
@@ -506,19 +548,9 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     return () => { active = false; };
   }, [selectedEvent?.Event_Request_ID, selectedEventEnded]);
 
-  useEffect(() => {
-    if (selectedEventEnded && scanMode === 'rsvp') {
-      setScanMode('hair_review');
-      setCameraStatus({
-        kind: 'info',
-        message: 'This event has ended. RSVP is closed, but pending Hair Intake & Review scans remain available.',
-      });
-    }
-  }, [scanMode, selectedEventEnded]);
-
   // Realtime: keep assigned events + attendees in sync
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
+    if (!isActivePage || !isSupabaseConfigured || !supabase) return undefined;
 
     const requestsChannel = supabase
       .channel('assigned-events-requests-realtime')
@@ -575,17 +607,12 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           if (!isForSelected) return;
 
           if (payload.eventType === 'INSERT') {
-            setAttendees((prev) => {
-              const exists = prev.some((row) => Number(row.Event_Attendee_ID) === Number(payload.new.Event_Attendee_ID));
-              const nextRows = exists ? prev : [...prev, payload.new];
-              attendeesCacheRef.current.set(targetEventRequestId, nextRows);
-              return nextRows;
-            });
+            void loadAttendees(targetEventRequestId, { silent: true, force: true });
           } else if (payload.eventType === 'UPDATE') {
             setAttendees((prev) => {
               const nextRows = prev.map((row) => (
                 Number(row.Event_Attendee_ID) === Number(payload.new.Event_Attendee_ID)
-                  ? payload.new
+                  ? { ...row, ...payload.new }
                   : row
               ));
               attendeesCacheRef.current.set(targetEventRequestId, nextRows);
@@ -608,7 +635,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       supabase.removeChannel(requestsChannel);
       supabase.removeChannel(attendeesChannel);
     };
-  }, [staffUserId, selectedEvent?.Event_Request_ID]);
+  }, [isActivePage, loadAttendees, staffUserId, selectedEvent?.Event_Request_ID]);
 
   const stopCamera = useCallback(() => {
     if (cameraStreamRef.current) {
@@ -619,6 +646,21 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       videoRef.current.srcObject = null;
     }
   }, []);
+
+  useEffect(() => {
+    if (!selectedEvent?.Event_Request_ID) return;
+
+    stopCamera();
+    setIsCameraOn(false);
+    setManualWaybillCode('');
+    setScanMode(selectedEventEnded ? 'hair_review' : 'rsvp');
+    setCameraStatus({
+      kind: 'info',
+      message: selectedEventEnded
+        ? 'This event has ended. RSVP is closed, but pending Hair Intake & Review scans remain available.'
+        : 'RSVP Check-in selected. Scan or enter an attendee waybill to mark attendance.',
+    });
+  }, [selectedEvent?.Event_Request_ID, selectedEventEnded, stopCamera]);
 
   const startCameraScanner = useCallback(async () => {
     if (isCameraOn || isStartingCamera) return;
@@ -717,6 +759,40 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         throw new Error('Selected event has no Event_Request_ID.');
       }
 
+      const scannedAttendee = attendees.find((row) => (
+        (scan.attendeeId && Number(row.Event_Attendee_ID) === Number(scan.attendeeId))
+        || (scan.waybillCode && String(row.Waybill_Code || '').trim().toUpperCase() === String(scan.waybillCode).trim().toUpperCase())
+        || (scan.userId && Number(row.User_ID) === Number(scan.userId))
+      )) || null;
+      if (scanMode === 'hair_review' && normalizeAttendeeType(scannedAttendee?.Attendee_Type) === 'Voluntary') {
+        const waybillCode = String(scannedAttendee?.Waybill_Code || scan.waybillCode || '').trim();
+        setActiveReview({
+          attendee: scannedAttendee,
+          submission: null,
+          details: [],
+          waybillCode,
+          attendeeType: 'Voluntary',
+          voluntaryOnly: true,
+        });
+        setQualityReason('');
+        setDetailDraft(createDetailDraft(null));
+        setCameraStatus({
+          kind: 'info',
+          message: `${scannedAttendee?.Full_Name || waybillCode || 'This attendee'} is voluntary. RSVP check-in is their only required step.`,
+        });
+        setScanOutcome({
+          tone: 'info',
+          title: 'Voluntary attendee identified',
+          waybill: waybillCode,
+          subject: scannedAttendee?.Full_Name || 'Voluntary attendee',
+          action: 'Verified attendee type; no hair intake was opened',
+          status: 'RSVP only',
+          nextStep: scannedAttendee?.RSVP_Scanned_At ? 'No further event scan required' : 'Complete RSVP Check-in',
+          statusChanges: [],
+        });
+        return true;
+      }
+
       const scanResult = await supabase.rpc('scan_event_attendee_operation', {
         p_event_request_id: eventRequestId,
         p_qr_payload: String(rawValue || ''),
@@ -726,6 +802,16 @@ export default function AssignedEventOperationsPage({ userProfile }) {
 
       const payload = scanResult.data || {};
       const updated = payload?.attendee || null;
+      const existingAttendee = attendees.find((row) => (
+        Number(row.Event_Attendee_ID) === Number(updated?.Event_Attendee_ID)
+      )) || scannedAttendee;
+      const updatedForDisplay = updated ? {
+        ...existingAttendee,
+        ...updated,
+        Full_Name: existingAttendee?.Full_Name || updated?.Full_Name || 'N/A',
+        Email: existingAttendee?.Email || updated?.Email || null,
+        Contact_Number: existingAttendee?.Contact_Number || updated?.Contact_Number || null,
+      } : null;
       const submission = payload?.submission || null;
       const submissionStatus = String(
         payload?.submission_status
@@ -746,13 +832,13 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         || '',
       ).trim();
 
-      if (updated?.Event_Attendee_ID) {
+      if (updatedForDisplay?.Event_Attendee_ID) {
         setAttendees((current) => {
-          const exists = current.some((row) => Number(row.Event_Attendee_ID) === Number(updated.Event_Attendee_ID));
+          const exists = current.some((row) => Number(row.Event_Attendee_ID) === Number(updatedForDisplay.Event_Attendee_ID));
           const nextRows = !exists
-            ? [updated, ...current]
+            ? [updatedForDisplay, ...current]
             : current.map((row) => (
-            Number(row.Event_Attendee_ID) === Number(updated.Event_Attendee_ID) ? updated : row
+            Number(row.Event_Attendee_ID) === Number(updatedForDisplay.Event_Attendee_ID) ? updatedForDisplay : row
             ));
           if (selectedEvent?.Event_Request_ID) {
             attendeesCacheRef.current.set(Number(selectedEvent.Event_Request_ID), nextRows);
@@ -773,7 +859,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       }
 
       setActiveReview(requiresHairReview ? {
-        attendee: updated || null,
+        attendee: updatedForDisplay || null,
         submission: submission || null,
         details,
         waybillCode: resolvedWaybillCode,
@@ -781,7 +867,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       setQualityReason('');
       setDetailDraft(createDetailDraft(details?.[0] || null));
 
-      const attendeeLabel = updated?.Full_Name || resolvedWaybillCode || 'attendee';
+      const attendeeLabel = updatedForDisplay?.Full_Name || resolvedWaybillCode || 'attendee';
       setNotice({
         kind: 'success',
         text: requiresHairReview
@@ -794,14 +880,42 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           ? `Hair intake opened.${submissionStatus ? ` Submission: ${submissionStatus}.` : ''} Review the details below.`
           : `RSVP success: ${attendeeLabel} marked Present.`,
       });
+      setScanOutcome({
+        tone: 'success',
+        title: requiresHairReview ? 'Hair intake opened' : 'RSVP check-in completed',
+        waybill: resolvedWaybillCode,
+        subject: attendeeLabel,
+        action: requiresHairReview ? 'Loaded donor submission and hair details' : 'Marked attendance as Present',
+        status: requiresHairReview ? 'Awaiting decision' : 'Present',
+        nextStep: requiresHairReview
+          ? 'Review the hair and choose Approve, Reject, or Rejected Cut'
+          : attendeeType === 'Voluntary' ? 'Process complete' : 'Use Hair Intake & Review when hair is received',
+        statusChanges: requiresHairReview ? [] : [{
+          label: 'Attendance',
+          before: existingAttendee?.Attendance_Status || 'Not Marked',
+          after: updatedForDisplay?.Attendance_Status || 'Present',
+        }],
+      });
+      return true;
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to process scan.' });
       setCameraStatus({ kind: 'error', message: error.message || 'Scan failed.' });
+      const scan = parseRsvpScanPayload(rawValue);
+      setScanOutcome({
+        tone: 'error',
+        title: 'Waybill was not processed',
+        waybill: scan.waybillCode,
+        action: 'No database change',
+        status: 'Blocked',
+        nextStep: error.message || 'Check the code and scan again',
+        statusChanges: [],
+      });
+      return false;
     } finally {
       setIsSaving(false);
       isScanProcessingRef.current = false;
     }
-  }, [loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, scanMode, selectedEvent]);
+  }, [attendees, loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, scanMode, selectedEvent]);
 
   const handleSaveDetailEdits = useCallback(async () => {
     if (!supabase || !selectedEvent) return;
@@ -964,6 +1078,28 @@ export default function AssignedEventOperationsPage({ userProfile }) {
             ? 'Hair quality marked Rejected Cut and submission marked Cancelled.'
             : 'Hair quality rejected and marked Cancelled.',
       });
+      setScanOutcome({
+        tone: resolvedDecision === 'Approved' ? 'success' : 'warning',
+        title: `Hair review finalized as ${resolvedDecision}`,
+        waybill: activeReview?.waybillCode || updatedAttendee?.Waybill_Code || '',
+        subject: activeReview?.attendee?.Full_Name || updatedAttendee?.Full_Name || 'Donor',
+        action: 'Saved the final staff quality decision',
+        status: resolvedDecision === 'Approved' ? 'Cut' : 'Cancelled',
+        nextStep: resolvedDecision === 'Approved'
+          ? 'Hair is available in Cut Hair Inventory and can be bundled'
+          : 'No further processing is allowed for this hair',
+        statusChanges: [
+          { label: 'Quality detail', before: 'Pending', after: resolvedDecision },
+          {
+            label: 'Hair submission',
+            before: activeReview?.submission?.Status || 'Pending',
+            after: resolvedDecision === 'Approved' ? 'Cut' : 'Cancelled',
+          },
+          ...(resolvedDecision === 'Approved'
+            ? [{ label: 'Cut inventory', before: 'Not available', after: 'Cut / Available' }]
+            : []),
+        ],
+      });
 
       if (resolvedDecision === 'Approved') {
         setQualityReason('');
@@ -1018,17 +1154,23 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     await startCameraScanner();
   };
 
-  const handleManualScanLookup = () => {
-    const value = String(manualWaybillCode || '').trim();
+  const handleManualScanLookup = async () => {
+    const value = normalizeWaybillCodeInput(manualWaybillCode);
     if (!value) return;
+    if (!isValidWaybillCode(value)) {
+      const message = 'Enter a complete waybill: WB followed by 6 letters or numbers.';
+      setNotice({ kind: 'warning', text: message });
+      setCameraStatus({ kind: 'warning', message });
+      return;
+    }
     if (reviewStatusMeta.needsDecision) {
       const message = 'Complete the current hair quality decision before scanning another donor.';
       setNotice({ kind: 'warning', text: message });
       setCameraStatus({ kind: 'warning', message });
       return;
     }
-    setManualWaybillCode('');
-    void markAttendeePresentByWaybill(value);
+    const succeeded = await markAttendeePresentByWaybill(value);
+    if (succeeded) setManualWaybillCode('');
   };
 
   const handleScanModeChange = (nextMode) => {
@@ -1455,39 +1597,13 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowHowToModal(true)}
-            aria-label="Open workflow guide"
-            title="Workflow guide"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 transition hover:bg-slate-100"
-          >
-            <HelpCircle size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => { void handleRefreshAll(); }}
-            disabled={isLoadingEvents || isLoadingAttendees || isSaving}
-            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-          >
-            {(isLoadingEvents || isLoadingAttendees || isSaving) ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-            Refresh
-          </button>
-        </div>
+        <PageHeaderActions
+          onHelp={() => setShowHowToModal(true)}
+          helpTitle="Assigned Events workflow guide"
+          onRefresh={() => { void handleRefreshAll(); }}
+          refreshLoading={isLoadingEvents || isLoadingAttendees || isSaving}
+        />
       </div>
-
-      {notice.text && (
-        <div className={`rounded-lg px-4 py-3 text-sm ${
-          notice.kind === 'error'
-            ? 'border border-rose-200 bg-rose-50 text-rose-700'
-            : notice.kind === 'warning'
-              ? 'border border-amber-200 bg-amber-50 text-amber-700'
-              : 'border border-emerald-200 bg-emerald-50 text-emerald-700'
-        }`}>
-          {notice.text}
-        </div>
-      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[340px,1fr]">
         <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -1515,24 +1631,23 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 </span>
               </div>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-1 sm:grid-cols-4 lg:grid-cols-2">
-              {EVENT_FILTERS.map((filterItem) => {
-                const active = eventTimeFilter === filterItem.id;
-                return (
-                  <button
-                    key={filterItem.id}
-                    type="button"
-                    onClick={() => setEventTimeFilter(filterItem.id)}
-                    className={`rounded-md border px-2 py-1 text-[11px] font-semibold transition ${
-                      active
-                        ? 'border-slate-900 bg-slate-900 text-white'
-                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    {filterItem.label}
-                  </button>
-                );
-              })}
+            <div className="mt-3">
+              <label htmlFor="assigned-event-time-filter" className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Show events
+              </label>
+              <select
+                id="assigned-event-time-filter"
+                value={eventTimeFilter}
+                onChange={(event) => {
+                  setEventTimeFilter(event.target.value);
+                  setSelectedCalendarDate('');
+                }}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+              >
+                {EVENT_FILTERS.map((filterItem) => (
+                  <option key={filterItem.id} value={filterItem.id}>{filterItem.label}</option>
+                ))}
+              </select>
             </div>
             {selectedCalendarDate && (
               <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
@@ -1778,7 +1893,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                   </div>
 
                   <div className="space-y-2">
-                    <div
+                    {cameraStatus.kind !== 'error' && <div
                       className={`rounded-md border px-3 py-2 text-xs ${
                         cameraStatus.kind === 'error'
                           ? 'border-rose-200 bg-rose-50 text-rose-700'
@@ -1793,20 +1908,24 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                         <AlertCircle size={12} className="mt-0.5" />
                         {cameraStatus.message}
                       </span>
-                    </div>
+                    </div>}
 
                     <div className="flex gap-2">
                       <input
                         type="text"
                         value={manualWaybillCode}
-                        onChange={(event) => setManualWaybillCode(event.target.value)}
+                        onChange={(event) => setManualWaybillCode(normalizeWaybillCodeInput(event.target.value))}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter') {
                             event.preventDefault();
-                            handleManualScanLookup();
+                            void handleManualScanLookup();
                           }
                         }}
-                        placeholder={scanMode === 'hair_review' ? 'Enter checked-in donor waybill' : 'Enter attendee waybill'}
+                        placeholder="WBXXXXXX"
+                        maxLength={WAYBILL_CODE_LENGTH}
+                        autoCapitalize="characters"
+                        autoComplete="off"
+                        spellCheck={false}
                         className="w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
                         disabled={reviewStatusMeta.needsDecision}
                       />
@@ -1821,6 +1940,11 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                       </button>
                     </div>
 
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                      <span>Manual entry: WB + 6 letters or numbers</span>
+                      <span className="font-mono">{manualWaybillCode.length}/{WAYBILL_CODE_LENGTH}</span>
+                    </div>
+
                     <p className="text-[11px] text-slate-500">
                       {scanMode === 'hair_review'
                         ? 'This scan does not change attendance. It opens a checked-in donor for the final hair decision.'
@@ -1829,6 +1953,8 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                   </div>
                 </div>
               </div>
+
+              <WaybillScanResult outcome={scanOutcome} possibleOutcomes={EVENT_SCAN_OUTCOMES} />
 
               {/* Hair Quality Review */}
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1839,7 +1965,20 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                   </span>
                 </div>
 
-                {!activeReview?.submission?.Submission_ID ? (
+                {activeReview?.voluntaryOnly ? (
+                  <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-4 text-sm text-sky-800">
+                    <div className="flex items-start gap-2">
+                      <CheckCircle2 size={17} className="mt-0.5 shrink-0" />
+                      <div>
+                        <p className="font-bold">Voluntary attendee — no hair review required</p>
+                        <p className="mt-1 text-xs leading-5">
+                          {activeReview?.attendee?.Full_Name || activeReview?.waybillCode || 'This attendee'} only needs RSVP check-in and does not submit hair for quality review.
+                        </p>
+                        <p className="mt-1 font-mono text-xs">{activeReview?.waybillCode}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : !activeReview?.submission?.Submission_ID ? (
                   <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-xs text-slate-600">
                     Select <strong>Hair Intake &amp; Review</strong>, then scan a donor who already completed RSVP Check-in.
                   </div>

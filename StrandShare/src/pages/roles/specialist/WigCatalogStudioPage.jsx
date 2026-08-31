@@ -206,7 +206,7 @@ function StockHistoryModal({ state, onClose }) {
   );
 }
 
-export default function WigCatalogStudioPage({ userProfile }) {
+export default function WigCatalogStudioPage({ userProfile, isActivePage = true }) {
   const { primaryColor } = useTheme() || {};
   const accent = primaryColor || '#7f1d1d';
   const [tab, setTab] = useState(TAB_INVENTORY);
@@ -297,7 +297,7 @@ export default function WigCatalogStudioPage({ userProfile }) {
   }, [loadInventory]);
 
   useEffect(() => {
-    if (!supabase) {
+    if (!isActivePage || !supabase) {
       return undefined;
     }
 
@@ -313,7 +313,7 @@ export default function WigCatalogStudioPage({ userProfile }) {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [loadInventory]);
+  }, [isActivePage, loadInventory]);
 
   const openStockModal = (row) => {
     setStockModal({

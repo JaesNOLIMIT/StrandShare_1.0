@@ -8,8 +8,11 @@ import {
   RefreshCw,
   Search,
   Scissors,
+  SlidersHorizontal,
+  X,
 } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
+import { useToast } from '../../../context/ToastContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
 const PERIODS = [
@@ -51,29 +54,48 @@ function periodStart(period) {
   return start.getTime();
 }
 
+function canonicalInventoryStatus(value, bundleId, submissionStatus) {
+  const key = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, '');
+  if (key === 'cut') return 'Cut';
+  if (key === 'bundling') return 'Bundling';
+  if (key === 'wigcreated') return 'Wig Created';
+  if (bundleId == null) return 'Cut';
+  return String(submissionStatus || '').trim().toLowerCase().replace(/[_\s-]+/g, '') === 'wigcreated'
+    ? 'Wig Created'
+    : 'Bundling';
+}
+
+function dateBoundary(value, endOfDay = false) {
+  if (!value) return null;
+  const parsed = new Date(`${value}T${endOfDay ? '23:59:59.999' : '00:00:00'}+08:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.getTime();
+}
+
 function statusClasses(status) {
   if (status === 'Wig Created') return 'border-violet-200 bg-violet-50 text-violet-700';
   if (status === 'Bundling') return 'border-sky-200 bg-sky-50 text-sky-700';
   return 'border-emerald-200 bg-emerald-50 text-emerald-700';
 }
 
-export default function CutHairInventoryPage() {
+export default function CutHairInventoryPage({ isActivePage = true }) {
   const { theme } = useTheme();
+  const { showToast } = useToast();
   const primaryColor = theme?.primaryColor || '#0f766e';
   const [rows, setRows] = useState([]);
   const [period, setPeriod] = useState('month');
   const [status, setStatus] = useState('all');
+  const [eventFilter, setEventFilter] = useState('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [search, setSearch] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [notice, setNotice] = useState('');
 
-  const loadInventory = useCallback(async () => {
+  const loadInventory = useCallback(async ({ showSuccess = false } = {}) => {
     if (!isSupabaseConfigured || !supabase) {
-      setNotice('Supabase is not configured.');
+      showToast({ type: 'error', title: 'Error', message: 'Supabase is not configured.' });
       return;
     }
     setIsLoading(true);
-    setNotice('');
     try {
       const inventoryResult = await supabase
         .from('Cut_Hair_Inventory')
@@ -84,16 +106,38 @@ export default function CutHairInventoryPage() {
 
       const baseRows = inventoryResult.data || [];
       const submissionIds = [...new Set(baseRows.map((row) => Number(row.Submission_ID || 0)).filter(Boolean))];
-      const eventIds = [...new Set(baseRows.map((row) => Number(row.Event_Request_ID || 0)).filter(Boolean))];
-      const donorIds = [...new Set(baseRows.map((row) => Number(row.Donor_User_ID || 0)).filter(Boolean))];
-      const wigIds = [...new Set(baseRows.map((row) => Number(row.Wig_ID || 0)).filter(Boolean))];
+      const submissionsResult = submissionIds.length
+        ? await supabase
+          .from('Hair_Submissions')
+          .select('Submission_ID, User_ID, Status, Bundle_ID, Event_Request_ID, Event_Attendee_ID, From_Event')
+          .in('Submission_ID', submissionIds)
+        : { data: [], error: null };
+      if (submissionsResult.error) throw submissionsResult.error;
 
-      const [detailsResult, eventsResult, donorsResult, wigsResult] = await Promise.all([
+      const submissionsById = new Map((submissionsResult.data || []).map((row) => [Number(row.Submission_ID), row]));
+      const eventIds = [...new Set([
+        ...baseRows.map((row) => Number(row.Event_Request_ID || 0)),
+        ...(submissionsResult.data || []).map((row) => Number(row.Event_Request_ID || 0)),
+      ].filter(Boolean))];
+      const donorIds = [...new Set([
+        ...baseRows.map((row) => Number(row.Donor_User_ID || 0)),
+        ...(submissionsResult.data || []).map((row) => Number(row.User_ID || 0)),
+      ].filter(Boolean))];
+      const wigIds = [...new Set(baseRows.map((row) => Number(row.Wig_ID || 0)).filter(Boolean))];
+      const attendeeIds = [...new Set([
+        ...baseRows.map((row) => Number(row.Event_Attendee_ID || 0)),
+        ...(submissionsResult.data || []).map((row) => Number(row.Event_Attendee_ID || 0)),
+      ].filter(Boolean))];
+
+      const [detailsResult, eventsResult, attendeesResult, donorsResult, wigsResult] = await Promise.all([
         submissionIds.length
           ? supabase.from('Hair_Submission_Details').select('Submission_ID, Declared_Length, Declared_Color, Declared_Texture, Declared_Density, Declared_Condition').in('Submission_ID', submissionIds)
           : Promise.resolve({ data: [], error: null }),
         eventIds.length
           ? supabase.from('Event_Requests').select('Event_Request_ID, Event_Name, Start_Date').in('Event_Request_ID', eventIds)
+          : Promise.resolve({ data: [], error: null }),
+        attendeeIds.length
+          ? supabase.rpc('get_cut_hair_inventory_waybills', { p_event_attendee_ids: attendeeIds })
           : Promise.resolve({ data: [], error: null }),
         donorIds.length
           ? supabase.from('user_details').select('user_id, first_name, middle_name, last_name, suffix').in('user_id', donorIds)
@@ -104,33 +148,64 @@ export default function CutHairInventoryPage() {
       ]);
       if (detailsResult.error) throw detailsResult.error;
       if (eventsResult.error) throw eventsResult.error;
+      if (attendeesResult.error) throw attendeesResult.error;
       if (donorsResult.error) throw donorsResult.error;
       if (wigsResult.error) throw wigsResult.error;
 
       const detailsBySubmission = new Map((detailsResult.data || []).map((row) => [Number(row.Submission_ID), row]));
       const eventsById = new Map((eventsResult.data || []).map((row) => [Number(row.Event_Request_ID), row]));
+      const attendeesById = new Map((attendeesResult.data || []).map((row) => [Number(row.event_attendee_id), row]));
+      const attendeesByEventAndUser = new Map((attendeesResult.data || []).map((row) => [
+        `${Number(row.event_request_id || 0)}:${Number(row.user_id || 0)}`,
+        row,
+      ]));
       const donorsById = new Map((donorsResult.data || []).map((row) => [Number(row.user_id), row]));
       const wigsById = new Map((wigsResult.data || []).map((row) => [Number(row.Wig_ID), row]));
 
-      setRows(baseRows.map((row) => ({
-        ...row,
-        detail: detailsBySubmission.get(Number(row.Submission_ID)) || null,
-        event: eventsById.get(Number(row.Event_Request_ID)) || null,
-        donor: donorsById.get(Number(row.Donor_User_ID)) || null,
-        wig: wigsById.get(Number(row.Wig_ID)) || null,
-      })));
+      setRows(baseRows.map((row) => {
+        const submission = submissionsById.get(Number(row.Submission_ID)) || null;
+        const bundleId = submission ? submission.Bundle_ID : row.Bundle_ID;
+        const inventoryStatus = canonicalInventoryStatus(row.Status, bundleId, submission?.Status);
+        const donorUserId = Number(submission?.User_ID || row.Donor_User_ID || 0);
+        const eventRequestId = Number(submission?.Event_Request_ID || row.Event_Request_ID || 0);
+        const eventAttendeeId = Number(submission?.Event_Attendee_ID || row.Event_Attendee_ID || 0);
+        const attendee = attendeesById.get(eventAttendeeId)
+          || attendeesByEventAndUser.get(`${eventRequestId}:${donorUserId}`)
+          || null;
+
+        return {
+          ...row,
+          Bundle_ID: bundleId,
+          Status: inventoryStatus,
+          Donor_User_ID: donorUserId || row.Donor_User_ID,
+          Event_Request_ID: eventRequestId || row.Event_Request_ID,
+          Event_Attendee_ID: eventAttendeeId || row.Event_Attendee_ID,
+          Waybill_Code: String(attendee?.waybill_code || '').trim().toUpperCase(),
+          detail: detailsBySubmission.get(Number(row.Submission_ID)) || null,
+          event: eventsById.get(eventRequestId) || null,
+          donor: donorsById.get(donorUserId) || null,
+          wig: inventoryStatus === 'Wig Created' ? (wigsById.get(Number(row.Wig_ID)) || null) : null,
+        };
+      }));
+      if (showSuccess) {
+        showToast({ type: 'success', message: 'Cut hair inventory refreshed.' });
+      }
     } catch (error) {
-      setNotice(error?.message || 'Unable to load cut hair inventory. Run the new SQL migration first.');
+      showToast({
+        type: 'error',
+        title: 'Error',
+        message: error?.message || 'Unable to load cut hair inventory. Run the new SQL migration first.',
+      });
       setRows([]);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [showToast]);
 
   useEffect(() => { void loadInventory(); }, [loadInventory]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
+    if (!isActivePage || !isSupabaseConfigured || !supabase) return undefined;
     let timer = null;
     const refresh = () => {
       if (timer) window.clearTimeout(timer);
@@ -144,17 +219,45 @@ export default function CutHairInventoryPage() {
       if (timer) window.clearTimeout(timer);
       supabase.removeChannel(channel);
     };
-  }, [loadInventory]);
+  }, [isActivePage, loadInventory]);
+
+  const eventOptions = useMemo(() => {
+    const events = new Map();
+    rows.forEach((row) => {
+      const eventId = Number(row.Event_Request_ID || 0);
+      if (eventId) {
+        events.set(eventId, row.event?.Event_Name || `Event #${eventId}`);
+      }
+    });
+    return [...events.entries()]
+      .map(([id, name]) => ({ id: String(id), name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [rows]);
 
   const filteredRows = useMemo(() => {
-    const start = periodStart(period);
+    const quickStart = dateFrom || dateTo ? null : periodStart(period);
+    const customStart = dateBoundary(dateFrom);
+    const customEnd = dateBoundary(dateTo, true);
     const term = search.trim().toLowerCase();
     return rows.filter((row) => {
       if (status !== 'all' && row.Status !== status) return false;
-      if (start && new Date(row.Approved_At).getTime() < start) return false;
+      const eventId = Number(row.Event_Request_ID || 0);
+      const isNonEvent = !eventId || row.Source_Type === 'Non-Event';
+      if (eventFilter === 'non-event' && !isNonEvent) return false;
+      if (!['all', 'non-event'].includes(eventFilter) && eventId !== Number(eventFilter)) return false;
+
+      const approvedAt = new Date(row.Approved_At).getTime();
+      if (quickStart && approvedAt < quickStart) return false;
+      if (customStart && approvedAt < customStart) return false;
+      if (customEnd && approvedAt > customEnd) return false;
       if (!term) return true;
       return [
         row.Submission_ID,
+        row.Inventory_ID,
+        row.Waybill_Code,
+        row.Bundle_ID,
+        row.wig?.Wig_Code,
+        row.wig?.Wig_Name,
         row.event?.Event_Name,
         fullName(row.donor),
         row.detail?.Declared_Color,
@@ -162,7 +265,23 @@ export default function CutHairInventoryPage() {
         row.Status,
       ].join(' ').toLowerCase().includes(term);
     });
-  }, [period, rows, search, status]);
+  }, [dateFrom, dateTo, eventFilter, period, rows, search, status]);
+
+  const hasActiveFilters = period !== 'all'
+    || status !== 'all'
+    || eventFilter !== 'all'
+    || Boolean(dateFrom)
+    || Boolean(dateTo)
+    || Boolean(search.trim());
+
+  const clearFilters = () => {
+    setPeriod('all');
+    setStatus('all');
+    setEventFilter('all');
+    setDateFrom('');
+    setDateTo('');
+    setSearch('');
+  };
 
   const summary = useMemo(() => ({
     total: filteredRows.length,
@@ -186,7 +305,7 @@ export default function CutHairInventoryPage() {
         </div>
         <button
           type="button"
-          onClick={() => { void loadInventory(); }}
+          onClick={() => { void loadInventory({ showSuccess: true }); }}
           disabled={isLoading}
           className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
         >
@@ -194,8 +313,6 @@ export default function CutHairInventoryPage() {
           Refresh
         </button>
       </div>
-
-      {notice && <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{notice}</div>}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
@@ -216,28 +333,77 @@ export default function CutHairInventoryPage() {
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 p-4">
-          <div className="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1">
-            {PERIODS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setPeriod(item.id)}
-                className={`rounded-md px-2.5 py-1.5 text-xs font-semibold ${period === item.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}
-              >
-                {item.label}
+        <div className="border-b border-slate-200 p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <SlidersHorizontal size={15} className="text-slate-500" />
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Filter inventory</p>
+                <p className="text-[11px] text-slate-500">Showing {filteredRows.length} of {rows.length} hair items</p>
+              </div>
+            </div>
+            {hasActiveFilters && (
+              <button type="button" onClick={clearFilters} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 hover:text-slate-900">
+                <X size={13} /> Clear filters
               </button>
-            ))}
+            )}
           </div>
-          <select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700">
-            <option value="all">All statuses</option>
-            <option value="Cut">Cut</option>
-            <option value="Bundling">Bundling</option>
-            <option value="Wig Created">Wig Created</option>
-          </select>
-          <div className="relative min-w-[220px] flex-1">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search donor, event, hair, or ID" className="w-full rounded-md border border-slate-300 py-2 pl-8 pr-3 text-xs" />
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <label className="space-y-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Status</span>
+              <select value={status} onChange={(event) => setStatus(event.target.value)} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700">
+                <option value="all">All statuses</option>
+                <option value="Cut">Cut / Available</option>
+                <option value="Bundling">Bundling</option>
+                <option value="Wig Created">Wig Created</option>
+              </select>
+            </label>
+
+            <label className="space-y-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Source event</span>
+              <select value={eventFilter} onChange={(event) => setEventFilter(event.target.value)} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700">
+                <option value="all">All events and sources</option>
+                <option value="non-event">Non-event donations</option>
+                {eventOptions.map((event) => (
+                  <option key={event.id} value={event.id}>{event.name} (ER-{event.id})</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="space-y-1 md:col-span-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Search</span>
+              <div className="relative">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Waybill, donor, event, submission, bundle, or wig" className="w-full rounded-md border border-slate-300 py-2 pl-8 pr-3 text-xs" />
+              </div>
+            </label>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Quick date</span>
+              <div className="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1">
+                {PERIODS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => { setPeriod(item.id); setDateFrom(''); setDateTo(''); }}
+                    className={`rounded-md px-2.5 py-1.5 text-xs font-semibold ${!dateFrom && !dateTo && period === item.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="space-y-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">From</span>
+              <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(event) => setDateFrom(event.target.value)} className="block rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700" />
+            </label>
+            <label className="space-y-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">To</span>
+              <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(event) => setDateTo(event.target.value)} className="block rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700" />
+            </label>
           </div>
         </div>
 
@@ -251,6 +417,7 @@ export default function CutHairInventoryPage() {
               <thead className="bg-slate-50 text-xs text-slate-600">
                 <tr>
                   <th className="px-4 py-3 font-semibold">Inventory</th>
+                  <th className="px-4 py-3 font-semibold">Waybill</th>
                   <th className="px-4 py-3 font-semibold">Donor / Source</th>
                   <th className="px-4 py-3 font-semibold">Hair details</th>
                   <th className="px-4 py-3 font-semibold">Status</th>
@@ -266,13 +433,20 @@ export default function CutHairInventoryPage() {
                       <p className="text-[11px] text-slate-500">Submission #{row.Submission_ID}</p>
                     </td>
                     <td className="px-4 py-3">
+                      {row.Waybill_Code ? (
+                        <p className="whitespace-nowrap font-mono text-xs font-bold text-slate-900">{row.Waybill_Code}</p>
+                      ) : (
+                        <p className="text-xs text-slate-400">{row.Source_Type === 'Non-Event' ? 'Not issued' : 'Unavailable'}</p>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
                       <p className="font-semibold text-slate-900">{fullName(row.donor)}</p>
-                      <p className="text-xs text-slate-500">{row.Source_Type}</p>
-                      {row.event && <p className="mt-1 inline-flex items-center gap-1 text-xs text-slate-600"><CalendarDays size={11} />{row.event.Event_Name}</p>}
+                      <p className="text-xs text-slate-500">{row.Source_Type === 'Non-Event' ? 'Non-event donation' : 'Event donation'}</p>
+                      {row.event && <p className="mt-1 inline-flex items-center gap-1 text-xs text-slate-600"><CalendarDays size={11} />{row.event.Event_Name} (ER-{row.Event_Request_ID})</p>}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-700">
-                      <p>{row.detail?.Declared_Length ?? 'N/A'} in Â· {row.detail?.Declared_Color || 'No color'}</p>
-                      <p>{row.detail?.Declared_Texture || 'No texture'} Â· {row.detail?.Declared_Density || 'No density'}</p>
+                      <p>{row.detail?.Declared_Length ?? 'N/A'} in · {row.detail?.Declared_Color || 'No color'}</p>
+                      <p>{row.detail?.Declared_Texture || 'No texture'} · {row.detail?.Declared_Density || 'No density'}</p>
                       <p className="text-slate-500">{row.detail?.Declared_Condition || 'No condition'}</p>
                     </td>
                     <td className="px-4 py-3">

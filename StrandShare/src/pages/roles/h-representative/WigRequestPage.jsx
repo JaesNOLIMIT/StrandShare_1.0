@@ -54,8 +54,6 @@ const SUBMITTED_STATUS_FILTERS = [
   { id: 'cancelled', label: 'Cancelled' },
 ];
 
-const REVIEW_QUEUE_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_in_production'];
-
 const CAP_SIZE_OPTIONS = [
   { value: 'Small', label: 'Small (21-21.5 inches)' },
   { value: 'Medium', label: 'Medium (22-22.5 inches)' },
@@ -719,7 +717,7 @@ function WigPreviewImage({
   );
 }
 
-export default function WigRequestPage({ userProfile }) {
+export default function WigRequestPage({ userProfile, isActivePage = true }) {
   const { theme } = useTheme();
   const [activeTab, setActiveTab] = useState('new-request');
 
@@ -1027,7 +1025,6 @@ export default function WigRequestPage({ userProfile }) {
   }, [wigRequests, patientById, safetyAssessmentsByReqId, userDetailsByUserId, usersById, wigSpecifications]);
 
   const submittedQuickStats = useMemo(() => {
-    const reviewStatusSet = new Set(REVIEW_QUEUE_STATUS_KEYS);
     const rescheduleRequestIds = new Set(
       currentReleaseSchedules
         .filter((schedule) => normalizeReleaseWorkflowKey(schedule.Hospital_Decision) === 'hospital_reschedule_requested')
@@ -1038,7 +1035,7 @@ export default function WigRequestPage({ userProfile }) {
     return [
       {
         label: 'To Be Review',
-        value: submittedRows.filter((row) => reviewStatusSet.has(row.statusKey)).length,
+        value: submittedRows.filter((row) => row.statusKey === 'pending').length,
       },
       {
         label: 'Accepted - In Production',
@@ -1051,6 +1048,10 @@ export default function WigRequestPage({ userProfile }) {
       {
         label: 'Reschedule Requested',
         value: rescheduleRequestIds.size,
+      },
+      {
+        label: 'Released',
+        value: submittedRows.filter((row) => row.statusKey === 'released').length,
       },
     ];
   }, [currentReleaseSchedules, submittedRows]);
@@ -1629,7 +1630,7 @@ export default function WigRequestPage({ userProfile }) {
   }, [hospitalId, fetchPatients, fetchSubmittedRequests, loadWigSpecifications]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !hospitalId) {
+    if (!isActivePage || !isSupabaseConfigured || !supabase || !hospitalId) {
       return undefined;
     }
 
@@ -1663,7 +1664,7 @@ export default function WigRequestPage({ userProfile }) {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [hospitalId, fetchSubmittedRequests]);
+  }, [hospitalId, fetchSubmittedRequests, isActivePage]);
 
   useEffect(() => {
     const handlePointerDown = (event) => {
@@ -2857,11 +2858,15 @@ export default function WigRequestPage({ userProfile }) {
 
       {activeTab === 'submitted' && (
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-sm">
-          <div className="grid grid-cols-2 gap-2 border-b border-slate-200 bg-slate-50 p-3 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-2 border-b border-slate-200 bg-slate-50 p-3 lg:grid-cols-3 xl:grid-cols-5">
             {submittedQuickStats.map((item) => (
               <article key={item.label} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{item.label}</p>
-                <p className="mt-1 text-xl font-bold text-slate-900">{isLoadingSubmitted ? 'â€”' : item.value}</p>
+                <p className="mt-1 flex min-h-7 items-center text-xl font-bold text-slate-900">
+                  {isLoadingSubmitted ? (
+                    <Loader2 size={19} className="animate-spin text-slate-400" aria-label="Loading request count" />
+                  ) : item.value}
+                </p>
               </article>
             ))}
           </div>

@@ -75,20 +75,6 @@ export default function AuditTrailsPage() {
 
   useEffect(() => {
     void loadAuditLogs();
-
-    if (!isSupabaseConfigured || !supabase) {
-      return undefined;
-    }
-
-    const channel = supabase
-      .channel('admin-audit-trails-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => void loadAuditLogs())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_details' }, () => void loadAuditLogs())
-      .subscribe();
-
-    return () => {
-      void supabase.removeChannel(channel);
-    };
   }, [loadAuditLogs]);
 
   const filteredLogs = useMemo(() => {

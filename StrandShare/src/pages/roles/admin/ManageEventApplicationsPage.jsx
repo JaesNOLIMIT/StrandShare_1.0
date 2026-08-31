@@ -8,7 +8,6 @@ import {
   ExternalLink,
   FileText,
   Globe2,
-  HelpCircle,
   Image as ImageIcon,
   Inbox,
   Info,
@@ -16,7 +15,6 @@ import {
   Mail,
   MapPin,
   Phone,
-  RefreshCw,
   Satellite,
   Search,
   Send,
@@ -28,6 +26,7 @@ import {
 } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 import { triggerSmtpNow } from '../../../lib/smtpTriggerClient';
 import ProgramScheduleCalendarModal, {
   formatScheduleDateLabel,
@@ -39,6 +38,21 @@ const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
 const USERS_TABLE = 'users';
 const SMTP_OUTBOX_TABLE = 'SMTP_Email_Outbox';
 const PRIVATE_ID_BUCKET = 'event_application_private_ids';
+const LEGACY_EVENT_ASSETS_BUCKET = 'event_application_assets';
+
+function normalizePrivateIdObjectPath(value) {
+  const raw = String(value || '').trim().replace(/^\/+/, '');
+  if (!raw) return '';
+  const bucketPrefix = `${PRIVATE_ID_BUCKET}/`;
+  return raw.startsWith(bucketPrefix) ? raw.slice(bucketPrefix.length) : raw;
+}
+
+function resolveLegacyApplicantIdUrl(path, storedUrl) {
+  if (!path.startsWith('applicant-valid-ids/')) return '';
+  const existingUrl = String(storedUrl || '').trim();
+  if (existingUrl) return existingUrl;
+  return supabase?.storage.from(LEGACY_EVENT_ASSETS_BUCKET).getPublicUrl(path).data?.publicUrl || '';
+}
 
 function normalizeStatus(value) {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -471,7 +485,7 @@ export default function ManageEventRequestsPage({ isActivePage = false }) {
   }, [loadRows, loadStaffOptions]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
+    if (!isActivePage || !isSupabaseConfigured || !supabase) return undefined;
 
     let refreshTimer = null;
     const scheduleRealtimeRefresh = () => {
@@ -505,7 +519,7 @@ export default function ManageEventRequestsPage({ isActivePage = false }) {
       supabase.removeChannel(requestsChannel);
       supabase.removeChannel(applicationsChannel);
     };
-  }, [loadRows]);
+  }, [isActivePage, loadRows]);
 
   const queueRows = useMemo(() => {
     return rows.filter((row) => {
@@ -587,15 +601,24 @@ export default function ManageEventRequestsPage({ isActivePage = false }) {
   useEffect(() => {
     let cancelled = false;
     setPrivateIdUrl('');
-    const path = String(selectedRow?.Application?.Applicant_Valid_ID_Path || '').trim();
-    if (!path || !supabase) return undefined;
+    const path = normalizePrivateIdObjectPath(selectedRow?.Application?.Applicant_Valid_ID_Path);
+    const legacyUrl = resolveLegacyApplicantIdUrl(path, selectedRow?.Application?.Applicant_Valid_ID_URL);
+    if (legacyUrl) {
+      setPrivateIdUrl(legacyUrl);
+      return undefined;
+    }
+    if (!path.startsWith('verified-sessions/') || !supabase) return undefined;
 
     supabase.storage.from(PRIVATE_ID_BUCKET).createSignedUrl(path, 10 * 60)
       .then(({ data, error }) => {
         if (!cancelled && !error) setPrivateIdUrl(data?.signedUrl || '');
-      });
+      })
+      .catch(() => {});
     return () => { cancelled = true; };
-  }, [selectedRow?.Application?.Applicant_Valid_ID_Path]);
+  }, [
+    selectedRow?.Application?.Applicant_Valid_ID_Path,
+    selectedRow?.Application?.Applicant_Valid_ID_URL,
+  ]);
 
   const selectedStatusKey = useMemo(() => normalizeStatus(selectedRow?.Status), [selectedRow]);
   const canDecide = selectedStatusKey === 'pendingadminapproval' || selectedStatusKey === 'appealed';
@@ -858,10 +881,12 @@ export default function ManageEventRequestsPage({ isActivePage = false }) {
           <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Program Applications</h1>
           <p className="text-sm text-slate-600">Review complete staff-endorsed applications, assign one staff member, and finalize the admin decision.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setIsWorkflowModalOpen(true)} aria-label="Open workflow guide" title="Workflow guide" className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"><HelpCircle size={17} /></button>
-          <button type="button" onClick={loadRows} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100" disabled={isLoading}><RefreshCw size={15} className={isLoading ? 'animate-spin' : ''} />Refresh</button>
-        </div>
+        <PageHeaderActions
+          onHelp={() => setIsWorkflowModalOpen(true)}
+          helpTitle="Program application workflow guide"
+          onRefresh={loadRows}
+          refreshLoading={isLoading}
+        />
       </div>
 
       {notice.text && (

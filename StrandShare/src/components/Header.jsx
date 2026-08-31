@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
-import { Search, Bell, MessageSquare, LogOut, ChevronDown, Settings } from 'lucide-react';
+import { Search, LogOut, ChevronDown, Settings } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 import { toRoleLabel } from '../lib/roleUtils';
 
@@ -134,20 +134,9 @@ export default function Header({
       </div>
 
       {/* Right - Icons & Profile */}
-      <div className="flex items-center gap-6">
-        {/* Bell Icon */}
-        <button className="relative hover:opacity-80 transition-opacity">
-          <Bell size={24} className="text-gray-600" />
-          <div className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full"></div>
-        </button>
-
-        {/* Message Icon */}
-        <button className="hover:opacity-80 transition-opacity">
-          <MessageSquare size={24} className="text-gray-600" />
-        </button>
-
+      <div className="flex items-center">
         {/* Profile Section */}
-        <div className="flex items-center gap-3 pl-6 border-l border-gray-200 relative">
+        <div className="flex items-center gap-3 relative">
           <div className="text-right">
             <p className="text-sm font-medium text-gray-900">{displayName}</p>
             <p className="text-xs" style={{ color: theme.primaryColor }}>

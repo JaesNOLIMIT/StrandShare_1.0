@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -7,8 +7,6 @@ import {
   CalendarClock,
   CheckCircle2,
   Clock3,
-  HelpCircle,
-  RefreshCw,
   Settings2,
   Users,
 } from 'lucide-react';
@@ -25,6 +23,7 @@ import {
 } from 'recharts';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabaseClient';
 import { useTheme } from '../../../context/ThemeContext';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
@@ -308,7 +307,7 @@ function Panel({ children, palette, className = '' }) {
   );
 }
 
-export default function DashboardPage({ onNavigate }) {
+export default function DashboardPage({ onNavigate, onInitialDataReady }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0f766e';
   const secondaryColor = theme?.secondaryColor || '#64748b';
@@ -330,12 +329,16 @@ export default function DashboardPage({ onNavigate }) {
   }), [primaryTextColor, secondaryColor, secondaryTextColor, tertiaryTextColor]);
 
   const [isLoading, setIsLoading] = useState(false);
+  const initialDataReportedRef = useRef(false);
+  const reportInitialDataReady = useCallback(() => {
+    if (initialDataReportedRef.current) return;
+    initialDataReportedRef.current = true;
+    onInitialDataReady?.();
+  }, [onInitialDataReady]);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [warnings, setWarnings] = useState([]);
   const [activePerformanceTab, setActivePerformanceTab] = useState('events');
   const [performanceRange, setPerformanceRange] = useState('weekly');
-  const [isInfoOpen, setIsInfoOpen] = useState(false);
-  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
   const [dashboard, setDashboard] = useState({
     kpis: {
       pendingAdminDecision: 0,
@@ -579,37 +582,12 @@ export default function DashboardPage({ onNavigate }) {
       setNotice({ kind: 'error', text: error.message || 'Unable to load dashboard data.' });
     } finally {
       setIsLoading(false);
+      reportInitialDataReady();
     }
-  }, []);
+  }, [reportInitialDataReady]);
 
   useEffect(() => {
     loadDashboard();
-  }, [loadDashboard]);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
-
-    let refreshTimer = null;
-    const scheduleRefresh = () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => void loadDashboard(), 250);
-    };
-    const channel = supabase
-      .channel('public:admin-dashboard-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_REQUESTS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_APPLICATIONS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUIREMENTS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: LOGISTICS_SETTINGS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: LEGAL_DOCUMENTS_TABLE }, scheduleRefresh)
-      .subscribe((status) => setIsRealtimeActive(status === 'SUBSCRIBED'));
-
-    return () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      setIsRealtimeActive(false);
-      supabase.removeChannel(channel);
-    };
   }, [loadDashboard]);
 
   const topMetrics = useMemo(() => ([
@@ -766,58 +744,30 @@ export default function DashboardPage({ onNavigate }) {
         <div className="flex items-center gap-2">
           <span
             className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold sm:inline-flex"
-            style={{ borderColor: withAlpha(isRealtimeActive ? SUCCESS_COLOR : secondaryColor, 0.28), color: isRealtimeActive ? SUCCESS_COLOR : palette.bodyText }}
+            style={{ borderColor: withAlpha(secondaryColor, 0.28), color: palette.bodyText }}
           >
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: isRealtimeActive ? SUCCESS_COLOR : secondaryColor }} />
-            {isRealtimeActive ? 'Live' : 'Connecting'}
+            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: secondaryColor }} />
+            Cached
           </span>
-          <div className="relative">
-            <button
-              type="button"
-              aria-label="About this dashboard"
-              aria-expanded={isInfoOpen}
-              aria-controls="admin-dashboard-info"
-              onClick={() => setIsInfoOpen((open) => !open)}
-              className="flex h-9 w-9 items-center justify-center rounded-lg border transition hover:shadow-sm"
-              style={{ backgroundColor: palette.surface, borderColor: palette.border, color: primaryColor }}
-            >
-              <HelpCircle size={17} />
-            </button>
-            {isInfoOpen && (
-              <div
-                id="admin-dashboard-info"
-                role="dialog"
-                aria-label="Dashboard information"
-                className="absolute right-0 top-11 z-30 w-72 rounded-xl border p-3 text-left shadow-xl"
-                style={{ backgroundColor: palette.surface, borderColor: palette.border }}
-              >
-                <p className="text-xs font-bold" style={{ color: palette.heading }}>About this dashboard</p>
-                <p className="mt-1 text-[10px] leading-relaxed" style={{ color: palette.bodyText }}>
-                  Metrics use live event, hospital, user, and configuration records. Green means approved or healthy; red means rejected, missing, or requiring attention.
-                </p>
-                <p className="mt-2 text-[9px]" style={{ color: palette.mutedText }}>
-                  Use the Performance Overview tabs to compare each operational area.
-                </p>
-              </div>
+          <PageHeaderActions
+            onRefresh={loadDashboard}
+            refreshLoading={isLoading}
+            autoRefreshOnChanges={false}
+            helpTitle="About the Admin Dashboard"
+            helpContent={(
+              <>
+                <p>Metrics summarize event, hospital, user, and configuration records. Green means approved or healthy; red means rejected, missing, or requiring attention.</p>
+                <p>Use the Performance Overview tabs to compare each operational area.</p>
+              </>
             )}
-          </div>
-          <button
-            type="button"
-            onClick={loadDashboard}
-            disabled={isLoading}
-            className="inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
-            style={{ backgroundColor: palette.surface, borderColor: palette.border, color: primaryColor }}
-          >
-            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
+          />
         </div>
       </div>
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {topMetrics.map((metric) => (
+        {topMetrics.map(({ key, ...metric }) => (
           <MetricTile
-            key={metric.key}
+            key={key}
             {...metric}
             palette={palette}
             onClick={() => typeof onNavigate === 'function' && onNavigate(metric.page)}

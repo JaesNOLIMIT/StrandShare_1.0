@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
+import { usePageActivity } from '../context/PageActivityContext';
 
 export default function useRealtimeRefresh({
   channelName,
@@ -8,23 +9,47 @@ export default function useRealtimeRefresh({
   enabled = true,
   debounceMs = 180,
 }) {
+  const isPageActive = usePageActivity();
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const tableKey = (tables || []).join('|');
 
   useEffect(() => {
-    if (!enabled || !isSupabaseConfigured || !supabase || !tableKey) {
+    if (!enabled || !isPageActive || !isSupabaseConfigured || !supabase || !tableKey) {
       return undefined;
     }
 
     let refreshTimer = null;
+    let refreshRunning = false;
+    let refreshQueued = false;
+    let disposed = false;
+
+    const runRefresh = async () => {
+      if (disposed) return;
+      if (refreshRunning) {
+        refreshQueued = true;
+        return;
+      }
+
+      refreshRunning = true;
+      try {
+        await onChangeRef.current?.();
+      } finally {
+        refreshRunning = false;
+        if (refreshQueued && !disposed) {
+          refreshQueued = false;
+          scheduleRefresh();
+        }
+      }
+    };
+
     const scheduleRefresh = () => {
       if (refreshTimer) {
         window.clearTimeout(refreshTimer);
       }
       refreshTimer = window.setTimeout(() => {
         refreshTimer = null;
-        onChangeRef.current?.();
+        void runRefresh();
       }, debounceMs);
     };
 
@@ -39,10 +64,12 @@ export default function useRealtimeRefresh({
     channel.subscribe();
 
     return () => {
+      disposed = true;
+      refreshQueued = false;
       if (refreshTimer) {
         window.clearTimeout(refreshTimer);
       }
       void supabase.removeChannel(channel);
     };
-  }, [channelName, debounceMs, enabled, tableKey]);
+  }, [channelName, debounceMs, enabled, isPageActive, tableKey]);
 }

@@ -12,7 +12,6 @@ import {
   Loader2,
   Package,
   Printer,
-  RefreshCw,
   ScanLine,
   Trash2,
   X,
@@ -21,17 +20,23 @@ import QRCode from 'qrcode';
 import jsPDF from 'jspdf';
 import jsQR from 'jsqr';
 import { useTheme } from '../../../context/ThemeContext';
+import { useToast } from '../../../context/ToastContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import {
   BUNDLE_HAIR_COUNT_TARGET_MAX,
   BUNDLE_HAIR_COUNT_TARGET_MIN,
   HAIR_BUNDLE_STATUS,
+  WAYBILL_CODE_LENGTH,
   buildBundleSubmissionCode,
   buildBundleWaybillQrPayload,
   deleteBundleDraft,
+  isValidWaybillCode,
+  normalizeWaybillCodeInput,
 } from '../../../lib/hairSubmissionWorkflow';
 import WigSpecificationPicker from './wigCatalog/WigSpecificationPicker';
 import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
+import WaybillScanResult from '../../../components/scanning/WaybillScanResult';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
@@ -44,6 +49,14 @@ const WIG_REQUESTS_TABLE = 'Wig_Requests';
 const PATIENTS_TABLE = 'Patients';
 const USER_DETAILS_TABLE = 'user_details';
 const SCAN_DEBOUNCE_MS = 2000;
+const BUNDLING_SCAN_OUTCOMES = [
+  'Eligible Approved/Cut waybill: hair is added to the active draft and inventory becomes Bundling.',
+  'Duplicate in the same draft: blocked; member count and records do not change.',
+  'Already assigned to another bundle: blocked and the existing bundle remains unchanged.',
+  'Pending quality, rejected, cancelled, not Cut, unknown, or malformed waybill: blocked with the exact reason.',
+  'Removed from a draft: Bundle_ID is cleared and the hair returns to Cut / Available inventory.',
+  'Draft reaches 8-10 hairs and is closed: members move to Wig In Production and the bundle waybill can be printed.',
+];
 const INITIAL_CONFIRM_MODAL = {
   isOpen: false,
   title: '',
@@ -137,6 +150,7 @@ function normalizeErrorMessage(error, fallback) {
 
 export default function BundlingPage() {
   const { theme } = useTheme();
+  const { showToast } = useToast();
   const primaryColor = theme?.primaryColor || '#0275d8';
   const tertiaryColor = theme?.tertiaryColor || '#10b981';
   const primaryTextColor = theme?.primaryTextColor || '#0f172a';
@@ -153,6 +167,7 @@ export default function BundlingPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isFinalizingDraftId, setIsFinalizingDraftId] = useState(null);
   const [isDeletingDraftId, setIsDeletingDraftId] = useState(null);
+  const [isRemovingSubmissionId, setIsRemovingSubmissionId] = useState(null);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [activePrintBundle, setActivePrintBundle] = useState(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -173,12 +188,24 @@ export default function BundlingPage() {
   // Master-detail selection: 'create' | `draft-<id>` | `bundle-<id>`.
   const [selectedKey, setSelectedKey] = useState('create');
   const [showHelp, setShowHelp] = useState(false);
+  const [scanOutcome, setScanOutcome] = useState(null);
 
   const videoRef = useRef(null);
   const scannerCanvasRef = useRef(null);
   const cameraStreamRef = useRef(null);
   const isScanProcessingRef = useRef(false);
+  const removingSubmissionIdRef = useRef(null);
   const lastScanRef = useRef({ raw: '', at: 0 });
+
+  useEffect(() => {
+    if (!notice.text || !['error', 'success'].includes(notice.kind)) return;
+    showToast({
+      type: notice.kind,
+      title: notice.kind === 'success' ? 'Bundling updated' : 'Bundling error',
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
 
   const loadData = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -708,15 +735,25 @@ export default function BundlingPage() {
   const handleScanWaybillIntoBundle = useCallback(async (rawValue, { fromCamera = false } = {}) => {
     if (isScanProcessingRef.current) return;
     const bundleId = Number(scannerDraftBundleId || 0);
-    const waybill = String(rawValue || '').trim();
+    const rawWaybill = String(rawValue || '').trim();
+    const waybill = fromCamera && rawWaybill.startsWith('{')
+      ? rawWaybill
+      : normalizeWaybillCodeInput(rawWaybill);
     if (!bundleId) {
       setNotice({ kind: 'warning', text: 'Open a draft first.' });
       if (fromCamera) setCameraStatus({ kind: 'warning', message: 'Open a draft before scanning.' });
+      setScanOutcome({ tone: 'warning', title: 'No active draft', action: 'No database change', status: 'Blocked', nextStep: 'Open or continue a draft bundle first' });
       return;
     }
     if (!waybill) {
       setNotice({ kind: 'warning', text: 'Enter or scan a waybill code.' });
       if (fromCamera) setCameraStatus({ kind: 'warning', message: 'No QR code was detected from camera frame.' });
+      setScanOutcome({ tone: 'warning', title: 'No waybill detected', action: 'No database change', status: 'Blocked', nextStep: 'Scan a QR or enter the complete WB code' });
+      return;
+    }
+    if (!fromCamera && !isValidWaybillCode(waybill)) {
+      setNotice({ kind: 'warning', text: 'Enter a complete waybill: WB followed by 6 letters or numbers.' });
+      setScanOutcome({ tone: 'warning', title: 'Incomplete waybill', waybill, action: 'No database change', status: 'Blocked', nextStep: 'Enter WB followed by 6 letters or numbers' });
       return;
     }
 
@@ -725,9 +762,40 @@ export default function BundlingPage() {
     setNotice({ kind: '', text: '' });
 
     try {
+      let rpcWaybillPayload = waybill;
+      if (isValidWaybillCode(waybill)) {
+        const attendeeLookup = await supabase
+          .from(EVENT_ATTENDEES_TABLE)
+          .select('Event_Attendee_ID')
+          .eq('Waybill_Code', waybill)
+          .maybeSingle();
+        if (attendeeLookup.error) throw attendeeLookup.error;
+
+        // Non-event waybills encode Submission_ID in base 36 and do not have an
+        // Event_Attendees row. Give the RPC the decoded ID so both paths work.
+        if (!attendeeLookup.data?.Event_Attendee_ID) {
+          const decodedSubmissionId = Number.parseInt(waybill.slice(2), 36);
+          if (Number.isInteger(decodedSubmissionId) && decodedSubmissionId > 0) {
+            const submissionLookup = await supabase
+              .from(HAIR_SUBMISSIONS_TABLE)
+              .select('Submission_ID')
+              .eq('Submission_ID', decodedSubmissionId)
+              .eq('From_Event', false)
+              .maybeSingle();
+            if (submissionLookup.error) throw submissionLookup.error;
+            if (submissionLookup.data?.Submission_ID) {
+              rpcWaybillPayload = JSON.stringify({
+                Submission_ID: submissionLookup.data.Submission_ID,
+                Waybill_Code: waybill,
+              });
+            }
+          }
+        }
+      }
+
       const result = await supabase.rpc('bundle_scan_add_waybill', {
         p_bundle_id: bundleId,
-        p_waybill_payload: waybill,
+        p_waybill_payload: rpcWaybillPayload,
       });
       if (result.error) throw result.error;
 
@@ -747,10 +815,28 @@ export default function BundlingPage() {
         kind: 'success',
         text: `Waybill ${submissionCode} added to bundle #${bundleId}. Current count: ${memberCount}.`,
       });
+      setScanOutcome({
+        tone: 'success', title: 'Hair added to draft', waybill: submissionCode,
+        subject: `Submission #${payload?.submission?.Submission_ID || 'N/A'}`,
+        action: `Added to bundle #${bundleId}; count is now ${memberCount}`,
+        status: 'Bundling',
+        nextStep: memberCount >= BUNDLE_HAIR_COUNT_TARGET_MIN
+          ? 'Close the draft now or scan up to 10 total hairs'
+          : `Scan ${BUNDLE_HAIR_COUNT_TARGET_MIN - memberCount} more eligible hair${BUNDLE_HAIR_COUNT_TARGET_MIN - memberCount === 1 ? '' : 's'} to unlock closing`,
+        statusChanges: [
+          { label: 'Bundle assignment', before: 'None', after: `Draft #${bundleId}` },
+          { label: 'Hair submission', before: 'Cut', after: 'Cut' },
+          { label: 'Cut inventory', before: 'Cut / Available', after: 'Bundling' },
+        ],
+      });
     } catch (error) {
       const normalized = normalizeErrorMessage(error, 'Unable to scan waybill into bundle.');
       setNotice({ kind: 'error', text: normalized });
       if (fromCamera) setCameraStatus({ kind: 'error', message: normalized });
+      setScanOutcome({
+        tone: 'error', title: 'Hair was not added', waybill: isValidWaybillCode(waybill) ? waybill : '',
+        action: 'No bundle or inventory change', status: 'Blocked', nextStep: normalized,
+      });
     } finally {
       setIsScanningWaybill(false);
       isScanProcessingRef.current = false;
@@ -786,6 +872,16 @@ export default function BundlingPage() {
         setCameraStatus({ kind: 'info', message: 'Camera is off. Start scanner to read waybill QR.' });
       }
       setNotice({ kind: 'success', text: `Bundle ${code} closed with ${memberCount} hairs. Waybill is ready to print.` });
+      setScanOutcome({
+        tone: 'success', title: 'Draft closed successfully', waybill: code,
+        subject: `Bundle #${bundleId}`, action: `Finalized ${memberCount} hairs for production`,
+        status: 'Wig In Production', nextStep: 'Print and attach the bundle waybill',
+        statusChanges: [
+          { label: 'Bundle', before: 'Draft', after: 'In Production' },
+          { label: 'Member submissions', before: 'Cut', after: 'Wig In Production' },
+          { label: 'Cut inventory', before: 'Bundling', after: 'Bundling' },
+        ],
+      });
       setActivePrintBundle({
         bundleId: Number(closedBundle.Bundle_ID || bundleId),
         submissionCode: code,
@@ -848,6 +944,9 @@ export default function BundlingPage() {
 
   const handleRemoveDraftMemberNow = useCallback(async ({ bundleId, submissionId, submissionCode }) => {
     if (!bundleId || !submissionId) return;
+    if (removingSubmissionIdRef.current) return;
+    removingSubmissionIdRef.current = Number(submissionId);
+    setIsRemovingSubmissionId(Number(submissionId));
     setNotice({ kind: '', text: '' });
     try {
       const result = await supabase.rpc('bundle_remove_waybill_from_draft', {
@@ -857,13 +956,38 @@ export default function BundlingPage() {
       if (result.error) throw result.error;
       const payload = result.data || {};
       const memberCount = Number(payload?.member_count || 0);
+      setBundleMembersByBundleId((current) => ({
+        ...current,
+        [Number(bundleId)]: (current[Number(bundleId)] || []).filter(
+          (member) => Number(member.submissionId) !== Number(submissionId),
+        ),
+      }));
       await loadData();
       setNotice({
         kind: 'success',
         text: `${submissionCode || `Submission #${submissionId}`} removed from draft #${bundleId}. Current count: ${memberCount}.`,
       });
+      setScanOutcome({
+        tone: 'info', title: 'Hair removed from draft', waybill: submissionCode,
+        subject: `Submission #${submissionId}`, action: `Removed from bundle #${bundleId}`,
+        status: 'Cut / Available', nextStep: 'The hair may be scanned into another eligible draft',
+        statusChanges: [
+          { label: 'Bundle assignment', before: `Draft #${bundleId}`, after: 'None' },
+          { label: 'Hair submission', before: 'Cut', after: 'Cut' },
+          { label: 'Cut inventory', before: 'Bundling', after: 'Cut / Available' },
+        ],
+      });
     } catch (error) {
-      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to remove this hair from draft.') });
+      const message = normalizeErrorMessage(error, 'Unable to remove this hair from draft.');
+      setNotice({ kind: 'error', text: message });
+      setScanOutcome({
+        tone: 'error', title: 'Hair was not removed', waybill: submissionCode,
+        subject: `Submission #${submissionId}`, action: 'No bundle or inventory change',
+        status: 'Blocked', nextStep: message,
+      });
+    } finally {
+      removingSubmissionIdRef.current = null;
+      setIsRemovingSubmissionId(null);
     }
   }, [loadData]);
 
@@ -1133,11 +1257,14 @@ export default function BundlingPage() {
                   <button
                     type="button"
                     onClick={() => handleRemoveDraftMember(bundle.Bundle_ID, member)}
-                    className="inline-flex items-center gap-1 rounded-lg border bg-white px-2 py-1 text-xs font-semibold"
+                    disabled={isRemovingSubmissionId !== null}
+                    className="inline-flex items-center gap-1 rounded-lg border bg-white px-2 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                     style={{ borderColor: '#fecaca', color: '#b91c1c' }}
                   >
-                    <Trash2 size={12} />
-                    Remove
+                    {isRemovingSubmissionId === member.submissionId
+                      ? <Loader2 size={12} className="animate-spin" />
+                      : <Trash2 size={12} />}
+                    {isRemovingSubmissionId === member.submissionId ? 'Removing...' : 'Remove'}
                   </button>
                 ) : (
                   <span
@@ -1173,7 +1300,7 @@ export default function BundlingPage() {
         })}
       </div>
     );
-  }, [bundleMembersByBundleId, handleRemoveDraftMember, primaryTextColor, secondaryTextColor, tertiaryTextColor]);
+  }, [bundleMembersByBundleId, handleRemoveDraftMember, isRemovingSubmissionId, primaryTextColor, secondaryTextColor, tertiaryTextColor]);
 
   return (
     <div className="space-y-6" style={rootStyle}>
@@ -1184,31 +1311,15 @@ export default function BundlingPage() {
               Open a draft, scan {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX} donor waybills, then close it to print the bundle waybill.
             </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowHelp(true)}
-            title="How bundling works"
-            aria-label="How bundling works"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border bg-white disabled:opacity-60"
-            style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-          >
-            <HelpCircle size={16} />
-          </button>
-          <button
-            type="button"
-            onClick={() => loadData()}
-            disabled={isLoading}
-            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3.5 py-2 text-sm font-semibold disabled:opacity-60"
-            style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-          >
-            {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            Refresh
-          </button>
-        </div>
+        <PageHeaderActions
+          onHelp={() => setShowHelp(true)}
+          helpTitle="How bundling works"
+          onRefresh={() => loadData()}
+          refreshLoading={isLoading}
+        />
       </header>
 
-      {notice.text && (
+      {notice.text && !['error', 'success'].includes(notice.kind) && (
         <div
           className="rounded-xl border px-3 py-2 text-sm font-medium"
           style={
@@ -1221,6 +1332,8 @@ export default function BundlingPage() {
           {notice.text}
         </div>
       )}
+
+      <WaybillScanResult outcome={scanOutcome} possibleOutcomes={BUNDLING_SCAN_OUTCOMES} />
 
       {wishRequests.length > 0 ? (
       <section className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
@@ -1495,7 +1608,7 @@ export default function BundlingPage() {
                   <div className="flex gap-2">
                     <input
                       value={scannerWaybillCode}
-                      onChange={(event) => setScannerWaybillCode(event.target.value)}
+                      onChange={(event) => setScannerWaybillCode(normalizeWaybillCodeInput(event.target.value))}
                       onKeyDown={(event) => {
                         if (event.key === 'Enter') {
                           event.preventDefault();
@@ -1503,18 +1616,27 @@ export default function BundlingPage() {
                         }
                       }}
                       placeholder="Scan or type waybill (WBXXXXXX)"
+                      maxLength={WAYBILL_CODE_LENGTH}
+                      autoCapitalize="characters"
+                      autoComplete="off"
+                      spellCheck={false}
                       className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
                       style={{ color: primaryTextColor }}
                     />
                     <button
                       type="button"
                       onClick={() => void handleScanWaybillIntoBundle(scannerWaybillCode, { fromCamera: false })}
-                      disabled={isScanningWaybill || !String(scannerWaybillCode || '').trim()}
+                      disabled={isScanningWaybill || !isValidWaybillCode(scannerWaybillCode)}
                       className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
                     >
                       {isScanningWaybill ? <Loader2 size={14} className="animate-spin" /> : <ScanLine size={14} />}
                       Scan
                     </button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                    <span>Manual entry: WB + 6 letters or numbers</span>
+                    <span className="font-mono">{scannerWaybillCode.length}/{WAYBILL_CODE_LENGTH}</span>
                   </div>
 
                   <button

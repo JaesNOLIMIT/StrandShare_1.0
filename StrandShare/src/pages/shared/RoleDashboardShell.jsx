@@ -1,12 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Sidebar from '../../components/Sidebar';
 import Header from '../../components/Header';
-import { logAuditAction } from '../../lib/auditLogger';
-import {
-  getDataRequestSnapshot,
-  subscribeToDataRequests,
-} from '../../lib/dataRequestTracker';
+import { PageActivityProvider } from '../../context/PageActivityContext';
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'Donivra.sidebar.collapsed';
 
@@ -28,17 +23,21 @@ export default function RoleDashboardShell({
   navItems,
   defaultPage = 'dashboard',
   pageComponents = {},
+  onInitialDashboardReady,
 }) {
   const initialPage = defaultPage || 'dashboard';
   const [currentPage, setCurrentPage] = useState(initialPage);
-  const [initialDataReady, setInitialDataReady] = useState(false);
-  const [requestSnapshot, setRequestSnapshot] = useState(getDataRequestSnapshot);
-  const [showPageLoader, setShowPageLoader] = useState(false);
-  const initialRequestBaselineRef = useRef(getDataRequestSnapshot().sequence);
+  const [visitedPages, setVisitedPages] = useState(() => new Set([initialPage]));
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(getInitialSidebarCollapsed);
 
   const navigateToPage = useCallback((pageId) => {
     const nextPage = pageId || 'dashboard';
+    setVisitedPages((previous) => {
+      if (previous.has(nextPage)) return previous;
+      const next = new Set(previous);
+      next.add(nextPage);
+      return next;
+    });
     setCurrentPage(nextPage);
   }, []);
 
@@ -51,39 +50,13 @@ export default function RoleDashboardShell({
     return activeNavItem?.label || 'Overview';
   }, [currentPage, navItems]);
   const hasActivePage = Boolean(pageComponents[currentPage]);
+  const cachedPageIds = useMemo(
+    () => Array.from(visitedPages).filter((pageId) => Boolean(pageComponents[pageId])),
+    [pageComponents, visitedPages],
+  );
 
   const hasSettingsPage = Boolean(pageComponents.settings) || navItems.some((item) => item.id === 'settings');
-  const pageWrapperClass = 'flex-1 overflow-auto bg-slate-50 p-6 md:p-8';
-
-  useEffect(() => {
-    return subscribeToDataRequests(setRequestSnapshot);
-  }, []);
-
-  useEffect(() => {
-    if (initialDataReady) {
-      return undefined;
-    }
-
-    const requestWasObserved = requestSnapshot.sequence > initialRequestBaselineRef.current;
-    if (requestSnapshot.pending > 0) {
-      return undefined;
-    }
-
-    const settleDelay = requestWasObserved ? 120 : 240;
-    const settleTimer = window.setTimeout(() => setInitialDataReady(true), settleDelay);
-
-    return () => window.clearTimeout(settleTimer);
-  }, [initialDataReady, requestSnapshot]);
-
-  useEffect(() => {
-    if (initialDataReady) {
-      setShowPageLoader(false);
-      return undefined;
-    }
-
-    const loaderTimer = window.setTimeout(() => setShowPageLoader(true), 120);
-    return () => window.clearTimeout(loaderTimer);
-  }, [initialDataReady]);
+  const pageWrapperClass = 'relative flex-1 overflow-auto bg-slate-50 p-6 md:p-8';
 
   useEffect(() => {
     try {
@@ -92,20 +65,6 @@ export default function RoleDashboardShell({
       // Ignore localStorage write failures.
     }
   }, [isSidebarCollapsed]);
-
-  useEffect(() => {
-    if (!currentPage) {
-      return;
-    }
-
-    void logAuditAction({
-      action: 'navigation.view_page',
-      description: `Viewed page: ${pageTitle}`,
-      resource: `page/${currentPage}`,
-      status: 'success',
-      userProfile,
-    });
-  }, [currentPage, pageTitle, userProfile]);
 
   return (
     <div className="flex h-screen bg-slate-50">
@@ -123,37 +82,37 @@ export default function RoleDashboardShell({
           userProfile={userProfile}
           pageTitle={pageTitle}
         />
-        <div className={`${pageWrapperClass} relative`} aria-busy={!initialDataReady}>
+        <div className={pageWrapperClass}>
           {!hasActivePage ? (
             <div className="p-8 text-slate-600">Page not available.</div>
           ) : (
-            Object.entries(pageComponents).map(([pageId, PageComponent]) => {
+            cachedPageIds.map((pageId) => {
+              const CachedPageComponent = pageComponents[pageId];
               const isActive = pageId === currentPage;
               return (
                 <div
                   key={pageId}
-                  className={isActive ? 'min-h-full' : 'hidden'}
+                  className={isActive
+                    ? 'min-h-full min-w-0'
+                    : 'pointer-events-none absolute inset-x-0 top-0 min-h-full min-w-0 select-none opacity-0'}
                   aria-hidden={!isActive}
+                  inert={isActive ? undefined : ''}
                 >
-                  <PageComponent
-                    userProfile={userProfile}
-                    onNavigate={navigateToPage}
-                    navItems={navItems}
-                    currentPage={pageId}
-                    isActivePage={isActive}
-                  />
+                  <PageActivityProvider active={isActive}>
+                    <Suspense fallback={null}>
+                      <CachedPageComponent
+                        userProfile={userProfile}
+                        onNavigate={navigateToPage}
+                        navItems={navItems}
+                        currentPage={pageId}
+                        isActivePage={isActive}
+                        onInitialDataReady={pageId === 'dashboard' ? onInitialDashboardReady : undefined}
+                      />
+                    </Suspense>
+                  </PageActivityProvider>
                 </div>
               );
             })
-          )}
-          {hasActivePage && !initialDataReady && showPageLoader && (
-            <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-50/40">
-              <Loader2
-                size={34}
-                className="animate-spin text-blue-600 drop-shadow-sm"
-                aria-label="Loading data"
-              />
-            </div>
           )}
         </div>
       </div>

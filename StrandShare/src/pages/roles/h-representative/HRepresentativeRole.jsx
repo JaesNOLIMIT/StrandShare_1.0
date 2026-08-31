@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy } from 'react';
 import {
   LayoutDashboard,
   Users,
@@ -7,11 +7,12 @@ import {
   Settings,
 } from 'lucide-react';
 import RoleDashboardShell from '../../shared/RoleDashboardShell';
-import DashboardPage from './DashboardPage';
-import ManagePatientsPage from './ManagePatientsPage';
-import WigRequestPage from './WigRequestPage';
-import GenerateReportsPage from './GenerateReportsPage';
-import SettingsPage from './SettingsPage';
+
+const DashboardPage = lazy(() => import('./DashboardPage'));
+const ManagePatientsPage = lazy(() => import('./ManagePatientsPage'));
+const WigRequestPage = lazy(() => import('./WigRequestPage'));
+const GenerateReportsPage = lazy(() => import('./GenerateReportsPage'));
+const SettingsPage = lazy(() => import('./SettingsPage'));
 
 const hRepresentativeNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -29,7 +30,7 @@ const hRepresentativePageComponents = {
   settings: SettingsPage,
 };
 
-export default function HRepresentativeRole({ onSignOut, userProfile }) {
+export default function HRepresentativeRole({ onSignOut, userProfile, onInitialDashboardReady }) {
   return (
     <RoleDashboardShell
       onSignOut={onSignOut}
@@ -37,6 +38,7 @@ export default function HRepresentativeRole({ onSignOut, userProfile }) {
       navItems={hRepresentativeNavItems}
       pageComponents={hRepresentativePageComponents}
       defaultPage="dashboard"
+      onInitialDashboardReady={onInitialDashboardReady}
     />
   );
 }

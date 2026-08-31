@@ -759,28 +759,6 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     void loadTemplateRows();
   }, [loadTemplateRows, selectedTemplateId]);
 
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
-      return undefined;
-    }
-
-    const refreshReport = () => void loadTemplateRows();
-    const channel = supabase
-      .channel(`role-reports-live-${roleKey || 'unknown'}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_APPLICATIONS_TABLE }, refreshReport)
-      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_REQUESTS_TABLE }, refreshReport)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, refreshReport)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, refreshReport)
-      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshReport)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'Cut_Hair_Inventory' }, refreshReport)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'Hair_AI_Review_Comparisons' }, refreshReport)
-      .subscribe();
-
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [loadTemplateRows, roleKey]);
-
   const statusOptions = useMemo(() => {
     const unique = [...new Set(rawRows.map((row) => row.statusLabel).filter(Boolean))];
     return ['all', ...unique];

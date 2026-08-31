@@ -27,6 +27,10 @@ import {
   extractMedicalDocumentText,
   parseMedicalDocumentFields,
 } from '../../../lib/medicalDocumentAutofill';
+import {
+  PERSON_SUFFIX_OPTIONS,
+  normalizePersonSuffix,
+} from '../../../lib/personIdentity';
 
 const PATIENTS_TABLE = 'Patients';
 const USERS_TABLE = 'users';
@@ -509,6 +513,14 @@ function mapPatientInsertError(rawMessage) {
     return 'Patient code already exists. Please generate a new PT code.';
   }
 
+  if (lowerMessage.includes('email address is already in use')) {
+    return 'Email is already registered. Use a different email address.';
+  }
+
+  if (lowerMessage.includes('contact number is already in use')) {
+    return 'That mobile number is already assigned to another account or patient contact.';
+  }
+
   if (
     lowerMessage.includes('duplicate key value')
     && (
@@ -565,7 +577,7 @@ function extractReadableErrorText(error, fallback = 'Unable to process this requ
   return fallback;
 }
 
-export default function ManagePatientsPage({ userProfile }) {
+export default function ManagePatientsPage({ userProfile, isActivePage = true }) {
   const { theme } = useTheme();
   const submitLockRef = useRef(false);
   const errorToastIdRef = useRef(0);
@@ -869,7 +881,7 @@ export default function ManagePatientsPage({ userProfile }) {
   }, [hospitalId, fetchPatients, fetchTransferData]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !hospitalId) {
+    if (!isActivePage || !isSupabaseConfigured || !supabase || !hospitalId) {
       return undefined;
     }
 
@@ -889,7 +901,7 @@ export default function ManagePatientsPage({ userProfile }) {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [hospitalId, fetchPatients, fetchTransferData]);
+  }, [hospitalId, fetchPatients, fetchTransferData, isActivePage]);
 
   useEffect(() => {
     if (!patientPictureFile) {
@@ -1085,7 +1097,7 @@ export default function ManagePatientsPage({ userProfile }) {
 
       Object.entries(recognizedFields).forEach(([fieldName, value]) => {
         if (!String(formRef.current[fieldName] || '').trim() && String(value || '').trim()) {
-          nextForm[fieldName] = value;
+          nextForm[fieldName] = fieldName === 'suffix' ? normalizePersonSuffix(value) : value;
           appliedFieldNames.push(fieldName);
         }
       });
@@ -1451,7 +1463,7 @@ export default function ManagePatientsPage({ userProfile }) {
     const normalizedFirstName = String(form.firstName || '').trim();
     const normalizedMiddleName = String(form.middleName || '').trim();
     const normalizedLastName = String(form.lastName || '').trim();
-    const normalizedSuffix = String(form.suffix || '').trim();
+    const normalizedSuffix = normalizePersonSuffix(form.suffix);
     const normalizedBirthdate = String(form.birthdate || '').trim();
     const normalizedGender = normalizePatientGender(form.gender);
     const normalizedDisplayName = buildDisplayName({
@@ -1520,6 +1532,12 @@ export default function ManagePatientsPage({ userProfile }) {
     }
     if (normalizedSecondaryGuardianContactNumber && !isValidPhilippineMobileNumber(normalizedSecondaryGuardianContactNumber)) {
       setNotice({ kind: 'error', text: 'Secondary guardian contact must use +63 912 345 6789 format.' });
+      submitLockRef.current = false;
+      return;
+    }
+    if (normalizedSecondaryGuardianContactNumber
+      && normalizedSecondaryGuardianContactNumber === normalizedGuardianContactNumber) {
+      setNotice({ kind: 'error', text: 'Primary and secondary contacts must use different mobile numbers.' });
       submitLockRef.current = false;
       return;
     }
@@ -1819,6 +1837,9 @@ export default function ManagePatientsPage({ userProfile }) {
     }
     if (secondaryGuardianContactNumber && !isValidPhilippineMobileNumber(secondaryGuardianContactNumber)) {
       return 'Secondary guardian contact must use +63 912 345 6789 format.';
+    }
+    if (secondaryGuardianContactNumber && secondaryGuardianContactNumber === guardianContactNumber) {
+      return 'Primary and secondary contacts must use different mobile numbers.';
     }
     if (!CONDITION_OPTIONS.includes(String(form.conditionCategory || '').trim())) {
       return 'Select the patient clinical condition.';
@@ -2442,6 +2463,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <input
                       type="email"
                       name="email"
+                      autoComplete="email"
                       value={form.email}
                       onChange={handleInputChange}
                       required
@@ -2490,6 +2512,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <label className="mb-1 block text-sm font-medium text-gray-700">First Name (required)</label>
                     <input
                       name="firstName"
+                      autoComplete="given-name"
                       value={form.firstName}
                       onChange={handleInputChange}
                       required
@@ -2502,6 +2525,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <label className="mb-1 block text-sm font-medium text-gray-700">Middle Name</label>
                     <input
                       name="middleName"
+                      autoComplete="additional-name"
                       value={form.middleName}
                       onChange={handleInputChange}
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
@@ -2513,6 +2537,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <label className="mb-1 block text-sm font-medium text-gray-700">Last Name (required)</label>
                     <input
                       name="lastName"
+                      autoComplete="family-name"
                       value={form.lastName}
                       onChange={handleInputChange}
                       required
@@ -2523,13 +2548,17 @@ export default function ManagePatientsPage({ userProfile }) {
 
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Suffix</label>
-                    <input
+                    <select
                       name="suffix"
                       value={form.suffix}
                       onChange={handleInputChange}
+                      autoComplete="honorific-suffix"
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
-                      placeholder="Jr, Sr, III"
-                    />
+                    >
+                      {PERSON_SUFFIX_OPTIONS.map((option) => (
+                        <option key={option.label} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
                   </div>
 
                   <div>
@@ -2537,6 +2566,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <input
                       type="date"
                       name="birthdate"
+                      autoComplete="bday"
                       value={form.birthdate}
                       onChange={handleInputChange}
                       max={todayDateValue}
@@ -2549,6 +2579,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <label className="mb-1 block text-sm font-medium text-gray-700">Gender (required)</label>
                     <select
                       name="gender"
+                      autoComplete="sex"
                       value={form.gender}
                       onChange={handleInputChange}
                       required
@@ -2708,6 +2739,9 @@ export default function ManagePatientsPage({ userProfile }) {
                     <label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number (required)</label>
                     <input
                       name="guardianContactNumber"
+                      type="tel"
+                      inputMode="numeric"
+                      autoComplete="tel"
                       value={form.guardianContactNumber}
                       onChange={handleInputChange}
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
@@ -2725,7 +2759,7 @@ export default function ManagePatientsPage({ userProfile }) {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                   <div><label className="mb-1 block text-sm font-medium text-gray-700">Name</label><input name="secondaryGuardian" value={form.secondaryGuardian} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Alternate contact name" /></div>
                   <div><label className="mb-1 block text-sm font-medium text-gray-700">Relationship</label><input name="secondaryGuardianRelationship" value={form.secondaryGuardianRelationship} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="e.g., Father" /></div>
-                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number</label><input name="secondaryGuardianContactNumber" value={form.secondaryGuardianContactNumber} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="+63 912 345 6789" maxLength={16} /></div>
+                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number</label><input type="tel" inputMode="numeric" name="secondaryGuardianContactNumber" value={form.secondaryGuardianContactNumber} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="+63 912 345 6789" maxLength={16} /></div>
                 </div>
               </div>
             )}

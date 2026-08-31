@@ -35,6 +35,21 @@ const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const USERS_TABLE = 'users';
 const PRIVATE_ID_BUCKET = 'event_application_private_ids';
+const LEGACY_EVENT_ASSETS_BUCKET = 'event_application_assets';
+
+function normalizePrivateIdObjectPath(value) {
+  const raw = String(value || '').trim().replace(/^\/+/, '');
+  if (!raw) return '';
+  const bucketPrefix = `${PRIVATE_ID_BUCKET}/`;
+  return raw.startsWith(bucketPrefix) ? raw.slice(bucketPrefix.length) : raw;
+}
+
+function resolveLegacyApplicantIdUrl(path, storedUrl) {
+  if (!path.startsWith('applicant-valid-ids/')) return '';
+  const existingUrl = String(storedUrl || '').trim();
+  if (existingUrl) return existingUrl;
+  return supabase?.storage.from(LEGACY_EVENT_ASSETS_BUCKET).getPublicUrl(path).data?.publicUrl || '';
+}
 
 function normalizeStatus(value) {
   return String(value || '')
@@ -673,7 +688,7 @@ function AttachmentTile({ url, label }) {
   );
 }
 
-export default function EventApplicationIntakePage({ userProfile }) {
+export default function EventApplicationIntakePage({ userProfile, isActivePage = true }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0f766e';
   const [isLoading, setIsLoading] = useState(false);
@@ -782,7 +797,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
 
   // Realtime: keep applications + linked requests in sync without refetching
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
+    if (!isActivePage || !isSupabaseConfigured || !supabase) return undefined;
 
     const applicationsChannel = supabase
       .channel('event-applications-intake-realtime')
@@ -838,7 +853,7 @@ export default function EventApplicationIntakePage({ userProfile }) {
       supabase.removeChannel(applicationsChannel);
       supabase.removeChannel(requestsChannel);
     };
-  }, [loadRows]);
+  }, [isActivePage, loadRows]);
 
   const selectedRow = useMemo(() => {
     return rows.find((row) => Number(row.Event_Application_ID || 0) === Number(selectedId || 0)) || null;
@@ -847,15 +862,21 @@ export default function EventApplicationIntakePage({ userProfile }) {
   useEffect(() => {
     let cancelled = false;
     setPrivateIdUrl('');
-    const path = String(selectedRow?.Applicant_Valid_ID_Path || '').trim();
-    if (!path || !supabase) return undefined;
+    const path = normalizePrivateIdObjectPath(selectedRow?.Applicant_Valid_ID_Path);
+    const legacyUrl = resolveLegacyApplicantIdUrl(path, selectedRow?.Applicant_Valid_ID_URL);
+    if (legacyUrl) {
+      setPrivateIdUrl(legacyUrl);
+      return undefined;
+    }
+    if (!path.startsWith('verified-sessions/') || !supabase) return undefined;
 
     supabase.storage.from(PRIVATE_ID_BUCKET).createSignedUrl(path, 10 * 60)
       .then(({ data, error }) => {
         if (!cancelled && !error) setPrivateIdUrl(data?.signedUrl || '');
-      });
+      })
+      .catch(() => {});
     return () => { cancelled = true; };
-  }, [selectedRow?.Applicant_Valid_ID_Path]);
+  }, [selectedRow?.Applicant_Valid_ID_Path, selectedRow?.Applicant_Valid_ID_URL]);
 
   const selectedLinkedRequest = useMemo(() => {
     const requestId = Number(selectedRow?.Linked_Event_Request_ID || 0);

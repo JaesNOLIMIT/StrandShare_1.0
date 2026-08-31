@@ -22,6 +22,12 @@ import {
   isSupabaseConfigured,
 } from '../../../lib/supabaseClient';
 import { toCanonicalRole, toRoleLabel } from '../../../lib/roleUtils';
+import {
+  PERSON_SUFFIX_OPTIONS,
+  formatPhilippineMobile,
+  isValidPhilippineMobile,
+  normalizePersonSuffix,
+} from '../../../lib/personIdentity';
 import UserAccountDetailsModal from './UserAccountDetailsModal';
 
 const DEFAULT_ROLES = ['admin', 'staff', 'specialist', 'h_representative'];
@@ -47,6 +53,14 @@ function mapInviteErrorMessage(rawMessage) {
 
   if (message.includes('User already registered')) {
     return 'This email already exists in Auth. Use a different email address.';
+  }
+
+  if (lower.includes('email address is already in use') || lower.includes('email already exists')) {
+    return 'This email is already assigned to another account. Use a different email address.';
+  }
+
+  if (lower.includes('contact number is already in use')) {
+    return 'This mobile number is already assigned to another account or patient contact.';
   }
 
   if (message.includes('Invalid email')) {
@@ -92,28 +106,11 @@ function buildTemporaryPassword() {
 }
 
 function formatPhilippineContactNumber(value) {
-  const digits = String(value || '').replace(/\D/g, '');
-  if (!digits) return '';
-
-  let local = digits;
-
-  if (local.startsWith('63')) local = local.slice(2);
-  if (local.startsWith('0')) local = local.slice(1);
-  local = local.slice(0, 10);
-
-  const part1 = local.slice(0, 3);
-  const part2 = local.slice(3, 6);
-  const part3 = local.slice(6, 10);
-
-  let formatted = '+63';
-  if (part1) formatted += ` ${part1}`;
-  if (part2) formatted += ` ${part2}`;
-  if (part3) formatted += ` ${part3}`;
-  return formatted.trim();
+  return formatPhilippineMobile(value);
 }
 
 function isValidPhilippineContactNumber(value) {
-  return /^\+63 9\d{2} \d{3} \d{4}$/.test(String(value || '').trim());
+  return isValidPhilippineMobile(value);
 }
 
 function getPhilippineSqlTimestamp(date = new Date()) {
@@ -229,7 +226,7 @@ function getInitialFormData() {
   };
 }
 
-export default function ManageUserAccountsPage() {
+export default function ManageUserAccountsPage({ isActivePage = true }) {
   const { theme } = useTheme();
   const tableHeaderTextColor = theme?.primaryTextColor || '#000000';
   const [users, setUsers] = useState([]);
@@ -266,20 +263,21 @@ export default function ManageUserAccountsPage() {
 
     fetchUsers();
     fetchAllRoles();
+  }, []);
+
+  useEffect(() => {
+    if (!isActivePage || !isSupabaseConfigured || !supabase) return undefined;
 
     const subscription = supabase
       .channel('public:users-hospital')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
         fetchUsers();
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => {
-        fetchUsers();
-      })
       .subscribe();
     return () => {
       void supabase.removeChannel(subscription);
     };
-  }, []);
+  }, [isActivePage]);
 
   const fetchUsers = async () => {
     try {
@@ -365,7 +363,7 @@ export default function ManageUserAccountsPage() {
         firstName: formData.firstName,
         middleName: formData.middleName,
         lastName: formData.lastName,
-        suffix: formData.suffix,
+        suffix: normalizePersonSuffix(formData.suffix),
       });
 
       if (!normalizedEmail) {
@@ -461,7 +459,7 @@ export default function ManageUserAccountsPage() {
         p_first_name: String(formData.firstName || '').trim() || null,
         p_middle_name: String(formData.middleName || '').trim() || null,
         p_last_name: String(formData.lastName || '').trim() || null,
-        p_suffix: String(formData.suffix || '').trim() || null,
+        p_suffix: normalizePersonSuffix(formData.suffix) || null,
         p_birthdate: birthdate,
         p_gender: String(formData.gender || '').trim() || null,
         p_street: String(formData.street || '').trim() || null,
@@ -672,7 +670,7 @@ export default function ManageUserAccountsPage() {
       firstName: profile.first_name || '',
       middleName: profile.middle_name || '',
       lastName: profile.last_name || '',
-      suffix: profile.suffix || '',
+      suffix: normalizePersonSuffix(profile.suffix),
       birthdate: profile.birthdate || '',
       gender: profile.gender || '',
       contactNumber: profile.contact_number || '',
@@ -708,6 +706,14 @@ export default function ManageUserAccountsPage() {
 
     if (!String(detailsForm.firstName || '').trim() || !String(detailsForm.lastName || '').trim()) {
       setDetailsNotice({ kind: 'error', text: 'First name and last name are required.' });
+      return;
+    }
+    if (!toPhilippineDateOrNull(detailsForm.birthdate)) {
+      setDetailsNotice({ kind: 'error', text: 'Birthdate is required.' });
+      return;
+    }
+    if (!String(detailsForm.gender || '').trim()) {
+      setDetailsNotice({ kind: 'error', text: 'Gender is required.' });
       return;
     }
     if (canChangeRole && !ADMIN_CREATABLE_ROLES.includes(nextRole)) {
@@ -747,7 +753,7 @@ export default function ManageUserAccountsPage() {
           first_name: String(detailsForm.firstName || '').trim(),
           middle_name: String(detailsForm.middleName || '').trim() || null,
           last_name: String(detailsForm.lastName || '').trim(),
-          suffix: String(detailsForm.suffix || '').trim() || null,
+          suffix: normalizePersonSuffix(detailsForm.suffix) || null,
           birthdate: toPhilippineDateOrNull(detailsForm.birthdate),
           gender: String(detailsForm.gender || '').trim() || null,
           contact_number: detailsForm.contactNumber || null,
@@ -767,7 +773,7 @@ export default function ManageUserAccountsPage() {
       setIsEditingDetails(false);
       setDetailsNotice({ kind: 'success', text: 'User account details saved successfully.' });
     } catch (error) {
-      setDetailsNotice({ kind: 'error', text: error.message || 'Unable to save user details.' });
+      setDetailsNotice({ kind: 'error', text: mapInviteErrorMessage(error.message || 'Unable to save user details.') });
     } finally {
       setIsSavingDetails(false);
     }
@@ -1096,7 +1102,7 @@ export default function ManageUserAccountsPage() {
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Email Address *</label>
-                        <input required name="email" value={formData.email} onChange={handleInputChange} type="email" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input required autoComplete="email" name="email" value={formData.email} onChange={handleInputChange} type="email" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Role *</label>
@@ -1125,33 +1131,35 @@ export default function ManageUserAccountsPage() {
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">First Name *</label>
-                        <input required name="firstName" value={formData.firstName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input required autoComplete="given-name" name="firstName" value={formData.firstName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Middle Name (optional)</label>
-                        <input name="middleName" value={formData.middleName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input autoComplete="additional-name" name="middleName" value={formData.middleName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Last Name *</label>
-                        <input required name="lastName" value={formData.lastName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input required autoComplete="family-name" name="lastName" value={formData.lastName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Suffix (optional)</label>
-                        <input name="suffix" value={formData.suffix} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <select name="suffix" value={formData.suffix} onChange={handleInputChange} autoComplete="honorific-suffix" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }}>
+                          {PERSON_SUFFIX_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
+                        </select>
                       </div>
                     </div>
 
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Birthdate *</label>
-                        <input required name="birthdate" value={formData.birthdate} onChange={handleInputChange} type="date" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input required autoComplete="bday" max={getPhilippineDateString()} name="birthdate" value={formData.birthdate} onChange={handleInputChange} type="date" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Gender *</label>
-                        <select required name="gender" value={formData.gender} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }}>
+                        <select required autoComplete="sex" name="gender" value={formData.gender} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }}>
                           <option value="">Select gender</option>
                           <option value="Male">Male</option>
                           <option value="Female">Female</option>
@@ -1170,6 +1178,7 @@ export default function ManageUserAccountsPage() {
                         onChange={handleInputChange}
                         type="text"
                         inputMode="numeric"
+                        autoComplete="tel"
                         placeholder="+63 912 345 6789"
                         maxLength={16}
                         title="Use +63 912 345 6789 format."

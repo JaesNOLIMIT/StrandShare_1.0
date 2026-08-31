@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy } from 'react';
 import {
   LayoutDashboard,
   Boxes,
@@ -9,13 +9,14 @@ import {
   Settings,
 } from 'lucide-react';
 import RoleDashboardShell from '../../shared/RoleDashboardShell';
-import DashboardPage from './DashboardPage';
-import QualityCheckPage from './QualityCheckPage';
-import BundlingPage from './BundlingPage';
-import WigCatalogStudioPage from './WigCatalogStudioPage';
-import GenerateReportsPage from './GenerateReportsPage';
-import SettingsPage from './SettingsPage';
-import CutHairInventoryPage from '../../shared/features/CutHairInventoryPage';
+
+const DashboardPage = lazy(() => import('./DashboardPage'));
+const QualityCheckPage = lazy(() => import('./QualityCheckPage'));
+const BundlingPage = lazy(() => import('./BundlingPage'));
+const WigCatalogStudioPage = lazy(() => import('./WigCatalogStudioPage'));
+const GenerateReportsPage = lazy(() => import('./GenerateReportsPage'));
+const SettingsPage = lazy(() => import('./SettingsPage'));
+const CutHairInventoryPage = lazy(() => import('../../shared/features/CutHairInventoryPage'));
 
 const specialistNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -37,7 +38,7 @@ const specialistPageComponents = {
   settings: SettingsPage,
 };
 
-export default function SpecialistRole({ onSignOut, userProfile, initialPage = 'dashboard' }) {
+export default function SpecialistRole({ onSignOut, userProfile, initialPage = 'dashboard', onInitialDashboardReady }) {
   return (
     <RoleDashboardShell
       onSignOut={onSignOut}
@@ -45,6 +46,7 @@ export default function SpecialistRole({ onSignOut, userProfile, initialPage = '
       navItems={specialistNavItems}
       pageComponents={specialistPageComponents}
       defaultPage={initialPage}
+      onInitialDashboardReady={onInitialDashboardReady}
     />
   );
 }

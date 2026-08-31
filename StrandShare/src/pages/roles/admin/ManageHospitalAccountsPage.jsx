@@ -256,7 +256,7 @@ function cardClass() {
   return 'rounded-xl border border-gray-200 bg-white p-4 md:p-5';
 }
 
-export default function ManageHospitalAccountsPage() {
+export default function ManageHospitalAccountsPage({ isActivePage = true }) {
   const { theme } = useTheme();
   const tableHeaderTextColor = theme?.primaryTextColor || '#111827';
 
@@ -613,7 +613,7 @@ export default function ManageHospitalAccountsPage() {
   }, [fetchHospitals, loadRegions]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
+    if (!isActivePage || !isSupabaseConfigured || !supabase) {
       return undefined;
     }
 
@@ -624,13 +624,12 @@ export default function ManageHospitalAccountsPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITAL_STAFF_TABLE }, refreshHospitals)
       .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshHospitals)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'user_details' }, refreshHospitals)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, refreshHospitals)
       .subscribe();
 
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [fetchHospitals]);
+  }, [fetchHospitals, isActivePage]);
 
   const openHospitalDetails = (hospital) => {
     setDetailsHospitalId(Number(hospital.Hospital_ID));

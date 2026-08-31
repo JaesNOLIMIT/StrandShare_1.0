@@ -589,39 +589,8 @@ export function ThemeProvider({ children }) {
     loadGlobalTheme();
     fetchGoogleFonts();
 
-    const channel = supabase
-      .channel('public:ui-theme-sync')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: UI_SETTINGS_TABLE,
-        },
-        (payload) => {
-          const nextTheme = payload?.new;
-          if (!nextTheme) {
-            return;
-          }
-          setTheme((prev) => mergeTheme({ ...prev, ...mapSettingsRowToTheme(nextTheme) }));
-        },
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: THEME_PRESETS_TABLE,
-        },
-        () => {
-          void refreshThemePresets();
-        },
-      )
-      .subscribe();
-
     return () => {
       isMounted = false;
-      supabase.removeChannel(channel);
     };
   }, [refreshThemePresets]);
 

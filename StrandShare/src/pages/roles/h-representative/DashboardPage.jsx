@@ -1,11 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CalendarClock,
   ClipboardList,
-  HelpCircle,
-  Loader2,
-  RefreshCw,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -21,6 +18,7 @@ import {
 } from 'recharts';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
 const HOSPITALS_TABLE = 'Hospitals';
@@ -230,7 +228,7 @@ function statusBadgeClass(statusKey) {
   return 'bg-amber-100 text-amber-700';
 }
 
-export default function DashboardPage({ userProfile }) {
+export default function DashboardPage({ userProfile, onInitialDataReady }) {
   const { theme } = useTheme();
 
   const [hospitalId, setHospitalId] = useState(null);
@@ -241,11 +239,15 @@ export default function DashboardPage({ userProfile }) {
   const [schedules, setSchedules] = useState([]);
   const [isResolvingHospital, setIsResolvingHospital] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const initialDataReportedRef = useRef(false);
+  const reportInitialDataReady = useCallback(() => {
+    if (initialDataReportedRef.current) return;
+    initialDataReportedRef.current = true;
+    onInitialDataReady?.();
+  }, [onInitialDataReady]);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [isReleaseWorkflowAvailable, setIsReleaseWorkflowAvailable] = useState(true);
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
-  const [isInfoOpen, setIsInfoOpen] = useState(false);
-  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
 
   const panelBorder = hexToRgba(theme.secondaryColor, 0.24);
 
@@ -255,6 +257,7 @@ export default function DashboardPage({ userProfile }) {
         kind: 'error',
         text: 'Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.',
       });
+      reportInitialDataReady();
       return;
     }
 
@@ -263,6 +266,7 @@ export default function DashboardPage({ userProfile }) {
       setHospitalId(null);
       setHospitalName('');
       setNotice({ kind: 'error', text: 'Unable to resolve your account ID. Please sign in again.' });
+      reportInitialDataReady();
       return;
     }
 
@@ -287,6 +291,7 @@ export default function DashboardPage({ userProfile }) {
           kind: 'error',
           text: 'No H-Representative assignment found for your account. Ask Admin to assign your account first.',
         });
+        reportInitialDataReady();
         return;
       }
 
@@ -301,10 +306,11 @@ export default function DashboardPage({ userProfile }) {
       setHospitalId(null);
       setHospitalName('');
       setNotice({ kind: 'error', text: error.message || 'Unable to resolve your H-Representative assignment.' });
+      reportInitialDataReady();
     } finally {
       setIsResolvingHospital(false);
     }
-  }, [userProfile?.user_id]);
+  }, [reportInitialDataReady, userProfile?.user_id]);
 
   const loadDashboard = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase || !hospitalId) {
@@ -413,8 +419,9 @@ export default function DashboardPage({ userProfile }) {
       setNotice({ kind: 'error', text: error.message || 'Unable to load dashboard data.' });
     } finally {
       setIsLoading(false);
+      reportInitialDataReady();
     }
-  }, [hospitalId]);
+  }, [hospitalId, reportInitialDataReady]);
 
   useEffect(() => {
     resolveAssignedHospital();
@@ -430,29 +437,6 @@ export default function DashboardPage({ userProfile }) {
     }
 
     loadDashboard();
-  }, [hospitalId, loadDashboard]);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !hospitalId) return undefined;
-
-    let refreshTimer = null;
-    const scheduleRefresh = () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => void loadDashboard(), 250);
-    };
-    const channel = supabase
-      .channel(`public:h-representative-dashboard-live:${hospitalId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: PATIENTS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: RELEASE_SCHEDULES_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITAL_STAFF_TABLE }, scheduleRefresh)
-      .subscribe((status) => setIsRealtimeActive(status === 'SUBSCRIBED'));
-
-    return () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      setIsRealtimeActive(false);
-      supabase.removeChannel(channel);
-    };
   }, [hospitalId, loadDashboard]);
 
   const patientById = useMemo(() => {
@@ -682,39 +666,18 @@ export default function DashboardPage({ userProfile }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold sm:inline-flex" style={{ borderColor: hexToRgba(isRealtimeActive ? '#15803d' : theme.secondaryColor, 0.3), color: isRealtimeActive ? '#15803d' : theme.secondaryTextColor }}>
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: isRealtimeActive ? '#15803d' : theme.secondaryColor }} />
-              {isRealtimeActive ? 'Live' : 'Connecting'}
+            <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold sm:inline-flex" style={{ borderColor: hexToRgba(theme.secondaryColor, 0.3), color: theme.secondaryTextColor }}>
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: theme.secondaryColor }} />
+              Cached
             </span>
-            <div className="relative">
-              <button
-                type="button"
-                aria-label="About the H-Representative dashboard"
-                aria-expanded={isInfoOpen}
-                onClick={() => setIsInfoOpen((open) => !open)}
-                className="flex h-9 w-9 items-center justify-center rounded-lg border bg-white transition hover:shadow-sm"
-                style={{ borderColor: panelBorder, color: theme.primaryColor }}
-              >
-                <HelpCircle size={16} />
-              </button>
-              {isInfoOpen && (
-                <div className="absolute right-0 top-11 z-30 w-72 rounded-xl border bg-white p-3 text-left shadow-xl" style={{ borderColor: panelBorder }}>
-                  <p className="text-xs font-bold" style={{ color: theme.primaryTextColor }}>About this dashboard</p>
-                  <p className="mt-1 text-[10px] leading-relaxed" style={{ color: theme.secondaryTextColor }}>
-                    Live data for your assigned hospital only: patients, wig requests, release approvals, and schedules.
-                  </p>
-                </div>
-              )}
-            </div>
-            <button
-              type="button"
-              onClick={loadDashboard}
-              disabled={isResolvingHospital || isLoading || !hospitalId}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-            >
-              {(isResolvingHospital || isLoading) ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-              Refresh
-            </button>
+            <PageHeaderActions
+              onRefresh={loadDashboard}
+              refreshLoading={isResolvingHospital || isLoading}
+              refreshDisabled={!hospitalId}
+              autoRefreshOnChanges={false}
+              helpTitle="About the H-Representative Dashboard"
+              helpContent={<p>Review patients, wig requests, release approvals, and schedules for your assigned hospital.</p>}
+            />
           </div>
         </div>
 

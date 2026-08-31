@@ -684,26 +684,6 @@ export default function GenerateReportsPage({ userProfile }) {
     loadReportData();
   }, [hospitalId, loadReportData]);
 
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !hospitalId) {
-      return undefined;
-    }
-
-    const refreshReport = () => void loadReportData();
-    const channel = supabase
-      .channel(`hospital-reports-live-${hospitalId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, refreshReport)
-      .on('postgres_changes', { event: '*', schema: 'public', table: PATIENTS_TABLE }, refreshReport)
-      .on('postgres_changes', { event: '*', schema: 'public', table: RELEASE_SCHEDULES_TABLE }, refreshReport)
-      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshReport)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_details' }, refreshReport)
-      .subscribe();
-
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [hospitalId, loadReportData]);
-
   const patientById = useMemo(() => {
     return new Map(patients.map((row) => [Number(row.Patient_ID || 0), row]));
   }, [patients]);

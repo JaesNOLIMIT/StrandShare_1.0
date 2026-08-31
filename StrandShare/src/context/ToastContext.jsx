@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle2, Info, X, XCircle } from 'lucide-react';
 import { useTheme } from './ThemeContext';
 
 const ToastContext = createContext(null);
-const MAX_VISIBLE_TOASTS = 5;
+const MAX_VISIBLE_TOASTS = 1;
 
 const TOAST_STYLES = {
   error: {
@@ -49,6 +49,7 @@ export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
   const idRef = useRef(0);
   const timerRefs = useRef(new Map());
+  const recentToastRef = useRef({ signature: '', at: 0, id: null });
 
   const dismissToast = useCallback((toastId) => {
     const timer = timerRefs.current.get(toastId);
@@ -68,7 +69,13 @@ export function ToastProvider({ children }) {
     const type = TOAST_STYLES[options.type || requestedType]
       ? (options.type || requestedType)
       : inferToastType(message);
+    const signature = `${type}:${message}`;
+    const now = Date.now();
+    if (recentToastRef.current.signature === signature && now - recentToastRef.current.at < 1000) {
+      return recentToastRef.current.id;
+    }
     const toastId = ++idRef.current;
+    recentToastRef.current = { signature, at: now, id: toastId };
     const duration = Number(options.duration ?? (type === 'error' ? 6500 : 4500));
     const toast = {
       id: toastId,
@@ -109,7 +116,7 @@ export function ToastProvider({ children }) {
     <ToastContext.Provider value={value}>
       {children}
       <div
-        className="pointer-events-none fixed bottom-4 right-4 z-[10050] flex w-[calc(100vw-2rem)] max-w-md flex-col-reverse gap-2 sm:bottom-5 sm:right-5"
+        className="pointer-events-none fixed bottom-4 right-4 z-[10050] flex w-[calc(100vw-2rem)] max-w-sm flex-col-reverse gap-2 sm:bottom-5 sm:right-5"
         aria-live="polite"
         aria-relevant="additions removals"
       >
@@ -120,14 +127,14 @@ export function ToastProvider({ children }) {
             <div
               key={toast.id}
               role={toast.type === 'error' ? 'alert' : 'status'}
-              className={`pointer-events-auto flex items-start gap-3 rounded-2xl border px-4 py-3.5 shadow-2xl backdrop-blur-sm toast-slide-in ${style.container}`}
+              className={`pointer-events-auto flex items-start gap-2.5 rounded-xl border px-3 py-2.5 shadow-2xl backdrop-blur-sm toast-slide-in ${style.container}`}
             >
-              <div className={`mt-0.5 flex h-8 w-8 flex-none items-center justify-center rounded-full ${style.icon}`}>
-                <Icon size={18} />
+              <div className={`mt-0.5 flex h-7 w-7 flex-none items-center justify-center rounded-full ${style.icon}`}>
+                <Icon size={16} />
               </div>
               <div className="min-w-0 flex-1">
-                <p className={`font-bold leading-5 ${style.titleColor}`}>{toast.title}</p>
-                <p className="mt-0.5 break-words text-sm leading-relaxed text-slate-700">{toast.message}</p>
+                <p className={`text-sm font-bold leading-5 ${style.titleColor}`}>{toast.title}</p>
+                <p className="mt-0.5 break-words text-xs leading-5 text-slate-700">{toast.message}</p>
               </div>
               <button
                 type="button"

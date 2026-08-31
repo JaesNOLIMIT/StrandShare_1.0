@@ -42,6 +42,18 @@ export const HAIR_SUBMISSION_STATUS_ORDER = [
 ];
 
 const UTC8_OFFSET_MINUTES = 8 * 60;
+export const WAYBILL_CODE_LENGTH = 8;
+
+export function normalizeWaybillCodeInput(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, WAYBILL_CODE_LENGTH);
+}
+
+export function isValidWaybillCode(value) {
+  return /^WB[A-Z0-9]{6}$/.test(String(value || '').trim().toUpperCase());
+}
 
 export function getManilaSqlTimestamp(dateValue = new Date()) {
   const date = dateValue instanceof Date ? dateValue : new Date(dateValue);

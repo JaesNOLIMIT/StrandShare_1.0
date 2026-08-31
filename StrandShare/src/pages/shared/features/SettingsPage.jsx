@@ -1,16 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
-import { Check, Eye, EyeOff, Plus, Save, ShieldCheck, Trash2, Upload, X } from 'lucide-react';
+import { Camera, Check, Eye, EyeOff, Mail, MapPin, Phone, Plus, Save, ShieldCheck, Trash2, User, X } from 'lucide-react';
 import { HexColorPicker } from 'react-colorful';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
-import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
+import {
+  PERSON_SUFFIX_OPTIONS,
+  formatPhilippineMobile,
+  isValidPhilippineMobile,
+  normalizePersonSuffix,
+} from '../../../lib/personIdentity';
 
 const TAB_ITEMS = [
   { id: 'profile', label: 'Profile' },
   { id: 'security', label: 'Security' },
-  { id: 'system', label: 'System Preferences' },
-  { id: 'notifications', label: 'Notifications' },
   { id: 'branding', label: 'Branding' },
 ];
 
@@ -26,8 +29,6 @@ const DEFAULT_AVATAR = `data:image/svg+xml;utf8,${encodeURIComponent(
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
 const SETTINGS_PROFILE_CACHE_KEY = 'Donivra_settings_profile_cache';
-const SYSTEM_PREFS_CACHE_KEY = 'Donivra_system_prefs_cache';
-const NOTIFICATION_PREFS_CACHE_KEY = 'Donivra_notification_prefs_cache';
 const BRANDING_BUCKET = 'branding_assests';
 
 function normalizeGenderOption(value) {
@@ -35,19 +36,21 @@ function normalizeGenderOption(value) {
     .toLowerCase()
     .replace(/[_\s]+/g, '-');
 
-  if (['male', 'female', 'non-binary', 'prefer-not-to-say'].includes(normalized)) {
+  if (['male', 'female', 'non-binary', 'other', 'prefer-not-to-say'].includes(normalized)) {
     return normalized;
   }
 
-  return 'male';
+  return '';
 }
 
 function mapGenderForStorage(value) {
   const option = normalizeGenderOption(value);
   if (option === 'prefer-not-to-say') return 'Prefer not to say';
   if (option === 'non-binary') return 'Non-binary';
+  if (option === 'other') return 'Other';
   if (option === 'female') return 'Female';
-  return 'Male';
+  if (option === 'male') return 'Male';
+  return '';
 }
 
 function formatRoleLabel(value) {
@@ -207,24 +210,6 @@ function colorValueToRgb(value) {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-function Toggle({ checked, onChange, activeColor }) {
-  return (
-    <button
-      type="button"
-      onClick={onChange}
-      className="relative h-6 w-11 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-slate-300"
-      style={{ backgroundColor: checked ? activeColor : '#cbd5e1' }}
-      aria-pressed={checked}
-    >
-      <span
-        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
-          checked ? 'translate-x-5' : 'translate-x-0'
-        }`}
-      />
-    </button>
-  );
-}
-
 function ColorPickerPanel({ color, onColorChange, onEnter }) {
   return (
     <div className="brand-picker-dropdown relative w-[272px] rounded-2xl border border-slate-300 bg-white p-3 shadow-[0_20px_40px_rgba(15,23,42,0.20)]">
@@ -330,7 +315,16 @@ export default function SettingsPage() {
       middleName: storedProfile?.middle_name || storedProfile?.middleName || '',
       lastName: storedProfile?.last_name || storedProfile?.lastName || '',
       suffix: storedProfile?.suffix || '',
-      gender: normalizeGenderOption(storedProfile?.gender || 'male'),
+      gender: normalizeGenderOption(storedProfile?.gender || ''),
+      birthdate: storedProfile?.birthdate || '',
+      contactNumber: storedProfile?.contact_number || storedProfile?.contactNumber || '',
+      street: storedProfile?.street || '',
+      barangay: storedProfile?.barangay || '',
+      city: storedProfile?.city || '',
+      province: storedProfile?.province || '',
+      region: storedProfile?.region || '',
+      country: storedProfile?.country || 'Philippines',
+      joinedDate: storedProfile?.joined_date || storedProfile?.joinedDate || '',
       email: storedProfile?.email || '',
       role: storedProfile?.role || '',
       avatar: resolvedAvatar || '',
@@ -424,35 +418,6 @@ export default function SettingsPage() {
     passwordRuleChecks.number &&
     passwordRuleChecks.special;
 
-  const [systemPreferences, setSystemPreferences] = useState(() => {
-    try {
-      const raw = localStorage.getItem(SYSTEM_PREFS_CACHE_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch {
-      // ignore cache parse errors
-    }
-
-    return {
-      language: 'en',
-      timezone: 'Asia/Manila',
-      maintenanceMode: false,
-    };
-  });
-
-  const [notifications, setNotifications] = useState(() => {
-    try {
-      const raw = localStorage.getItem(NOTIFICATION_PREFS_CACHE_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch {
-      // ignore cache parse errors
-    }
-
-    return {
-      email: true,
-      push: false,
-    };
-  });
-
   useEffect(() => {
     try {
       localStorage.setItem(SETTINGS_PROFILE_CACHE_KEY, JSON.stringify(profile));
@@ -460,22 +425,6 @@ export default function SettingsPage() {
       // ignore cache write errors
     }
   }, [profile]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(SYSTEM_PREFS_CACHE_KEY, JSON.stringify(systemPreferences));
-    } catch {
-      // ignore cache write errors
-    }
-  }, [systemPreferences]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(NOTIFICATION_PREFS_CACHE_KEY, JSON.stringify(notifications));
-    } catch {
-      // ignore cache write errors
-    }
-  }, [notifications]);
 
   const [tempColors, setTempColors] = useState({
     primary: theme.primaryColor,
@@ -690,6 +639,7 @@ export default function SettingsPage() {
             detail: {
               authUserId: merged.auth_user_id,
               profile: merged,
+              source: 'profile-update',
             },
           }),
         );
@@ -702,7 +652,7 @@ export default function SettingsPage() {
   const hydrateProfileFromDb = async (nextAuthUserId, nextEmail) => {
     const { data: userRow, error: userError } = await supabase
       .from('users')
-      .select('user_id, role, email')
+      .select('user_id, role, email, access_start, access_end, is_active, created_at, updated_at')
       .eq('auth_user_id', nextAuthUserId)
       .maybeSingle();
 
@@ -727,7 +677,7 @@ export default function SettingsPage() {
     if (resolvedUserId) {
       const { data: detailsRow, error: detailsError } = await supabase
         .from('user_details')
-        .select('first_name, middle_name, last_name, suffix, gender, photo_path')
+        .select('first_name, middle_name, last_name, suffix, birthdate, gender, contact_number, street, barangay, city, province, region, country, joined_date, photo_path')
         .eq('user_id', resolvedUserId)
         .maybeSingle();
 
@@ -748,8 +698,17 @@ export default function SettingsPage() {
           firstName: detailsRow.first_name || prev.firstName,
           middleName: detailsRow.middle_name || '',
           lastName: detailsRow.last_name || prev.lastName,
-          suffix: detailsRow.suffix || '',
+          suffix: normalizePersonSuffix(detailsRow.suffix),
+          birthdate: detailsRow.birthdate || '',
           gender: normalizeGenderOption(detailsRow.gender || prev.gender),
+          contactNumber: detailsRow.contact_number || '',
+          street: detailsRow.street || '',
+          barangay: detailsRow.barangay || '',
+          city: detailsRow.city || '',
+          province: detailsRow.province || '',
+          region: detailsRow.region || '',
+          country: detailsRow.country || 'Philippines',
+          joinedDate: detailsRow.joined_date || '',
           avatar: resolveAvatarUrl(resolvedPhotoPath) || prev.avatar,
           role: nextRole,
           email: nextResolvedEmail,
@@ -762,7 +721,16 @@ export default function SettingsPage() {
       middle_name: resolvedDetails?.middle_name || profile.middleName,
       last_name: resolvedDetails?.last_name || profile.lastName,
       suffix: resolvedDetails?.suffix || profile.suffix,
+      birthdate: resolvedDetails?.birthdate || profile.birthdate,
       gender: resolvedDetails?.gender || mapGenderForStorage(profile.gender),
+      contact_number: resolvedDetails?.contact_number || profile.contactNumber,
+      street: resolvedDetails?.street || profile.street,
+      barangay: resolvedDetails?.barangay || profile.barangay,
+      city: resolvedDetails?.city || profile.city,
+      province: resolvedDetails?.province || profile.province,
+      region: resolvedDetails?.region || profile.region,
+      country: resolvedDetails?.country || profile.country,
+      joined_date: resolvedDetails?.joined_date || profile.joinedDate,
       photo_path: resolvedDetails?.photo_path || avatarStoragePath || null,
       role: nextRole,
       email: nextResolvedEmail,
@@ -838,24 +806,6 @@ export default function SettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useRealtimeRefresh({
-    channelName: `account-settings-live-${authUserId || 'pending'}`,
-    // Account/profile tables intentionally stay outside the Realtime publication;
-    // their audited mutations trigger this safe refresh channel instead.
-    tables: ['audit_logs'],
-    enabled: Boolean(authUserId),
-    onChange: async () => {
-      try {
-        await hydrateProfileFromDb(authUserId, authEmail);
-      } catch {
-        // Keep the last usable cached profile when a background sync fails.
-      }
-      if (userId) {
-        void loadSecurityActivity(userId);
-      }
-    },
-  });
-
   const handleProfileImage = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -896,7 +846,15 @@ export default function SettingsPage() {
         middle_name: profile.middleName,
         last_name: profile.lastName,
         suffix: profile.suffix,
+        birthdate: profile.birthdate,
         gender: mapGenderForStorage(profile.gender),
+        contact_number: profile.contactNumber,
+        street: profile.street,
+        barangay: profile.barangay,
+        city: profile.city,
+        province: profile.province,
+        region: profile.region,
+        country: profile.country,
         photo_path: filePath,
         email: authEmail || profile.email,
         role: profile.role,
@@ -1013,11 +971,37 @@ export default function SettingsPage() {
     }
 
     try {
+      const normalizedEmail = String(profile.email || authEmail || '').trim().toLowerCase();
+      const normalizedContactNumber = formatPhilippineMobile(profile.contactNumber);
+      if (!String(profile.firstName || '').trim() || !String(profile.lastName || '').trim()) {
+        throw new Error('First name and last name are required.');
+      }
+      if (!profile.birthdate) {
+        throw new Error('Birthdate is required.');
+      }
+      if (new Date(profile.birthdate) > new Date()) {
+        throw new Error('Birthdate cannot be in the future.');
+      }
+      if (!profile.gender) {
+        throw new Error('Gender is required.');
+      }
+      if (profile.contactNumber && !isValidPhilippineMobile(normalizedContactNumber)) {
+        throw new Error('Contact number must use +63 912 345 6789 format.');
+      }
+      if (!normalizedEmail) {
+        throw new Error('Email address is required.');
+      }
+
       const ensuredUserId = await ensureUserRow();
+
+      if (normalizedEmail !== String(authEmail || '').trim().toLowerCase()) {
+        const { error: authEmailError } = await supabase.auth.updateUser({ email: normalizedEmail });
+        if (authEmailError) throw authEmailError;
+      }
 
       const { error: userUpdateError } = await supabase
         .from('users')
-        .update({ email: profile.email || authEmail })
+        .update({ email: normalizedEmail })
         .eq('user_id', ensuredUserId);
 
       if (userUpdateError) {
@@ -1039,12 +1023,21 @@ export default function SettingsPage() {
 
       const detailsPayload = {
         user_id: ensuredUserId,
-        first_name: profile.firstName || null,
-        middle_name: profile.middleName || null,
-        last_name: profile.lastName || null,
-        suffix: profile.suffix || null,
+        first_name: String(profile.firstName || '').trim(),
+        middle_name: String(profile.middleName || '').trim() || null,
+        last_name: String(profile.lastName || '').trim(),
+        suffix: normalizePersonSuffix(profile.suffix) || null,
+        birthdate: profile.birthdate,
         gender: mapGenderForStorage(profile.gender),
+        contact_number: normalizedContactNumber || null,
+        street: String(profile.street || '').trim() || null,
+        barangay: String(profile.barangay || '').trim() || null,
+        city: String(profile.city || '').trim() || null,
+        province: String(profile.province || '').trim() || null,
+        region: String(profile.region || '').trim() || null,
+        country: String(profile.country || '').trim() || 'Philippines',
         photo_path: safePhotoPath,
+        updated_at: new Date().toISOString(),
       };
 
       if (existingDetails?.user_details_id) {
@@ -1066,18 +1059,35 @@ export default function SettingsPage() {
 
       setProfile((prev) => ({
         ...prev,
+        email: normalizedEmail,
+        contactNumber: normalizedContactNumber,
+        suffix: normalizePersonSuffix(prev.suffix),
         gender: normalizeGenderOption(prev.gender),
       }));
 
       pushUserProfileToShell({
-        email: authEmail || profile.email,
+        email: normalizedEmail,
         role: profile.role,
-        first_name: profile.firstName,
-        last_name: profile.lastName,
+        first_name: String(profile.firstName || '').trim(),
+        middle_name: String(profile.middleName || '').trim(),
+        last_name: String(profile.lastName || '').trim(),
+        suffix: normalizePersonSuffix(profile.suffix),
+        birthdate: profile.birthdate,
+        gender: mapGenderForStorage(profile.gender),
+        contact_number: normalizedContactNumber,
+        street: String(profile.street || '').trim(),
+        barangay: String(profile.barangay || '').trim(),
+        city: String(profile.city || '').trim(),
+        province: String(profile.province || '').trim(),
+        region: String(profile.region || '').trim(),
+        country: String(profile.country || '').trim() || 'Philippines',
+        joined_date: profile.joinedDate,
         photo_path: safePhotoPath,
       });
 
-      showToast('Profile settings updated in real time.');
+      showToast(normalizedEmail !== String(authEmail || '').trim().toLowerCase()
+        ? 'Profile saved. Check your new email address to confirm the change.'
+        : 'Profile saved successfully.');
     } catch (saveError) {
       showToast(saveError?.message || 'Failed to save profile settings.');
     }
@@ -1482,16 +1492,6 @@ export default function SettingsPage() {
       return;
     }
 
-    if (activeTab === 'system') {
-      showToast('System preferences saved.');
-      return;
-    }
-
-    if (activeTab === 'notifications') {
-      showToast('Notification preferences saved.');
-      return;
-    }
-
     showToast('Changes saved.');
   };
 
@@ -1551,21 +1551,6 @@ export default function SettingsPage() {
       setBrandingAssetPaths({
         logoImagePath: theme.logoImagePath || '',
         loginBackgroundImagePath: theme.loginBackgroundImagePath || '',
-      });
-    }
-
-    if (activeTab === 'system') {
-      setSystemPreferences({
-        language: 'en',
-        timezone: 'Asia/Manila',
-        maintenanceMode: false,
-      });
-    }
-
-    if (activeTab === 'notifications') {
-      setNotifications({
-        email: true,
-        push: false,
       });
     }
 
@@ -1666,15 +1651,13 @@ export default function SettingsPage() {
 
   return (
     <div className="w-full">
-      <div className="w-full rounded-xl border border-slate-200 bg-white p-6 md:p-8">
-        <div className="mb-8">
-          <div>
-            <h1 className="role-page-title text-slate-900">System Settings</h1>
-            <p className="text-slate-500 mt-1">Configure global platform parameters and visual identity.</p>
-          </div>
+      <div className="w-full">
+        <div className="mb-5">
+          <h1 className="role-page-title text-slate-900">Settings</h1>
+          <p className="mt-1 text-sm text-slate-500">Manage your profile and account security{canManageBranding ? ', or update the platform branding.' : '.'}</p>
         </div>
 
-        <div className="mb-6 border-b border-slate-200 overflow-x-auto tab-strip-scroll">
+        <div className="mb-5 overflow-x-auto border-b border-slate-200 tab-strip-scroll">
           <nav className="flex gap-8 min-w-max pr-6">
             {visibleTabs.map((tab) => (
               <button
@@ -1691,107 +1674,73 @@ export default function SettingsPage() {
         </div>
 
         {activeTab === 'profile' && (
-          <section className="rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200">
-              <h3 className="text-xl font-bold text-slate-900">Profile Settings</h3>
-            </div>
-
-            <div className="p-5 grid grid-cols-12 gap-4">
-              <div className="col-span-12 md:col-span-3 flex items-center justify-center py-2">
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+            <aside className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-4 2xl:col-span-3">
+              <div className="flex flex-col items-center text-center">
                 <div className="relative">
                   <img
                     src={profile.avatar || (isProfileHydrated ? DEFAULT_AVATAR : 'data:image/gif;base64,R0lGODlhAQABAAAAACw=')}
                     alt="Profile"
-                    className="w-28 h-28 rounded-full border-2 border-slate-200 object-cover shadow-sm"
+                    className="h-32 w-32 rounded-2xl border border-slate-200 object-cover shadow-sm"
                   />
                   <label
-                    className="absolute bottom-1 right-1 w-8 h-8 rounded-full text-white flex items-center justify-center cursor-pointer shadow"
+                    className="absolute -bottom-2 -right-2 flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border-4 border-white text-white shadow-lg"
                     style={{ backgroundColor: theme.primaryColor }}
+                    title="Upload profile picture"
                   >
-                    <Upload size={14} />
+                    <Camera size={16} />
                     <input type="file" accept="image/*" className="hidden" onChange={handleProfileImage} />
                   </label>
                 </div>
+                <h2 className="mt-5 text-xl font-bold text-slate-900">
+                  {[profile.firstName, profile.middleName, profile.lastName, profile.suffix].filter(Boolean).join(' ') || 'Your profile'}
+                </h2>
+                <p className="mt-1 text-sm font-semibold" style={{ color: theme.primaryColor }}>{formatRoleLabel(profile.role)}</p>
+                <p className="mt-1 break-all text-sm text-slate-500">{profile.email || 'No email address'}</p>
               </div>
+              <div className="mt-6 space-y-3 border-t border-slate-200 pt-5 text-sm">
+                <div className="flex items-center gap-3 text-slate-600"><User size={16} /><span>{formatRoleLabel(profile.role)}</span></div>
+                <div className="flex items-center gap-3 text-slate-600"><Mail size={16} /><span className="min-w-0 truncate">{profile.email || 'Not provided'}</span></div>
+                <div className="flex items-center gap-3 text-slate-600"><Phone size={16} /><span>{profile.contactNumber || 'Not provided'}</span></div>
+                <div className="flex items-start gap-3 text-slate-600"><MapPin size={16} className="mt-0.5 flex-none" /><span>{[profile.barangay, profile.city, profile.province].filter(Boolean).join(', ') || 'Address not provided'}</span></div>
+              </div>
+              <p className="mt-5 rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500">Your role and joined date are managed by the system and cannot be changed here.</p>
+            </aside>
 
-              <div className="col-span-12 md:col-span-9 grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">First Name</label>
-                  <input
-                    value={profile.firstName}
-                    onChange={(e) => setProfile({ ...profile, firstName: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  />
+            <div className="space-y-5 xl:col-span-8 2xl:col-span-9">
+              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+                <div className="mb-5"><h3 className="text-lg font-bold text-slate-900">Personal information</h3><p className="mt-1 text-sm text-slate-500">Keep your identity details accurate and complete.</p></div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <label className="text-sm font-semibold text-slate-700">First name *<input autoComplete="given-name" value={profile.firstName} onChange={(e) => setProfile({ ...profile, firstName: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Middle name<input autoComplete="additional-name" value={profile.middleName} onChange={(e) => setProfile({ ...profile, middleName: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Last name *<input autoComplete="family-name" value={profile.lastName} onChange={(e) => setProfile({ ...profile, lastName: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Suffix<select autoComplete="honorific-suffix" value={profile.suffix} onChange={(e) => setProfile({ ...profile, suffix: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900">{PERSON_SUFFIX_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}</select></label>
+                  <label className="text-sm font-semibold text-slate-700">Birthdate *<input type="date" autoComplete="bday" max={new Date().toISOString().slice(0, 10)} value={profile.birthdate} onChange={(e) => setProfile({ ...profile, birthdate: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Gender *<select autoComplete="sex" value={profile.gender} onChange={(e) => setProfile({ ...profile, gender: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900"><option value="">Select gender</option><option value="male">Male</option><option value="female">Female</option><option value="non-binary">Non-binary</option><option value="other">Other</option><option value="prefer-not-to-say">Prefer not to say</option></select></label>
+                  <label className="text-sm font-semibold text-slate-700 md:col-span-2">Mobile number<input type="tel" inputMode="numeric" autoComplete="tel" maxLength={16} placeholder="+63 912 345 6789" value={profile.contactNumber} onChange={(e) => setProfile({ ...profile, contactNumber: formatPhilippineMobile(e.target.value) })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
                 </div>
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Middle Name</label>
-                  <input
-                    value={profile.middleName}
-                    onChange={(e) => setProfile({ ...profile, middleName: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  />
+              </section>
+
+              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+                <div className="mb-5"><h3 className="text-lg font-bold text-slate-900">Account and address</h3><p className="mt-1 text-sm text-slate-500">Email changes may require confirmation from your inbox.</p></div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  <label className="text-sm font-semibold text-slate-700 md:col-span-2">Email address *<input type="email" autoComplete="email" value={profile.email} onChange={(e) => setProfile({ ...profile, email: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Joined date<input type="date" value={profile.joinedDate} readOnly className="mt-1.5 w-full cursor-not-allowed rounded-lg border border-slate-200 bg-slate-100 px-3 py-2.5 font-normal text-slate-500" /></label>
+                  <label className="text-sm font-semibold text-slate-700 xl:col-span-2">Street<input autoComplete="street-address" value={profile.street} onChange={(e) => setProfile({ ...profile, street: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Barangay<input value={profile.barangay} onChange={(e) => setProfile({ ...profile, barangay: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">City / municipality<input autoComplete="address-level2" value={profile.city} onChange={(e) => setProfile({ ...profile, city: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Province<input autoComplete="address-level1" value={profile.province} onChange={(e) => setProfile({ ...profile, province: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Region<input value={profile.region} onChange={(e) => setProfile({ ...profile, region: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Country<input autoComplete="country-name" value={profile.country} onChange={(e) => setProfile({ ...profile, country: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
                 </div>
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Last Name</label>
-                  <input
-                    value={profile.lastName}
-                    onChange={(e) => setProfile({ ...profile, lastName: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Suffix</label>
-                  <input
-                    value={profile.suffix}
-                    onChange={(e) => setProfile({ ...profile, suffix: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Gender</label>
-                  <select
-                    value={profile.gender}
-                    onChange={(e) => setProfile({ ...profile, gender: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  >
-                    <option value="male">Male</option>
-                    <option value="female">Female</option>
-                    <option value="non-binary">Non-binary</option>
-                    <option value="prefer-not-to-say">Prefer not to say</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Role</label>
-                  <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold text-slate-700">
-                    {formatRoleLabel(profile.role)}
-                  </div>
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Email Address</label>
-                  <input
-                    value={profile.email}
-                    onChange={(e) => setProfile({ ...profile, email: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  />
-                </div>
+              </section>
+
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <button type="button" onClick={handleDiscard} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Discard changes</button>
+                <button type="button" onClick={handleSave} className="inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold text-white" style={{ backgroundColor: theme.primaryColor }}><Save size={15} />Save profile</button>
               </div>
             </div>
-
-            <div className="px-5 py-4 border-t border-slate-200 flex items-center justify-end gap-4">
-              <button type="button" onClick={handleDiscard} className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-500">
-                Discard Changes
-              </button>
-              <button
-                type="button"
-                onClick={handleSave}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider text-white"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                <Save size={14} />
-                Save All Changes
-              </button>
-            </div>
-          </section>
+          </div>
         )}
 
         {activeTab === 'security' && (
@@ -2045,121 +1994,6 @@ export default function SettingsPage() {
             </section>
 
           </div>
-        )}
-
-        {activeTab === 'system' && (
-          <section className="rounded-xl border border-slate-200 p-5">
-            <h3 className="text-xl font-bold text-slate-900 mb-4">System Preferences</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Language</label>
-                <select
-                  value={systemPreferences.language}
-                  onChange={(e) => setSystemPreferences({ ...systemPreferences, language: e.target.value })}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                >
-                  <option value="en">English</option>
-                  <option value="es">Spanish</option>
-                  <option value="fr">French</option>
-                  <option value="de">German</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Timezone</label>
-                <select
-                  value={systemPreferences.timezone}
-                  onChange={(e) => setSystemPreferences({ ...systemPreferences, timezone: e.target.value })}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                >
-                  <option value="Asia/Manila">Asia/Manila</option>
-                  <option value="UTC">UTC</option>
-                  <option value="America/New_York">America/New_York</option>
-                  <option value="Europe/London">Europe/London</option>
-                </select>
-              </div>
-              <div className="md:col-span-2 mt-1">
-                <div className="flex items-center justify-between rounded-lg border border-slate-200 p-4">
-                  <div>
-                    <p className="font-semibold text-slate-900">Maintenance Mode</p>
-                    <p className="text-sm text-slate-500">
-                      Temporarily disable user access while admins perform updates.
-                    </p>
-                  </div>
-                  <Toggle
-                    checked={systemPreferences.maintenanceMode}
-                    onChange={() =>
-                      setSystemPreferences({
-                        ...systemPreferences,
-                        maintenanceMode: !systemPreferences.maintenanceMode,
-                      })
-                    }
-                    activeColor={theme.primaryColor}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-3 border-t border-slate-200 pt-4">
-              <button type="button" onClick={handleDiscard} className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-500">
-                Discard System Changes
-              </button>
-              <button
-                type="button"
-                onClick={handleSave}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider text-white"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                <Save size={14} />
-                Save System Changes
-              </button>
-            </div>
-          </section>
-        )}
-
-        {activeTab === 'notifications' && (
-          <section className="rounded-xl border border-slate-200 p-5">
-            <h3 className="text-xl font-bold text-slate-900 mb-4">Notifications</h3>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between rounded-lg border border-slate-200 p-3">
-                <div>
-                  <p className="font-semibold text-slate-900">Email Notifications</p>
-                  <p className="text-sm text-slate-500">Receive updates through email.</p>
-                </div>
-                <Toggle
-                  checked={notifications.email}
-                  onChange={() => setNotifications({ ...notifications, email: !notifications.email })}
-                  activeColor={theme.primaryColor}
-                />
-              </div>
-
-              <div className="flex items-center justify-between rounded-lg border border-slate-200 p-3">
-                <div>
-                  <p className="font-semibold text-slate-900">Push Notifications</p>
-                  <p className="text-sm text-slate-500">Receive browser and mobile push notifications.</p>
-                </div>
-                <Toggle
-                  checked={notifications.push}
-                  onChange={() => setNotifications({ ...notifications, push: !notifications.push })}
-                  activeColor={theme.primaryColor}
-                />
-              </div>
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-3 border-t border-slate-200 pt-4">
-              <button type="button" onClick={handleDiscard} className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-500">
-                Discard Notification Changes
-              </button>
-              <button
-                type="button"
-                onClick={handleSave}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider text-white"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                <Save size={14} />
-                Save Notification Changes
-              </button>
-            </div>
-          </section>
         )}
 
         {activeTab === 'branding' && (

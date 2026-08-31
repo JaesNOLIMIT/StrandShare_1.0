@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy } from 'react';
 import {
   BarChart3,
   Boxes,
@@ -11,15 +11,16 @@ import {
   Settings,
 } from 'lucide-react';
 import RoleDashboardShell from '../../shared/RoleDashboardShell';
-import DashboardPage from './DashboardPage';
-import EventApplicationIntakePage from './EventApplicationIntakePage';
-import AssignedEventOperationsPage from './AssignedEventOperationsPage';
-import UpdateWigRequestStatusPage from './UpdateWigRequestStatusPage';
-import SettingsPage from './SettingsPage';
-import ManageRequirementsPage from '../../shared/features/ManageRequirementsPage';
-import RoleReportsPage from '../../shared/features/RoleReportsPage';
-import SalonSchedulePage from './SalonSchedulePage';
-import CutHairInventoryPage from '../../shared/features/CutHairInventoryPage';
+
+const DashboardPage = lazy(() => import('./DashboardPage'));
+const EventApplicationIntakePage = lazy(() => import('./EventApplicationIntakePage'));
+const AssignedEventOperationsPage = lazy(() => import('./AssignedEventOperationsPage'));
+const UpdateWigRequestStatusPage = lazy(() => import('./UpdateWigRequestStatusPage'));
+const SettingsPage = lazy(() => import('./SettingsPage'));
+const ManageRequirementsPage = lazy(() => import('../../shared/features/ManageRequirementsPage'));
+const RoleReportsPage = lazy(() => import('../../shared/features/RoleReportsPage'));
+const SalonSchedulePage = lazy(() => import('./SalonSchedulePage'));
+const CutHairInventoryPage = lazy(() => import('../../shared/features/CutHairInventoryPage'));
 
 const staffNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -45,7 +46,7 @@ const staffPageComponents = {
   settings: SettingsPage,
 };
 
-export default function StaffRole({ onSignOut, userProfile }) {
+export default function StaffRole({ onSignOut, userProfile, onInitialDashboardReady }) {
   return (
     <RoleDashboardShell
       onSignOut={onSignOut}
@@ -53,6 +54,7 @@ export default function StaffRole({ onSignOut, userProfile }) {
       navItems={staffNavItems}
       pageComponents={staffPageComponents}
       defaultPage="dashboard"
+      onInitialDashboardReady={onInitialDashboardReady}
     />
   );
 }
