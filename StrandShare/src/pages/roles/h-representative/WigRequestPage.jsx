@@ -4,6 +4,7 @@ import { jsPDF } from 'jspdf';
 import { AlertTriangle, CheckCircle2, FileText, Info, Loader2, Search, X } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 import ReleaseDateApprovalPage from './ReleaseDateApprovalPage';
 
 const PATIENTS_TABLE = 'Patients';
@@ -2261,17 +2262,53 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     setSelectedSubmittedRequest(null);
   };
 
+  const handleRefreshPage = async () => {
+    setNotice({ kind: '', text: '' });
+
+    if (!hospitalId) {
+      await resolveAssignedHospital();
+      return;
+    }
+
+    if (activeTab === 'submitted') {
+      await fetchSubmittedRequests();
+      return;
+    }
+
+    await Promise.all([
+      fetchPatients(),
+      loadWigSpecifications(),
+    ]);
+  };
+
+  const isRefreshingPage = isResolvingHospital
+    || (activeTab === 'submitted'
+      ? isLoadingSubmitted
+      : isLoadingPatients || isLoadingWigSpecifications);
+
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">H-Representative Workflow</p>
-        <h1 className="role-page-title mt-1 text-2xl font-extrabold tracking-tight text-slate-900 md:text-3xl">Wig Requests Workspace</h1>
-        <p className="mt-1 text-sm text-slate-600">
-          Submit visual wig preferences, track stock and production, and complete release approvals in one place.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="role-page-title text-2xl font-bold text-slate-900">Wig Requests</h1>
+          <p className="text-sm text-slate-600">Submit wig preferences, monitor production, and complete release approvals.</p>
+          <p className="mt-1 text-xs text-emerald-700">Related request updates appear automatically while this page is open.</p>
+        </div>
+        <PageHeaderActions
+          onRefresh={handleRefreshPage}
+          refreshLoading={isRefreshingPage}
+          refreshDisabled={isSubmitting || isUploadingPreview}
+          helpTitle="About Wig Requests"
+          helpContent={(
+            <>
+              <p><strong>Request Wig</strong> lets you select a patient, confirm their safety information, and submit their preferred wig.</p>
+              <p><strong>Submitted Requests</strong> shows the latest review, production, release, and rescheduling status for your hospital.</p>
+            </>
+          )}
+        />
       </div>
 
-      <div className="border-b border-slate-200 bg-white">
+      <div className="border-b border-slate-200">
         <nav className="-mb-px flex flex-wrap gap-6 px-1" aria-label="Wig request sections">
         {tabs.map((tab) => (
           <button

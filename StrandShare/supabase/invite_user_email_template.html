@@ -78,7 +78,7 @@
                   {{ end }}
                 {{ else if eq .Data.account_type "internal_web_user" }}
                 <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.25;color:#ffffff;font-weight:800;">
-                  Staff/Specialist Account Created
+                  {{ .Data.role_label }} Account Created
                 </h1>
                 <p style="margin:0 0 16px 0;font-size:14px;line-height:1.7;color:#c9c9c9;">
                   Your Donivra web account is now active. Use the temporary login credentials below, then change your password after your first login.
@@ -183,9 +183,11 @@
                 </div>
                 {{ end }}
 
+                {{ if or (eq .Data.account_type "patient") (eq .Data.account_type "partner_hospital") (eq .Data.account_type "internal_web_user") }}
                 <p style="margin:0 0 6px 0;font-size:12px;line-height:1.7;color:#9ca3af;">
-                  This template supports patient, internal web account, event application, and partner hospital communications through invite_user metadata.
+                  This message contains private account information intended only for {{ .Data.recipient_email }}. Do not forward or share the temporary credentials.
                 </p>
+                {{ end }}
                 <p style="margin:0;font-size:12px;line-height:1.7;color:#9ca3af;">
                   If you did not expect this email, you may safely ignore it.
                 </p>

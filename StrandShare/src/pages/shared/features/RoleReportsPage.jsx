@@ -13,6 +13,7 @@ import {
   Package,
   RefreshCw,
   Search,
+  ScanLine,
   Send,
   Users,
   XCircle,
@@ -29,6 +30,8 @@ import {
   YAxis,
   AreaChart,
   Area,
+  PieChart,
+  Pie,
 } from 'recharts';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
@@ -161,6 +164,7 @@ function labelFromKey(key) {
   if (key === 'ended') return 'Ended';
   if (key === 'cut') return 'Cut';
   if (key === 'bundling') return 'Bundling';
+  if (key === 'wiginproduction') return 'Wig In Production';
   if (key === 'wigcreated') return 'Wig Created';
   if (key === 'rejectedcut') return 'Rejected Cut';
   if (key === 'pendingadminapproval') return 'Pending Admin Approval';
@@ -195,6 +199,53 @@ function approvedLikeStatus(statusKey) {
 function rejectedLikeStatus(statusKey) {
   if (!statusKey) return false;
   return statusKey.includes('rejected') || statusKey.includes('cancelled');
+}
+
+function calculateAiReviewAccuracy(screening, staffValues) {
+  const ai = screening && typeof screening === 'object' ? screening : {};
+  const staff = staffValues && typeof staffValues === 'object' ? staffValues : {};
+  const comparisons = [
+    {
+      key: 'length',
+      ai: ai.Estimated_Length,
+      staff: staff.length,
+      matches: (aiValue, staffValue) => staffValue != null
+        && String(staffValue).trim() !== ''
+        && Number(aiValue) === Number(staffValue),
+    },
+    { key: 'color', ai: ai.Detected_Color, staff: staff.color },
+    { key: 'texture', ai: ai.Detected_Texture, staff: staff.texture },
+    { key: 'density', ai: ai.Detected_Density, staff: staff.density },
+    { key: 'condition', ai: ai.Detected_Condition, staff: staff.condition },
+  ];
+
+  let comparable = 0;
+  let matched = 0;
+  const changed = [];
+
+  comparisons.forEach((field) => {
+    if (field.ai == null || String(field.ai).trim() === '') return;
+    comparable += 1;
+    const isMatch = typeof field.matches === 'function'
+      ? field.matches(field.ai, field.staff)
+      : normalizeKey(field.ai) === normalizeKey(field.staff);
+    if (isMatch) matched += 1;
+    else changed.push(field.key);
+  });
+
+  const aiPercent = comparable > 0 ? (matched / comparable) * 100 : 0;
+  return {
+    comparable,
+    matched,
+    changed,
+    aiPercent,
+    humanPercent: comparable > 0 ? 100 - aiPercent : 0,
+  };
+}
+
+function formatPercentage(value) {
+  const numeric = Number(value || 0);
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1);
 }
 
 // Every chart / KPI color pulls from UI_Settings (theme) so the palette stays
@@ -351,7 +402,7 @@ function templateCatalogForRole(roleKey, theme) {
       name: 'AI Hair Scan Accuracy',
       shortName: 'AI Accuracy',
       description: 'AI predictions compared with final staff observations and corrections.',
-      icon: AlertTriangle,
+      icon: ScanLine,
       accent: secondary,
       page: 'reports',
       exportPrefix: 'ai_hair_accuracy',
@@ -359,11 +410,10 @@ function templateCatalogForRole(roleKey, theme) {
         { key: 'recordId', label: 'Comparison ID' },
         { key: 'submissionId', label: 'Submission' },
         { key: 'eventName', label: 'Event' },
-        { key: 'sourceLabel', label: 'Scan Source' },
         { key: 'statusLabel', label: 'Final Decision' },
-        { key: 'accuracyLabel', label: 'AI Accuracy' },
-        { key: 'criticalChanges', label: 'Critical Corrections' },
-        { key: 'minorChanges', label: 'Minor Corrections' },
+        { key: 'accuracyLabel', label: 'AI Correct' },
+        { key: 'humanChangeLabel', label: 'Human Changes' },
+        { key: 'aiComments', label: 'AI Comments' },
         { key: 'createdAtLabel', label: 'Reviewed At' },
       ],
     },
@@ -447,6 +497,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     () => templates.find((item) => item.id === selectedTemplateId) || templates[0] || null,
     [templates, selectedTemplateId],
   );
+  const isAiAccuracyReport = selectedTemplate?.id === 'ai_hair_accuracy';
 
   const resolveStaffUserId = useCallback(async () => {
     if (staffUserId) return staffUserId;
@@ -666,45 +717,35 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           };
         });
       } else if (selectedTemplate.id === 'ai_hair_accuracy') {
-        const result = await supabase
-          .from('Hair_AI_Review_Comparisons')
-          .select('Comparison_ID,Submission_ID,Event_Request_ID,Is_AI_Source,Changed_Fields,Critical_Changed_Fields,Minor_Changed_Fields,AI_Accuracy_Percent,Final_Decision,Reviewed_At,Updated_At')
-          .order('Reviewed_At', { ascending: false, nullsFirst: false })
-          .limit(3000);
+        const result = await supabase.rpc('get_hair_ai_accuracy_report');
         if (result.error) throw result.error;
-        const comparisonRows = result.data || [];
-        const eventIds = [...new Set(comparisonRows.map((row) => Number(row.Event_Request_ID || 0)).filter(Boolean))];
-        let eventsById = new Map();
-        if (eventIds.length) {
-          const eventResult = await supabase
-            .from(EVENT_REQUESTS_TABLE)
-            .select('Event_Request_ID,Event_Name')
-            .in('Event_Request_ID', eventIds);
-          if (eventResult.error) throw eventResult.error;
-          eventsById = new Map((eventResult.data || []).map((row) => [Number(row.Event_Request_ID), row]));
-        }
-        mappedRows = comparisonRows.map((row) => {
-          const statusKey = normalizeKey(row.Final_Decision || 'Pending');
-          const eventName = eventsById.get(Number(row.Event_Request_ID))?.Event_Name || `Event #${row.Event_Request_ID || 'N/A'}`;
-          const critical = Array.isArray(row.Critical_Changed_Fields) ? row.Critical_Changed_Fields : [];
-          const minor = Array.isArray(row.Minor_Changed_Fields) ? row.Minor_Changed_Fields : [];
+        mappedRows = (result.data || []).map((row) => {
+          const statusKey = normalizeKey(row.final_decision || 'Pending');
+          const screening = row.ai_screening || {};
+          const comparison = calculateAiReviewAccuracy(screening, row.staff_values);
+          const aiComments = String(
+            screening.Summary
+            || screening.Visible_Damage_Notes
+            || screening.Decision
+            || '',
+          ).trim() || 'No AI comments';
           return {
-            recordId: `AI-${String(row.Comparison_ID).padStart(6, '0')}`,
-            submissionId: `Submission #${row.Submission_ID}`,
-            eventName,
-            sourceLabel: row.Is_AI_Source ? 'AI Analysis' : 'Manual',
+            recordId: `AI-${String(row.comparison_id).padStart(6, '0')}`,
+            submissionId: `Submission #${row.submission_id}`,
+            eventName: row.event_name || `Event #${row.event_request_id || 'N/A'}`,
             statusKey,
             statusLabel: labelFromKey(statusKey),
-            accuracyLabel: row.Is_AI_Source
-              ? (row.AI_Accuracy_Percent == null ? 'Pending' : `${row.AI_Accuracy_Percent}%`)
-              : 'Manual source',
-            criticalChanges: critical.length ? critical.join(', ') : 'None',
-            minorChanges: minor.length ? minor.join(', ') : 'None',
-            createdAt: row.Reviewed_At,
-            updatedAt: row.Updated_At,
-            createdAtLabel: formatDateTime(row.Reviewed_At),
-            updatedAtLabel: formatDateTime(row.Updated_At),
-            searchText: [row.Comparison_ID, row.Submission_ID, eventName, row.Final_Decision, ...critical, ...minor].filter(Boolean).join(' ').toLowerCase(),
+            accuracyLabel: `${formatPercentage(comparison.aiPercent)}%`,
+            humanChangeLabel: `${formatPercentage(comparison.humanPercent)}%`,
+            aiComments,
+            comparableFieldCount: comparison.comparable,
+            matchedFieldCount: comparison.matched,
+            changedFields: comparison.changed,
+            createdAt: row.reviewed_at,
+            updatedAt: row.reviewed_at,
+            createdAtLabel: formatDateTime(row.reviewed_at),
+            updatedAtLabel: formatDateTime(row.reviewed_at),
+            searchText: [row.comparison_id, row.submission_id, row.event_name, row.final_decision, aiComments, ...comparison.changed].filter(Boolean).join(' ').toLowerCase(),
           };
         });
       } else if (selectedTemplate.id === 'user_accounts' && isAdmin) {
@@ -783,6 +824,33 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     const rejected = filteredRows.filter((row) => rejectedLikeStatus(row.statusKey)).length;
     return { total, pending, approved, rejected };
   }, [filteredRows]);
+
+  const aiAccuracySummary = useMemo(() => {
+    const totals = filteredRows.reduce((accumulator, row) => ({
+      comparable: accumulator.comparable + Number(row.comparableFieldCount || 0),
+      matched: accumulator.matched + Number(row.matchedFieldCount || 0),
+    }), { comparable: 0, matched: 0 });
+    const aiPercent = totals.comparable > 0 ? (totals.matched / totals.comparable) * 100 : 0;
+    return {
+      totalRecords: filteredRows.length,
+      comparableFields: totals.comparable,
+      aiPercent,
+      humanPercent: totals.comparable > 0 ? 100 - aiPercent : 0,
+    };
+  }, [filteredRows]);
+
+  const aiAccuracyPieData = useMemo(() => [
+    {
+      name: 'AI correct',
+      value: Number(aiAccuracySummary.aiPercent.toFixed(2)),
+      color: theme?.tertiaryColor || '#10b981',
+    },
+    {
+      name: 'Human changes',
+      value: Number(aiAccuracySummary.humanPercent.toFixed(2)),
+      color: theme?.primaryColor || '#0f766e',
+    },
+  ], [aiAccuracySummary.aiPercent, aiAccuracySummary.humanPercent, theme]);
 
   const pct = (value, total) => (total > 0 ? Math.round((value / total) * 100) : 0);
 
@@ -912,7 +980,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
 
   const SelectedIcon = selectedTemplate.icon || ClipboardList;
 
-  const kpiTiles = [
+  const standardKpiTiles = [
     {
       key: 'total',
       label: 'Total Records',
@@ -946,6 +1014,30 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       accent: palette.rejected,
     },
   ];
+
+  const kpiTiles = isAiAccuracyReport ? [
+    {
+      key: 'total-reviewed',
+      label: 'Total Reviewed Records',
+      value: aiAccuracySummary.totalRecords,
+      icon: SelectedIcon,
+      accent: palette.primary,
+    },
+    {
+      key: 'ai-correct',
+      label: 'AI Correct',
+      value: `${formatPercentage(aiAccuracySummary.aiPercent)}%`,
+      icon: CheckCircle2,
+      accent: theme?.tertiaryColor || palette.approved,
+    },
+    {
+      key: 'human-change',
+      label: 'Human Changes',
+      value: `${formatPercentage(aiAccuracySummary.humanPercent)}%`,
+      icon: Users,
+      accent: primaryColor,
+    },
+  ] : standardKpiTiles;
 
   return (
     <div
@@ -1032,7 +1124,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
 
       {/* Filters bar */}
       <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_2fr]">
+        <div className={`grid grid-cols-1 gap-3 md:grid-cols-2 ${isAiAccuracyReport ? 'xl:grid-cols-[1fr_1fr_2fr]' : 'xl:grid-cols-[1fr_1fr_1fr_2fr]'}`}>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">From Date</span>
             <input
@@ -1051,20 +1143,22 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
             />
           </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Status</span>
-            <select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
-            >
-              {statusOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option === 'all' ? 'All statuses' : option}
-                </option>
-              ))}
-            </select>
-          </label>
+          {!isAiAccuracyReport ? (
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Status</span>
+              <select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+              >
+                {statusOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option === 'all' ? 'All statuses' : option}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Search</span>
             <div className="relative">
@@ -1081,7 +1175,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       </div>
 
       {/* KPI tiles */}
-      <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <section className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${isAiAccuracyReport ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}>
         {kpiTiles.map((tile) => {
           const Icon = tile.icon;
           return (
@@ -1096,12 +1190,14 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                 >
                   <Icon size={15} />
                 </div>
-                <span
-                  className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold"
-                  style={{ borderColor: `${tile.accent}33`, color: tile.accent, backgroundColor: `${tile.accent}10` }}
-                >
-                  {tile.pctValue}%
-                </span>
+                {!isAiAccuracyReport ? (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold"
+                    style={{ borderColor: `${tile.accent}33`, color: tile.accent, backgroundColor: `${tile.accent}10` }}
+                  >
+                    {tile.pctValue}%
+                  </span>
+                ) : null}
               </div>
               <p className="mt-3 text-[11px] font-bold uppercase tracking-wider text-slate-500">{tile.label}</p>
               <p className="mt-1 text-3xl font-bold leading-none text-slate-900">{tile.value}</p>
@@ -1111,6 +1207,66 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       </section>
 
       {/* Charts row */}
+      {isAiAccuracyReport ? (
+        <section className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(280px,0.75fr)]">
+          <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">AI Accuracy vs Human Changes</h3>
+              <p className="mt-0.5 text-xs text-slate-500">Five comparable hair fields per reviewed record: length, color, texture, density, and condition.</p>
+            </div>
+            <div className="mt-3 h-64 min-h-64">
+              {aiAccuracySummary.comparableFields === 0 ? (
+                <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 text-xs text-slate-500">
+                  No completed AI-to-staff comparisons match the selected filters.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%" minWidth={240} minHeight={240}>
+                  <PieChart>
+                    <Pie
+                      data={aiAccuracyPieData}
+                      dataKey="value"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={62}
+                      outerRadius={94}
+                      paddingAngle={2}
+                      label={({ name, value }) => `${name}: ${formatPercentage(value)}%`}
+                      labelLine
+                    >
+                      {aiAccuracyPieData.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(value) => `${formatPercentage(value)}%`} />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </article>
+
+          <aside className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h3 className="text-sm font-bold text-slate-900">How to read this report</h3>
+            <p className="mt-1 text-xs leading-5 text-slate-600">AI Correct means the final staff value exactly matched the original AI screening. Human Changes means staff changed that AI value.</p>
+            <div className="mt-4 space-y-3">
+              {aiAccuracyPieData.map((entry) => (
+                <div key={entry.name} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: entry.color }} />
+                      {entry.name}
+                    </span>
+                    <strong className="text-lg text-slate-900">{formatPercentage(entry.value)}%</strong>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="mt-4 rounded-lg border px-3 py-2 text-[11px] leading-5" style={{ borderColor: `${primaryColor}30`, color: primaryTextColor, backgroundColor: `${primaryColor}08` }}>
+              Percentages are weighted by comparable fields, so every reviewed AI value contributes equally.
+            </p>
+          </aside>
+        </section>
+      ) : (
       <section className="grid grid-cols-1 gap-3 xl:grid-cols-12">
         <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-5">
           <div className="flex items-center justify-between">
@@ -1183,6 +1339,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           </div>
         </article>
       </section>
+      )}
 
       {/* Preview table */}
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -1202,14 +1359,16 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => typeof onNavigate === 'function' && onNavigate(selectedTemplate.page)}
-            className="inline-flex items-center gap-1 text-xs font-semibold hover:underline"
-            style={{ color: primaryColor }}
-          >
-            Open related page
-          </button>
+          {selectedTemplate.page !== 'reports' ? (
+            <button
+              type="button"
+              onClick={() => typeof onNavigate === 'function' && onNavigate(selectedTemplate.page)}
+              className="inline-flex items-center gap-1 text-xs font-semibold hover:underline"
+              style={{ color: primaryColor }}
+            >
+              Open related page
+            </button>
+          ) : null}
         </div>
 
         {isLoading ? (
@@ -1263,6 +1422,24 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                         return (
                           <td key={`${row.recordId}-${column.key}`} className="px-5 py-2.5">
                             <span className="font-mono text-xs font-semibold text-slate-700">{cellValue}</span>
+                          </td>
+                        );
+                      }
+                      if (column.key === 'accuracyLabel' || column.key === 'humanChangeLabel') {
+                        const isAiCorrect = column.key === 'accuracyLabel';
+                        const accent = isAiCorrect ? (theme?.tertiaryColor || palette.approved) : primaryColor;
+                        return (
+                          <td key={`${row.recordId}-${column.key}`} className="px-5 py-2.5">
+                            <span className="inline-flex rounded-full border px-2.5 py-1 text-xs font-bold" style={{ borderColor: `${accent}35`, color: accent, backgroundColor: `${accent}0D` }}>
+                              {cellValue}
+                            </span>
+                          </td>
+                        );
+                      }
+                      if (column.key === 'aiComments') {
+                        return (
+                          <td key={`${row.recordId}-${column.key}`} className="max-w-xs px-5 py-2.5 text-slate-700">
+                            <p className="line-clamp-2 text-xs leading-5" title={String(cellValue || '')}>{String(cellValue || 'No AI comments')}</p>
                           </td>
                         );
                       }

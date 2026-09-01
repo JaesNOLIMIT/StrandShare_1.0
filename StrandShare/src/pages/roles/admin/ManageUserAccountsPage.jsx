@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { createClient } from '@supabase/supabase-js';
 import {
   Plus,
   Search,
@@ -29,18 +28,23 @@ import {
   normalizePersonSuffix,
 } from '../../../lib/personIdentity';
 import UserAccountDetailsModal from './UserAccountDetailsModal';
+import { invokeAdminAccountManagement } from '../../../lib/adminAccountManagement';
 
 const DEFAULT_ROLES = ['admin', 'staff', 'specialist', 'h_representative'];
 const ADMIN_CREATABLE_ROLES = ['staff', 'specialist'];
 const PHILIPPINE_TIME_ZONE = 'Asia/Manila';
-let manageUsersInviteAdminClient = null;
 
 function mapInviteErrorMessage(rawMessage) {
   const message = String(rawMessage || 'Unexpected error while sending invitation email.');
   const lower = message.toLowerCase();
 
-  if (!message || lower.includes('missing-service-role')) {
-    return 'Invite email service is not configured. Add REACT_APP_SUPABASE_SERVICE_ROLE_KEY in .env.local and restart the app.';
+  if (
+    !message
+    || lower.includes('failed to send a request')
+    || lower.includes('function not found')
+    || lower.includes('non-2xx status')
+  ) {
+    return 'The secure account invitation service is unavailable. Deploy the admin-account-management Edge Function, then try again.';
   }
 
   if (
@@ -98,11 +102,6 @@ function normalizeRoleSlug(roleValue) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '');
-}
-
-function buildTemporaryPassword() {
-  const numeric = Math.floor(100000 + (Math.random() * 900000));
-  return `Strand-${numeric}!Aa`;
 }
 
 function formatPhilippineContactNumber(value) {
@@ -181,29 +180,6 @@ function buildDisplayName({ firstName, middleName, lastName, suffix }) {
     .trim();
 }
 
-function createManageUsersInviteAdminClient() {
-  if (manageUsersInviteAdminClient) {
-    return manageUsersInviteAdminClient;
-  }
-
-  const url = process.env.REACT_APP_SUPABASE_URL;
-  const serviceRoleKey = process.env.REACT_APP_SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) {
-    return null;
-  }
-
-  manageUsersInviteAdminClient = createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-      storageKey: 'Donivra-manage-users-invite-admin-client',
-    },
-  });
-
-  return manageUsersInviteAdminClient;
-}
-
 function getInitialFormData() {
   return {
     firstName: '',
@@ -241,7 +217,6 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
   const [invitedEmail, setInvitedEmail] = useState('');
   const [invitedRoleLabel, setInvitedRoleLabel] = useState('');
   const [invitedDisplayName, setInvitedDisplayName] = useState('');
-  const [temporaryPasswordIssued, setTemporaryPasswordIssued] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const [detailsUserId, setDetailsUserId] = useState(null);
@@ -430,11 +405,6 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
         }
       }
 
-      const adminInviteClient = createManageUsersInviteAdminClient();
-      if (!adminInviteClient) {
-        throw new Error('missing-service-role');
-      }
-
       const { data: existingUser, error: checkError } = await supabase
         .from('users')
         .select('user_id')
@@ -481,7 +451,6 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
         throw new Error('Unable to create users/user_details records.');
       }
 
-      const tempPassword = buildTemporaryPassword();
       const roleLabel = toRoleLabel(normalizedRole);
       const metadata = {
         account_type: 'internal_web_user',
@@ -494,56 +463,24 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
         review_notes: '',
         has_access_window: Boolean(accessStart && accessEnd),
         access_window: accessStart && accessEnd ? `${formatDateTime(accessStart)} to ${formatDateTime(accessEnd)}` : '',
-        temporary_password: tempPassword,
         display_name: displayName || '',
         full_name: displayName || '',
         name: displayName || '',
         staff_or_specialist_role: normalizedRole,
       };
 
-      const inviteResult = await adminInviteClient.auth.admin.inviteUserByEmail(normalizedEmail, {
-        redirectTo: `${window.location.origin}/login`,
-        data: metadata,
+      const inviteResult = await invokeAdminAccountManagement({
+        action: 'invite-internal',
+        email: normalizedEmail,
+        role: normalizedRole,
+        publicUserId: createdPublicUserId,
+        redirectTo: window.location.origin,
+        metadata,
       });
 
-      if (inviteResult.error) {
-        throw new Error(mapInviteErrorMessage(inviteResult.error.message));
-      }
-
-      createdAuthUserId = String(inviteResult.data?.user?.id || '').trim() || null;
+      createdAuthUserId = String(inviteResult?.authUserId || '').trim() || null;
       if (!createdAuthUserId) {
         throw new Error('Invite email was sent but auth user id could not be resolved.');
-      }
-
-      const updateAuthResult = await adminInviteClient.auth.admin.updateUserById(createdAuthUserId, {
-        email_confirm: true,
-        password: tempPassword,
-        user_metadata: {
-          account_type: 'internal_web_user',
-          role: normalizedRole,
-          full_name: displayName || null,
-          updated_at: nowSql,
-        },
-      });
-
-      if (updateAuthResult.error) {
-        throw new Error(mapInviteErrorMessage(updateAuthResult.error.message));
-      }
-
-      const linkResult = await supabase
-        .from('users')
-        .update({
-          auth_user_id: createdAuthUserId,
-          role: normalizedRole,
-          is_active: true,
-          updated_at: nowSql,
-          access_start: accessStart,
-          access_end: accessEnd,
-        })
-        .eq('user_id', createdPublicUserId);
-
-      if (linkResult.error) {
-        throw linkResult.error;
       }
 
       const detailsResult = await supabase
@@ -558,11 +495,9 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
         throw detailsResult.error;
       }
 
-      setIsModalOpen(false);
       setInvitedEmail(normalizedEmail);
       setInvitedRoleLabel(roleLabel);
       setInvitedDisplayName(displayName);
-      setTemporaryPasswordIssued(tempPassword);
       setShowSuccessModal(true);
       setFormData(getInitialFormData());
 
@@ -570,10 +505,10 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
     } catch (error) {
       if (createdAuthUserId) {
         try {
-          const adminInviteClient = createManageUsersInviteAdminClient();
-          if (adminInviteClient) {
-            await adminInviteClient.auth.admin.deleteUser(createdAuthUserId);
-          }
+          await invokeAdminAccountManagement({
+            action: 'delete-auth-user',
+            authUserId: createdAuthUserId,
+          });
         } catch {
           // Keep original error.
         }
@@ -861,7 +796,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
           <p className="mt-1 text-sm text-gray-600">Add and manage staff/specialist web accounts and monitor account access windows.</p>
         </div>
         <button
-          onClick={() => setIsModalOpen(true)}
+          onClick={() => { setShowSuccessModal(false); setIsModalOpen(true); }}
           className="text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm"
           style={{ backgroundColor: theme.primaryColor }}
         >
@@ -1023,54 +958,13 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
         onToggleStatus={() => void toggleUserStatus(detailsUser)}
       />
 
-      {showSuccessModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-sm w-full text-center">
-            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4 text-green-600">
-              <CheckCircle size={40} />
-            </div>
-            <h3 className="text-2xl font-bold text-gray-800 mb-2">
-              User Account Created
-            </h3>
-            <div>
-              <p className="text-gray-600 text-sm mb-4">Credentials email was sent to:</p>
-              <p className="font-bold text-lg mb-1" style={{ color: theme.primaryColor }}>{invitedEmail}</p>
-              {invitedDisplayName ? (
-                <p className="text-xs text-gray-500 mb-1">{invitedDisplayName}</p>
-              ) : null}
-              {invitedRoleLabel ? (
-                <p className="text-xs text-gray-500 mb-4">Role: {invitedRoleLabel}</p>
-              ) : null}
-              {temporaryPasswordIssued ? (
-                <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 mb-4 text-left">
-                  <p className="text-[11px] uppercase tracking-wide text-blue-700 font-semibold mb-1">Temporary Login Credentials</p>
-                  <p className="text-xs text-blue-900"><strong>Email:</strong> {invitedEmail}</p>
-                  <p className="text-xs text-blue-900"><strong>Password:</strong> {temporaryPasswordIssued}</p>
-                </div>
-              ) : null}
-              <p className="text-gray-500 text-xs mb-6">
-                This account can login immediately using the temporary credentials.
-              </p>
-            </div>
-
-            <button
-              onClick={() => setShowSuccessModal(false)}
-              className="w-full py-3 text-white rounded-xl font-bold"
-              style={{ backgroundColor: theme.primaryColor }}
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
-
-      {showErrorModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-sm w-full text-center">
+      {showErrorModal && typeof document !== 'undefined' ? createPortal(
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="alertdialog" aria-modal="true" aria-labelledby="user-create-error-title">
+          <div className="w-full max-w-sm rounded-2xl border border-red-100 bg-white p-8 text-center shadow-2xl">
             <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600">
               <AlertTriangle size={40} />
             </div>
-            <h3 className="text-2xl font-bold text-gray-800 mb-2">Error</h3>
+            <h3 id="user-create-error-title" className="text-2xl font-bold text-gray-800 mb-2">Error</h3>
             <p className="text-gray-600 mb-6 text-sm">{errorMessage}</p>
             <button
               onClick={() => setShowErrorModal(false)}
@@ -1079,16 +973,40 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
               Try Again
             </button>
           </div>
-        </div>
-      )}
+        </div>,
+        document.body,
+      ) : null}
 
       {isModalOpen && typeof document !== 'undefined'
         ? createPortal(
             <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
-              <div className="w-full max-w-3xl overflow-hidden rounded-xl bg-white shadow-2xl">
+              <div className={`w-full overflow-hidden rounded-xl bg-white shadow-2xl ${showSuccessModal ? 'max-w-md' : 'max-w-3xl'}`} role="dialog" aria-modal="true" aria-labelledby={showSuccessModal ? 'user-create-success-title' : 'add-user-title'}>
+                {showSuccessModal ? (
+                  <div className="p-8 text-center">
+                    <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-green-100 text-green-600">
+                      <CheckCircle size={40} />
+                    </div>
+                    <h3 id="user-create-success-title" className="mb-2 text-2xl font-bold text-gray-800">User Account Created</h3>
+                    <p className="mb-4 text-sm text-gray-600">The private login instructions were sent only to:</p>
+                    <p className="mb-1 break-all text-lg font-bold" style={{ color: theme.primaryColor }}>{invitedEmail}</p>
+                    {invitedDisplayName ? <p className="mb-1 text-xs text-gray-500">{invitedDisplayName}</p> : null}
+                    {invitedRoleLabel ? <p className="mb-5 text-xs text-gray-500">Role: {invitedRoleLabel}</p> : null}
+                    <div className="mb-6 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-left text-xs leading-5 text-emerald-900">
+                      For confidentiality, the temporary password is not displayed here. Only the entered recipient should open the account email.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { setShowSuccessModal(false); setIsModalOpen(false); }}
+                      className="w-full rounded-xl py-3 font-bold text-white"
+                      style={{ backgroundColor: theme.primaryColor }}
+                    >
+                      Close
+                    </button>
+                  </div>
+                ) : (
                 <div className="max-h-[90vh] overflow-y-auto p-6">
                   <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
-                    <h3 className="text-xl font-bold text-gray-800">Add New User</h3>
+                    <h3 id="add-user-title" className="text-xl font-bold text-gray-800">Add New User</h3>
                     <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-red-500">
                       <X size={24} />
                     </button>
@@ -1253,6 +1171,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
                     </div>
                   </form>
                 </div>
+                )}
               </div>
             </div>,
             document.body,

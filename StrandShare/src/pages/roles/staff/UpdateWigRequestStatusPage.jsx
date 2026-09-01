@@ -1414,7 +1414,6 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
         <div>
           <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Wig Request</h1>
           <p className="text-sm text-slate-600">Review incoming requests, inspect specifications, and process each request through release scheduling.</p>
-          <p className="mt-1 text-xs text-emerald-700">While this page is open, related database changes update the list automatically.</p>
         </div>
         <PageHeaderActions
           onRefresh={() => loadReviewRows(selectedRow?.reqId || null)}

@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { createClient } from '@supabase/supabase-js';
 import {
   AlertTriangle,
   Building2,
@@ -18,6 +17,7 @@ import {
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { triggerSmtpNow } from '../../../lib/smtpTriggerClient';
+import { invokeAdminAccountManagement } from '../../../lib/adminAccountManagement';
 
 const HOSPITALS_TABLE = 'Hospitals';
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
@@ -25,7 +25,6 @@ const USERS_TABLE = 'users';
 const HOSPITAL_LOGOS_BUCKET = 'hospital_logos';
 const PSGC_BASE_URL = 'https://psgc.gitlab.io/api';
 const PHILIPPINE_TIME_ZONE = 'Asia/Manila';
-let hospitalActionAdminClient = null;
 
 const PAGE_TABS = [
   { id: 'manage', label: 'Manage H-Representatives' },
@@ -156,47 +155,9 @@ function getHospitalApprovalStatusLabel(statusKey) {
   return 'Pending';
 }
 
-function mapHospitalEmailError(rawMessage) {
-  const message = String(rawMessage || 'Unable to prepare hospital account email.');
-  const lowerMessage = message.toLowerCase();
-
-  if (!message || lowerMessage.includes('missing-service-role')) {
-    return 'Hospital email service is not configured. Add REACT_APP_SUPABASE_SERVICE_ROLE_KEY in .env.local and restart the app.';
-  }
-
-  if (lowerMessage.includes('user not found')) {
-    return 'The manager Auth account was not found. Ask the applicant to verify email again or resubmit the application.';
-  }
-
-  return message;
-}
-
 function buildTemporaryPassword() {
   const numeric = Math.floor(100000 + (Math.random() * 900000));
   return `Strand-${numeric}!Aa`;
-}
-
-function createHospitalActionAdminClient() {
-  if (hospitalActionAdminClient) {
-    return hospitalActionAdminClient;
-  }
-
-  const url = process.env.REACT_APP_SUPABASE_URL;
-  const serviceRoleKey = process.env.REACT_APP_SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) {
-    return null;
-  }
-
-  hospitalActionAdminClient = createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-      storageKey: 'Donivra-hospital-action-admin-client',
-    },
-  });
-
-  return hospitalActionAdminClient;
 }
 
 function formatHospitalAddress(hospital) {
@@ -709,25 +670,12 @@ export default function ManageHospitalAccountsPage({ isActivePage = true }) {
       throw new Error('The manager Auth account is missing. The applicant must verify email before approval can send login credentials.');
     }
 
-    const adminClient = createHospitalActionAdminClient();
-    if (!adminClient) {
-      throw new Error(mapHospitalEmailError('missing-service-role'));
-    }
-
-    const updateResult = await adminClient.auth.admin.updateUserById(authUserId, {
-      email_confirm: true,
-      password: tempPassword,
-      user_metadata: {
-        account_type: 'partner_hospital',
-        role: 'h_representative',
-        hospital_id: Number(hospital?.Hospital_ID || 0),
-        updated_at: getPhilippineTimestamp(),
-      },
+    await invokeAdminAccountManagement({
+      action: 'set-hospital-manager-credentials',
+      authUserId,
+      temporaryPassword: tempPassword,
+      hospitalId: Number(hospital?.Hospital_ID || 0),
     });
-
-    if (updateResult.error) {
-      throw new Error(mapHospitalEmailError(updateResult.error.message));
-    }
   };
 
   const handleHospitalApplicationDecision = (hospital, nextStatus) => {

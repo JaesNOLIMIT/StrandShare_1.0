@@ -225,6 +225,18 @@ function createDetailDraft(detail) {
   };
 }
 
+function formatAiConfidence(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 'N/A';
+  const percent = numeric <= 1 ? numeric * 100 : numeric;
+  return `${Math.max(0, Math.min(100, percent)).toFixed(0)}%`;
+}
+
+function displayAiValue(value, fallback = 'Not provided') {
+  if (value == null || String(value).trim() === '') return fallback;
+  return String(value);
+}
+
 function buildUserFullName(detailRow) {
   if (!detailRow) return '';
   return [
@@ -286,6 +298,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   const [activeReview, setActiveReview] = useState(null);
   const [qualityReason, setQualityReason] = useState('');
   const [detailDraft, setDetailDraft] = useState(() => createDetailDraft(null));
+  const [aiReviewTab, setAiReviewTab] = useState('screening');
   const [isSubmittingQuality, setIsSubmittingQuality] = useState(false);
   const [isSavingDetail, setIsSavingDetail] = useState(false);
   const [eventSummary, setEventSummary] = useState(null);
@@ -716,6 +729,20 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     return detailsResult.data || [];
   }, []);
 
+  const loadAiScreeningBySubmissionId = useCallback(async (eventRequestId, submissionId) => {
+    const targetEventId = Number(eventRequestId || 0);
+    const targetSubmissionId = Number(submissionId || 0);
+    if (!targetEventId || !targetSubmissionId || !supabase) return null;
+
+    const result = await supabase.rpc('get_event_hair_ai_screening', {
+      p_event_request_id: targetEventId,
+      p_submission_id: targetSubmissionId,
+    });
+
+    if (result.error) throw result.error;
+    return result.data || null;
+  }, []);
+
   const reviewStatusMeta = useMemo(() => {
     const submission = activeReview?.submission || null;
     const details = Array.isArray(activeReview?.details) ? activeReview.details : [];
@@ -734,6 +761,8 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       finalStatusLabel: detailFinal ? String(detailStatus) : (submission?.Status ? String(submission.Status) : ''),
     };
   }, [activeReview]);
+
+  const activeAiScreening = activeReview?.aiScreening || null;
 
   const markAttendeePresentByWaybill = useCallback(async (rawValue) => {
     if (isScanProcessingRef.current || !selectedEvent || !supabase) return;
@@ -850,11 +879,15 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       }
 
       let details = [];
+      let aiScreening = null;
       if (requiresHairReview) {
         details = Array.isArray(payload?.details) ? payload.details : [];
         const submissionId = Number(submission?.Submission_ID || 0);
         if (!details.length && submissionId > 0) {
           details = await loadSubmissionDetailsById(submissionId);
+        }
+        if (submissionId > 0) {
+          aiScreening = await loadAiScreeningBySubmissionId(eventRequestId, submissionId);
         }
       }
 
@@ -862,8 +895,10 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         attendee: updatedForDisplay || null,
         submission: submission || null,
         details,
+        aiScreening,
         waybillCode: resolvedWaybillCode,
       } : null);
+      setAiReviewTab('screening');
       setQualityReason('');
       setDetailDraft(createDetailDraft(details?.[0] || null));
 
@@ -915,7 +950,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       setIsSaving(false);
       isScanProcessingRef.current = false;
     }
-  }, [attendees, loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, scanMode, selectedEvent]);
+  }, [attendees, loadAiScreeningBySubmissionId, loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, scanMode, selectedEvent]);
 
   const handleSaveDetailEdits = useCallback(async () => {
     if (!supabase || !selectedEvent) return;
@@ -967,6 +1002,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         attendee: prev?.attendee || null,
         submission: updatedSubmission || prev?.submission || null,
         details: updatedDetails.length ? updatedDetails : (prev?.details || []),
+        aiScreening: prev?.aiScreening || null,
         waybillCode: prev?.waybillCode || '',
       }));
       setDetailDraft(createDetailDraft(updatedDetails?.[0] || null));
@@ -1058,6 +1094,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         attendee: updatedAttendee || prev?.attendee || null,
         submission: updatedSubmission || prev?.submission || null,
         details: updatedDetails.length ? updatedDetails : (prev?.details || []),
+        aiScreening: prev?.aiScreening || null,
         waybillCode: prev?.waybillCode || '',
       }));
       setDetailDraft(createDetailDraft(updatedDetails?.[0] || null));
@@ -1592,9 +1629,6 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         <div>
           <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Assigned Events</h1>
           <p className="text-sm text-slate-600">View events admin assigned to you, search attendees, and print waybills.</p>
-          <p className="mt-1 text-xs text-emerald-700">
-            Live updates are active. Data refreshes only when a related database record changes.
-          </p>
         </div>
 
         <PageHeaderActions
@@ -2152,6 +2186,93 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                         </button>
                       </div>
                     </div>
+
+                    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+                        <div>
+                          <h4 className="text-sm font-bold text-slate-900">Original AI Hair Review</h4>
+                          <p className="mt-0.5 text-[11px] text-slate-500">This is the AI baseline used to measure the final staff review accuracy.</p>
+                        </div>
+                        {activeAiScreening ? (
+                          <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: `${primaryColor}40`, color: primaryColor, backgroundColor: `${primaryColor}0D` }}>
+                            Confidence {formatAiConfidence(activeAiScreening.Confidence_Score)}
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className="flex gap-1 border-b border-slate-200 bg-white px-3 pt-3" role="tablist" aria-label="AI review information">
+                        {[
+                          { id: 'screening', label: 'AI Screening' },
+                          { id: 'comments', label: 'AI Comments' },
+                        ].map((tab) => {
+                          const isSelected = aiReviewTab === tab.id;
+                          return (
+                            <button
+                              key={tab.id}
+                              type="button"
+                              role="tab"
+                              aria-selected={isSelected}
+                              onClick={() => setAiReviewTab(tab.id)}
+                              className={`rounded-t-lg border border-b-0 px-3 py-2 text-xs font-semibold transition ${isSelected ? 'text-white shadow-sm' : 'border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`}
+                              style={isSelected ? { backgroundColor: primaryColor, borderColor: primaryColor } : undefined}
+                            >
+                              {tab.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {!activeAiScreening ? (
+                        <div className="m-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center text-xs text-slate-600">
+                          No AI screening is linked to this submission. Staff can still complete the manual quality review, but it will not be included in AI accuracy reporting.
+                        </div>
+                      ) : aiReviewTab === 'screening' ? (
+                        <div className="grid grid-cols-2 gap-2 p-4 md:grid-cols-3 xl:grid-cols-5" role="tabpanel">
+                          {[
+                            ['Estimated length', `${displayAiValue(activeAiScreening.Estimated_Length, '0')} in`],
+                            ['Detected color', displayAiValue(activeAiScreening.Detected_Color)],
+                            ['Texture', displayAiValue(activeAiScreening.Detected_Texture)],
+                            ['Density', displayAiValue(activeAiScreening.Detected_Density)],
+                            ['Condition', displayAiValue(activeAiScreening.Detected_Condition)],
+                            ['Hair density score', `${displayAiValue(activeAiScreening.Hair_Density_Score, '0')}%`],
+                            ['Shine level', `${displayAiValue(activeAiScreening.Shine_Level, '0')}/10`],
+                            ['Frizz level', `${displayAiValue(activeAiScreening.Frizz_Level, '0')}/10`],
+                            ['Dryness level', `${displayAiValue(activeAiScreening.Dryness_Level, '0')}/10`],
+                            ['Damage level', `${displayAiValue(activeAiScreening.Damage_Level, '0')}/10`],
+                            ['Bald spots', activeAiScreening.Bald_Spots_Present ? 'Detected' : 'Not detected'],
+                            ['Dandruff', activeAiScreening.Dandruff_Detected ? displayAiValue(activeAiScreening.Dandruff_Severity, 'Detected') : 'Not detected'],
+                            ['Lice indicators', activeAiScreening.Lice_Detected ? displayAiValue(activeAiScreening.Lice_Confidence, 'Detected') : 'Not detected'],
+                            ['Shedding', displayAiValue(activeAiScreening.Shedding_Level)],
+                            ['Visible scalp', displayAiValue(activeAiScreening.Visible_Scalp_Area)],
+                          ].map(([label, value]) => (
+                            <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+                              <p className="mt-1 text-xs font-semibold text-slate-900">{value}</p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2" role="tabpanel">
+                          {[
+                            ['AI decision', activeAiScreening.Decision],
+                            ['Analysis summary', activeAiScreening.Summary],
+                            ['Visible damage notes', activeAiScreening.Visible_Damage_Notes],
+                            ['Length assessment', activeAiScreening.Length_Assessment],
+                            ['Donation readiness', activeAiScreening.Donation_Readiness_Note],
+                            ['History assessment', activeAiScreening.History_Assessment],
+                            ['Improvement recommendation', activeAiScreening.Improvement_Recommendation],
+                            ['Scalp coverage notes', activeAiScreening.Scalp_Coverage_Notes],
+                            ['Dandruff notes', activeAiScreening.Dandruff_Notes],
+                            ['Lice notes', activeAiScreening.Lice_Notes],
+                          ].map(([label, value]) => (
+                            <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+                              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+                              <p className="mt-1 text-xs leading-5 text-slate-700">{displayAiValue(value)}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
 
                     <div>
                       <label className="mb-1 block text-xs font-semibold text-slate-700" htmlFor="hair-quality-reason">

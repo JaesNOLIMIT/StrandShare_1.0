@@ -4,8 +4,8 @@ import {
   CalendarDays,
   Layers,
   Loader2,
+  Package,
   PackageCheck,
-  RefreshCw,
   Search,
   Scissors,
   SlidersHorizontal,
@@ -14,6 +14,7 @@ import {
 import { useTheme } from '../../../context/ThemeContext';
 import { useToast } from '../../../context/ToastContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const PERIODS = [
   { id: 'week', label: 'This week' },
@@ -56,13 +57,13 @@ function periodStart(period) {
 
 function canonicalInventoryStatus(value, bundleId, submissionStatus) {
   const key = String(value || '').trim().toLowerCase().replace(/[_\s-]+/g, '');
+  const submissionKey = String(submissionStatus || '').trim().toLowerCase().replace(/[_\s-]+/g, '');
+  if (key === 'wigcreated' || submissionKey === 'wigcreated') return 'Wig Created';
+  if (key === 'wiginproduction' || submissionKey === 'wiginproduction') return 'Wig In Production';
   if (key === 'cut') return 'Cut';
   if (key === 'bundling') return 'Bundling';
-  if (key === 'wigcreated') return 'Wig Created';
   if (bundleId == null) return 'Cut';
-  return String(submissionStatus || '').trim().toLowerCase().replace(/[_\s-]+/g, '') === 'wigcreated'
-    ? 'Wig Created'
-    : 'Bundling';
+  return 'Bundling';
 }
 
 function dateBoundary(value, endOfDay = false) {
@@ -73,6 +74,7 @@ function dateBoundary(value, endOfDay = false) {
 
 function statusClasses(status) {
   if (status === 'Wig Created') return 'border-violet-200 bg-violet-50 text-violet-700';
+  if (status === 'Wig In Production') return 'border-amber-200 bg-amber-50 text-amber-700';
   if (status === 'Bundling') return 'border-sky-200 bg-sky-50 text-sky-700';
   return 'border-emerald-200 bg-emerald-50 text-emerald-700';
 }
@@ -287,6 +289,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
     total: filteredRows.length,
     cut: filteredRows.filter((row) => row.Status === 'Cut').length,
     bundling: filteredRows.filter((row) => row.Status === 'Bundling').length,
+    production: filteredRows.filter((row) => row.Status === 'Wig In Production').length,
     usedInWigs: filteredRows.filter((row) => row.Status === 'Wig Created' && row.Wig_ID).length,
     created: new Set(
       filteredRows
@@ -301,24 +304,26 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
         <div>
           <h1 className="role-page-title text-2xl font-bold text-slate-900">Cut Hair Inventory</h1>
           <p className="text-sm text-slate-600">Only quality-approved cut hair appears here and can proceed to bundling.</p>
-          <p className="mt-1 text-xs text-emerald-700">Inventory status updates live from Cut to Bundling to Wig Created.</p>
         </div>
-        <button
-          type="button"
-          onClick={() => { void loadInventory({ showSuccess: true }); }}
-          disabled={isLoading}
-          className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-        >
-          {isLoading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-          Refresh
-        </button>
+        <PageHeaderActions
+          onRefresh={() => { void loadInventory({ showSuccess: true }); }}
+          refreshLoading={isLoading}
+          helpTitle="About Cut Hair Inventory"
+          helpContent={(
+            <>
+              <p>Review quality-approved hair and follow each item from available stock through bundling, wig production, and completion.</p>
+              <p>Use the status, event, date, and search filters to find a specific inventory item or waybill.</p>
+            </>
+          )}
+        />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {[
           ['Approved hair items', summary.total, Boxes, 'Quality-approved inventory'],
           ['Cut / Available', summary.cut, Scissors, 'Ready for bundling'],
-          ['Bundling hair', summary.bundling, Layers, 'Assigned to unfinished bundles'],
+          ['Bundling hair', summary.bundling, Layers, 'Assigned to a draft bundle'],
+          ['Wig In Production', summary.production, Package, 'Closed bundle in production'],
           ['Completed wigs', summary.created, PackageCheck, `${summary.usedInWigs} hair item${summary.usedInWigs === 1 ? '' : 's'} used`],
         ].map(([label, value, Icon, helper]) => (
           <div key={label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -356,6 +361,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
                 <option value="all">All statuses</option>
                 <option value="Cut">Cut / Available</option>
                 <option value="Bundling">Bundling</option>
+                <option value="Wig In Production">Wig In Production</option>
                 <option value="Wig Created">Wig Created</option>
               </select>
             </label>
@@ -384,16 +390,26 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
             <div className="space-y-1">
               <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Quick date</span>
               <div className="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1">
-                {PERIODS.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => { setPeriod(item.id); setDateFrom(''); setDateTo(''); }}
-                    className={`rounded-md px-2.5 py-1.5 text-xs font-semibold ${!dateFrom && !dateTo && period === item.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
+                {PERIODS.map((item) => {
+                  const isSelected = !dateFrom && !dateTo && period === item.id;
+
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      aria-pressed={isSelected}
+                      onClick={() => { setPeriod(item.id); setDateFrom(''); setDateTo(''); }}
+                      className={`rounded-md border px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-1 ${
+                        isSelected
+                          ? 'border-transparent text-white shadow-sm ring-1 ring-slate-900/10'
+                          : 'border-transparent text-slate-600 hover:border-slate-200 hover:bg-white hover:text-slate-900'
+                      }`}
+                      style={isSelected ? { backgroundColor: primaryColor } : undefined}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
             <label className="space-y-1">

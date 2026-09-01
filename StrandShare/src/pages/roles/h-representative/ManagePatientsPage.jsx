@@ -468,7 +468,7 @@ function isPdfDocument(pathValue, urlValue) {
 function mapStorageUploadError(rawMessage) {
   const message = String(rawMessage || 'Upload failed.');
   if (message.toLowerCase().includes('row-level security')) {
-    return 'Upload blocked by Storage RLS policy. Apply patient_assets storage policies first.';
+    return 'Your account is not authorized to upload patient files. Refresh your session and try again. If it continues, contact an administrator.';
   }
   return message;
 }
@@ -3096,8 +3096,8 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
         </div>
       )}
 
-      {successPopup.open && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/55 px-4 backdrop-blur-[1px]">
+      {successPopup.open && typeof document !== 'undefined' ? createPortal(
+        <div className="fixed inset-0 z-[10010] flex items-center justify-center bg-black/55 px-4 backdrop-blur-[1px]">
           <button
             type="button"
             aria-label="Close success popup"
@@ -3138,36 +3138,38 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
               </button>
             </div>
           </section>
-        </div>
-      )}
+        </div>,
+        document.body,
+      ) : null}
 
-      {errorToasts.length > 0 && (
+      {errorToasts.length > 0 && typeof document !== 'undefined' ? createPortal(
         <div className="fixed bottom-5 right-5 z-[10020] flex w-[min(92vw,390px)] flex-col gap-2" aria-live="assertive">
           {errorToasts.map((toast) => (
             <div
               key={toast.id}
               role="alert"
-              className="flex items-start gap-3 rounded-xl border border-red-200 bg-white px-4 py-3 text-red-900 shadow-xl"
+              className="flex items-start gap-3 rounded-xl border border-red-800 bg-red-700 px-4 py-3 text-white shadow-2xl"
             >
-              <div className="mt-0.5 rounded-full bg-red-100 p-1.5 text-red-700">
+              <div className="mt-0.5 rounded-full bg-white p-1.5 text-red-700">
                 <AlertTriangle size={16} />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-bold uppercase tracking-wide text-red-700">Unable to continue</p>
-                <p className="mt-0.5 break-words text-sm text-gray-800">{toast.text}</p>
+                <p className="text-xs font-bold uppercase tracking-wide text-white">Unable to continue</p>
+                <p className="mt-0.5 break-words text-sm text-red-50">{toast.text}</p>
               </div>
               <button
                 type="button"
                 onClick={() => dismissErrorToast(toast.id)}
-                className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                className="rounded-md p-1 text-red-100 hover:bg-red-800 hover:text-white"
                 aria-label="Dismiss error"
               >
                 <X size={16} />
               </button>
             </div>
           ))}
-        </div>
-      )}
+        </div>,
+        document.body,
+      ) : null}
     </div>
   );
 }

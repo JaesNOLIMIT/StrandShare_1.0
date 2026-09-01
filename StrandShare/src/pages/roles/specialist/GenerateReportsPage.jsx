@@ -666,6 +666,7 @@ export default function GenerateReportsPage({ userProfile }) {
         { label: 'Approved hair items', value: filteredRows.length },
         { label: 'Cut / available', value: filteredRows.filter((row) => row.status === 'Cut').length },
         { label: 'Bundling', value: filteredRows.filter((row) => row.status === 'Bundling').length },
+        { label: 'Wig In Production', value: filteredRows.filter((row) => row.status === 'Wig In Production').length },
         { label: 'Completed wigs', value: completedBundleCount },
         { label: 'Rejected Cut excluded', value: 'Yes' },
       ];
@@ -951,6 +952,7 @@ export default function GenerateReportsPage({ userProfile }) {
         { id: 'all', label: 'All statuses' },
         { id: 'cut', label: 'Cut' },
         { id: 'bundling', label: 'Bundling' },
+        { id: 'wig in production', label: 'Wig In Production' },
         { id: 'wig created', label: 'Wig Created' },
       ];
     }

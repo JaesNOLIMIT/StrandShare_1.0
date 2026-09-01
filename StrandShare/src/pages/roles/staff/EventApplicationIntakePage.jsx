@@ -891,18 +891,21 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
 
   const isLinkedToAdmin = Boolean(selectedRow?.Linked_Event_Request_ID);
   const applicationStatusKey = normalizeStatus(selectedRow?.Status);
+  const isAutomaticallyRejectedApplication = applicationStatusKey === 'rejected'
+    && Boolean(selectedRow?.Auto_Rejected_At);
   const isStaffRejectedApplication = applicationStatusKey === 'rejected'
     && Number(selectedRow?.Staff_Rejected_By_User_ID || 0) > 0;
+  const isFinalRejectedApplication = isStaffRejectedApplication || isAutomaticallyRejectedApplication;
   const canAppealRejectedRequest = Boolean(
     isLinkedToAdmin
     && linkedRequestStatusKey === 'rejected'
-    && !isStaffRejectedApplication,
+    && !isFinalRejectedApplication,
   );
   const canRejectByStaff = (
     applicationStatusKey === 'pendingstaffreview'
     && !isLinkedToAdmin
   ) || canAppealRejectedRequest;
-  const isLockedFromActions = isStaffRejectedApplication
+  const isLockedFromActions = isFinalRejectedApplication
     || (isLinkedToAdmin && !canAppealRejectedRequest);
   const notesHaveUnsavedChanges = normalizeNote(staffNotes) !== normalizeNote(savedStaffNotes)
     || normalizeNote(contactNotes) !== normalizeNote(savedContactNotes);
@@ -1771,6 +1774,17 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
               </div>
 
               {/* Status banner */}
+              {isAutomaticallyRejectedApplication && (
+                <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-800">
+                  <Clock3 size={20} className="mt-0.5 flex-none" />
+                  <div>
+                    <p className="font-bold">Application automatically rejected</p>
+                    <p className="mt-1">
+                      The proposed event start date passed before staff review was completed. This application is now permanently closed.
+                    </p>
+                  </div>
+                </div>
+              )}
               {isStaffRejectedApplication && (
                 <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-800">
                   <XCircle size={20} className="mt-0.5 flex-none" />
@@ -1783,7 +1797,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                   </div>
                 </div>
               )}
-              {isLockedFromActions && !isStaffRejectedApplication && (
+              {isLockedFromActions && !isFinalRejectedApplication && (
                 <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-800">
                   <CheckCircle2 size={20} className="mt-0.5 flex-none" />
                   <div>
