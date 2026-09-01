@@ -72,6 +72,47 @@ function lowerCaseRoleKey(value) {
     .replace(/[_\s-]+/g, '');
 }
 
+function isAal2RequiredError(error) {
+  const value = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  return value.includes('aal2') || value.includes('mfa verification');
+}
+
+function isMfaFactorNameConflict(error) {
+  const value = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  return value.includes('mfa_factor_name_conflict') || value.includes('friendly name');
+}
+
+function isPasswordReauthenticationRequired(error) {
+  const value = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  return value.includes('reauthentication')
+    || value.includes('reauthenticate')
+    || (value.includes('nonce') && (value.includes('required') || value.includes('invalid')));
+}
+
+function getPasswordUpdateErrorMessage(error) {
+  const value = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  if (value.includes('current password')) return 'The current password is incorrect.';
+  if (value.includes('different from the old') || value.includes('same password') || value.includes('same as old')) {
+    return 'Choose a new password that is different from your current password.';
+  }
+  if (value.includes('weak password')) return 'The new password does not meet the project password requirements.';
+  return error?.message || 'Unable to update the password.';
+}
+
+function getNextMfaFriendlyName(factors = []) {
+  const usedNames = new Set(
+    factors
+      .map((factor) => String(factor?.friendly_name || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  if (!usedNames.has('google authenticator')) return 'Google Authenticator';
+
+  let index = 2;
+  while (usedNames.has(`google authenticator ${index}`)) index += 1;
+  return `Google Authenticator ${index}`;
+}
+
 function isAbsoluteUrl(value) {
   return /^https?:\/\//i.test(String(value || ''));
 }
@@ -301,8 +342,14 @@ export default function SettingsPage() {
     secret: '',
     code: '',
   });
+  const [mfaFactors, setMfaFactors] = useState([]);
+  const [isManagingMfa, setIsManagingMfa] = useState(false);
+  const [mfaStepUp, setMfaStepUp] = useState({ required: false, factorId: '', code: '' });
+  const [showMfaRecoveryHelp, setShowMfaRecoveryHelp] = useState(false);
+  const [isVerifyingMfaStepUp, setIsVerifyingMfaStepUp] = useState(false);
   const [isVerifyingMfaCode, setIsVerifyingMfaCode] = useState(false);
   const [isLoadingMfaStatus, setIsLoadingMfaStatus] = useState(true);
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
 
   const [profile, setProfile] = useState(() => {
     const storedProfile = readCachedProfile();
@@ -768,6 +815,7 @@ export default function SettingsPage() {
       }
 
       const hasVerifiedTotp = (factorsData?.totp || []).some((factor) => factor.status === 'verified');
+      setMfaFactors((factorsData?.totp || []).filter((factor) => factor.status === 'verified'));
       setSecurity((prev) => ({ ...prev, twoFactorEnabled: hasVerifiedTotp }));
       setIsLoadingMfaStatus(false);
 
@@ -1093,63 +1141,89 @@ export default function SettingsPage() {
     }
   };
 
-  const validateCurrentPassword = async () => {
-    const loginEmail = authEmail || profile.email;
-    if (!loginEmail || !security.currentPassword) {
-      throw new Error('Current password is required.');
-    }
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email: loginEmail,
-      password: security.currentPassword,
-    });
-
-    if (error) {
-      throw new Error('Current password is incorrect.');
-    }
-  };
-
-  const handleRequestPasswordOtp = async () => {
+  const validatePasswordForm = () => {
     if (!isSupabaseConfigured || !supabase) {
       showToast('Supabase is not configured.');
-      return;
+      return false;
     }
 
     if (!security.currentPassword) {
       showToast('Current password is required.');
-      return;
+      return false;
     }
 
     if (!security.newPassword || !security.confirmPassword) {
       showToast('New password and confirmation are required.');
-      return;
+      return false;
     }
 
     if (!isPasswordChecklistComplete) {
       showToast('New password does not meet all requirements.');
-      return;
+      return false;
     }
 
     if (security.newPassword !== security.confirmPassword) {
       showToast('New password and confirmation do not match.');
-      return;
+      return false;
     }
 
-    try {
-      await validateCurrentPassword();
-      const { error } = await supabase.auth.reauthenticate();
-      if (error) {
-        throw error;
-      }
+    if (security.currentPassword === security.newPassword) {
+      showToast('Choose a new password that is different from your current password.');
+      return false;
+    }
 
-      setIsOtpSent(true);
-      setPasswordMfaRequired(false);
-      setPasswordMfaCode('');
-      setPasswordMfaFactorId('');
-      setSecurity((prev) => ({ ...prev, passwordOtp: '' }));
-      showToast('Reauthentication OTP sent to your email.');
-    } catch (otpError) {
-      showToast(otpError?.message || 'Unable to send OTP for password change.');
+    return true;
+  };
+
+  const beginPasswordEmailReauthentication = async () => {
+    const { error } = await supabase.auth.reauthenticate();
+    if (error) throw error;
+
+    setIsOtpSent(true);
+    setSecurity((prev) => ({ ...prev, passwordOtp: '' }));
+    showToast('A password-change verification code was sent to your registered email.');
+  };
+
+  const completePasswordUpdate = async (nonceValue = '') => {
+    const attributes = {
+      password: security.newPassword,
+      current_password: security.currentPassword,
+    };
+    if (nonceValue) attributes.nonce = nonceValue;
+
+    const { error } = await supabase.auth.updateUser(attributes);
+    if (error) throw error;
+  };
+
+  const handleRequestPasswordOtp = async () => {
+    if (!validatePasswordForm() || isUpdatingPassword) return;
+
+    setIsUpdatingPassword(true);
+    try {
+      await completePasswordUpdate();
+      finalizePasswordUpdateSuccess();
+    } catch (passwordError) {
+      if (isAal2RequiredError(passwordError)) {
+        try {
+          const factorId = await resolvePasswordMfaFactor();
+          setPasswordMfaFactorId(factorId);
+          setPasswordMfaRequired(true);
+          setPasswordMfaCode('');
+          showToast('Enter your authenticator code to authorize this password change.');
+        } catch (mfaError) {
+          showToast(mfaError?.message || 'Authenticator verification could not be started.');
+        }
+      } else if (isPasswordReauthenticationRequired(passwordError)) {
+        try {
+          await beginPasswordEmailReauthentication();
+        } catch (reauthError) {
+          showToast(reauthError?.message || 'Unable to send the password-change verification code.');
+        }
+      } else {
+        showToast(getPasswordUpdateErrorMessage(passwordError));
+      }
+    } finally {
+      setIsUpdatingPassword(false);
     }
   };
 
@@ -1165,17 +1239,6 @@ export default function SettingsPage() {
     }
 
     return verifiedTotp.id;
-  };
-
-  const completePasswordUpdateWithNonce = async (otpValue) => {
-    const { error } = await supabase.auth.updateUser({
-      password: security.newPassword,
-      nonce: otpValue,
-    });
-
-    if (error) {
-      throw error;
-    }
   };
 
   const finalizePasswordUpdateSuccess = () => {
@@ -1221,10 +1284,18 @@ export default function SettingsPage() {
         throw verifyError;
       }
 
-      await completePasswordUpdateWithNonce(security.passwordOtp.trim());
-      finalizePasswordUpdateSuccess();
+      try {
+        await completePasswordUpdate(security.passwordOtp.trim());
+        finalizePasswordUpdateSuccess();
+      } catch (passwordError) {
+        if (isPasswordReauthenticationRequired(passwordError) && !security.passwordOtp.trim()) {
+          await beginPasswordEmailReauthentication();
+        } else {
+          throw passwordError;
+        }
+      }
     } catch (error) {
-      showToast(error?.message || 'Authenticator verification failed.');
+      showToast(getPasswordUpdateErrorMessage(error) || 'Authenticator verification failed.');
     } finally {
       setIsVerifyingPasswordMfa(false);
     }
@@ -1237,11 +1308,10 @@ export default function SettingsPage() {
 
     setIsVerifyingPasswordOtp(true);
     try {
-      await completePasswordUpdateWithNonce(otpValue);
+      await completePasswordUpdate(otpValue);
       finalizePasswordUpdateSuccess();
     } catch (verifyError) {
-      const message = String(verifyError?.message || '');
-      if (message.toLowerCase().includes('aal2 session is required')) {
+      if (isAal2RequiredError(verifyError)) {
         try {
           const factorId = await resolvePasswordMfaFactor();
           setPasswordMfaFactorId(factorId);
@@ -1252,7 +1322,9 @@ export default function SettingsPage() {
           showToast(mfaError?.message || 'MFA is required but could not be started.');
         }
       } else {
-        showToast(verifyError?.message || 'Invalid OTP. Please try again.');
+        showToast(isPasswordReauthenticationRequired(verifyError)
+          ? 'The email verification code is invalid or expired. Request a new code and try again.'
+          : getPasswordUpdateErrorMessage(verifyError));
       }
     } finally {
       setIsVerifyingPasswordOtp(false);
@@ -1279,22 +1351,59 @@ export default function SettingsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [passwordMfaCode, passwordMfaRequired]);
 
+  const refreshMfaFactors = async () => {
+    const { data, error } = await supabase.auth.mfa.listFactors();
+    if (error) throw error;
+    const verified = (data?.totp || []).filter((factor) => factor.status === 'verified');
+    setMfaFactors(verified);
+    setSecurity((prev) => ({ ...prev, twoFactorEnabled: verified.length > 0 }));
+    return verified;
+  };
+
   const startMfaEnrollment = async () => {
     const { data: factorsData, error: factorsError } = await supabase.auth.mfa.listFactors();
     if (factorsError) {
       throw factorsError;
     }
 
-    const unverifiedFactors = (factorsData?.totp || []).filter((factor) => factor.status !== 'verified');
-    for (const factor of unverifiedFactors) {
-      await supabase.auth.mfa.unenroll({ factorId: factor.id });
+    const verifiedFactors = (factorsData?.totp || []).filter((factor) => factor.status === 'verified');
+    if (verifiedFactors.length > 0) {
+      const { data: assurance, error: assuranceError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (assuranceError) throw assuranceError;
+      if (assurance?.currentLevel !== 'aal2') {
+        setMfaFactors(verifiedFactors);
+        setMfaStepUp({ required: true, factorId: verifiedFactors[0].id, code: '' });
+        showToast('Verify one of your existing authenticators before adding a backup.');
+        return;
+      }
     }
 
-    const { data: enrollData, error: enrollError } = await supabase.auth.mfa.enroll({
+    const allTotpFactors = factorsData?.totp || [];
+    const friendlyName = getNextMfaFriendlyName(allTotpFactors);
+    const unverifiedFactors = allTotpFactors.filter((factor) => factor.status !== 'verified');
+    for (const factor of unverifiedFactors) {
+      const { error: cleanupError } = await supabase.auth.mfa.unenroll({ factorId: factor.id });
+      if (cleanupError && cleanupError.code !== 'mfa_factor_not_found') {
+        // Continue with a new unique name. A stale unverified factor must not block recovery setup.
+      }
+    }
+
+    let { data: enrollData, error: enrollError } = await supabase.auth.mfa.enroll({
       factorType: 'totp',
-      friendlyName: 'Google Authenticator',
+      friendlyName,
       issuer: 'Donivra',
     });
+
+    if (enrollError && isMfaFactorNameConflict(enrollError)) {
+      const uniqueSuffix = `${Date.now()}`.slice(-6);
+      const retryResult = await supabase.auth.mfa.enroll({
+        factorType: 'totp',
+        friendlyName: `Google Authenticator ${uniqueSuffix}`,
+        issuer: 'Donivra',
+      });
+      enrollData = retryResult.data;
+      enrollError = retryResult.error;
+    }
 
     if (enrollError || !enrollData?.id) {
       throw enrollError || new Error('Unable to start Google Authenticator enrollment.');
@@ -1337,6 +1446,7 @@ export default function SettingsPage() {
 
       setSecurity((prev) => ({ ...prev, twoFactorEnabled: true }));
       setMfaSetup({ enrolling: false, factorId: '', qrSvg: '', secret: '', code: '' });
+      await refreshMfaFactors();
       void appendSecurityLog('security.2fa_enable', 'Enabled two-factor authentication.', 'security/2fa');
       showToast('Google Authenticator is now enabled.');
     } catch (error) {
@@ -1370,14 +1480,91 @@ export default function SettingsPage() {
 
       const verifiedFactor = (factorsData?.totp || []).find((factor) => factor.status === 'verified');
       if (verifiedFactor) {
+        setMfaFactors((factorsData?.totp || []).filter((factor) => factor.status === 'verified'));
         setSecurity((prev) => ({ ...prev, twoFactorEnabled: true }));
-        showToast('Google Authenticator is already active and required.');
+        showToast('Google Authenticator is already active. Use Add backup authenticator to register another device.');
         return;
       }
 
       await startMfaEnrollment();
     } catch (mfaError) {
       showToast(mfaError?.message || 'Unable to start Google Authenticator setup.');
+    }
+  };
+
+  const handleStartMfaEnrollment = async () => {
+    if (mfaSetup.enrolling || isManagingMfa) return;
+    setIsManagingMfa(true);
+    try {
+      await startMfaEnrollment();
+    } catch (error) {
+      showToast(error?.message || 'Unable to start Google Authenticator setup.');
+    } finally {
+      setIsManagingMfa(false);
+    }
+  };
+
+  const verifyMfaStepUpAndEnroll = async () => {
+    if (!mfaStepUp.factorId || mfaStepUp.code.length !== 6 || isVerifyingMfaStepUp) return;
+    setIsVerifyingMfaStepUp(true);
+    try {
+      const { data: challenge, error: challengeError } = await supabase.auth.mfa.challenge({
+        factorId: mfaStepUp.factorId,
+      });
+      if (challengeError) throw challengeError;
+
+      const { error: verifyError } = await supabase.auth.mfa.verify({
+        factorId: mfaStepUp.factorId,
+        challengeId: challenge.id,
+        code: mfaStepUp.code,
+      });
+      if (verifyError) throw verifyError;
+
+      setMfaStepUp({ required: false, factorId: '', code: '' });
+      await startMfaEnrollment();
+    } catch (error) {
+      showToast(error?.message || 'Authenticator verification failed. Wait for a new code and try again.');
+    } finally {
+      setIsVerifyingMfaStepUp(false);
+    }
+  };
+
+  const cancelMfaEnrollment = async () => {
+    const factorId = mfaSetup.factorId;
+    setMfaSetup({ enrolling: false, factorId: '', qrSvg: '', secret: '', code: '' });
+    if (!factorId) return;
+    try {
+      await supabase.auth.mfa.unenroll({ factorId });
+    } catch {
+      // The unverified factor will be cleaned up before the next enrollment attempt.
+    }
+  };
+
+  const handleRemoveMfaFactor = async (factor) => {
+    if (!factor?.id || isManagingMfa) return;
+    if (mfaFactors.length <= 1) {
+      showToast('Add and verify a backup authenticator before removing your only active factor.');
+      return;
+    }
+    if (!window.confirm(`Remove ${factor.friendly_name || 'this authenticator'}? You will no longer be able to use its codes.`)) return;
+
+    setIsManagingMfa(true);
+    try {
+      const { data: assurance, error: assuranceError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (assuranceError) throw assuranceError;
+      if (assurance?.currentLevel !== 'aal2') {
+        throw new Error('Verify an active authenticator during sign-in before removing a factor.');
+      }
+
+      const { error } = await supabase.auth.mfa.unenroll({ factorId: factor.id });
+      if (error) throw error;
+      await refreshMfaFactors();
+      void appendSecurityLog('security.2fa_remove', 'Removed an authenticator factor.', 'security/2fa');
+      showToast('Authenticator removed successfully.');
+    } catch (error) {
+      showToast(error?.message || 'Unable to remove the authenticator.');
+    } finally {
+      setIsManagingMfa(false);
     }
   };
 
@@ -1839,10 +2026,11 @@ export default function SettingsPage() {
                   <button
                     type="button"
                     onClick={handleRequestPasswordOtp}
-                    className="px-4 py-2 rounded-lg text-white text-sm font-semibold"
+                    disabled={isUpdatingPassword || isVerifyingPasswordOtp || isVerifyingPasswordMfa}
+                    className="px-4 py-2 rounded-lg text-white text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                     style={{ backgroundColor: theme.primaryColor }}
                   >
-                    Change Password
+                    {isUpdatingPassword ? 'Updating...' : 'Change Password'}
                   </button>
                   {isOtpSent && <span className="text-xs text-slate-500">OTP sent to your email. Enter it below to finish.</span>}
                 </div>
@@ -1890,26 +2078,106 @@ export default function SettingsPage() {
                     </p>
                   </div>
                 </div>
-                {isLoadingMfaStatus ? (
-                  <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
-                    Checking...
-                  </span>
-                ) : security.twoFactorEnabled ? (
-                  <span className="shrink-0 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
-                    Required · Active
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleEnsureMfaEnabled}
-                    className="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
-                    style={{ backgroundColor: theme.primaryColor }}
-                    disabled={mfaSetup.enrolling}
-                  >
-                    Set up now
-                  </button>
-                )}
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                  {isLoadingMfaStatus ? (
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">Checking...</span>
+                  ) : security.twoFactorEnabled ? (
+                    <>
+                      <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">Required · Active</span>
+                      <button
+                        type="button"
+                        onClick={handleStartMfaEnrollment}
+                        disabled={mfaSetup.enrolling || isManagingMfa}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                      >
+                        Add backup authenticator
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleEnsureMfaEnabled}
+                      className="rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                      style={{ backgroundColor: theme.primaryColor }}
+                      disabled={mfaSetup.enrolling}
+                    >
+                      Set up now
+                    </button>
+                  )}
+                </div>
               </div>
+
+              {mfaStepUp.required && (
+                <div className="mt-4 space-y-3 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                  <div>
+                    <p className="text-sm font-semibold text-blue-950">Verify an existing authenticator</p>
+                    <p className="mt-1 text-xs leading-5 text-blue-800">Supabase requires an AAL2 session before another authenticator can be enrolled.</p>
+                  </div>
+                  {mfaFactors.length > 1 && (
+                    <select
+                      value={mfaStepUp.factorId}
+                      onChange={(event) => setMfaStepUp((prev) => ({ ...prev, factorId: event.target.value, code: '' }))}
+                      className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2.5 text-sm text-slate-800"
+                    >
+                      {mfaFactors.map((factor, index) => (
+                        <option key={factor.id} value={factor.id}>{factor.friendly_name || `Google Authenticator ${index + 1}`}</option>
+                      ))}
+                    </select>
+                  )}
+                  <input
+                    value={mfaStepUp.code}
+                    onChange={(event) => setMfaStepUp((prev) => ({ ...prev, code: event.target.value.replace(/\D/g, '').slice(0, 6) }))}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    placeholder="Enter current 6-digit code"
+                    className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2.5 text-sm tracking-[0.3em]"
+                  />
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button type="button" onClick={() => setMfaStepUp({ required: false, factorId: '', code: '' })} disabled={isVerifyingMfaStepUp} className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60">Cancel</button>
+                    <button type="button" onClick={() => setShowMfaRecoveryHelp(true)} disabled={isVerifyingMfaStepUp} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-60">I no longer have access</button>
+                    <button type="button" onClick={verifyMfaStepUpAndEnroll} disabled={mfaStepUp.code.length !== 6 || isVerifyingMfaStepUp} className="rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-60" style={{ backgroundColor: theme.primaryColor }}>
+                      {isVerifyingMfaStepUp ? 'Verifying...' : 'Verify and continue'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showMfaRecoveryHelp && (
+                <div className="mt-4 rounded-lg border border-amber-300 bg-amber-100 p-4 text-amber-950">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-bold">The lost authenticator must be reset</p>
+                      <p className="mt-1 text-xs leading-5">
+                        Email recovery creates an AAL1 session, but Supabase does not allow that session to replace an existing MFA factor. Ask a different authorized administrator to verify your identity and remove the lost factor. If this is the only administrator account, the Supabase project owner must remove it from Auth administration. You will then sign in again and enroll a new authenticator.
+                      </p>
+                    </div>
+                    <button type="button" onClick={() => setShowMfaRecoveryHelp(false)} className="shrink-0 rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-semibold text-amber-950">Close</button>
+                  </div>
+                </div>
+              )}
+
+              {mfaFactors.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Verified authenticators</p>
+                  {mfaFactors.map((factor, index) => (
+                    <div key={factor.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-800">{factor.friendly_name || `Google Authenticator ${index + 1}`}</p>
+                        <p className="text-xs text-slate-500">Verified and available during sign-in</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMfaFactor(factor)}
+                        disabled={mfaFactors.length <= 1 || isManagingMfa}
+                        title={mfaFactors.length <= 1 ? 'Add a backup authenticator before removing this factor.' : 'Remove authenticator'}
+                        className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {mfaSetup.enrolling && (
                 <div className="mt-4 rounded-lg border border-slate-200 p-4 space-y-3">
@@ -1934,8 +2202,23 @@ export default function SettingsPage() {
                     className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm tracking-[0.3em]"
                   />
                   {isVerifyingMfaCode && <p className="text-xs text-slate-500">Verifying authenticator code...</p>}
+                  <div className="flex justify-end">
+                    <button type="button" onClick={cancelMfaEnrollment} disabled={isVerifyingMfaCode} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60">
+                      Cancel setup
+                    </button>
+                  </div>
                 </div>
               )}
+
+              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <p className="font-semibold">If you lose access to Google Authenticator</p>
+                <ol className="mt-1 list-decimal space-y-1 pl-5 text-xs leading-5">
+                  <li>Use a verified backup authenticator during sign-in, if available.</li>
+                  <li>If every authenticator is unavailable, choose <strong>Recovery Email</strong> on the login verification screen to regain limited account access.</li>
+                  <li>Ask an authorized administrator to reset the lost MFA factor after verifying your identity, then enroll a new authenticator at your next sign-in.</li>
+                </ol>
+                <p className="mt-2 text-xs">Supabase does not provide recovery codes, so registering a backup authenticator in advance is recommended.</p>
+              </div>
             </section>
 
             <section className="rounded-xl border border-slate-200 p-5">

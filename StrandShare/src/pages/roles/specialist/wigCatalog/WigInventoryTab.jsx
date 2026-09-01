@@ -49,7 +49,6 @@ function StatusBadge({ row }) {
 export default function WigInventoryTab({
   rows,
   loading,
-  onRefresh,
   onAdjustStock,
   onOpenHistory,
   onOpenBundleScanner,
@@ -178,14 +177,6 @@ export default function WigInventoryTab({
                   <option value="stock-high">Stock high-low</option>
                 </select>
               </label>
-              <button
-                type="button"
-                onClick={onRefresh}
-                disabled={loading}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
-              </button>
             </div>
           </div>
         </div>

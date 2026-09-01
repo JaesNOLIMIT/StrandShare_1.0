@@ -17,7 +17,6 @@ import {
   Mail,
   MapPin,
   Phone,
-  RefreshCw,
   Satellite,
   Search,
   Send,
@@ -30,6 +29,7 @@ import {
 import { supabase, isSupabaseConfigured } from '../../../lib/supabaseClient';
 import { useTheme } from '../../../context/ThemeContext';
 import { triggerSmtpNow } from '../../../lib/smtpTriggerClient';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
@@ -1483,44 +1483,31 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
             <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Program Applications</h1>
             <p className="text-sm text-slate-600">Review submissions, contact requestors, then forward to admin or reject.</p>
         </div>
-        <button
-          type="button"
-          onClick={() => loadRows()}
-          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={isLoading}
-        >
-          <RefreshCw size={15} className={isLoading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+        <PageHeaderActions
+          onRefresh={() => loadRows()}
+          refreshLoading={isLoading}
+          helpTitle="Program application workflow"
+          helpContent={(
+            <ol className="space-y-3">
+              {[
+                { step: 1, title: 'Review Intake', body: 'Check the applicant identity, supporting files, contact details, and proposed program.' },
+                { step: 2, title: 'Contact + Notes', body: 'Contact the requestor using the preferred method, then record and save the relevant notes.' },
+                { step: 3, title: 'Decision', body: 'Reject an ineligible application or submit a complete application to admin for final approval.' },
+              ].map((stepRow) => (
+                <li key={stepRow.step} className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <span className="flex h-7 w-7 flex-none items-center justify-center rounded-full text-xs font-bold text-white" style={{ backgroundColor: primaryColor }}>
+                    {stepRow.step}
+                  </span>
+                  <div>
+                    <p className="font-semibold text-slate-900">{stepRow.title}</p>
+                    <p className="mt-0.5 text-sm leading-5 text-slate-600">{stepRow.body}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        />
         </div>
-
-      <div className="rounded-xl border border-slate-200 bg-white px-5 py-4">
-        <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Workflow</p>
-        <div className="grid grid-cols-1 gap-y-3 sm:grid-cols-3 sm:gap-y-0">
-          {[
-            { step: 1, title: 'Review Intake', body: 'Check applicant details, files, and proposed program.' },
-            { step: 2, title: 'Contact + Notes', body: 'Contact requestor using preferred method and save notes.' },
-            { step: 3, title: 'Decision', body: 'Reject by staff or submit to admin for approval.' },
-          ].map((stepRow, index) => (
-            <div
-              key={stepRow.step}
-              className={`flex items-start gap-2.5 ${index > 0 ? 'sm:border-l sm:border-slate-100 sm:pl-5' : ''} ${index < 2 ? 'sm:pr-5' : ''}`}
-            >
-              <span
-                className="flex h-5 w-5 flex-none items-center justify-center rounded-full text-[10px] font-bold text-white"
-                style={{ backgroundColor: primaryColor }}
-                aria-hidden
-              >
-                {stepRow.step}
-              </span>
-              <div className="min-w-0">
-                <p className="text-xs font-semibold text-slate-800">{stepRow.title}</p>
-                <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{stepRow.body}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
 
       {notice.text && createPortal(
         <div

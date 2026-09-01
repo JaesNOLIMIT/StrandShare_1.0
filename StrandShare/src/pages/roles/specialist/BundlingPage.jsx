@@ -1304,9 +1304,9 @@ export default function BundlingPage() {
 
   return (
     <div className="space-y-6" style={rootStyle}>
-      <header className="flex flex-wrap items-center justify-between gap-3">
+      <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-            <h1 className="role-page-title text-2xl font-bold md:text-3xl" style={headingStyle}>Bundling</h1>
+            <h1 className="role-page-title text-2xl font-bold" style={headingStyle}>Bundling</h1>
             <p className="text-sm" style={{ color: secondaryTextColor }}>
               Open a draft, scan {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX} donor waybills, then close it to print the bundle waybill.
             </p>

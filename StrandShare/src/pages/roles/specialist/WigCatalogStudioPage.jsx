@@ -13,6 +13,7 @@ import {
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 import AddWigTab from './wigCatalog/AddWigTab';
 import BundleCompletionScanner from './wigCatalog/BundleCompletionScanner';
 import WigInventoryTab from './wigCatalog/WigInventoryTab';
@@ -484,24 +485,33 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
   return (
     <div className="space-y-5">
       <header>
-        <div className="flex flex-col gap-5 pb-7 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-col gap-3 pb-5 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="role-page-title text-2xl font-semibold tracking-tight text-slate-700 sm:text-3xl">
+            <h1 className="role-page-title text-2xl font-bold text-slate-900">
               Wig Catalog Studio
             </h1>
-            <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-600">
+            <p className="max-w-3xl text-sm text-slate-600">
               Add catalog-ready wigs with private local AI, review similar styles,
               confirm photo try-on, and monitor inventory from one workspace.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setTab(TAB_ADD)}
-            className="inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-lg px-5 py-3 text-sm font-semibold text-white shadow-sm"
-            style={{ backgroundColor: accent }}
-          >
-            <PlusCircle size={17} /> Add New Wig
-          </button>
+          <div className="flex shrink-0 items-center gap-2 self-start">
+            <PageHeaderActions
+              onRefresh={() => loadInventory()}
+              refreshLoading={loading}
+              autoRefreshOnChanges={false}
+              helpTitle="About Wig Catalog Studio"
+              helpContent={<p>Review wig inventory or open Add Wig to create catalog-ready wig records and starting stock.</p>}
+            />
+            <button
+              type="button"
+              onClick={() => setTab(TAB_ADD)}
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold text-white shadow-sm"
+              style={{ backgroundColor: accent }}
+            >
+              <PlusCircle size={16} /> Add New Wig
+            </button>
+          </div>
         </div>
 
         <nav className="flex gap-7 border-b border-slate-300" aria-label="Wig catalog sections">
@@ -546,7 +556,6 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
         <WigInventoryTab
           rows={inventory}
           loading={loading}
-          onRefresh={loadInventory}
           onAdjustStock={openStockModal}
           onOpenHistory={openHistory}
           onOpenBundleScanner={openBundleScanner}

@@ -84,7 +84,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
   const { showToast } = useToast();
   const primaryColor = theme?.primaryColor || '#0f766e';
   const [rows, setRows] = useState([]);
-  const [period, setPeriod] = useState('month');
+  const [period, setPeriod] = useState('all');
   const [status, setStatus] = useState('all');
   const [eventFilter, setEventFilter] = useState('all');
   const [dateFrom, setDateFrom] = useState('');
@@ -255,7 +255,6 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
       if (!term) return true;
       return [
         row.Submission_ID,
-        row.Inventory_ID,
         row.Waybill_Code,
         row.Bundle_ID,
         row.wig?.Wig_Code,
@@ -432,7 +431,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
             <table className="min-w-full text-left text-sm">
               <thead className="bg-slate-50 text-xs text-slate-600">
                 <tr>
-                  <th className="px-4 py-3 font-semibold">Inventory</th>
+                  <th className="px-4 py-3 font-semibold">Submission ID</th>
                   <th className="px-4 py-3 font-semibold">Waybill</th>
                   <th className="px-4 py-3 font-semibold">Donor / Source</th>
                   <th className="px-4 py-3 font-semibold">Hair details</th>
@@ -445,8 +444,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
                 {filteredRows.map((row) => (
                   <tr key={row.Inventory_ID} className="border-t border-slate-200 align-top hover:bg-slate-50/60">
                     <td className="px-4 py-3">
-                      <p className="font-mono text-xs font-bold text-slate-900">CHI-{String(row.Inventory_ID).padStart(6, '0')}</p>
-                      <p className="text-[11px] text-slate-500">Submission #{row.Submission_ID}</p>
+                      <p className="font-mono text-xs font-bold text-slate-900">{row.Submission_ID}</p>
                     </td>
                     <td className="px-4 py-3">
                       {row.Waybill_Code ? (

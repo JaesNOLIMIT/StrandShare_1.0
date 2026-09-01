@@ -8,7 +8,6 @@ import {
   Hash,
   Loader2,
   Paintbrush,
-  RefreshCw,
   Ruler,
   Save,
   Scissors,
@@ -422,23 +421,12 @@ export default function WigRequirementsPage({ userProfile }) {
               Global qualification standards for hair donations. Updates apply to the shared rule set.
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            {isDirty && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700">
-                <AlertTriangle size={11} />
-                Unsaved changes
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={loadWigRequirements}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
-              disabled={isLoading}
-            >
-              <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
-              Refresh
-            </button>
-          </div>
+          {isDirty && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-700">
+              <AlertTriangle size={11} />
+              Unsaved changes
+            </span>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-px border-t border-slate-100 bg-slate-100 sm:grid-cols-3">

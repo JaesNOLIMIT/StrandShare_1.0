@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CalendarDays, CheckCircle2, Info, Loader2, RefreshCw, Search, X } from 'lucide-react';
+import { CalendarDays, CheckCircle2, Info, Loader2, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import PageHeaderActions from '../../../components/PageHeaderActions';
@@ -1142,6 +1142,18 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     });
   }, [rows, activeStatusFilter, searchTerm, requestDateFrom, requestDateTo]);
 
+  const hasActiveRequestFilters = activeStatusFilter !== 'all_active'
+    || Boolean(requestDateFrom)
+    || Boolean(requestDateTo)
+    || Boolean(searchTerm.trim());
+
+  const clearRequestFilters = () => {
+    setActiveStatusFilter('all_active');
+    setRequestDateFrom('');
+    setRequestDateTo('');
+    setSearchTerm('');
+  };
+
   const quickStats = useMemo(() => {
     const pendingCount = rows.filter((row) => row.statusKey === 'pending').length;
     const acceptedAllocatedCount = rows.filter((row) => row.statusKey === 'accepted_allocated').length;
@@ -1438,54 +1450,76 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
         ))}
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-5">
-          <div className="relative xl:col-span-2">
-            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-xs text-slate-800 focus:border-slate-500 focus:outline-none"
-              placeholder="Search requests, patients, hospitals, wigs..."
-            />
+      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-200 p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <SlidersHorizontal size={15} className="text-slate-500" />
+            <div>
+              <p className="text-sm font-semibold text-slate-800">Filter wig requests</p>
+              <p className="text-[11px] text-slate-500">Showing {filteredRows.length} of {rows.length} requests</p>
+            </div>
           </div>
-
-          <select
-            value={activeStatusFilter}
-            onChange={(event) => setActiveStatusFilter(event.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
-            aria-label="Wig request status filter"
-          >
-            {STATUS_FILTERS.map((filterItem) => (
-              <option key={filterItem.id} value={filterItem.id}>{filterItem.label}</option>
-            ))}
-          </select>
-
-          <input
-            type="date"
-            value={requestDateFrom}
-            onChange={(event) => setRequestDateFrom(event.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
-            aria-label="Request from date"
-            title="From date"
-          />
-
-          <input
-            type="date"
-            value={requestDateTo}
-            onChange={(event) => setRequestDateTo(event.target.value)}
-            min={requestDateFrom || undefined}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
-            aria-label="Request to date"
-            title="To date"
-          />
-
+          {hasActiveRequestFilters && (
+            <button type="button" onClick={clearRequestFilters} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 hover:text-slate-900">
+              <X size={13} /> Clear filters
+            </button>
+          )}
         </div>
-      </div>
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[170px_170px_minmax(220px,1fr)_minmax(360px,2.5fr)]">
+          <label className="space-y-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">From</span>
+            <input
+              type="date"
+              value={requestDateFrom}
+              onChange={(event) => setRequestDateFrom(event.target.value)}
+              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
+            />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">To</span>
+            <input
+              type="date"
+              value={requestDateTo}
+              onChange={(event) => setRequestDateTo(event.target.value)}
+              min={requestDateFrom || undefined}
+              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
+            />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Status</span>
+            <select
+              value={activeStatusFilter}
+              onChange={(event) => setActiveStatusFilter(event.target.value)}
+              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
+            >
+              {STATUS_FILTERS.map((filterItem) => (
+                <option key={filterItem.id} value={filterItem.id}>{filterItem.label}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Search</span>
+            <div className="relative">
+              <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                className="w-full rounded-md border border-slate-300 bg-white py-2 pl-8 pr-3 text-xs text-slate-800 focus:border-slate-500 focus:outline-none"
+                placeholder="Request, patient, hospital, wig, status, or condition"
+              />
+            </div>
+          </label>
+        </div>
+        </div>
 
       {notice.text && (
         <div
-          className={`rounded-lg border px-3 py-2 text-sm font-medium ${
+          className={`m-4 rounded-lg border px-3 py-2 text-sm font-medium ${
             notice.kind === 'error'
               ? 'border-red-200 bg-red-50 text-red-800'
               : notice.kind === 'warning'
@@ -1496,12 +1530,6 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           {notice.text}
         </div>
       )}
-
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <div className="border-b border-slate-200 px-4 py-3">
-          <h2 className="text-lg font-semibold text-slate-900">Wig Request Management</h2>
-          <p className="mt-0.5 text-xs text-slate-500">Review request details and continue the role-appropriate status workflow.</p>
-        </div>
 
         {isLoading ? (
           <div className="px-4 py-8 text-sm text-slate-600 inline-flex items-center gap-2">

@@ -10,7 +10,6 @@ import {
   Filter,
   Loader2,
   Package,
-  RefreshCw,
   ShieldCheck,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
@@ -31,6 +30,7 @@ import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { HAIR_BUNDLE_STATUS } from '../../../lib/hairSubmissionWorkflow';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
@@ -979,23 +979,19 @@ export default function GenerateReportsPage({ userProfile }) {
     <div className="space-y-6" style={rootStyle}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="role-page-title text-3xl font-bold mb-2" style={headingStyle}>Reports</h1>
-          <p style={{ color: secondaryTextColor }}>
+          <h1 className="role-page-title text-2xl font-bold" style={headingStyle}>Reports</h1>
+          <p className="text-sm" style={{ color: secondaryTextColor }}>
             Generate QA, bundling, and wig inventory reports. Filter by date, status, or event, then export to CSV or PDF.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => loadAll()}
-            disabled={isLoading}
-            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3.5 py-2 text-sm font-semibold disabled:opacity-60"
-            style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-          >
-            {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            Refresh data
-          </button>
-        </div>
+        <PageHeaderActions
+          onRefresh={() => loadAll()}
+          refreshLoading={isLoading}
+          refreshLabel="Refresh"
+          autoRefreshOnChanges={false}
+          helpTitle="About Specialist Reports"
+          helpContent={<p>Filter quality checks, bundles, and wig inventory records, then export the selected report to CSV or PDF.</p>}
+        />
       </header>
 
       {notice.text ? (

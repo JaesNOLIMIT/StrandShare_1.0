@@ -7,7 +7,6 @@ import {
   Loader2,
   MapPin,
   Pencil,
-  RefreshCw,
   Save,
   Search,
   Trash2,
@@ -18,6 +17,7 @@ import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { triggerSmtpNow } from '../../../lib/smtpTriggerClient';
 import { invokeAdminAccountManagement } from '../../../lib/adminAccountManagement';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const HOSPITALS_TABLE = 'Hospitals';
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
@@ -1294,13 +1294,24 @@ export default function ManageHospitalAccountsPage({ isActivePage = true }) {
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="role-page-title text-3xl font-bold text-gray-900">Manage H-Representative Accounts</h1>
           <p className="text-sm text-gray-600 mt-1">
             Review and maintain hospital records used by H-Representatives, patients, and wig request routing.
           </p>
         </div>
+        <PageHeaderActions
+          onRefresh={fetchHospitals}
+          refreshLoading={isLoadingHospitals}
+          helpTitle="About Manage H-Representative Accounts"
+          helpContent={(
+            <div className="space-y-2">
+              <p>Use <strong>Manage H-Representatives</strong> to review and maintain approved hospital records and their account access.</p>
+              <p>Use <strong>Hospital Applications</strong> to review pending partnership applications and approve or reject them.</p>
+            </div>
+          )}
+        />
       </div>
 
       <div className="border-b border-gray-200">
@@ -1331,7 +1342,7 @@ export default function ManageHospitalAccountsPage({ isActivePage = true }) {
 
       {activeTab === 'manage' && (
         <section className={cardClass()}>
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
+          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center">
             <div className="relative w-full md:max-w-sm">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
@@ -1342,19 +1353,6 @@ export default function ManageHospitalAccountsPage({ isActivePage = true }) {
                 style={{ '--tw-ring-color': theme.primaryColor }}
               />
             </div>
-
-            <button
-              type="button"
-              onClick={fetchHospitals}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold"
-              style={{
-                borderColor: `${theme.primaryColor}33`,
-                backgroundColor: `${theme.primaryColor}12`,
-                color: theme.primaryColor,
-              }}
-            >
-              <RefreshCw size={14} /> Refresh
-            </button>
           </div>
 
           {isLoadingHospitals ? (
@@ -1465,26 +1463,13 @@ export default function ManageHospitalAccountsPage({ isActivePage = true }) {
 
       {activeTab === 'applications' && (
         <section className={cardClass()}>
-          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="mb-4">
             <div>
               <h3 className="text-lg font-semibold text-gray-900">Hospital Applications</h3>
               <p className="mt-1 text-xs text-gray-500">
                 Review hospital partnership submissions and decide whether to approve or reject.
               </p>
             </div>
-
-            <button
-              type="button"
-              onClick={fetchHospitals}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold"
-              style={{
-                borderColor: `${theme.primaryColor}33`,
-                backgroundColor: `${theme.primaryColor}12`,
-                color: theme.primaryColor,
-              }}
-            >
-              <RefreshCw size={14} /> Refresh
-            </button>
           </div>
 
           <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr,220px]">

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Info, Loader2, RefreshCw, Save, MapPin, Search } from 'lucide-react';
+import { Info, Loader2, Save, MapPin, Search } from 'lucide-react';
 import maplibregl from 'maplibre-gl';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
@@ -794,7 +794,7 @@ export default function LogisticsDestinationSettingsPage({ userProfile }) {
   return (
     <div className="space-y-6" style={rootStyle}>
       <section className="rounded-2xl border bg-white p-6 shadow-sm" style={{ borderColor: `${secondaryColor}30`, backgroundColor }}>
-        <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
           <div>
             <h2 className="text-2xl font-bold" style={{ color: primaryTextColor, fontFamily: `${headingFont}, sans-serif` }}>
               Logistics Destination Settings
@@ -803,15 +803,6 @@ export default function LogisticsDestinationSettingsPage({ userProfile }) {
               Maintain the single global logistics destination record shown to users.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={loadSettings}
-            disabled={isLoading}
-            className="inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
-            style={{ borderColor: `${secondaryColor}55`, color: secondaryTextColor }}
-          >
-            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} /> Refresh
-          </button>
         </div>
 
         <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">

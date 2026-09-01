@@ -483,22 +483,12 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
     <div className="space-y-4" style={rootStyle}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="role-page-title mb-1 text-2xl font-bold" style={headingStyle}>Specialist Dashboard</h1>
-          <p style={{ color: secondaryTextColor }}>
-            Cached QA queue, bundling progress, and finished wig output. Refresh when you need the latest snapshot.
+          <h1 className="role-page-title text-2xl font-bold" style={headingStyle}>Specialist Dashboard</h1>
+          <p className="text-sm" style={{ color: secondaryTextColor }}>
+            QA queue, bundling progress, and finished wig output at a glance.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full border bg-white px-2.5 py-1 text-xs font-semibold"
-            style={{ borderColor: withColorAlpha(primaryColor, 0.25), color: secondaryTextColor }}
-          >
-            <span
-              className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: tertiaryTextColor }}
-            />
-            Cached
-          </span>
           <PageHeaderActions
             onRefresh={() => loadData()}
             refreshLoading={isLoading}

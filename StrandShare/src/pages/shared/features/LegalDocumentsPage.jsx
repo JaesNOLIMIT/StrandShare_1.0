@@ -4,7 +4,6 @@ import {
   Eye,
   FileText,
   Loader2,
-  RefreshCw,
   Upload,
 } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
@@ -126,7 +125,6 @@ export default function LegalDocumentsPage({ userProfile }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [pdfFile, setPdfFile] = useState(null);
   const [notice, setNotice] = useState({ kind: '', text: '' });
-  const [isLoading, setIsLoading] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [isActivatingId, setIsActivatingId] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
@@ -172,7 +170,6 @@ export default function LegalDocumentsPage({ userProfile }) {
     }
 
     try {
-      setIsLoading(true);
       setNotice({ kind: '', text: '' });
 
       const { data, error } = await supabase
@@ -193,8 +190,6 @@ export default function LegalDocumentsPage({ userProfile }) {
       });
     } catch (error) {
       setNotice({ kind: 'error', text: mapLoadError(error?.message) });
-    } finally {
-      setIsLoading(false);
     }
   }, []);
 
@@ -380,22 +375,13 @@ export default function LegalDocumentsPage({ userProfile }) {
 
   return (
     <div className="space-y-6" style={rootStyle}>
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div>
         <div>
           <h1 className="role-page-title text-3xl font-bold text-gray-900">Legal Documents</h1>
           <p className="mt-1 text-sm text-gray-600">
             Manage and publish the latest PDF consent form for minors with version history.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => loadDocuments()}
-          disabled={isLoading}
-          className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-        >
-          {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          Refresh
-        </button>
       </div>
 
       {notice.text ? (

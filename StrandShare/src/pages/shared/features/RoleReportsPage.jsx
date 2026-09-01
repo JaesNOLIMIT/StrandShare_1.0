@@ -11,7 +11,6 @@ import {
   FileText,
   Loader2,
   Package,
-  RefreshCw,
   Search,
   ScanLine,
   Send,
@@ -33,6 +32,7 @@ import {
   PieChart,
   Pie,
 } from 'recharts';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
@@ -1045,7 +1045,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       style={{ fontFamily: `${fontFamily}, sans-serif`, color: primaryTextColor }}
     >
       {/* Plain title row */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1
             className="role-page-title text-2xl font-bold"
@@ -1056,35 +1056,35 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           <p className="text-sm" style={{ color: secondaryTextColor }}>
             Filter, visualize, and export data on events, wigs, and partner activity.
           </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Last refreshed: <strong className="font-semibold text-slate-700">{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : 'Not refreshed yet'}</strong>
+          </p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          <span className="hidden sm:inline">Last refreshed: <strong className="font-semibold text-slate-700">{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : 'â€”'}</strong></span>
-          <button
-            type="button"
-            onClick={() => loadTemplateRows()}
-            disabled={isLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
-          >
-            <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <PageHeaderActions
+            onRefresh={() => loadTemplateRows()}
+            refreshLoading={isLoading}
+            autoRefreshOnChanges={false}
+            helpTitle={isAdmin ? 'About Admin Reports' : 'About Staff Reports'}
+            helpContent={<p>Select a report, apply filters, review the visual summary, and export the current result to CSV or PDF.</p>}
+          />
           <button
             type="button"
             onClick={exportCsv}
             disabled={isExporting || filteredRows.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-100 disabled:opacity-60"
           >
-            {isExporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+            {isExporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
             CSV
           </button>
           <button
             type="button"
             onClick={exportPdf}
             disabled={isExporting || filteredRows.length === 0}
-            className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-60"
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg px-4 text-sm font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-60"
             style={{ backgroundColor: primaryColor }}
           >
-            <FileText size={13} />
+            <FileText size={15} />
             PDF
           </button>
         </div>

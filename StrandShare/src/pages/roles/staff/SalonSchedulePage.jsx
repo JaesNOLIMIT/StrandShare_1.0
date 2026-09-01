@@ -12,7 +12,6 @@ import {
   Mail,
   MapPin,
   Phone,
-  RefreshCw,
   Save,
   Scissors,
   Settings2,
@@ -21,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const APPOINTMENTS_TABLE = 'Salon_Donation_Appointments';
 const HOURS_TABLE = 'Salon_Operating_Hours';
@@ -522,10 +522,10 @@ export default function SalonSchedulePage({ isActivePage = true }) {
 
   return (
     <div className="min-w-0 space-y-5" style={{ color: primaryTextColor }}>
-      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-300 pb-5">
+      <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="role-page-title text-3xl font-bold" style={{ fontFamily: `${headingFont}, sans-serif` }}>Salon Schedule</h1>
-          <p className="mt-1 max-w-3xl text-sm" style={{ color: secondaryTextColor }}>
+          <h1 className="role-page-title text-2xl font-bold" style={{ fontFamily: `${headingFont}, sans-serif` }}>Salon Schedule</h1>
+          <p className="max-w-3xl text-sm" style={{ color: secondaryTextColor }}>
             Review automatically confirmed salon donations, manage capacity and closures, and complete on-site hair intake.
           </p>
           <div className="mt-2 flex items-start gap-1.5 text-xs text-slate-500">
@@ -533,15 +533,18 @@ export default function SalonSchedulePage({ isActivePage = true }) {
             <span>{formatAddress(logistics)}</span>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void loadPage()}
-          disabled={isLoading}
-          className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 disabled:opacity-60"
-        >
-          {isLoading ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
-          Refresh
-        </button>
+        <PageHeaderActions
+          onRefresh={() => void loadPage()}
+          refreshLoading={isLoading}
+          autoRefreshOnChanges={false}
+          helpTitle="About Salon Schedule"
+          helpContent={(
+            <div className="space-y-2">
+              <p>Use <strong>Appointments</strong> to review confirmed salon donations and complete on-site intake.</p>
+              <p>Use <strong>Hours &amp; closures</strong> to manage capacity, operating hours, and special schedule overrides.</p>
+            </div>
+          )}
+        />
       </header>
 
       {notice.text ? (

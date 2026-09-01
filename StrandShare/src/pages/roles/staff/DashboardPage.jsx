@@ -538,7 +538,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
       style={{ fontFamily: `${fontFamily}, sans-serif`, color: primaryTextColor }}
     >
       {/* Plain title row */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1
             className="role-page-title text-2xl font-bold"
@@ -550,11 +550,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
             Intake workload, assigned operations, and wig workflow at a glance.
           </p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          <span className="hidden items-center gap-1.5 rounded-full border border-slate-200 px-2.5 py-1 text-[10px] font-semibold text-slate-600 sm:inline-flex">
-            <span className="h-2 w-2 rounded-full bg-slate-400" />
-            Cached
-          </span>
+        <div className="flex items-center gap-2">
           <PageHeaderActions
             onRefresh={loadDashboard}
             refreshLoading={isLoading}

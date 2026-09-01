@@ -8,7 +8,6 @@ import {
   Image as ImageIcon,
   Loader2,
   PackageOpen,
-  RefreshCw,
   ScanLine,
   XCircle,
 } from 'lucide-react';
@@ -16,6 +15,7 @@ import jsQR from 'jsqr';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 import WaybillScanResult from '../../../components/scanning/WaybillScanResult';
 import {
   HAIR_SUBMISSION_STATUS,
@@ -1085,23 +1085,19 @@ export default function QualityCheckPage() {
 
   return (
     <div className="min-w-0 space-y-6 overflow-x-hidden" style={rootStyle}>
-      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-300 pb-5">
+      <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="role-page-title text-3xl font-bold" style={headingStyle}>Hair Quality Check</h1>
-          <p className="mt-1 text-sm" style={{ color: secondaryTextColor }}>
+          <h1 className="role-page-title text-2xl font-bold" style={headingStyle}>Hair Quality Check</h1>
+          <p className="text-sm" style={{ color: secondaryTextColor }}>
             Scan a waybill, compare the received hair with the submitted details, then approve or reject.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => loadQueue()}
-          disabled={isLoadingQueue}
-          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3.5 py-2 text-sm font-semibold disabled:opacity-60"
-          style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-        >
-          {isLoadingQueue ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          Refresh
-        </button>
+        <PageHeaderActions
+          onRefresh={() => loadQueue()}
+          refreshLoading={isLoadingQueue}
+          helpTitle="About Hair Quality Check"
+          helpContent={<p>Scan a donor waybill, compare the physical hair with the submitted details, and record the final quality decision.</p>}
+        />
       </header>
 
       {notice.text && (

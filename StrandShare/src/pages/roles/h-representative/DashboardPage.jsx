@@ -666,10 +666,6 @@ export default function DashboardPage({ userProfile, onInitialDataReady }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold sm:inline-flex" style={{ borderColor: hexToRgba(theme.secondaryColor, 0.3), color: theme.secondaryTextColor }}>
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: theme.secondaryColor }} />
-              Cached
-            </span>
             <PageHeaderActions
               onRefresh={loadDashboard}
               refreshLoading={isResolvingHospital || isLoading}

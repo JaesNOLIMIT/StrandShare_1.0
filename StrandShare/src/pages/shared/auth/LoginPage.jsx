@@ -126,6 +126,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
   const [mfaMethod, setMfaMethod] = useState('authenticator');
   const [mfaCode, setMfaCode] = useState('');
   const [mfaFactorId, setMfaFactorId] = useState(null);
+  const [mfaFactorOptions, setMfaFactorOptions] = useState([]);
   const [mfaQrSvg, setMfaQrSvg] = useState('');
   const [mfaSecret, setMfaSecret] = useState('');
   const [mfaPendingProfile, setMfaPendingProfile] = useState(null);
@@ -167,6 +168,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
     setMfaMethod('authenticator');
     setMfaCode('');
     setMfaFactorId(null);
+    setMfaFactorOptions([]);
     setMfaQrSvg('');
     setMfaSecret('');
     setMfaPendingProfile(null);
@@ -350,12 +352,14 @@ export default function LoginPage({ authNotice, onClearNotice }) {
       throw factorsError;
     }
 
-    const verifiedTotpFactor = (factorsData?.totp || []).find((factor) => factor.status === 'verified');
+    const verifiedTotpFactors = (factorsData?.totp || []).filter((factor) => factor.status === 'verified');
+    const verifiedTotpFactor = verifiedTotpFactors[0];
 
     if (verifiedTotpFactor) {
       setMfaPendingProfile(profile);
       setMfaPendingAuthUserId(authUserId);
       setMfaFactorId(verifiedTotpFactor.id);
+      setMfaFactorOptions(verifiedTotpFactors);
       setMfaMode('verify');
       setMfaMethod('authenticator');
       setSuccessMessage('Enter your Google Authenticator code to continue.');
@@ -950,7 +954,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
                   }}
                   disabled={isSubmitting || isSendingEmailOtp || isCompletingLogin}
                 >
-                  Email OTP
+                  Recovery Email
                 </button>
               </div>
 
@@ -981,9 +985,30 @@ export default function LoginPage({ authNotice, onClearNotice }) {
               )}
 
               {mfaMethod === 'authenticator' && mfaMode === 'verify' && (
-                <p className="text-sm text-gray-600">
-                  Enter the 6-digit code from your Google Authenticator app.
-                </p>
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-600">
+                    Enter the 6-digit code from your Google Authenticator app.
+                  </p>
+                  {mfaFactorOptions.length > 1 && (
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Authenticator device</label>
+                      <select
+                        value={mfaFactorId || ''}
+                        onChange={(event) => {
+                          setMfaFactorId(event.target.value);
+                          setMfaCode('');
+                        }}
+                        className="w-full rounded-lg border border-gray-300 bg-white p-2.5 text-gray-900"
+                      >
+                        {mfaFactorOptions.map((factor, index) => (
+                          <option key={factor.id} value={factor.id}>
+                            {factor.friendly_name || `Google Authenticator ${index + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
               )}
 
               {mfaMethod === 'authenticator' && (
@@ -1021,9 +1046,9 @@ export default function LoginPage({ authNotice, onClearNotice }) {
               {mfaMethod === 'email-otp' && (
                 <div className="space-y-4">
                   <div className="rounded-lg border border-gray-200 bg-white p-3">
-                    <p className="text-sm font-medium text-gray-800">Verify your registered email</p>
+                    <p className="text-sm font-medium text-gray-800">Recover access using your registered email</p>
                     <p className="mt-1 text-xs text-gray-500">
-                      Request the 6-digit OTP from your email, then enter it below.
+                      Use this when your authenticator device is unavailable. After signing in, add a replacement authenticator in Settings → Security.
                     </p>
                   </div>
 

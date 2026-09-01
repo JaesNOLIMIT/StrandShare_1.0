@@ -728,7 +728,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1
             className="role-page-title text-2xl font-bold leading-tight"
@@ -742,13 +742,6 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
         </div>
 
         <div className="flex items-center gap-2">
-          <span
-            className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold sm:inline-flex"
-            style={{ borderColor: withAlpha(secondaryColor, 0.28), color: palette.bodyText }}
-          >
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: secondaryColor }} />
-            Cached
-          </span>
           <PageHeaderActions
             onRefresh={loadDashboard}
             refreshLoading={isLoading}
