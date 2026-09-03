@@ -6,6 +6,9 @@ import { useTheme } from '../../context/ThemeContext';
 import { supabase } from '../../lib/supabaseClient';
 import philippineAddressOptions from '../../data/philippineAddressOptions.json';
 import { TransitionFlipEntrance } from '../../components/transitions/TransitionFlip';
+import LegalTermsGate from '../../components/LegalTermsGate';
+import useActiveLegalDocument from '../../hooks/useActiveLegalDocument';
+import { getAdultBirthdateMax, isAtLeastAge } from '../../lib/personIdentity';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const HOSPITAL_LOGOS_BUCKET = 'hospital_logos';
@@ -171,8 +174,8 @@ const initialForm = {
   email: '',
 };
 
-const LEAD_GENDER_OPTIONS = ['Male', 'Female', 'Non-binary', 'Prefer not to say'];
-const TERMS_AND_AGREEMENT_PDF_PATH = '/legal/donivra-terms-and-agreement.pdf';
+const LEAD_GENDER_OPTIONS = ['Male', 'Female'];
+const HOSPITAL_APPLICATION_TERMS_TYPE = 'hospital_representative_application_terms';
 
 function toTitle(value = '') {
   return String(value)
@@ -663,6 +666,7 @@ export default function PartnershipApplicationPage() {
   const backgroundColor = theme.backgroundColor || '#f8fafc';
   const primaryTextColor = theme.primaryTextColor || '#0f172a';
   const secondaryTextColor = theme.secondaryTextColor || '#334155';
+  const hospitalApplicationTerms = useActiveLegalDocument(HOSPITAL_APPLICATION_TERMS_TYPE);
   const [form, setForm] = useState(initialForm);
   const [activePage, setActivePage] = useState(1);
   const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
@@ -682,6 +686,7 @@ export default function PartnershipApplicationPage() {
   const [otpCooldownSeconds, setOtpCooldownSeconds] = useState(0);
   const [otpVerifiedEmail, setOtpVerifiedEmail] = useState('');
   const [otpVerifiedAuthUserId, setOtpVerifiedAuthUserId] = useState('');
+  const [fieldErrors, setFieldErrors] = useState({});
   const fieldRefs = useRef({});
   const logoInputRef = useRef(null);
   const otpClientRef = useRef(null);
@@ -690,6 +695,12 @@ export default function PartnershipApplicationPage() {
     borderColor: `${secondaryColor}55`,
     '--tw-ring-color': `${primaryColor}55`,
   };
+  const getFieldClassName = useCallback((fieldKey, extraClassName = '') => `${fieldClassName} ${fieldErrors[fieldKey] ? '!border-rose-500 !bg-rose-50 !ring-2 !ring-rose-200' : ''} ${extraClassName}`.trim(), [fieldErrors]);
+  const fieldError = useCallback((fieldKey) => (
+    fieldErrors[fieldKey]
+      ? <span className="block text-xs font-semibold text-rose-600">{fieldErrors[fieldKey]}</span>
+      : null
+  ), [fieldErrors]);
 
   const regionOptions = useMemo(() => {
     return toUnifiedRegionOptions(PHILIPPINE_ADDRESS_TREE);
@@ -792,6 +803,7 @@ export default function PartnershipApplicationPage() {
       && normalizePhilippineMobile(form.hospitalHeadContactNumber).length === 10
       && isValidEmail(form.hospitalHeadEmail)
       && form.street.trim()
+      && form.barangay.trim()
       && form.city.trim()
       && form.province.trim()
       && form.region.trim()
@@ -806,6 +818,7 @@ export default function PartnershipApplicationPage() {
     form.hospitalHeadContactNumber,
     form.hospitalHeadEmail,
     form.street,
+    form.barangay,
     form.city,
     form.province,
     form.region,
@@ -818,15 +831,18 @@ export default function PartnershipApplicationPage() {
     return (
       form.firstName.trim()
       && form.lastName.trim()
+      && isAtLeastAge(form.birthdate, 18)
+      && LEAD_GENDER_OPTIONS.includes(form.gender)
       && normalizePhilippineMobile(form.leadContactNumber).length === 10
       && form.leadStreet.trim()
+      && form.leadBarangay.trim()
       && form.leadCity.trim()
       && form.leadProvince.trim()
       && form.leadRegion.trim()
       && form.leadCountry.trim()
       && isValidEmail(form.email)
     );
-  }, [form.firstName, form.lastName, form.leadContactNumber, form.leadStreet, form.leadCity, form.leadProvince, form.leadRegion, form.leadCountry, form.email]);
+  }, [form.firstName, form.lastName, form.birthdate, form.gender, form.leadContactNumber, form.leadStreet, form.leadBarangay, form.leadCity, form.leadProvince, form.leadRegion, form.leadCountry, form.email]);
 
   const hasEntityRequiredFields = useMemo(() => hasHospitalRequiredFields, [hasHospitalRequiredFields]);
 
@@ -852,40 +868,44 @@ export default function PartnershipApplicationPage() {
     }, 140);
   }, []);
 
-  const getValidationIssue = useCallback((page) => {
-    const issue = (field, message) => ({ field, message });
+  const getValidationErrors = useCallback((page) => {
+    const errors = {};
+    const add = (field, message) => { if (!errors[field]) errors[field] = message; };
 
     if (page === 1) {
-      if (!form.hospitalName.trim()) return issue('hospitalName', 'Hospital name is required.');
-      if (!form.hospitalHeadName.trim()) return issue('hospitalHeadName', 'Hospital head/owner name is required.');
-      if (!form.hospitalHeadTitle.trim()) return issue('hospitalHeadTitle', 'Head/owner position is required.');
-      if (normalizePhilippineMobile(form.hospitalHeadContactNumber).length !== 10) return issue('hospitalHeadContactNumber', 'Head/owner contact number must be valid (+63 912 345 6789).');
-      if (!isValidEmail(form.hospitalHeadEmail)) return issue('hospitalHeadEmail', 'Head/owner email must be valid.');
-      if (!form.street.trim()) return issue('street', 'Street is required.');
-      if (!form.region.trim()) return issue('region', 'Region is required.');
-      if (!form.province.trim()) return issue('province', 'Province is required.');
-      if (!form.city.trim()) return issue('city', 'City/Municipality is required.');
-      if (selectedLatitude === null || selectedLongitude === null) return issue('latitude', 'Please set the exact location pin.');
-      return null;
+      if (!form.hospitalName.trim()) add('hospitalName', 'Hospital name is required.');
+      if (!form.hospitalHeadName.trim()) add('hospitalHeadName', 'Hospital head/owner name is required.');
+      if (!form.hospitalHeadTitle.trim()) add('hospitalHeadTitle', 'Head/owner position is required.');
+      if (normalizePhilippineMobile(form.hospitalHeadContactNumber).length !== 10) add('hospitalHeadContactNumber', 'Use the +63 912 345 6789 format.');
+      if (!isValidEmail(form.hospitalHeadEmail)) add('hospitalHeadEmail', 'Enter a valid head/owner email.');
+      if (!form.street.trim()) add('street', 'Street is required.');
+      if (!form.region.trim()) add('region', 'Region is required.');
+      if (!form.province.trim()) add('province', 'Province is required.');
+      if (!form.city.trim()) add('city', 'City/Municipality is required.');
+      if (!form.barangay.trim()) add('barangay', 'Barangay is required.');
+      if (selectedLatitude === null || selectedLongitude === null) add('latitude', 'Set the exact hospital location pin.');
     }
 
     if (page === 2) {
-      if (!form.firstName.trim()) return issue('firstName', 'First name is required.');
-      if (!form.lastName.trim()) return issue('lastName', 'Last name is required.');
-      if (normalizePhilippineMobile(form.leadContactNumber).length !== 10) return issue('leadContactNumber', 'H-Representative contact number must be valid (+63 912 345 6789).');
-      if (!isValidEmail(form.email)) return issue('email', 'H-Representative email must be valid.');
-      if (!form.leadStreet.trim()) return issue('leadStreet', 'Street is required.');
-      if (!form.leadRegion.trim()) return issue('leadRegion', 'Region is required.');
-      if (!form.leadProvince.trim()) return issue('leadProvince', 'Province is required.');
-      if (!form.leadCity.trim()) return issue('leadCity', 'City/Municipality is required.');
-      return null;
+      if (!form.firstName.trim()) add('firstName', 'First name is required.');
+      if (!form.lastName.trim()) add('lastName', 'Last name is required.');
+      if (!form.birthdate) add('birthdate', 'Birthdate is required.');
+      else if (!isAtLeastAge(form.birthdate, 18)) add('birthdate', 'The H-Representative must be at least 18 years old.');
+      if (!LEAD_GENDER_OPTIONS.includes(form.gender)) add('gender', 'Select Male or Female.');
+      if (normalizePhilippineMobile(form.leadContactNumber).length !== 10) add('leadContactNumber', 'Use the +63 912 345 6789 format.');
+      if (!isValidEmail(form.email)) add('email', 'Enter a valid H-Representative email.');
+      if (!form.leadStreet.trim()) add('leadStreet', 'Street is required.');
+      if (!form.leadRegion.trim()) add('leadRegion', 'Region is required.');
+      if (!form.leadProvince.trim()) add('leadProvince', 'Province is required.');
+      if (!form.leadCity.trim()) add('leadCity', 'City/Municipality is required.');
+      if (!form.leadBarangay.trim()) add('leadBarangay', 'Barangay is required.');
     }
 
     if (page === 4 && !isEmailOtpVerified) {
-      return issue('otpCode', 'Please verify email with the 6-digit OTP before submitting.');
+      add('otpCode', 'Verify email with the 6-digit OTP before submitting.');
     }
 
-    return null;
+    return errors;
   }, [
     form,
     selectedLatitude,
@@ -904,6 +924,12 @@ export default function PartnershipApplicationPage() {
     const nextValue = event.target.value;
     setErrorMessage('');
     setSuccessMessage('');
+    setFieldErrors((previous) => {
+      if (!previous[field]) return previous;
+      const next = { ...previous };
+      delete next[field];
+      return next;
+    });
 
     if (field === 'email') {
       const normalizedNextEmail = String(nextValue || '').trim().toLowerCase();
@@ -927,6 +953,12 @@ export default function PartnershipApplicationPage() {
   const onLocationPinChange = (nextLat, nextLng) => {
     setErrorMessage('');
     setSuccessMessage('');
+    setFieldErrors((previous) => {
+      if (!previous.latitude) return previous;
+      const next = { ...previous };
+      delete next.latitude;
+      return next;
+    });
     setForm((prev) => ({
       ...prev,
       latitude: Number(nextLat).toFixed(7),
@@ -948,6 +980,7 @@ export default function PartnershipApplicationPage() {
 
   const onRegionChange = (event) => {
     const regionName = event.target.value;
+    setFieldErrors((previous) => { const next = { ...previous }; delete next.region; return next; });
     setForm((prev) => ({
       ...prev,
       region: regionName,
@@ -959,6 +992,7 @@ export default function PartnershipApplicationPage() {
 
   const onProvinceChange = (event) => {
     const provinceName = event.target.value;
+    setFieldErrors((previous) => { const next = { ...previous }; delete next.province; return next; });
     setForm((prev) => ({
       ...prev,
       province: provinceName,
@@ -969,6 +1003,7 @@ export default function PartnershipApplicationPage() {
 
   const onCityChange = (event) => {
     const cityName = event.target.value;
+    setFieldErrors((previous) => { const next = { ...previous }; delete next.city; return next; });
     setForm((prev) => ({
       ...prev,
       city: cityName,
@@ -990,6 +1025,7 @@ export default function PartnershipApplicationPage() {
 
   const onLeadRegionChange = (event) => {
     const regionName = event.target.value;
+    setFieldErrors((previous) => { const next = { ...previous }; delete next.leadRegion; return next; });
     setForm((prev) => ({
       ...prev,
       leadRegion: regionName,
@@ -1001,6 +1037,7 @@ export default function PartnershipApplicationPage() {
 
   const onLeadProvinceChange = (event) => {
     const provinceName = event.target.value;
+    setFieldErrors((previous) => { const next = { ...previous }; delete next.leadProvince; return next; });
     setForm((prev) => ({
       ...prev,
       leadProvince: provinceName,
@@ -1011,6 +1048,7 @@ export default function PartnershipApplicationPage() {
 
   const onLeadCityChange = (event) => {
     const cityName = event.target.value;
+    setFieldErrors((previous) => { const next = { ...previous }; delete next.leadCity; return next; });
     setForm((prev) => ({
       ...prev,
       leadCity: cityName,
@@ -1020,6 +1058,12 @@ export default function PartnershipApplicationPage() {
 
   const onContactNumberChange = (field) => (event) => {
     const formatted = formatPhilippineMobileWithCountry(event.target.value);
+    setFieldErrors((previous) => {
+      if (!previous[field]) return previous;
+      const next = { ...previous };
+      delete next[field];
+      return next;
+    });
     setForm((prev) => ({
       ...prev,
       [field]: formatted,
@@ -1302,6 +1346,10 @@ export default function PartnershipApplicationPage() {
   };
 
   const acceptTermsAndContinue = () => {
+    if (!hospitalApplicationTerms.document?.legal_document_id || !hospitalApplicationTerms.previewUrl) {
+      setErrorMessage('The H-Representative Application Terms PDF is unavailable. Please try again after an administrator publishes it.');
+      return;
+    }
     if (!hasConfirmedTerms) {
       setErrorMessage('Please confirm that you agree to the Terms and Agreement before continuing.');
       return;
@@ -1317,13 +1365,15 @@ export default function PartnershipApplicationPage() {
     setErrorMessage('');
     setSuccessMessage('');
 
-    const issue = getValidationIssue(1);
-    if (issue) {
-      setErrorMessage(issue.message);
-      focusField(issue.field);
+    const errors = getValidationErrors(1);
+    if (Object.keys(errors).length) {
+      setFieldErrors(errors);
+      setErrorMessage('Complete the highlighted required hospital fields before continuing.');
+      focusField(Object.keys(errors)[0]);
       return;
     }
 
+    setFieldErrors({});
     setActivePage(2);
   };
 
@@ -1337,13 +1387,15 @@ export default function PartnershipApplicationPage() {
     setErrorMessage('');
     setSuccessMessage('');
 
-    const issue = getValidationIssue(2);
-    if (issue) {
-      setErrorMessage(issue.message);
-      focusField(issue.field);
+    const errors = getValidationErrors(2);
+    if (Object.keys(errors).length) {
+      setFieldErrors(errors);
+      setErrorMessage('Complete the highlighted required H-Representative fields before continuing.');
+      focusField(Object.keys(errors)[0]);
       return;
     }
 
+    setFieldErrors({});
     setActivePage(3);
   };
 
@@ -1356,6 +1408,18 @@ export default function PartnershipApplicationPage() {
   const goToOtpPage = () => {
     setErrorMessage('');
     setSuccessMessage('');
+    const hospitalErrors = getValidationErrors(1);
+    const representativeErrors = getValidationErrors(2);
+    if (Object.keys(hospitalErrors).length || Object.keys(representativeErrors).length) {
+      const showHospitalPage = Object.keys(hospitalErrors).length > 0;
+      const errors = showHospitalPage ? hospitalErrors : representativeErrors;
+      setActivePage(showHospitalPage ? 1 : 2);
+      setFieldErrors(errors);
+      setErrorMessage('Some required information changed or is missing. Complete the highlighted fields.');
+      focusField(Object.keys(errors)[0]);
+      return;
+    }
+    setFieldErrors({});
     setActivePage(4);
   };
 
@@ -1385,20 +1449,30 @@ export default function PartnershipApplicationPage() {
       return;
     }
 
-    if (!hasRequiredFields) {
-      setErrorMessage('Please complete all required fields.');
+    const hospitalErrors = getValidationErrors(1);
+    const representativeErrors = getValidationErrors(2);
+    if (Object.keys(hospitalErrors).length || Object.keys(representativeErrors).length) {
+      const showHospitalPage = Object.keys(hospitalErrors).length > 0;
+      const errors = showHospitalPage ? hospitalErrors : representativeErrors;
+      setActivePage(showHospitalPage ? 1 : 2);
+      setFieldErrors(errors);
+      setErrorMessage('Complete the highlighted required fields before submitting.');
+      focusField(Object.keys(errors)[0]);
       return;
     }
 
     if (!isEmailOtpVerified) {
-      setErrorMessage('Please verify your email with the 6-digit code before submitting.');
+      setFieldErrors({ otpCode: 'Verify email with the 6-digit OTP before submitting.' });
+      setErrorMessage('Verify the highlighted email code before submitting.');
+      focusField('otpCode');
       return;
     }
 
     const firstName = toTitle(form.firstName);
     const middleName = toTitle(form.middleName);
     const suffix = toTitle(form.suffix);
-    const gender = toTitle(form.gender);
+    const normalizedGender = toTitle(form.gender);
+    const gender = LEAD_GENDER_OPTIONS.includes(normalizedGender) ? normalizedGender : '';
     const lastName = toTitle(form.lastName);
     const hospitalName = form.hospitalName.trim();
     const hospitalHeadName = form.hospitalHeadName.trim();
@@ -1449,7 +1523,7 @@ export default function PartnershipApplicationPage() {
         }
       }
 
-      const submitApplicationResult = await submitClient.rpc('submit_partner_hospital_application', {
+      const submitApplicationResult = await submitClient.rpc('submit_partner_hospital_application_with_terms', {
         p_email: normalizedEmail,
         p_first_name: firstName,
         p_middle_name: middleName || null,
@@ -1479,6 +1553,8 @@ export default function PartnershipApplicationPage() {
         p_hospital_country: form.country.trim(),
         p_latitude: selectedLat,
         p_longitude: selectedLng,
+        p_terms_document_id: hospitalApplicationTerms.document.legal_document_id,
+        p_terms_version: hospitalApplicationTerms.document.version,
       });
 
       if (submitApplicationResult.error) {
@@ -1559,53 +1635,22 @@ export default function PartnershipApplicationPage() {
                   background: `linear-gradient(120deg, ${primaryColor}22, #ffffff)`,
                 }}
               >
-                <h1 className="text-2xl font-extrabold tracking-tight md:text-3xl" style={{ color: primaryTextColor }}>
-                  Terms and Conditions
-                </h1>
-                <p className="mt-2 max-w-3xl text-sm md:text-base" style={{ color: secondaryTextColor }}>
-                  Review and accept the Donivra Terms and Agreement before starting the partnership application.
-                </p>
+                <p className="text-xs font-bold uppercase tracking-[0.2em]" style={{ color: secondaryTextColor }}>Application requirement</p>
               </header>
 
               <div className="space-y-4 px-5 py-6 md:px-7 md:py-7">
-                <div className="overflow-hidden rounded-xl border bg-slate-50" style={{ borderColor: `${secondaryColor}33` }}>
-                  <iframe
-                    title="Donivra Terms and Agreement"
-                    src={TERMS_AND_AGREEMENT_PDF_PATH}
-                    className="h-[60vh] w-full bg-white"
-                  />
-                </div>
-
-                <p className="text-xs" style={{ color: secondaryTextColor }}>
-                  If the preview does not load, open the file here:{' '}
-                  <a
-                    href={TERMS_AND_AGREEMENT_PDF_PATH}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-semibold underline"
-                    style={{ color: primaryTextColor }}
-                  >
-                    Donivra Terms and Agreement (PDF)
-                  </a>
-                </p>
-
-                <label
-                  className="flex items-start gap-2 rounded-xl border bg-white px-3 py-3 text-sm"
-                  style={{ borderColor: `${secondaryColor}33`, color: secondaryTextColor }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={hasConfirmedTerms}
-                    onChange={(event) => {
-                      setHasConfirmedTerms(event.target.checked);
-                      if (event.target.checked) {
-                        setErrorMessage('');
-                      }
-                    }}
-                    className="mt-0.5 h-4 w-4 rounded border-slate-300"
-                  />
-                  <span>I have read and agree to the Donivra Terms and Agreement.</span>
-                </label>
+                <LegalTermsGate
+                  title="H-Representative Application Terms and Conditions"
+                  description="Review the active PDF before starting the partner hospital and H-Representative application."
+                  {...hospitalApplicationTerms}
+                  checked={hasConfirmedTerms}
+                  onCheckedChange={(checked) => {
+                    setHasConfirmedTerms(checked);
+                    if (checked) setErrorMessage('');
+                  }}
+                  onReload={hospitalApplicationTerms.reload}
+                  accentColor={primaryColor}
+                />
 
                 {errorMessage ? (
                   <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
@@ -1744,6 +1789,7 @@ export default function PartnershipApplicationPage() {
               <span>Page {currentStepNumber} of 4</span>
               <span>{stepLabel}</span>
             </div>
+            <p className="text-xs font-semibold text-slate-600"><span className="text-rose-600">*</span> Required field</p>
 
             {activePage === 1 ? (
               <fieldset className="space-y-5 rounded-2xl border bg-white p-5 shadow-sm" style={{ borderColor: `${secondaryColor}33` }}>
@@ -1758,11 +1804,12 @@ export default function PartnershipApplicationPage() {
                       ref={setFieldRef('hospitalName')}
                       value={form.hospitalName}
                       onChange={updateField('hospitalName')}
-                      className={fieldClassName}
+                      className={getFieldClassName('hospitalName')}
                       style={fieldStyle}
                       placeholder="Example: Donivra Medical Center"
                       required
                     />
+                    {fieldError('hospitalName')}
                   </label>
 
                   <label className="space-y-1 text-sm">
@@ -1771,11 +1818,12 @@ export default function PartnershipApplicationPage() {
                       ref={setFieldRef('hospitalHeadName')}
                       value={form.hospitalHeadName}
                       onChange={updateField('hospitalHeadName')}
-                      className={fieldClassName}
+                      className={getFieldClassName('hospitalHeadName')}
                       style={fieldStyle}
                       placeholder="Full name of owner or hospital head"
                       required
                     />
+                    {fieldError('hospitalHeadName')}
                   </label>
 
                   <label className="space-y-1 text-sm">
@@ -1784,11 +1832,12 @@ export default function PartnershipApplicationPage() {
                       ref={setFieldRef('hospitalHeadTitle')}
                       value={form.hospitalHeadTitle}
                       onChange={updateField('hospitalHeadTitle')}
-                      className={fieldClassName}
+                      className={getFieldClassName('hospitalHeadTitle')}
                       style={fieldStyle}
                       placeholder="Example: Medical Director"
                       required
                     />
+                    {fieldError('hospitalHeadTitle')}
                   </label>
 
                   <label className="space-y-1 text-sm">
@@ -1798,12 +1847,13 @@ export default function PartnershipApplicationPage() {
                       type="tel"
                       value={form.hospitalHeadContactNumber}
                       onChange={onContactNumberChange('hospitalHeadContactNumber')}
-                      className={fieldClassName}
+                      className={getFieldClassName('hospitalHeadContactNumber')}
                       style={fieldStyle}
                       inputMode="numeric"
                       placeholder="+63 912 345 6789"
                       required
                     />
+                    {fieldError('hospitalHeadContactNumber')}
                     <p className="text-[11px]" style={{ color: secondaryTextColor }}>Format only: +63 912 345 6789</p>
                   </label>
 
@@ -1814,11 +1864,12 @@ export default function PartnershipApplicationPage() {
                       type="email"
                       value={form.hospitalHeadEmail}
                       onChange={updateField('hospitalHeadEmail')}
-                      className={fieldClassName}
+                      className={getFieldClassName('hospitalHeadEmail')}
                       style={fieldStyle}
                       placeholder="head@example.com"
                       required
                     />
+                    {fieldError('hospitalHeadEmail')}
                   </label>
 
                   <label className="space-y-2 text-sm md:col-span-2">
@@ -1888,11 +1939,12 @@ export default function PartnershipApplicationPage() {
                       ref={setFieldRef('street')}
                       value={form.street}
                       onChange={updateField('street')}
-                      className={fieldClassName}
+                      className={getFieldClassName('street')}
                       style={fieldStyle}
                       placeholder="Street address"
                       required
                     />
+                    {fieldError('street')}
                   </label>
 
                   <label className="space-y-1 text-sm">
@@ -1915,7 +1967,7 @@ export default function PartnershipApplicationPage() {
                       value={form.region}
                       onChange={onRegionChange}
                       disabled={!form.country || regionOptions.length === 0}
-                      className={`${fieldClassName} disabled:cursor-not-allowed disabled:opacity-60`}
+                      className={getFieldClassName('region', 'disabled:cursor-not-allowed disabled:opacity-60')}
                       style={fieldStyle}
                       required
                     >
@@ -1926,6 +1978,7 @@ export default function PartnershipApplicationPage() {
                         </option>
                       ))}
                     </select>
+                    {fieldError('region')}
                   </label>
 
                   <label className="space-y-1 text-sm">
@@ -1935,7 +1988,7 @@ export default function PartnershipApplicationPage() {
                       value={form.province}
                       onChange={onProvinceChange}
                       disabled={!form.region || provinceOptions.length === 0}
-                      className={`${fieldClassName} disabled:cursor-not-allowed disabled:opacity-60`}
+                      className={getFieldClassName('province', 'disabled:cursor-not-allowed disabled:opacity-60')}
                       style={fieldStyle}
                       required
                     >
@@ -1946,6 +1999,7 @@ export default function PartnershipApplicationPage() {
                         </option>
                       ))}
                     </select>
+                    {fieldError('province')}
                   </label>
 
                   <label className="space-y-1 text-sm">
@@ -1955,7 +2009,7 @@ export default function PartnershipApplicationPage() {
                       value={form.city}
                       onChange={onCityChange}
                       disabled={!form.province || cityOptions.length === 0}
-                      className={`${fieldClassName} disabled:cursor-not-allowed disabled:opacity-60`}
+                      className={getFieldClassName('city', 'disabled:cursor-not-allowed disabled:opacity-60')}
                       style={fieldStyle}
                       required
                     >
@@ -1966,16 +2020,18 @@ export default function PartnershipApplicationPage() {
                         </option>
                       ))}
                     </select>
+                    {fieldError('city')}
                   </label>
 
                   <label className="space-y-1 text-sm md:col-span-2">
-                    <span className="font-semibold" style={{ color: secondaryTextColor }}>Barangay</span>
+                    <span className="font-semibold" style={{ color: secondaryTextColor }}>Barangay *</span>
                     {barangayOptions.length > 0 ? (
                       <select
+                        ref={setFieldRef('barangay')}
                         value={form.barangay}
                         onChange={updateField('barangay')}
                         disabled={!form.city}
-                        className={`${fieldClassName} disabled:cursor-not-allowed disabled:opacity-60`}
+                        className={getFieldClassName('barangay', 'disabled:cursor-not-allowed disabled:opacity-60')}
                         style={fieldStyle}
                       >
                         <option value="">Select barangay</option>
@@ -1987,13 +2043,15 @@ export default function PartnershipApplicationPage() {
                       </select>
                     ) : (
                       <input
+                        ref={setFieldRef('barangay')}
                         value={form.barangay}
                         onChange={updateField('barangay')}
-                        className={fieldClassName}
+                        className={getFieldClassName('barangay')}
                         style={fieldStyle}
                         placeholder="Type barangay if not listed"
                       />
                     )}
+                    {fieldError('barangay')}
                   </label>
                 </div>
 
@@ -2004,6 +2062,7 @@ export default function PartnershipApplicationPage() {
                     longitude={selectedLongitude}
                     onChange={onLocationPinChange}
                   />
+                  {fieldError('latitude')}
                   <div className="grid gap-3 md:grid-cols-2">
                     <label className="space-y-1 text-sm">
                       <span className="font-semibold" style={{ color: secondaryTextColor }}>Latitude *</span>
@@ -2011,7 +2070,7 @@ export default function PartnershipApplicationPage() {
                         ref={setFieldRef('latitude')}
                         value={form.latitude}
                         onChange={updateField('latitude')}
-                        className={fieldClassName}
+                        className={getFieldClassName('latitude')}
                         style={fieldStyle}
                         placeholder="Auto-filled from map pin"
                         readOnly
@@ -2023,7 +2082,7 @@ export default function PartnershipApplicationPage() {
                       <input
                         value={form.longitude}
                         onChange={updateField('longitude')}
-                        className={fieldClassName}
+                        className={getFieldClassName('latitude')}
                         style={fieldStyle}
                         placeholder="Auto-filled from map pin"
                         readOnly
@@ -2060,10 +2119,11 @@ export default function PartnershipApplicationPage() {
                         ref={setFieldRef('firstName')}
                         value={form.firstName}
                         onChange={updateField('firstName')}
-                        className={fieldClassName}
+                        className={getFieldClassName('firstName')}
                         style={fieldStyle}
                         required
                       />
+                      {fieldError('firstName')}
                     </label>
 
                     <label className="space-y-1 text-sm">
@@ -2082,10 +2142,11 @@ export default function PartnershipApplicationPage() {
                         ref={setFieldRef('lastName')}
                         value={form.lastName}
                         onChange={updateField('lastName')}
-                        className={fieldClassName}
+                        className={getFieldClassName('lastName')}
                         style={fieldStyle}
                         required
                       />
+                      {fieldError('lastName')}
                     </label>
 
                     <label className="space-y-1 text-sm">
@@ -2100,23 +2161,29 @@ export default function PartnershipApplicationPage() {
                     </label>
 
                     <label className="space-y-1 text-sm">
-                      <span className="font-semibold" style={{ color: secondaryTextColor }}>Birthdate (Optional)</span>
+                      <span className="font-semibold" style={{ color: secondaryTextColor }}>Birthdate *</span>
                       <input
+                        ref={setFieldRef('birthdate')}
                         type="date"
+                        max={getAdultBirthdateMax()}
                         value={form.birthdate}
                         onChange={updateField('birthdate')}
-                        className={fieldClassName}
+                        className={getFieldClassName('birthdate')}
                         style={fieldStyle}
+                        required
                       />
+                      {fieldError('birthdate')}
                     </label>
 
                     <label className="space-y-1 text-sm">
-                      <span className="font-semibold" style={{ color: secondaryTextColor }}>Gender (Optional)</span>
+                      <span className="font-semibold" style={{ color: secondaryTextColor }}>Gender *</span>
                       <select
+                        ref={setFieldRef('gender')}
                         value={form.gender}
                         onChange={updateField('gender')}
-                        className={fieldClassName}
+                        className={getFieldClassName('gender')}
                         style={fieldStyle}
+                        required
                       >
                         <option value="">Select gender</option>
                         {LEAD_GENDER_OPTIONS.map((option) => (
@@ -2125,6 +2192,7 @@ export default function PartnershipApplicationPage() {
                           </option>
                         ))}
                       </select>
+                      {fieldError('gender')}
                     </label>
 
                     <label className="space-y-1 text-sm">
@@ -2134,12 +2202,13 @@ export default function PartnershipApplicationPage() {
                         type="tel"
                         value={form.leadContactNumber}
                         onChange={onContactNumberChange('leadContactNumber')}
-                        className={fieldClassName}
+                        className={getFieldClassName('leadContactNumber')}
                         style={fieldStyle}
                         inputMode="numeric"
                         placeholder="+63 912 345 6789"
                         required
                       />
+                      {fieldError('leadContactNumber')}
                       <p className="text-[11px]" style={{ color: secondaryTextColor }}>Format only: +63 912 345 6789</p>
                     </label>
 
@@ -2150,11 +2219,12 @@ export default function PartnershipApplicationPage() {
                         type="email"
                         value={form.email}
                         onChange={updateField('email')}
-                        className={fieldClassName}
+                        className={getFieldClassName('email')}
                         style={fieldStyle}
                         placeholder="name@example.com"
                         required
                       />
+                      {fieldError('email')}
                     </label>
 
                     <label className="space-y-1 text-sm md:col-span-2">
@@ -2163,11 +2233,12 @@ export default function PartnershipApplicationPage() {
                         ref={setFieldRef('leadStreet')}
                         value={form.leadStreet}
                         onChange={updateField('leadStreet')}
-                        className={fieldClassName}
+                        className={getFieldClassName('leadStreet')}
                         style={fieldStyle}
                         placeholder="Street address"
                         required
                       />
+                      {fieldError('leadStreet')}
                     </label>
 
                     <label className="space-y-1 text-sm">
@@ -2190,7 +2261,7 @@ export default function PartnershipApplicationPage() {
                         value={form.leadRegion}
                         onChange={onLeadRegionChange}
                         disabled={!form.leadCountry || leadRegionOptions.length === 0}
-                        className={`${fieldClassName} disabled:cursor-not-allowed disabled:opacity-60`}
+                        className={getFieldClassName('leadRegion', 'disabled:cursor-not-allowed disabled:opacity-60')}
                         style={fieldStyle}
                         required
                       >
@@ -2201,6 +2272,7 @@ export default function PartnershipApplicationPage() {
                           </option>
                         ))}
                       </select>
+                      {fieldError('leadRegion')}
                     </label>
 
                     <label className="space-y-1 text-sm">
@@ -2210,7 +2282,7 @@ export default function PartnershipApplicationPage() {
                         value={form.leadProvince}
                         onChange={onLeadProvinceChange}
                         disabled={!form.leadRegion || leadProvinceOptions.length === 0}
-                        className={`${fieldClassName} disabled:cursor-not-allowed disabled:opacity-60`}
+                        className={getFieldClassName('leadProvince', 'disabled:cursor-not-allowed disabled:opacity-60')}
                         style={fieldStyle}
                         required
                       >
@@ -2221,6 +2293,7 @@ export default function PartnershipApplicationPage() {
                           </option>
                         ))}
                       </select>
+                      {fieldError('leadProvince')}
                     </label>
 
                     <label className="space-y-1 text-sm">
@@ -2230,7 +2303,7 @@ export default function PartnershipApplicationPage() {
                         value={form.leadCity}
                         onChange={onLeadCityChange}
                         disabled={!form.leadProvince || leadCityOptions.length === 0}
-                        className={`${fieldClassName} disabled:cursor-not-allowed disabled:opacity-60`}
+                        className={getFieldClassName('leadCity', 'disabled:cursor-not-allowed disabled:opacity-60')}
                         style={fieldStyle}
                         required
                       >
@@ -2241,16 +2314,18 @@ export default function PartnershipApplicationPage() {
                           </option>
                         ))}
                       </select>
+                      {fieldError('leadCity')}
                     </label>
 
                     <label className="space-y-1 text-sm md:col-span-2">
-                      <span className="font-semibold" style={{ color: secondaryTextColor }}>Barangay</span>
+                      <span className="font-semibold" style={{ color: secondaryTextColor }}>Barangay *</span>
                       {leadBarangayOptions.length > 0 ? (
                         <select
+                          ref={setFieldRef('leadBarangay')}
                           value={form.leadBarangay}
                           onChange={updateField('leadBarangay')}
                           disabled={!form.leadCity}
-                          className={`${fieldClassName} disabled:cursor-not-allowed disabled:opacity-60`}
+                          className={getFieldClassName('leadBarangay', 'disabled:cursor-not-allowed disabled:opacity-60')}
                           style={fieldStyle}
                         >
                           <option value="">Select barangay</option>
@@ -2262,13 +2337,15 @@ export default function PartnershipApplicationPage() {
                         </select>
                       ) : (
                         <input
+                          ref={setFieldRef('leadBarangay')}
                           value={form.leadBarangay}
                           onChange={updateField('leadBarangay')}
-                          className={fieldClassName}
+                          className={getFieldClassName('leadBarangay')}
                           style={fieldStyle}
                           placeholder="Type barangay if not listed"
                         />
                       )}
+                      {fieldError('leadBarangay')}
                     </label>
                   </div>
                 </fieldset>
@@ -2285,7 +2362,8 @@ export default function PartnershipApplicationPage() {
                     <p className="text-xs font-bold uppercase tracking-[0.16em]" style={{ color: secondaryTextColor }}>Hospital Profile</p>
                     <div className="mt-2 space-y-1.5 text-sm text-slate-700">
                       <div><span className="font-semibold">Hospital Name:</span> {form.hospitalName || 'N/A'}</div>
-                      <div><span className="font-semibold">Hospital Contact:</span> {form.hospitalHeadContactNumber || 'N/A'}</div>
+                      <div><span className="font-semibold">Uploaded Logo:</span> {logoFile?.name || 'Not provided'}</div>
+                      {logoPreviewUrl ? <img src={logoPreviewUrl} alt="Uploaded hospital logo" className="mt-3 max-h-52 w-full rounded-lg border border-slate-200 bg-white object-contain" /> : null}
                     </div>
                   </section>
 
@@ -2304,6 +2382,15 @@ export default function PartnershipApplicationPage() {
                     <div className="mt-2 space-y-1.5 text-sm text-slate-700">
                       <div><span className="font-semibold">Address:</span> {[form.street, form.barangay, form.city, form.province, form.region, form.country].filter(Boolean).join(', ') || 'N/A'}</div>
                       <div><span className="font-semibold">Map Coordinates:</span> {form.latitude && form.longitude ? `${form.latitude}, ${form.longitude}` : 'N/A'}</div>
+                      {form.latitude && form.longitude ? (
+                        <iframe
+                          title="Hospital pinned location"
+                          src={`https://maps.google.com/maps?q=${encodeURIComponent(`${form.latitude},${form.longitude}`)}&z=16&output=embed`}
+                          className="mt-3 h-56 w-full rounded-lg border border-slate-200 bg-white"
+                          loading="lazy"
+                          referrerPolicy="no-referrer-when-downgrade"
+                        />
+                      ) : null}
                     </div>
                   </section>
 
@@ -2311,6 +2398,8 @@ export default function PartnershipApplicationPage() {
                     <p className="text-xs font-bold uppercase tracking-[0.16em]" style={{ color: secondaryTextColor }}>H-Representative Account</p>
                     <div className="mt-2 grid grid-cols-1 gap-1.5 text-sm text-slate-700 md:grid-cols-2">
                       <div><span className="font-semibold">Name:</span> {[form.firstName, form.middleName, form.lastName, form.suffix].filter(Boolean).join(' ') || 'N/A'}</div>
+                      <div><span className="font-semibold">Birthdate:</span> {form.birthdate || 'N/A'}</div>
+                      <div><span className="font-semibold">Gender:</span> {form.gender || 'N/A'}</div>
                       <div><span className="font-semibold">Contact:</span> {form.leadContactNumber || 'N/A'}</div>
                       <div className="md:col-span-2"><span className="font-semibold">Email:</span> {form.email || 'N/A'}</div>
                       <div className="md:col-span-2"><span className="font-semibold">Address:</span> {[form.leadStreet, form.leadBarangay, form.leadCity, form.leadProvince, form.leadRegion, form.leadCountry].filter(Boolean).join(', ') || 'N/A'}</div>
@@ -2354,7 +2443,7 @@ export default function PartnershipApplicationPage() {
                       pattern="[0-9]*"
                       maxLength={6}
                       placeholder="Enter 6-digit code"
-                      className={fieldClassName}
+                      className={getFieldClassName('otpCode')}
                       style={fieldStyle}
                     />
                     <button
@@ -2368,6 +2457,7 @@ export default function PartnershipApplicationPage() {
                       {isVerifyingOtp ? 'Verifying...' : 'Verify Code'}
                     </button>
                   </div>
+                  {fieldError('otpCode')}
 
                   {otpNotice.message ? (
                     <p
@@ -2498,7 +2588,7 @@ export default function PartnershipApplicationPage() {
                   </button>
                   <button
                     type="submit"
-                    disabled={isSubmitting || !canSubmit}
+                    disabled={isSubmitting}
                     className="inline-flex items-center gap-2 rounded-xl px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
                     style={{ backgroundColor: primaryColor }}
                   >

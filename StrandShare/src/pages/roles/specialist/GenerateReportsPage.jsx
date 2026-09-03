@@ -123,7 +123,8 @@ const REPORT_TEMPLATES = [
       { key: 'submission', label: 'Submission' },
       { key: 'drive', label: 'Event' },
       { key: 'status', label: 'Final Decision' },
-      { key: 'accuracy', label: 'AI Accuracy' },
+      { key: 'accuracy', label: 'AI Correct' },
+      { key: 'humanChange', label: 'Human Changes' },
       { key: 'critical', label: 'Critical Corrections' },
       { key: 'minor', label: 'Minor Corrections' },
       { key: 'reviewed', label: 'Reviewed At' },
@@ -305,7 +306,7 @@ export default function GenerateReportsPage({ userProfile }) {
           .limit(3000),
         supabase
           .from(HAIR_AI_REVIEW_COMPARISONS_TABLE)
-          .select('Comparison_ID, Submission_ID, Event_Request_ID, Is_AI_Source, Critical_Changed_Fields, Minor_Changed_Fields, AI_Accuracy_Percent, Final_Decision, Reviewed_At, Updated_At')
+          .select('Comparison_ID, Submission_ID, Event_Request_ID, Is_AI_Source, Changed_Fields, Critical_Changed_Fields, Minor_Changed_Fields, Comparable_Field_Count, Matched_Field_Count, AI_Accuracy_Percent, Final_Decision, Reviewed_At, Updated_At')
           .order('Reviewed_At', { ascending: false, nullsFirst: false })
           .limit(3000),
         supabase
@@ -531,6 +532,7 @@ export default function GenerateReportsPage({ userProfile }) {
     if (selectedTemplateId === 'ai_hair_accuracy') {
       return aiComparisons
         .filter((row) => {
+          if (!row.Is_AI_Source || !row.Reviewed_At) return false;
           if (statusFilter !== 'all' && statusKey(row.Final_Decision || 'pending') !== statusFilter) return false;
           if (driveFilter !== 'all' && Number(row.Event_Request_ID || 0) !== Number(driveFilter)) return false;
           if ((dateFrom || dateTo) && !isWithinRange(row.Reviewed_At, dateFrom, dateTo)) return false;
@@ -539,14 +541,23 @@ export default function GenerateReportsPage({ userProfile }) {
         .map((row) => {
           const critical = Array.isArray(row.Critical_Changed_Fields) ? row.Critical_Changed_Fields : [];
           const minor = Array.isArray(row.Minor_Changed_Fields) ? row.Minor_Changed_Fields : [];
+          const changed = Array.isArray(row.Changed_Fields) ? row.Changed_Fields : [...critical, ...minor];
+          const comparableFieldCount = Number(row.Comparable_Field_Count || 0);
+          const matchedFieldCount = Number(row.Matched_Field_Count || 0);
+          const aiPercent = comparableFieldCount > 0
+            ? (matchedFieldCount / comparableFieldCount) * 100
+            : Number(row.AI_Accuracy_Percent || 0);
+          const humanPercent = comparableFieldCount > 0 ? 100 - aiPercent : 0;
           return {
             code: `AI-${String(row.Comparison_ID).padStart(6, '0')}`,
             submission: `#${row.Submission_ID}`,
             drive: drivesById[Number(row.Event_Request_ID)]?.Event_Name || `Event #${row.Event_Request_ID || 'N/A'}`,
             status: row.Final_Decision || 'Pending',
-            accuracy: row.Is_AI_Source
-              ? (row.AI_Accuracy_Percent == null ? 'Pending' : `${row.AI_Accuracy_Percent}%`)
-              : 'Manual source',
+            accuracy: `${Number(aiPercent.toFixed(2))}%`,
+            humanChange: `${Number(humanPercent.toFixed(2))}%`,
+            comparableFieldCount,
+            matchedFieldCount,
+            changedFieldCount: changed.length,
             critical: critical.length ? critical.join(', ') : 'None',
             minor: minor.length ? minor.join(', ') : 'None',
             reviewed: formatDateTime(row.Reviewed_At),
@@ -672,18 +683,19 @@ export default function GenerateReportsPage({ userProfile }) {
       ];
     }
     if (selectedTemplateId === 'ai_hair_accuracy') {
-      const numericAccuracy = filteredRows
-        .map((row) => Number.parseFloat(row.accuracy))
-        .filter((value) => Number.isFinite(value));
-      const average = numericAccuracy.length
-        ? Math.round(numericAccuracy.reduce((sum, value) => sum + value, 0) / numericAccuracy.length)
-        : null;
+      const totals = filteredRows.reduce((accumulator, row) => ({
+        comparable: accumulator.comparable + Number(row.comparableFieldCount || 0),
+        matched: accumulator.matched + Number(row.matchedFieldCount || 0),
+      }), { comparable: 0, matched: 0 });
+      const reviewCount = filteredRows.length;
+      const aiPercent = totals.comparable > 0 ? Math.round((totals.matched / totals.comparable) * 100) : null;
+      const humanPercent = aiPercent == null ? null : 100 - aiPercent;
       return [
-        { label: 'Reviews', value: filteredRows.length },
-        { label: 'Average AI accuracy', value: average == null ? 'N/A' : `${average}%` },
+        { label: 'Reviews', value: reviewCount },
+        { label: 'AI correct', value: aiPercent == null ? 'N/A' : `${aiPercent}%` },
+        { label: 'Human changes', value: humanPercent == null ? 'N/A' : `${humanPercent}%` },
         { label: 'Critical corrections', value: filteredRows.filter((row) => row.critical !== 'None').length },
         { label: 'Rejected Cut', value: filteredRows.filter((row) => statusKey(row.status) === 'rejected cut').length },
-        { label: 'Length tolerance', value: '6 in' },
       ];
     }
     const drives = filteredRows.length;
@@ -737,7 +749,20 @@ export default function GenerateReportsPage({ userProfile }) {
       const data = Array.from(map.entries()).map(([name, value], idx) => ({ name, value, color: palette[idx % palette.length] }));
       return { type: 'pie', data };
     }
-    if (selectedTemplateId === 'cut_hair_inventory' || selectedTemplateId === 'ai_hair_accuracy') {
+    if (selectedTemplateId === 'ai_hair_accuracy') {
+      const totals = filteredRows.reduce((accumulator, row) => ({
+        comparable: accumulator.comparable + Number(row.comparableFieldCount || 0),
+        matched: accumulator.matched + Number(row.matchedFieldCount || 0),
+      }), { comparable: 0, matched: 0 });
+      return {
+        type: 'pie',
+        data: [
+          { name: 'AI correct fields', value: totals.matched, color: tertiaryColor },
+          { name: 'Human-changed fields', value: totals.comparable - totals.matched, color: primaryColor },
+        ].filter((entry) => entry.value > 0),
+      };
+    }
+    if (selectedTemplateId === 'cut_hair_inventory') {
       const map = new Map();
       filteredRows.forEach((row) => {
         const key = row.status || 'Pending';

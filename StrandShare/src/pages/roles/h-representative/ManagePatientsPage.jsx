@@ -83,8 +83,6 @@ const CONDITION_STAGE_OPTIONS = {
 const GENDER_OPTIONS = [
   { id: 'Male', label: 'Male' },
   { id: 'Female', label: 'Female' },
-  { id: 'Other', label: 'Other' },
-  { id: 'Prefer not to say', label: 'Prefer not to say' },
 ];
 
 const AUTOFILL_FIELD_LABELS = {
@@ -174,14 +172,6 @@ function normalizePatientGender(value) {
 
   if (normalized === 'f' || normalized === 'female') {
     return 'Female';
-  }
-
-  if (normalized === 'other' || normalized === 'non binary' || normalized === 'non-binary' || normalized === 'nonbinary') {
-    return 'Other';
-  }
-
-  if (normalized === 'prefer not to say' || normalized === 'prefer-not-to-say') {
-    return 'Prefer not to say';
   }
 
   return '';

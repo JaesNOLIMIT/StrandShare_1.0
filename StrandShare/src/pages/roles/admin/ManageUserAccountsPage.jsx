@@ -24,6 +24,8 @@ import { toCanonicalRole, toRoleLabel } from '../../../lib/roleUtils';
 import {
   PERSON_SUFFIX_OPTIONS,
   formatPhilippineMobile,
+  getAdultBirthdateMax,
+  isAtLeastAge,
   isValidPhilippineMobile,
   normalizePersonSuffix,
 } from '../../../lib/personIdentity';
@@ -135,6 +137,13 @@ function getPhilippineSqlTimestamp(date = new Date()) {
 
 function getPhilippineDateString(date = new Date()) {
   return getPhilippineSqlTimestamp(date).slice(0, 10);
+}
+
+function normalizeGender(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'male') return 'Male';
+  if (normalized === 'female') return 'Female';
+  return '';
 }
 
 function toPhilippineSqlTimestampOrNull(value) {
@@ -356,6 +365,9 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
       if (!birthdate) {
         throw new Error('Birthdate is required.');
       }
+      if (!isAtLeastAge(birthdate, 18)) {
+        throw new Error('The account holder must be at least 18 years old.');
+      }
 
       if (!String(formData.gender || '').trim()) {
         throw new Error('Gender is required.');
@@ -431,7 +443,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
         p_last_name: String(formData.lastName || '').trim() || null,
         p_suffix: normalizePersonSuffix(formData.suffix) || null,
         p_birthdate: birthdate,
-        p_gender: String(formData.gender || '').trim() || null,
+        p_gender: normalizeGender(formData.gender) || null,
         p_street: String(formData.street || '').trim() || null,
         p_region: String(formData.region || '').trim() || null,
         p_barangay: String(formData.barangay || '').trim() || null,
@@ -607,7 +619,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
       lastName: profile.last_name || '',
       suffix: normalizePersonSuffix(profile.suffix),
       birthdate: profile.birthdate || '',
-      gender: profile.gender || '',
+      gender: normalizeGender(profile.gender),
       contactNumber: profile.contact_number || '',
       street: profile.street || '',
       region: profile.region || '',
@@ -645,6 +657,10 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
     }
     if (!toPhilippineDateOrNull(detailsForm.birthdate)) {
       setDetailsNotice({ kind: 'error', text: 'Birthdate is required.' });
+      return;
+    }
+    if (!isAtLeastAge(detailsForm.birthdate, 18)) {
+      setDetailsNotice({ kind: 'error', text: 'The account holder must be at least 18 years old.' });
       return;
     }
     if (!String(detailsForm.gender || '').trim()) {
@@ -690,7 +706,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
           last_name: String(detailsForm.lastName || '').trim(),
           suffix: normalizePersonSuffix(detailsForm.suffix) || null,
           birthdate: toPhilippineDateOrNull(detailsForm.birthdate),
-          gender: String(detailsForm.gender || '').trim() || null,
+          gender: normalizeGender(detailsForm.gender) || null,
           contact_number: detailsForm.contactNumber || null,
           street: String(detailsForm.street || '').trim() || null,
           barangay: String(detailsForm.barangay || '').trim() || null,
@@ -1073,7 +1089,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Birthdate *</label>
-                        <input required autoComplete="bday" max={getPhilippineDateString()} name="birthdate" value={formData.birthdate} onChange={handleInputChange} type="date" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input required autoComplete="bday" max={getAdultBirthdateMax()} name="birthdate" value={formData.birthdate} onChange={handleInputChange} type="date" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Gender *</label>
@@ -1081,8 +1097,6 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
                           <option value="">Select gender</option>
                           <option value="Male">Male</option>
                           <option value="Female">Female</option>
-                          <option value="Other">Other</option>
-                          <option value="Prefer not to say">Prefer not to say</option>
                         </select>
                       </div>
                     </div>

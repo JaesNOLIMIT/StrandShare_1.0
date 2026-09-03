@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
+import { useToast } from '../../../context/ToastContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
 const WIG_REQUIREMENTS_TABLE = 'wig_requirements';
@@ -92,6 +93,9 @@ function mapLoadError(rawMessage) {
   }
   if (lower.includes('row-level security')) {
     return 'Reading wig requirements is blocked by database policy.';
+  }
+  if (lower.includes('get_or_create_wig_requirements') && lower.includes('schema cache')) {
+    return 'Wig Requirements is not initialized yet. Apply the latest Supabase migration, then refresh this page.';
   }
   return message;
 }
@@ -222,6 +226,7 @@ function NumberField({ label, icon: Icon, unit, value, onChange, disabled, min =
 
 export default function WigRequirementsPage({ userProfile }) {
   const { theme } = useTheme();
+  const { showToast } = useToast();
   const primaryColor = theme?.primaryColor || '#0f766e';
   const roleKey = normalizeRoleKey(userProfile?.role);
   const canEdit = roleKey === 'admin' || roleKey === 'staff' || roleKey === 'superadmin';
@@ -234,6 +239,16 @@ export default function WigRequirementsPage({ userProfile }) {
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [notice, setNotice] = useState({ kind: '', text: '' });
+
+  useEffect(() => {
+    if (!notice.text || !['error', 'success'].includes(notice.kind)) return;
+    showToast({
+      type: notice.kind,
+      title: notice.kind === 'error' ? 'Wig Requirements unavailable' : 'Wig Requirements updated',
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
 
   const applyRowToForm = useCallback((row) => {
     if (!row) return;
@@ -300,14 +315,12 @@ export default function WigRequirementsPage({ userProfile }) {
 
       if (result.error) throw result.error;
 
-      const row = Array.isArray(result.data) ? result.data[0] : null;
+      let row = Array.isArray(result.data) ? result.data[0] : null;
       if (!row) {
-        setWigRequirementId(null);
-        setNotice({
-          kind: 'error',
-          text: 'No wig requirements row found. Run migration 067_create_wig_requirements.sql to initialize the singleton row.',
-        });
-        return;
+        const repairResult = await supabase.rpc('get_or_create_wig_requirements');
+        if (repairResult.error) throw repairResult.error;
+        row = Array.isArray(repairResult.data) ? repairResult.data[0] : repairResult.data;
+        if (!row) throw new Error('The wig requirements singleton could not be initialized.');
       }
 
       applyRowToForm(row);
@@ -356,15 +369,19 @@ export default function WigRequirementsPage({ userProfile }) {
       return;
     }
 
-    if (!wigRequirementId) {
-      setNotice({ kind: 'error', text: 'Singleton row is missing. Run migration 067_create_wig_requirements.sql.' });
-      return;
-    }
-
     setIsSaving(true);
     setNotice({ kind: '', text: '' });
 
     try {
+      let targetRequirementId = wigRequirementId;
+      if (!targetRequirementId) {
+        const repairResult = await supabase.rpc('get_or_create_wig_requirements');
+        if (repairResult.error) throw repairResult.error;
+        const repairedRow = Array.isArray(repairResult.data) ? repairResult.data[0] : repairResult.data;
+        targetRequirementId = Number(repairedRow?.Wig_Requirement_ID || 0) || null;
+        if (!targetRequirementId) throw new Error('The Wig Requirements record could not be initialized.');
+      }
+
       const actorUserId = await resolveActorUserId();
       const payload = {
         Minimum_Number_Donor: toIntegerOrNull(form.minimumNumberDonor),
@@ -382,7 +399,7 @@ export default function WigRequirementsPage({ userProfile }) {
       const result = await supabase
         .from(WIG_REQUIREMENTS_TABLE)
         .update(payload)
-        .eq('Wig_Requirement_ID', wigRequirementId)
+        .eq('Wig_Requirement_ID', targetRequirementId)
         .select('*')
         .single();
 
@@ -409,7 +426,7 @@ export default function WigRequirementsPage({ userProfile }) {
   const textureChips = useMemo(() => parseTextureChips(form.hairTextureStatus), [form.hairTextureStatus]);
   const allowedCount = TREATMENT_TOGGLES.filter((toggle) => Boolean(form[toggle.key])).length;
 
-  const canSave = canEdit && wigRequirementId && isDirty && !isSaving && !isLoading;
+  const canSave = canEdit && isDirty && !isSaving && !isLoading;
 
   return (
     <div className="space-y-5 pb-24">
@@ -451,21 +468,6 @@ export default function WigRequirementsPage({ userProfile }) {
         <div className="flex items-start gap-2.5 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
           <ShieldCheck size={16} className="mt-0.5 flex-none" />
           <span>You are viewing this page in read-only mode. Only admin and staff accounts can edit wig requirements.</span>
-        </div>
-      )}
-
-      {notice.text && (
-        <div
-          className={`flex items-start gap-2.5 rounded-xl border px-4 py-3 text-sm shadow-sm ${
-            notice.kind === 'error'
-              ? 'border-rose-200 bg-rose-50 text-rose-700'
-              : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-          }`}
-        >
-          {notice.kind === 'error'
-            ? <AlertTriangle size={16} className="mt-0.5 flex-none" />
-            : <CheckCircle2 size={16} className="mt-0.5 flex-none" />}
-          <span>{notice.text}</span>
         </div>
       )}
 

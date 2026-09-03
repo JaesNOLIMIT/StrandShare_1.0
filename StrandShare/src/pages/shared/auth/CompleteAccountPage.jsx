@@ -2,9 +2,17 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Loader2, Save } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import { getAdultBirthdateMax, isAtLeastAge } from '../../../lib/personIdentity';
 
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
+
+function normalizeGender(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'male') return 'Male';
+  if (normalized === 'female') return 'Female';
+  return '';
+}
 
 const EMPTY_FORM = {
   firstName: '',
@@ -99,7 +107,7 @@ export default function CompleteAccountPage() {
             lastName: detailsRow.last_name || '',
             suffix: detailsRow.suffix || '',
             birthdate: detailsRow.birthdate || '',
-            gender: detailsRow.gender || '',
+            gender: normalizeGender(detailsRow.gender),
             contactNumber: detailsRow.contact_number || '',
             street: detailsRow.street || '',
             region: detailsRow.region || '',
@@ -143,6 +151,11 @@ export default function CompleteAccountPage() {
 
     if (!passwordPattern.test(password)) {
       setErrorMessage('Password must be at least 8 characters and include an uppercase letter, a number, and a special character.');
+      return;
+    }
+
+    if (!isAtLeastAge(form.birthdate, 18)) {
+      setErrorMessage('You must be at least 18 years old to create this account.');
       return;
     }
 
@@ -203,7 +216,7 @@ export default function CompleteAccountPage() {
         last_name: form.lastName,
         suffix: form.suffix || null,
         birthdate: form.birthdate || null,
-        gender: form.gender || null,
+        gender: normalizeGender(form.gender) || null,
         contact_number: form.contactNumber || null,
         street: form.street || null,
         region: form.region || null,
@@ -362,16 +375,15 @@ export default function CompleteAccountPage() {
               <input name="suffix" value={form.suffix} onChange={updateField} className="w-full p-2 border border-gray-300 rounded-lg bg-white" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Birthdate</label>
-              <input type="date" name="birthdate" value={form.birthdate} onChange={updateField} className="w-full p-2 border border-gray-300 rounded-lg bg-white" />
+              <label className="block text-sm font-medium text-gray-700 mb-1">Birthdate *</label>
+              <input required type="date" name="birthdate" max={getAdultBirthdateMax()} value={form.birthdate} onChange={updateField} className="w-full p-2 border border-gray-300 rounded-lg bg-white" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Gender</label>
-              <select name="gender" value={form.gender} onChange={updateField} className="w-full p-2 border border-gray-300 rounded-lg bg-white">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Gender *</label>
+              <select required name="gender" value={form.gender} onChange={updateField} className="w-full p-2 border border-gray-300 rounded-lg bg-white">
                 <option value="">Select</option>
                 <option value="Male">Male</option>
                 <option value="Female">Female</option>
-                <option value="Prefer not to say">Prefer not to say</option>
               </select>
             </div>
           </div>

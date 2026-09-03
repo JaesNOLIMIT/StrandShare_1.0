@@ -117,6 +117,37 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
       if (submissionsResult.error) throw submissionsResult.error;
 
       const submissionsById = new Map((submissionsResult.data || []).map((row) => [Number(row.Submission_ID), row]));
+      const bundleIds = [...new Set([
+        ...baseRows.map((row) => Number(row.Bundle_ID || 0)),
+        ...(submissionsResult.data || []).map((row) => Number(row.Bundle_ID || 0)),
+      ].filter(Boolean))];
+      const bundlesResult = bundleIds.length
+        ? await supabase
+          .from('Hair_Submission_Bundles')
+          .select('Bundle_ID, Wig_Specification_ID, Status, Wig_Completed_At')
+          .in('Bundle_ID', bundleIds)
+        : { data: [], error: null };
+      if (bundlesResult.error) throw bundlesResult.error;
+
+      const specificationIds = [...new Set((bundlesResult.data || [])
+        .map((row) => Number(row.Wig_Specification_ID || 0))
+        .filter(Boolean))];
+      const specificationsResult = specificationIds.length
+        ? await supabase
+          .from('Wig_Specifications')
+          .select('Wig_Specification_ID, Wig_ID')
+          .in('Wig_Specification_ID', specificationIds)
+        : { data: [], error: null };
+      if (specificationsResult.error) throw specificationsResult.error;
+
+      const specificationsById = new Map((specificationsResult.data || []).map((row) => [
+        Number(row.Wig_Specification_ID),
+        row,
+      ]));
+      const resolvedWigIdByBundle = new Map((bundlesResult.data || []).map((bundle) => [
+        Number(bundle.Bundle_ID),
+        Number(specificationsById.get(Number(bundle.Wig_Specification_ID))?.Wig_ID || 0) || null,
+      ]));
       const eventIds = [...new Set([
         ...baseRows.map((row) => Number(row.Event_Request_ID || 0)),
         ...(submissionsResult.data || []).map((row) => Number(row.Event_Request_ID || 0)),
@@ -125,7 +156,10 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
         ...baseRows.map((row) => Number(row.Donor_User_ID || 0)),
         ...(submissionsResult.data || []).map((row) => Number(row.User_ID || 0)),
       ].filter(Boolean))];
-      const wigIds = [...new Set(baseRows.map((row) => Number(row.Wig_ID || 0)).filter(Boolean))];
+      const wigIds = [...new Set([
+        ...baseRows.map((row) => Number(row.Wig_ID || 0)),
+        ...resolvedWigIdByBundle.values(),
+      ].filter(Boolean))];
       const attendeeIds = [...new Set([
         ...baseRows.map((row) => Number(row.Event_Attendee_ID || 0)),
         ...(submissionsResult.data || []).map((row) => Number(row.Event_Attendee_ID || 0)),
@@ -168,6 +202,9 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
         const submission = submissionsById.get(Number(row.Submission_ID)) || null;
         const bundleId = submission ? submission.Bundle_ID : row.Bundle_ID;
         const inventoryStatus = canonicalInventoryStatus(row.Status, bundleId, submission?.Status);
+        const resolvedWigId = inventoryStatus === 'Wig Created'
+          ? (Number(row.Wig_ID || resolvedWigIdByBundle.get(Number(bundleId)) || 0) || null)
+          : null;
         const donorUserId = Number(submission?.User_ID || row.Donor_User_ID || 0);
         const eventRequestId = Number(submission?.Event_Request_ID || row.Event_Request_ID || 0);
         const eventAttendeeId = Number(submission?.Event_Attendee_ID || row.Event_Attendee_ID || 0);
@@ -178,6 +215,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
         return {
           ...row,
           Bundle_ID: bundleId,
+          Wig_ID: resolvedWigId,
           Status: inventoryStatus,
           Donor_User_ID: donorUserId || row.Donor_User_ID,
           Event_Request_ID: eventRequestId || row.Event_Request_ID,
@@ -186,7 +224,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
           detail: detailsBySubmission.get(Number(row.Submission_ID)) || null,
           event: eventsById.get(eventRequestId) || null,
           donor: donorsById.get(donorUserId) || null,
-          wig: inventoryStatus === 'Wig Created' ? (wigsById.get(Number(row.Wig_ID)) || null) : null,
+          wig: resolvedWigId ? (wigsById.get(resolvedWigId) || null) : null,
         };
       }));
       if (showSuccess) {

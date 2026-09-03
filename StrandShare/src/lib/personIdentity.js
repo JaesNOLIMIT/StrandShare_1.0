@@ -42,3 +42,31 @@ export function formatPhilippineMobile(value) {
 export function isValidPhilippineMobile(value) {
   return /^\+63 9\d{2} \d{3} \d{4}$/.test(String(value || '').trim());
 }
+
+function getManilaDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date).reduce((result, part) => {
+    if (part.type !== 'literal') result[part.type] = part.value;
+    return result;
+  }, {});
+
+  return { year: Number(parts.year), month: Number(parts.month), day: Number(parts.day) };
+}
+
+export function getAdultBirthdateMax(minimumAge = 18, date = new Date()) {
+  const { year, month, day } = getManilaDateParts(date);
+  return `${String(year - minimumAge).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+export function isAtLeastAge(birthdate, minimumAge = 18, date = new Date()) {
+  const normalized = String(birthdate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return false;
+
+  const parsed = new Date(`${normalized}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== normalized) return false;
+  return normalized <= getAdultBirthdateMax(minimumAge, date);
+}

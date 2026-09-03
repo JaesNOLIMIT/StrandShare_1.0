@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle2, Info, X, XCircle } from 'lucide-react';
 import { useTheme } from './ThemeContext';
 
 const ToastContext = createContext(null);
-const MAX_VISIBLE_TOASTS = 1;
+const MAX_VISIBLE_TOASTS = 3;
 
 const TOAST_STYLES = {
   error: {
@@ -11,7 +11,7 @@ const TOAST_STYLES = {
     container: 'border-rose-300 bg-rose-50 text-rose-950',
     icon: 'bg-rose-100 text-rose-700',
     titleColor: 'text-rose-800',
-    Icon: AlertTriangle,
+    Icon: XCircle,
   },
   success: {
     title: 'Success',
@@ -25,7 +25,7 @@ const TOAST_STYLES = {
     container: 'border-amber-300 bg-amber-50 text-amber-950',
     icon: 'bg-amber-100 text-amber-700',
     titleColor: 'text-amber-800',
-    Icon: XCircle,
+    Icon: AlertTriangle,
   },
   info: {
     title: 'Information',
@@ -116,7 +116,7 @@ export function ToastProvider({ children }) {
     <ToastContext.Provider value={value}>
       {children}
       <div
-        className="pointer-events-none fixed bottom-4 right-4 z-[10050] flex w-[calc(100vw-2rem)] max-w-sm flex-col-reverse gap-2 sm:bottom-5 sm:right-5"
+        className="pointer-events-none fixed bottom-4 right-4 z-[2147483600] flex w-[calc(100vw-2rem)] max-w-sm flex-col-reverse gap-2 sm:bottom-5 sm:right-5"
         aria-live="polite"
         aria-relevant="additions removals"
       >
@@ -127,7 +127,7 @@ export function ToastProvider({ children }) {
             <div
               key={toast.id}
               role={toast.type === 'error' ? 'alert' : 'status'}
-              className={`pointer-events-auto flex items-start gap-2.5 rounded-xl border px-3 py-2.5 shadow-2xl backdrop-blur-sm toast-slide-in ${style.container}`}
+              className={`pointer-events-auto flex items-start gap-3 rounded-xl border border-l-4 px-3.5 py-3 shadow-2xl backdrop-blur-sm toast-slide-in ${style.container}`}
             >
               <div className={`mt-0.5 flex h-7 w-7 flex-none items-center justify-center rounded-full ${style.icon}`}>
                 <Icon size={16} />

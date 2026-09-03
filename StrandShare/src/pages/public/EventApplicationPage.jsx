@@ -6,7 +6,10 @@ import { isSupabaseConfigured, supabase } from '../../lib/supabaseClient';
 import { useTheme } from '../../context/ThemeContext';
 import { TransitionFlipEntrance } from '../../components/transitions/TransitionFlip';
 import { triggerSmtpNow } from '../../lib/smtpTriggerClient';
+import LegalTermsGate from '../../components/LegalTermsGate';
+import useActiveLegalDocument from '../../hooks/useActiveLegalDocument';
 import philippineAddressOptions from '../../data/philippineAddressOptions.json';
+import { getAdultBirthdateMax, isAtLeastAge } from '../../lib/personIdentity';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
@@ -86,7 +89,7 @@ const PH_VALID_ID_OPTIONS = [
   { value: 'other_government', label: 'Other Government ID' },
 ];
 
-const GENDER_OPTIONS = ['Male', 'Female', 'Non-binary', 'Prefer not to say'];
+const GENDER_OPTIONS = ['Male', 'Female'];
 const FORM_STEPS = [
   { id: 1, title: 'Applicant', description: 'Details & email' },
   { id: 2, title: 'Program', description: 'Schedule & venue' },
@@ -98,7 +101,7 @@ const HAIR_TREATMENT_REQUIREMENTS = [
   { key: 'Bleached_Hair_Status', label: 'Bleached hair' },
   { key: 'Rebonded_Hair_Status', label: 'Rebonded hair' },
 ];
-const TERMS_AND_AGREEMENT_PDF_PATH = '/legal/donivra-terms-and-agreement.pdf';
+const EVENT_TERMS_DOCUMENT_TYPE = 'event_application_terms';
 
 const INITIAL_FORM = {
   applicantValidIdType: 'philsys',
@@ -108,6 +111,7 @@ const INITIAL_FORM = {
   applicantMiddleName: '',
   applicantLastName: '',
   applicantEmail: '',
+  applicantBirthdate: '',
   applicantGender: '',
   applicantContactNumber: '',
   preferredContactMethod: 'email',
@@ -537,7 +541,12 @@ function mapDiditGender(value) {
   const key = String(value || '').trim().toLowerCase();
   if (key === 'm' || key === 'male') return 'Male';
   if (key === 'f' || key === 'female') return 'Female';
-  return value ? String(value) : '';
+  return '';
+}
+
+function mapDiditBirthdate(value) {
+  const match = String(value || '').trim().match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : '';
 }
 
 function toProgramDateKey(value) {
@@ -878,6 +887,7 @@ function LocationPinPicker({ latitude, longitude, onChange }) {
 export default function EventApplicationPage() {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0f766e';
+  const eventTerms = useActiveLegalDocument(EVENT_TERMS_DOCUMENT_TYPE);
 
   const [form, setForm] = useState(INITIAL_FORM);
   const [eventPlacePhotoFile, setEventPlacePhotoFile] = useState(null);
@@ -886,6 +896,7 @@ export default function EventApplicationPage() {
   const [eventPosterPhotoPreviewUrl, setEventPosterPhotoPreviewUrl] = useState('');
   const [diditSession, setDiditSession] = useState(null);
   const [diditStatus, setDiditStatus] = useState('Not Started');
+  const [verifiedIdPreviewUrl, setVerifiedIdPreviewUrl] = useState('');
   const [diditWarnings, setDiditWarnings] = useState([]);
   const [diditNotice, setDiditNotice] = useState('');
   const [isCreatingDiditSession, setIsCreatingDiditSession] = useState(false);
@@ -915,6 +926,7 @@ export default function EventApplicationPage() {
   const [wigRequirementsError, setWigRequirementsError] = useState('');
   const fieldRefs = useRef({});
   const programDateAvailabilityChannelRef = useRef(null);
+  const idPreviewRefreshSessionRef = useRef('');
 
   const incomingTransition = (() => {
     try {
@@ -1026,6 +1038,14 @@ export default function EventApplicationPage() {
       setFieldErrors({});
       setErrorMessage(message || 'Please review the required fields.');
     }
+  }, [focusField]);
+
+  const markFieldErrors = useCallback((errors) => {
+    const nextErrors = errors && typeof errors === 'object' ? errors : {};
+    setFieldErrors(nextErrors);
+    setErrorMessage(Object.keys(nextErrors).length ? 'Complete the highlighted required fields before continuing.' : '');
+    const firstField = Object.keys(nextErrors)[0];
+    if (firstField) focusField(firstField);
   }, [focusField]);
 
   const fieldError = useCallback((fieldKey) => (
@@ -1177,6 +1197,7 @@ export default function EventApplicationPage() {
       && form.applicantFirstName.trim()
       && form.applicantLastName.trim()
       && isValidEmail(form.applicantEmail)
+      && isAtLeastAge(form.applicantBirthdate, 18)
       && form.applicantGender.trim()
       && isValidPhilippineMobile(form.applicantContactNumber)
       && form.preferredContactMethod.trim()
@@ -1284,7 +1305,9 @@ export default function EventApplicationPage() {
       if (!form.applicantValidIdType.trim()) return issue('applicantValidIdType', 'Valid ID type is required.');
       if (!form.applicantFirstName.trim()) return issue('applicantFirstName', 'First name is required.');
       if (!form.applicantLastName.trim()) return issue('applicantLastName', 'Last name is required.');
-      if (!form.applicantGender.trim()) return issue('applicantGender', 'Gender is required.');
+      if (!form.applicantBirthdate) return issue('applicantBirthdate', 'Birthdate is required.');
+      if (!isAtLeastAge(form.applicantBirthdate, 18)) return issue('applicantBirthdate', 'The applicant must be at least 18 years old.');
+      if (!GENDER_OPTIONS.includes(form.applicantGender.trim())) return issue('applicantGender', 'Select Male or Female.');
       if (!form.applicantIdDocumentNumber.trim()) return issue('applicantIdDocumentNumber', 'ID number is required. Correct it if the scan is inaccurate.');
       if (!form.applicantIdAddress.trim()) return issue('applicantIdAddress', 'Address on the ID is required. Correct it if the scan is inaccurate.');
       if (!form.applicantContactNumber.trim()) return issue('applicantContactNumber', 'Contact number is required.');
@@ -1356,10 +1379,69 @@ export default function EventApplicationPage() {
     minimumExpectedAttendees,
   ]);
 
+  const getStepValidationErrors = useCallback((stepNumber) => {
+    const errors = {};
+    const add = (field, message) => { if (!errors[field]) errors[field] = message; };
+
+    if (stepNumber === 1) {
+      if (!form.applicantEmail.trim()) add('applicantEmail', 'Email is required.');
+      else if (!isValidEmail(form.applicantEmail)) add('applicantEmail', 'Enter a valid email address.');
+      else if (emailAvailability.status === 'checking') add('applicantEmail', 'Wait for the email check to finish.');
+      else if (emailAvailability.status !== 'available') add('applicantEmail', emailAvailability.message || 'Check this email before continuing.');
+      if (!isEmailOtpVerified || normalizedEmail !== verifiedEmail) add('otpCode', 'Verify the applicant email before continuing.');
+      if (!isDiditVerified) add('diditVerification', 'Complete and pass the government ID verification.');
+      if (!form.applicantValidIdType.trim()) add('applicantValidIdType', 'Valid ID type is required.');
+      if (!form.applicantFirstName.trim()) add('applicantFirstName', 'First name is required.');
+      if (!form.applicantLastName.trim()) add('applicantLastName', 'Last name is required.');
+      if (!form.applicantBirthdate) add('applicantBirthdate', 'Birthdate is required.');
+      else if (!isAtLeastAge(form.applicantBirthdate, 18)) add('applicantBirthdate', 'The applicant must be at least 18 years old.');
+      if (!GENDER_OPTIONS.includes(form.applicantGender.trim())) add('applicantGender', 'Select Male or Female.');
+      if (!form.applicantIdDocumentNumber.trim()) add('applicantIdDocumentNumber', 'ID number is required.');
+      if (!form.applicantIdAddress.trim()) add('applicantIdAddress', 'Address on the ID is required.');
+      if (!isValidPhilippineMobile(form.applicantContactNumber)) add('applicantContactNumber', 'Use the +63 912 345 6789 format.');
+      if (!form.preferredContactMethod.trim()) add('preferredContactMethod', 'Preferred contact method is required.');
+    }
+
+    if (stepNumber === 2) {
+      if (!form.eventVisibility.trim()) add('eventVisibility', 'Program type is required.');
+      if (!form.eventName.trim()) add('eventName', 'Program name is required.');
+      if (!form.venueName.trim()) add('venueName', 'Venue name is required.');
+      if (!form.eventOverview.trim()) add('eventOverview', 'Program overview is required.');
+      if (!Number.isInteger(Number(form.expectedAttendees)) || Number(form.expectedAttendees) < minimumExpectedAttendees) {
+        add('expectedAttendees', `Enter at least ${minimumExpectedAttendees} expected attendees.`);
+      }
+      if (!form.proposedDate.trim()) add('proposedDate', 'Choose an available program date.');
+      if (!form.proposedStartTime.trim()) add('proposedStartTime', 'Start time is required.');
+      if (!form.proposedEndTime.trim()) add('proposedEndTime', 'End time is required.');
+      if (!eventPlacePhotoFile) add('eventPlacePhoto', 'One program place photo is required.');
+      if (!form.street.trim()) add('street', 'Street is required.');
+      if (!form.barangay.trim()) add('barangay', 'Barangay is required.');
+      if (!form.city.trim()) add('city', 'City/Municipality is required.');
+      if (!form.province.trim()) add('province', 'Province is required.');
+      if (!form.region.trim()) add('region', 'Region is required.');
+      if (!form.latitude.trim() || !form.longitude.trim()) add('locationPin', 'Map pin location is required.');
+
+      const scheduleIssue = getStepValidationIssue(2);
+      if (scheduleIssue) add(scheduleIssue.field, scheduleIssue.message);
+    }
+
+    return errors;
+  }, [
+    emailAvailability,
+    eventPlacePhotoFile,
+    form,
+    getStepValidationIssue,
+    isDiditVerified,
+    isEmailOtpVerified,
+    minimumExpectedAttendees,
+    normalizedEmail,
+    verifiedEmail,
+  ]);
+
   const goNextStep = useCallback(() => {
-    const validationIssue = getStepValidationIssue(currentStep);
-    if (validationIssue) {
-      markFieldError(validationIssue.field, validationIssue.message);
+    const validationErrors = getStepValidationErrors(currentStep);
+    if (Object.keys(validationErrors).length) {
+      markFieldErrors(validationErrors);
       return;
     }
 
@@ -1367,7 +1449,7 @@ export default function EventApplicationPage() {
     setErrorMessage('');
     setCurrentStep((previous) => Math.min(FORM_STEPS.length, previous + 1));
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [currentStep, getStepValidationIssue, markFieldError]);
+  }, [currentStep, getStepValidationErrors, markFieldErrors]);
 
   const goPreviousStep = useCallback(() => {
     setFieldErrors({});
@@ -1382,6 +1464,10 @@ export default function EventApplicationPage() {
   }, []);
 
   const handleAcceptTerms = useCallback(() => {
+    if (!eventTerms.document?.legal_document_id || !eventTerms.previewUrl) {
+      setErrorMessage('The Event Application Terms PDF is unavailable. Please try again after an administrator publishes it.');
+      return;
+    }
     if (!hasConfirmedTerms) {
       setErrorMessage('Please confirm that you agree to the Terms and Agreement before continuing.');
       return;
@@ -1391,7 +1477,7 @@ export default function EventApplicationPage() {
     setFieldErrors({});
     setHasAcceptedTerms(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [hasConfirmedTerms]);
+  }, [eventTerms.document?.legal_document_id, eventTerms.previewUrl, hasConfirmedTerms]);
 
   const loadUnavailableProgramDates = useCallback(async ({ showLoading = true } = {}) => {
     if (!isSupabaseConfigured || !supabase) return null;
@@ -1498,6 +1584,7 @@ export default function EventApplicationPage() {
       applicantFirstName: String(document.first_name || previous.applicantFirstName || '').trim(),
       applicantMiddleName: middleName || previous.applicantMiddleName,
       applicantLastName: String(document.last_name || previous.applicantLastName || '').trim(),
+      applicantBirthdate: mapDiditBirthdate(document.date_of_birth || document.birth_date) || previous.applicantBirthdate,
       applicantGender: mapDiditGender(document.gender) || previous.applicantGender,
       applicantIdDocumentNumber: String(document.document_number || previous.applicantIdDocumentNumber || '').trim(),
       applicantIdAddress: String(document.formatted_address || document.address || previous.applicantIdAddress || '').trim(),
@@ -1509,6 +1596,7 @@ export default function EventApplicationPage() {
       delete next.applicantFirstName;
       delete next.applicantMiddleName;
       delete next.applicantLastName;
+      delete next.applicantBirthdate;
       delete next.applicantGender;
       delete next.applicantIdDocumentNumber;
       delete next.applicantIdAddress;
@@ -1538,9 +1626,15 @@ export default function EventApplicationPage() {
 
       setDiditStatus(String(data?.status || 'Unknown'));
       setDiditWarnings(Array.isArray(data?.warnings) ? data.warnings : []);
+      const nextIdPreviewUrl = data?.verified ? String(data?.idFrontImageUrl || '') : '';
+      setVerifiedIdPreviewUrl(nextIdPreviewUrl);
       if (data?.verified && data?.document) {
         applyDiditDocument(data.document);
-        setDiditNotice('ID verified. Name, ID number, gender, and address were filled when detected. You may correct any scan error.');
+        setDiditNotice(
+          nextIdPreviewUrl
+            ? 'ID verified. Name, birthdate, ID number, gender, and address were filled when detected. You may correct any scan error.'
+            : `ID verified, but the image preview could not be loaded. ${String(data?.idImageNotice || 'Use Refresh ID preview to try again.')}`,
+        );
         setIsDiditModalOpen(false);
       } else if (String(data?.status || '').toLowerCase() === 'in review') {
         setDiditNotice('The ID is still being reviewed. Check the verification status again shortly.');
@@ -1567,6 +1661,8 @@ export default function EventApplicationPage() {
     setIsCreatingDiditSession(true);
     setDiditNotice('Creating a secure identity verification session...');
     setDiditStatus('Not Started');
+    setVerifiedIdPreviewUrl('');
+    idPreviewRefreshSessionRef.current = '';
     setDiditWarnings([]);
     try {
       const { data, error } = await supabase.functions.invoke('didit-verification', {
@@ -1592,6 +1688,14 @@ export default function EventApplicationPage() {
       setIsCreatingDiditSession(false);
     }
   }, []);
+
+  useEffect(() => {
+    const sessionId = String(diditSession?.sessionId || '');
+    if (currentStep !== 3 || !isDiditVerified || verifiedIdPreviewUrl || !sessionId) return;
+    if (idPreviewRefreshSessionRef.current === sessionId) return;
+    idPreviewRefreshSessionRef.current = sessionId;
+    void checkDiditStatus();
+  }, [checkDiditStatus, currentStep, diditSession?.sessionId, isDiditVerified, verifiedIdPreviewUrl]);
 
   useEffect(() => {
     const handleDiditMessage = (event) => {
@@ -2066,17 +2170,17 @@ export default function EventApplicationPage() {
       return;
     }
 
-    const step1Issue = getStepValidationIssue(1);
-    if (step1Issue) {
+    const step1Errors = getStepValidationErrors(1);
+    if (Object.keys(step1Errors).length) {
       setCurrentStep(1);
-      markFieldError(step1Issue.field, step1Issue.message);
+      markFieldErrors(step1Errors);
       return;
     }
 
-    const step2Issue = getStepValidationIssue(2);
-    if (step2Issue) {
+    const step2Errors = getStepValidationErrors(2);
+    if (Object.keys(step2Errors).length) {
       setCurrentStep(2);
-      markFieldError(step2Issue.field, step2Issue.message);
+      markFieldErrors(step2Errors);
       return;
     }
 
@@ -2142,7 +2246,10 @@ export default function EventApplicationPage() {
         Applicant_Middle_Name: form.applicantMiddleName.trim() || null,
         Applicant_Last_Name: form.applicantLastName.trim(),
         Applicant_Email: form.applicantEmail.trim() || null,
-        Applicant_Gender: form.applicantGender.trim() || null,
+        Applicant_Birthdate: form.applicantBirthdate,
+        Applicant_Gender: GENDER_OPTIONS.includes(form.applicantGender.trim())
+          ? form.applicantGender.trim()
+          : null,
         Applicant_ID_Document_Number: form.applicantIdDocumentNumber.trim() || null,
         Applicant_ID_Address: form.applicantIdAddress.trim() || null,
         Applicant_Contact_Number: toStoredPhoneNumber(form.applicantContactNumber) || null,
@@ -2183,6 +2290,9 @@ export default function EventApplicationPage() {
         Staff_Rejection_Reason: null,
         Linked_Event_Request_ID: null,
         Resubmission_Count: 0,
+        Terms_Document_ID: eventTerms.document.legal_document_id,
+        Terms_Version: eventTerms.document.version,
+        Terms_Accepted_At: new Date().toISOString(),
       };
 
       await insertEventApplicationIntake(payload);
@@ -2237,45 +2347,18 @@ export default function EventApplicationPage() {
               Back To Landing
             </button>
 
-            <h1 className="text-2xl font-bold text-slate-900 md:text-3xl">Terms and Conditions</h1>
-            <p className="mt-2 text-sm text-slate-600">
-              Review and accept the Donivra Terms and Agreement before starting the program application.
-            </p>
-
-            <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
-              <iframe
-                title="Donivra Terms and Agreement"
-                src={TERMS_AND_AGREEMENT_PDF_PATH}
-                className="h-[60vh] w-full bg-white"
-              />
-            </div>
-
-            <p className="mt-2 text-xs text-slate-500">
-              If the preview does not load, open the file here:{' '}
-              <a
-                href={TERMS_AND_AGREEMENT_PDF_PATH}
-                target="_blank"
-                rel="noreferrer"
-                className="font-semibold text-slate-700 underline"
-              >
-                Donivra Terms and Agreement (PDF)
-              </a>
-            </p>
-
-            <label className="mt-4 flex items-start gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-700">
-              <input
-                type="checkbox"
-                checked={hasConfirmedTerms}
-                onChange={(event) => {
-                  setHasConfirmedTerms(event.target.checked);
-                  if (event.target.checked) {
-                    setErrorMessage('');
-                  }
-                }}
-                className="mt-0.5 h-4 w-4 rounded border-slate-300"
-              />
-              <span>I have read and agree to the Donivra Terms and Agreement.</span>
-            </label>
+            <LegalTermsGate
+              title="Event Application Terms and Conditions"
+              description="Review the active Event Application Terms PDF before starting the program application."
+              {...eventTerms}
+              checked={hasConfirmedTerms}
+              onCheckedChange={(checked) => {
+                setHasConfirmedTerms(checked);
+                if (checked) setErrorMessage('');
+              }}
+              onReload={eventTerms.reload}
+              accentColor={primaryColor}
+            />
 
             {errorMessage ? (
               <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
@@ -2610,7 +2693,7 @@ export default function EventApplicationPage() {
                       <h2 className="text-sm font-semibold text-slate-800">Verify a Philippine Government ID *</h2>
                     </div>
                     <p className="mt-1 text-xs text-slate-600">
-                      The secure verification checks the ID and fills only the name, ID number, gender, and address when available.
+                      The secure verification checks the ID and fills only the name, birthdate, ID number, gender, and address when available.
                     </p>
                   </div>
                   <button
@@ -2679,6 +2762,13 @@ export default function EventApplicationPage() {
                 <span className="text-sm font-medium text-slate-700">Last Name *</span>
                 <input ref={setFieldRef('applicantLastName')} type="text" value={form.applicantLastName} onChange={updateField('applicantLastName')} className={getFieldInputClassName('applicantLastName')} style={{ '--tw-ring-color': primaryColor }} />
                 {fieldError('applicantLastName')}
+              </label>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-slate-700">Birthdate *</span>
+                <input ref={setFieldRef('applicantBirthdate')} type="date" max={getAdultBirthdateMax()} value={form.applicantBirthdate} onChange={updateField('applicantBirthdate')} className={getFieldInputClassName('applicantBirthdate')} style={{ '--tw-ring-color': primaryColor }} />
+                {fieldError('applicantBirthdate')}
+                <span className="text-xs text-slate-500">The applicant must be at least 18 years old.</span>
               </label>
 
               <label className="flex flex-col gap-1">
@@ -3031,6 +3121,7 @@ export default function EventApplicationPage() {
                     <div className="grid grid-cols-1 gap-2 text-sm text-slate-700 md:grid-cols-2">
                       {[
                         ['Name', [form.applicantFirstName, form.applicantMiddleName, form.applicantLastName].filter(Boolean).join(' ') || 'N/A'],
+                        ['Birthdate', form.applicantBirthdate || 'N/A'],
                         ['Gender', form.applicantGender || 'N/A'],
                         ['ID Type', PH_VALID_ID_OPTIONS.find((option) => option.value === form.applicantValidIdType)?.label || 'N/A'],
                         ['ID Verification', isDiditVerified ? 'Approved' : diditStatus],
@@ -3043,6 +3134,30 @@ export default function EventApplicationPage() {
                           <span className="font-semibold">{label}:</span> {value}
                         </div>
                       ))}
+                    </div>
+                    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Submitted Government ID</p>
+                      {verifiedIdPreviewUrl ? (
+                        <img
+                          src={verifiedIdPreviewUrl}
+                          alt="Submitted government ID"
+                          onError={() => setVerifiedIdPreviewUrl('')}
+                          className="max-h-72 w-full rounded-lg border border-slate-200 bg-white object-contain"
+                        />
+                      ) : (
+                        <div className="space-y-2">
+                          <p className="text-xs text-slate-500">The secure ID preview is unavailable or has expired.</p>
+                          <button
+                            type="button"
+                            onClick={() => checkDiditStatus()}
+                            disabled={isCheckingDiditStatus}
+                            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                          >
+                            {isCheckingDiditStatus && <Loader2 size={13} className="animate-spin" />}
+                            Refresh ID preview
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -3141,14 +3256,6 @@ export default function EventApplicationPage() {
                  <button
                    type="button"
                    onClick={goNextStep}
-                   disabled={
-                     currentStep === 1
-                     && (
-                       emailAvailability.status !== 'available'
-                       || !isEmailOtpVerified
-                       || normalizedEmail !== verifiedEmail
-                     )
-                   }
                    title={
                      currentStep === 1 && (!isEmailOtpVerified || normalizedEmail !== verifiedEmail)
                        ? 'Verify the applicant email before continuing.'
@@ -3164,7 +3271,7 @@ export default function EventApplicationPage() {
                 <button
                   type="button"
                   onClick={() => handleSubmit(null, false)}
-                  disabled={isSubmitting || !canSubmit || !isEmailOtpVerified || normalizedEmail !== verifiedEmail}
+                  disabled={isSubmitting}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60 sm:w-auto"
                   style={{ backgroundColor: primaryColor }}
                 >
@@ -3227,6 +3334,7 @@ export default function EventApplicationPage() {
                   label="Full name"
                   value={[form.applicantFirstName, form.applicantMiddleName, form.applicantLastName].filter(Boolean).join(' ')}
                 />
+                <ConfirmationItem label="Birthdate" value={form.applicantBirthdate} />
                 <ConfirmationItem label="Gender" value={form.applicantGender} />
                 <ConfirmationItem
                   label="Government ID type"
@@ -3293,6 +3401,10 @@ export default function EventApplicationPage() {
 
               <ConfirmationSection title="Submitted images">
                 <ConfirmationItem
+                  label="Government ID"
+                  value={verifiedIdPreviewUrl ? 'Verified ID image attached' : 'Refreshing secure preview may be required'}
+                />
+                <ConfirmationItem
                   label="Program place photo"
                   value={eventPlacePhotoFile?.name || 'Selected place photo'}
                 />
@@ -3308,6 +3420,31 @@ export default function EventApplicationPage() {
                       alt="Submitted program place"
                       className="h-40 w-full rounded-lg border border-slate-200 bg-white object-contain"
                     />
+                  </div>
+                )}
+                {verifiedIdPreviewUrl && (
+                  <div className="md:col-span-2">
+                    <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Government ID preview</p>
+                    <img
+                      src={verifiedIdPreviewUrl}
+                      alt="Verified submitted government ID"
+                      onError={() => setVerifiedIdPreviewUrl('')}
+                      className="max-h-72 w-full rounded-lg border border-slate-200 bg-white object-contain"
+                    />
+                  </div>
+                )}
+                {!verifiedIdPreviewUrl && (
+                  <div className="md:col-span-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                    <p className="text-xs text-amber-900">The verified ID image has not loaded yet.</p>
+                    <button
+                      type="button"
+                      onClick={() => checkDiditStatus()}
+                      disabled={isCheckingDiditStatus}
+                      className="mt-2 inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+                    >
+                      {isCheckingDiditStatus && <Loader2 size={13} className="animate-spin" />}
+                      Refresh ID preview
+                    </button>
                   </div>
                 )}
                 {eventPosterPhotoPreviewUrl && (

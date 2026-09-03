@@ -7,13 +7,18 @@ import {
   Upload,
 } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
+import { useToast } from '../../../context/ToastContext';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
 const LEGAL_DOCUMENTS_TABLE = 'legal_documents';
 const LEGAL_DOCUMENTS_BUCKET = 'legal-documents';
-const CONSENT_DOCUMENT_TYPE = 'consent_for_minors';
-const CONSENT_DOCUMENT_TITLE = 'Consent for Minors';
+const DOCUMENT_TYPES = [
+  { value: 'consent_for_minors', label: 'Consent for Minors' },
+  { value: 'event_application_terms', label: 'Event Application Terms and Conditions' },
+  { value: 'hospital_representative_application_terms', label: 'H-Representative Application Terms and Conditions' },
+  { value: 'wig_request_terms', label: 'Wig Request Terms and Conditions' },
+];
 
 const EMPTY_FORM = {
   effectiveAt: '',
@@ -117,9 +122,11 @@ function isPdfFile(fileValue) {
 
 export default function LegalDocumentsPage({ userProfile }) {
   const { theme } = useTheme();
+  const { showToast } = useToast();
   const roleKey = normalizeRoleKey(userProfile?.role);
-  const canManage = roleKey === 'superadmin' || roleKey === 'staff';
+  const canManage = roleKey === 'admin' || roleKey === 'superadmin' || roleKey === 'staff';
 
+  const [selectedDocumentType, setSelectedDocumentType] = useState(DOCUMENT_TYPES[0].value);
   const [documents, setDocuments] = useState([]);
   const [selectedDocumentId, setSelectedDocumentId] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -131,6 +138,16 @@ export default function LegalDocumentsPage({ userProfile }) {
   const [localPreviewUrl, setLocalPreviewUrl] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!notice.text || !['error', 'success'].includes(notice.kind)) return;
+    showToast({
+      type: notice.kind,
+      title: notice.kind === 'error' ? 'Legal Documents error' : 'Legal Documents updated',
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
 
   const primaryColor = theme?.primaryColor || '#0f766e';
   const primaryTextColor = theme?.primaryTextColor || '#0f172a';
@@ -152,6 +169,10 @@ export default function LegalDocumentsPage({ userProfile }) {
   );
 
   const nextVersion = useMemo(() => getNextVersion(documents), [documents]);
+  const selectedTypeDefinition = useMemo(
+    () => DOCUMENT_TYPES.find((option) => option.value === selectedDocumentType) || DOCUMENT_TYPES[0],
+    [selectedDocumentType],
+  );
   const nowLocalDateTimeValue = useMemo(() => formatDateForInput(new Date()), []);
 
   const selectedPdfPath = useMemo(
@@ -175,7 +196,7 @@ export default function LegalDocumentsPage({ userProfile }) {
       const { data, error } = await supabase
         .from(LEGAL_DOCUMENTS_TABLE)
         .select('legal_document_id, document_type, version, title, content, is_active, effective_at, created_at, file_path')
-        .eq('document_type', CONSENT_DOCUMENT_TYPE)
+        .eq('document_type', selectedDocumentType)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -191,7 +212,7 @@ export default function LegalDocumentsPage({ userProfile }) {
     } catch (error) {
       setNotice({ kind: 'error', text: mapLoadError(error?.message) });
     }
-  }, []);
+  }, [selectedDocumentType]);
 
   useEffect(() => {
     void loadDocuments();
@@ -270,7 +291,7 @@ export default function LegalDocumentsPage({ userProfile }) {
       setNotice({ kind: 'error', text: 'Missing auth_user_id in profile. Please sign out and sign in again.' });
       return;
     }
-    const storagePath = `${actorAuthUserId}/legal-documents/v${newVersion.replace('.', '_')}-${Date.now()}-${safeName}`;
+    const storagePath = `${actorAuthUserId}/legal-documents/${selectedDocumentType}/v${newVersion.replace('.', '_')}-${Date.now()}-${safeName}`;
 
     try {
       setIsPublishing(true);
@@ -288,17 +309,17 @@ export default function LegalDocumentsPage({ userProfile }) {
       const deactivateResult = await supabase
         .from(LEGAL_DOCUMENTS_TABLE)
         .update({ is_active: false })
-        .eq('document_type', CONSENT_DOCUMENT_TYPE)
+        .eq('document_type', selectedDocumentType)
         .eq('is_active', true);
       if (deactivateResult.error) throw deactivateResult.error;
 
       const insertResult = await supabase
         .from(LEGAL_DOCUMENTS_TABLE)
         .insert({
-          document_type: CONSENT_DOCUMENT_TYPE,
+          document_type: selectedDocumentType,
           version: newVersion,
-          title: CONSENT_DOCUMENT_TITLE,
-          content: `Uploaded PDF consent file: ${pdfFile.name}`,
+          title: selectedTypeDefinition.label,
+          content: `Uploaded legal PDF: ${pdfFile.name}`,
           is_active: true,
           effective_at: toIsoOrNow(form.effectiveAt),
           file_path: storagePath,
@@ -307,11 +328,11 @@ export default function LegalDocumentsPage({ userProfile }) {
         .single();
       if (insertResult.error) throw insertResult.error;
 
-      setNotice({ kind: 'success', text: `Consent document version ${newVersion} published and set as active.` });
+      setNotice({ kind: 'success', text: `${selectedTypeDefinition.label} version ${newVersion} published and set as active.` });
       setPdfFile(null);
       await logAuditAction({
         action: 'legal_documents.publish',
-        description: `Published consent document v${newVersion}`,
+        description: `Published ${selectedTypeDefinition.label} v${newVersion}`,
         resource: LEGAL_DOCUMENTS_TABLE,
         status: 'success',
         userProfile,
@@ -354,7 +375,7 @@ export default function LegalDocumentsPage({ userProfile }) {
       const deactivateResult = await supabase
         .from(LEGAL_DOCUMENTS_TABLE)
         .update({ is_active: false })
-        .eq('document_type', CONSENT_DOCUMENT_TYPE)
+        .eq('document_type', selectedDocumentType)
         .eq('is_active', true);
       if (deactivateResult.error) throw deactivateResult.error;
 
@@ -379,31 +400,32 @@ export default function LegalDocumentsPage({ userProfile }) {
         <div>
           <h1 className="role-page-title text-3xl font-bold text-gray-900">Legal Documents</h1>
           <p className="mt-1 text-sm text-gray-600">
-            Manage and publish the latest PDF consent form for minors with version history.
+            Upload and preview the active PDF shown in each consent or application workflow.
           </p>
         </div>
       </div>
 
-      {notice.text ? (
-        <div
-          className={`rounded-xl border px-3 py-2 text-sm font-medium ${
-            notice.kind === 'error'
-              ? 'border-red-200 bg-red-50 text-red-700'
-              : notice.kind === 'success'
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                : 'border-amber-200 bg-amber-50 text-amber-700'
-          }`}
-        >
-          {notice.text}
-        </div>
-      ) : null}
-
       <section className="rounded-xl border border-gray-200 bg-white p-4 md:p-5">
+        <label className="mb-4 block text-sm font-medium text-gray-700">
+          Legal document shown in the UI
+          <select
+            value={selectedDocumentType}
+            onChange={(event) => {
+              setSelectedDocumentType(event.target.value);
+              setPdfFile(null);
+              setSelectedDocumentId(null);
+              setNotice({ kind: '', text: '' });
+            }}
+            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+          >
+            {DOCUMENT_TYPES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
         <div className="mb-4 flex items-center justify-between gap-2">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Publish Latest Consent Form</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Publish {selectedTypeDefinition.label}</h2>
             <p className="mt-1 text-xs text-gray-500">
-              Document type: <span className="font-semibold">{CONSENT_DOCUMENT_TITLE}</span> | Next version: <span className="font-semibold">{nextVersion}</span>
+              The uploaded title will be <span className="font-semibold">{selectedTypeDefinition.label}</span> | Next version: <span className="font-semibold">{nextVersion}</span>
             </p>
           </div>
         </div>
@@ -422,7 +444,7 @@ export default function LegalDocumentsPage({ userProfile }) {
         </div>
 
         <div className="mt-4">
-          <label className="mb-1 block text-sm font-medium text-gray-700">Consent PDF File</label>
+          <label className="mb-1 block text-sm font-medium text-gray-700">PDF File</label>
           <input
             ref={fileInputRef}
             type="file"
@@ -502,7 +524,7 @@ export default function LegalDocumentsPage({ userProfile }) {
 
           {!documents.length ? (
             <div className="rounded-lg border border-dashed border-gray-300 px-4 py-8 text-center text-sm text-gray-500">
-              No consent document versions yet.
+              No versions have been uploaded for {selectedTypeDefinition.label} yet.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -577,7 +599,7 @@ export default function LegalDocumentsPage({ userProfile }) {
           {localPreviewUrl || previewUrl ? (
             <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
               <iframe
-                title="Consent PDF preview"
+                title={`${selectedTypeDefinition.label} PDF preview`}
                 src={localPreviewUrl || previewUrl}
                 className="h-[78vh] w-full"
               />
@@ -594,7 +616,7 @@ export default function LegalDocumentsPage({ userProfile }) {
         <div className="flex items-start gap-2">
           <FileText size={14} className="mt-0.5 text-gray-500" />
           <p>
-            This page manages <code>{CONSENT_DOCUMENT_TITLE}</code> records in <code>{LEGAL_DOCUMENTS_TABLE}</code>.
+            This page manages <code>{selectedTypeDefinition.label}</code> records in <code>{LEGAL_DOCUMENTS_TABLE}</code>.
             Publishing creates a new version and automatically sets only one active document.
           </p>
         </div>

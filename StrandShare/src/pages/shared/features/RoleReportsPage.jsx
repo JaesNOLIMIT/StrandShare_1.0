@@ -723,6 +723,14 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           const statusKey = normalizeKey(row.final_decision || 'Pending');
           const screening = row.ai_screening || {};
           const comparison = calculateAiReviewAccuracy(screening, row.staff_values);
+          const recordedChangedFields = Array.isArray(row.changed_fields)
+            ? row.changed_fields.filter(Boolean)
+            : comparison.changed;
+          const comparableFieldCount = Number(row.comparable_field_count ?? comparison.comparable);
+          const matchedFieldCount = Number(row.matched_field_count ?? comparison.matched);
+          const aiPercent = comparableFieldCount > 0
+            ? (matchedFieldCount / comparableFieldCount) * 100
+            : 0;
           const aiComments = String(
             screening.Summary
             || screening.Visible_Damage_Notes
@@ -735,17 +743,17 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
             eventName: row.event_name || `Event #${row.event_request_id || 'N/A'}`,
             statusKey,
             statusLabel: labelFromKey(statusKey),
-            accuracyLabel: `${formatPercentage(comparison.aiPercent)}%`,
-            humanChangeLabel: `${formatPercentage(comparison.humanPercent)}%`,
+            accuracyLabel: `${formatPercentage(aiPercent)}%`,
+            humanChangeLabel: `${formatPercentage(comparableFieldCount > 0 ? 100 - aiPercent : 0)}%`,
             aiComments,
-            comparableFieldCount: comparison.comparable,
-            matchedFieldCount: comparison.matched,
-            changedFields: comparison.changed,
+            comparableFieldCount,
+            matchedFieldCount,
+            changedFields: recordedChangedFields,
             createdAt: row.reviewed_at,
             updatedAt: row.reviewed_at,
             createdAtLabel: formatDateTime(row.reviewed_at),
             updatedAtLabel: formatDateTime(row.reviewed_at),
-            searchText: [row.comparison_id, row.submission_id, row.event_name, row.final_decision, aiComments, ...comparison.changed].filter(Boolean).join(' ').toLowerCase(),
+            searchText: [row.comparison_id, row.submission_id, row.event_name, row.final_decision, aiComments, ...recordedChangedFields].filter(Boolean).join(' ').toLowerCase(),
           };
         });
       } else if (selectedTemplate.id === 'user_accounts' && isAdmin) {
@@ -1212,7 +1220,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div>
               <h3 className="text-sm font-bold text-slate-900">AI Accuracy vs Human Changes</h3>
-              <p className="mt-0.5 text-xs text-slate-500">Five comparable hair fields per reviewed record: length, color, texture, density, and condition.</p>
+              <p className="mt-0.5 text-xs text-slate-500">Five comparable fields contribute equally: length, color, texture, density, and condition.</p>
             </div>
             <div className="mt-3 h-64 min-h-64">
               {aiAccuracySummary.comparableFields === 0 ? (
@@ -1247,7 +1255,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
 
           <aside className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <h3 className="text-sm font-bold text-slate-900">How to read this report</h3>
-            <p className="mt-1 text-xs leading-5 text-slate-600">AI Correct means the final staff value exactly matched the original AI screening. Human Changes means staff changed that AI value.</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">AI Correct is the share of comparable fields matching the original AI screening. Human Changes is the share corrected by staff.</p>
             <div className="mt-4 space-y-3">
               {aiAccuracyPieData.map((entry) => (
                 <div key={entry.name} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -1262,7 +1270,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               ))}
             </div>
             <p className="mt-4 rounded-lg border px-3 py-2 text-[11px] leading-5" style={{ borderColor: `${primaryColor}30`, color: primaryTextColor, backgroundColor: `${primaryColor}08` }}>
-              Percentages are weighted by comparable fields, so every reviewed AI value contributes equally.
+              AI Correct and Human Changes always total 100% across all comparable fields in the selected completed reviews.
             </p>
           </aside>
         </section>

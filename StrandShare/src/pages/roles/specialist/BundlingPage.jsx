@@ -11,8 +11,11 @@ import {
   Image as ImageIcon,
   Loader2,
   Package,
+  Palette,
   Printer,
+  Ruler,
   ScanLine,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
@@ -29,6 +32,7 @@ import {
   WAYBILL_CODE_LENGTH,
   buildBundleSubmissionCode,
   buildBundleWaybillQrPayload,
+  buildWaybillCode,
   deleteBundleDraft,
   isValidWaybillCode,
   normalizeWaybillCodeInput,
@@ -37,6 +41,7 @@ import WigSpecificationPicker from './wigCatalog/WigSpecificationPicker';
 import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 import WaybillScanResult from '../../../components/scanning/WaybillScanResult';
 import PageHeaderActions from '../../../components/PageHeaderActions';
+import { FILTERS_BUCKET, getPublicUrl } from './wigCatalog/wigCatalogUtils';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
@@ -46,6 +51,7 @@ const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const WIG_SPECIFICATIONS_TABLE = 'Wig_Specifications';
 const WIGS_TABLE = 'Wigs';
 const WIG_REQUESTS_TABLE = 'Wig_Requests';
+const CUT_HAIR_INVENTORY_TABLE = 'Cut_Hair_Inventory';
 const PATIENTS_TABLE = 'Patients';
 const USER_DETAILS_TABLE = 'user_details';
 const SCAN_DEBOUNCE_MS = 2000;
@@ -148,6 +154,99 @@ function normalizeErrorMessage(error, fallback) {
   return message || fallback;
 }
 
+function normalizeAttribute(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+}
+
+function numericLength(value) {
+  const match = String(value ?? '').match(/\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : null;
+}
+
+function compareHairToWig(hair, specification) {
+  const detail = hair?.detail || {};
+  const targetLength = numericLength(specification?.hairLength);
+  const hairLength = numericLength(detail.Declared_Length);
+  const targetTexture = normalizeAttribute(specification?.hairTexture);
+  const hairTexture = normalizeAttribute(detail.Declared_Texture);
+  const targetColor = normalizeAttribute(specification?.hairColor);
+  const hairColor = normalizeAttribute(detail.Declared_Color);
+  const targetDensity = normalizeAttribute(specification?.hairDensity);
+  const hairDensity = normalizeAttribute(detail.Declared_Density);
+  const reasons = [];
+  let score = 0;
+
+  const tooShort = targetLength !== null && hairLength !== null && hairLength < targetLength;
+  const lengthVerified = targetLength !== null && hairLength !== null;
+  const hasTrimMargin = lengthVerified && hairLength >= targetLength + 2;
+  const textureMismatch = Boolean(targetTexture && hairTexture && targetTexture !== hairTexture);
+  const colorMismatch = Boolean(targetColor && hairColor && targetColor !== hairColor);
+  if (targetLength === null || hairLength === null) {
+    reasons.push('Length needs manual verification');
+  } else if (hairLength >= targetLength + 2) {
+    score += 50;
+    reasons.push(`${hairLength} in provides trimming room for a ${targetLength} in wig`);
+  } else if (hairLength >= targetLength) {
+    score += 35;
+    reasons.push(`${hairLength} in meets the target, with limited trimming room`);
+  } else {
+    reasons.push(`${hairLength} in is shorter than the ${targetLength} in target`);
+  }
+
+  if (targetTexture && hairTexture) {
+    if (targetTexture === hairTexture) {
+      score += 20;
+      reasons.push('Texture matches');
+    } else {
+      reasons.push(`Texture differs (${detail.Declared_Texture} vs ${specification.hairTexture})`);
+    }
+  } else {
+    score += 5;
+    reasons.push('Texture needs manual verification');
+  }
+
+  if (targetColor && hairColor) {
+    if (targetColor === hairColor) {
+      score += 18;
+      reasons.push('Color matches');
+    } else {
+      reasons.push(`Color differs (${detail.Declared_Color} vs ${specification.hairColor})`);
+    }
+  } else {
+    score += 5;
+    reasons.push('Color needs manual verification');
+  }
+
+  if (targetDensity && hairDensity) {
+    if (targetDensity === hairDensity) {
+      score += 12;
+      reasons.push('Density matches');
+    } else {
+      score += 3;
+      reasons.push(`Density differs (${detail.Declared_Density} vs ${specification.hairDensity})`);
+    }
+  } else {
+    score += 3;
+  }
+
+  if (tooShort) {
+    return { score, key: 'not-recommended', label: 'Too short', reasons };
+  }
+  if (!lengthVerified) return { score, key: 'review', label: 'Check length', reasons };
+  if (hasTrimMargin && !textureMismatch && !colorMismatch) {
+    return { score, key: 'recommended', label: 'Best fit', reasons };
+  }
+  if (!textureMismatch && !colorMismatch) return { score, key: 'compatible', label: 'Usable', reasons };
+  return { score, key: 'review', label: 'Review', reasons };
+}
+
+const COMPATIBILITY_STYLES = {
+  recommended: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+  compatible: 'border-sky-200 bg-sky-50 text-sky-800',
+  review: 'border-amber-200 bg-amber-50 text-amber-800',
+  'not-recommended': 'border-rose-200 bg-rose-50 text-rose-800',
+};
+
 export default function BundlingPage() {
   const { theme } = useTheme();
   const { showToast } = useToast();
@@ -172,6 +271,7 @@ export default function BundlingPage() {
   const [activePrintBundle, setActivePrintBundle] = useState(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [wigSpecOptions, setWigSpecOptions] = useState([]);
+  const [availableCutHair, setAvailableCutHair] = useState([]);
   const [wishRequests, setWishRequests] = useState([]);
   const [openingWishRequestId, setOpeningWishRequestId] = useState(null);
   const [scannerDraftBundleId, setScannerDraftBundleId] = useState(null);
@@ -198,10 +298,16 @@ export default function BundlingPage() {
   const lastScanRef = useRef({ raw: '', at: 0 });
 
   useEffect(() => {
-    if (!notice.text || !['error', 'success'].includes(notice.kind)) return;
+    if (!notice.text) return;
     showToast({
-      type: notice.kind,
-      title: notice.kind === 'success' ? 'Bundling updated' : 'Bundling error',
+      type: notice.kind || 'info',
+      title: notice.kind === 'success'
+        ? 'Bundling updated'
+        : notice.kind === 'error'
+          ? 'Action not completed'
+          : notice.kind === 'warning'
+            ? 'Check before continuing'
+            : 'Bundling information',
       message: notice.text,
     });
     setNotice({ kind: '', text: '' });
@@ -267,6 +373,79 @@ export default function BundlingPage() {
         };
       });
       setWigSpecOptions(nextSpecOptions);
+
+      const availableInventoryResult = await supabase
+        .from(CUT_HAIR_INVENTORY_TABLE)
+        .select('Inventory_ID, Submission_ID, Event_Attendee_ID, Donor_User_ID, Source_Type, Status, Approved_At, Bundle_ID')
+        .eq('Status', 'Cut')
+        .is('Bundle_ID', null)
+        .order('Approved_At', { ascending: false })
+        .limit(500);
+      if (availableInventoryResult.error) throw availableInventoryResult.error;
+
+      const availableInventory = availableInventoryResult.data || [];
+      const availableSubmissionIds = Array.from(new Set(
+        availableInventory.map((row) => Number(row.Submission_ID || 0)).filter(Boolean),
+      ));
+      const availableAttendeeIds = Array.from(new Set(
+        availableInventory.map((row) => Number(row.Event_Attendee_ID || 0)).filter(Boolean),
+      ));
+      const availableDonorIds = Array.from(new Set(
+        availableInventory.map((row) => Number(row.Donor_User_ID || 0)).filter(Boolean),
+      ));
+
+      const [availableDetailsResult, availableAttendeesResult, availableDonorsResult] = await Promise.all([
+        availableSubmissionIds.length
+          ? supabase
+            .from(HAIR_SUBMISSION_DETAILS_TABLE)
+            .select('Submission_Detail_ID, Submission_ID, Declared_Length, Declared_Color, Declared_Texture, Declared_Density, Declared_Condition, Is_Chemically_Treated, Is_Colored, Is_Bleached, Is_Rebonded')
+            .in('Submission_ID', availableSubmissionIds)
+            .order('Submission_Detail_ID', { ascending: false })
+          : Promise.resolve({ data: [], error: null }),
+        availableAttendeeIds.length
+          ? supabase
+            .from(EVENT_ATTENDEES_TABLE)
+            .select('Event_Attendee_ID, Waybill_Code')
+            .in('Event_Attendee_ID', availableAttendeeIds)
+          : Promise.resolve({ data: [], error: null }),
+        availableDonorIds.length
+          ? supabase
+            .from(USER_DETAILS_TABLE)
+            .select('user_id, first_name, middle_name, last_name, suffix')
+            .in('user_id', availableDonorIds)
+          : Promise.resolve({ data: [], error: null }),
+      ]);
+      if (availableDetailsResult.error) throw availableDetailsResult.error;
+      if (availableAttendeesResult.error) throw availableAttendeesResult.error;
+      if (availableDonorsResult.error) throw availableDonorsResult.error;
+
+      const availableDetailsBySubmission = (availableDetailsResult.data || []).reduce((acc, row) => {
+        const submissionId = Number(row.Submission_ID || 0);
+        if (submissionId && !acc[submissionId]) acc[submissionId] = row;
+        return acc;
+      }, {});
+      const availableWaybillByAttendee = (availableAttendeesResult.data || []).reduce((acc, row) => {
+        acc[Number(row.Event_Attendee_ID || 0)] = String(row.Waybill_Code || '').trim().toUpperCase();
+        return acc;
+      }, {});
+      const availableDonorById = (availableDonorsResult.data || []).reduce((acc, row) => {
+        acc[Number(row.user_id || 0)] = row;
+        return acc;
+      }, {});
+
+      setAvailableCutHair(availableInventory.map((row) => {
+        const submissionId = Number(row.Submission_ID || 0);
+        const attendeeId = Number(row.Event_Attendee_ID || 0);
+        const donor = availableDonorById[Number(row.Donor_User_ID || 0)] || {};
+        return {
+          ...row,
+          submissionId,
+          waybillCode: availableWaybillByAttendee[attendeeId] || buildWaybillCode({ submissionId }),
+          donorName: buildFullName(donor.first_name, donor.middle_name, donor.last_name, donor.suffix)
+            || `Donor #${row.Donor_User_ID}`,
+          detail: availableDetailsBySubmission[submissionId] || null,
+        };
+      }));
 
       const wishResult = await supabase
         .from(WIG_REQUESTS_TABLE)
@@ -474,6 +653,7 @@ export default function BundlingPage() {
       HAIR_SUBMISSION_BUNDLES_TABLE,
       HAIR_SUBMISSION_DETAILS_TABLE,
       EVENT_ATTENDEES_TABLE,
+      CUT_HAIR_INVENTORY_TABLE,
       WIG_SPECIFICATIONS_TABLE,
       WIGS_TABLE,
     ],
@@ -533,7 +713,9 @@ export default function BundlingPage() {
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraStatus({ kind: 'error', message: 'Camera API is unavailable on this browser/device.' });
+      const message = 'Camera access is unavailable on this browser or device.';
+      setCameraStatus({ kind: 'error', message });
+      setNotice({ kind: 'error', text: message });
       return;
     }
 
@@ -560,7 +742,9 @@ export default function BundlingPage() {
       setIsCameraOn(true);
       setCameraStatus({ kind: 'success', message: 'Scanner is running. Point camera at a donor waybill QR.' });
     } catch (error) {
-      setCameraStatus({ kind: 'error', message: normalizeErrorMessage(error, 'Could not access the camera.') });
+      const message = normalizeErrorMessage(error, 'Could not access the camera.');
+      setCameraStatus({ kind: 'error', message });
+      setNotice({ kind: 'error', text: message });
     } finally {
       setIsStartingCamera(false);
     }
@@ -1212,6 +1396,22 @@ export default function BundlingPage() {
     ? activeBundles.find((b) => `bundle-${b.Bundle_ID}` === selectedKey) || null
     : null;
   const showCreatePanel = selectedKey === 'create' || (!selectedDraftRow && !selectedBundleRow);
+  const selectedTargetRow = selectedDraftRow || selectedBundleRow;
+  const selectedTargetSpecification = wigSpecOptions.find(
+    (option) => Number(option.Wig_Specification_ID || 0) === Number(selectedTargetRow?.Wig_Specification_ID || 0),
+  ) || null;
+  const rankedAvailableHair = useMemo(() => {
+    if (!selectedTargetSpecification) return [];
+    return availableCutHair
+      .map((hair) => ({ ...hair, compatibility: compareHairToWig(hair, selectedTargetSpecification) }))
+      .sort((left, right) => (
+        right.compatibility.score - left.compatibility.score
+        || new Date(right.Approved_At || 0) - new Date(left.Approved_At || 0)
+      ));
+  }, [availableCutHair, selectedTargetSpecification]);
+  const recommendedAvailableCount = rankedAvailableHair.filter(
+    (hair) => ['recommended', 'compatible'].includes(hair.compatibility.key),
+  ).length;
   const flowSteps = [
     { id: 1, title: 'Open Draft', detail: 'Pick a wig specification and open a draft bundle.' },
     { id: 2, title: 'Scan Waybills', detail: 'Scan each donor waybill once with the camera or by typing it.' },
@@ -1233,6 +1433,9 @@ export default function BundlingPage() {
 
   const renderBundleHairDetails = useCallback((bundle, { allowRemove = false } = {}) => {
     const members = bundleMembersByBundleId[Number(bundle.Bundle_ID || 0)] || [];
+    const targetSpecification = wigSpecOptions.find(
+      (option) => Number(option.Wig_Specification_ID || 0) === Number(bundle.Wig_Specification_ID || 0),
+    ) || null;
     if (!members.length) {
       return (
         <div className="rounded-lg border px-3 py-2 text-xs" style={{ borderColor: '#e2e8f0', color: tertiaryTextColor }}>
@@ -1245,6 +1448,7 @@ export default function BundlingPage() {
       <div className="space-y-2">
         {members.map((member) => {
           const detail = member.detail || {};
+          const compatibility = targetSpecification ? compareHairToWig(member, targetSpecification) : null;
           return (
             <div key={`${bundle.Bundle_ID}-${member.submissionId}`} className="rounded-lg border bg-white p-3" style={{ borderColor: '#e2e8f0' }}>
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1253,6 +1457,15 @@ export default function BundlingPage() {
                   <p className="text-sm font-semibold" style={{ color: primaryTextColor }}>{member.donorName}</p>
                   <p className="text-xs" style={{ color: tertiaryTextColor }}>{member.eventTitle}</p>
                 </div>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                {compatibility ? (
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${COMPATIBILITY_STYLES[compatibility.key]}`}
+                    title={compatibility.reasons.join('. ')}
+                  >
+                    {compatibility.label}
+                  </span>
+                ) : null}
                 {allowRemove ? (
                   <button
                     type="button"
@@ -1274,6 +1487,7 @@ export default function BundlingPage() {
                     {member.status || '-'}
                   </span>
                 )}
+                </div>
               </div>
 
               <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] md:grid-cols-3">
@@ -1300,7 +1514,131 @@ export default function BundlingPage() {
         })}
       </div>
     );
-  }, [bundleMembersByBundleId, handleRemoveDraftMember, isRemovingSubmissionId, primaryTextColor, secondaryTextColor, tertiaryTextColor]);
+  }, [bundleMembersByBundleId, handleRemoveDraftMember, isRemovingSubmissionId, primaryTextColor, secondaryTextColor, tertiaryTextColor, wigSpecOptions]);
+
+  const renderTargetWigCard = (bundle) => {
+    const specification = wigSpecOptions.find(
+      (option) => Number(option.Wig_Specification_ID || 0) === Number(bundle?.Wig_Specification_ID || 0),
+    ) || null;
+    if (!specification) {
+      return (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+          This bundle&apos;s wig specification could not be loaded. Refresh the page or verify the catalog record.
+        </div>
+      );
+    }
+
+    const imageUrl = specification.imageUrl || getPublicUrl(FILTERS_BUCKET, specification.catalogImagePath);
+    return (
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-2.5">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Chosen wig design</p>
+            <p className="text-xs text-slate-500">This target is locked to the draft.</p>
+          </div>
+          <span className="rounded-full border border-slate-200 bg-white px-2 py-1 font-mono text-[10px] font-semibold text-slate-600">
+            Spec #{specification.Wig_Specification_ID}
+          </span>
+        </div>
+        <div className="grid gap-4 p-4 sm:grid-cols-[112px,1fr]">
+          <div className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+            {imageUrl ? (
+              <img src={imageUrl} alt={specification.wigName || 'Chosen wig'} className="h-full w-full object-contain" />
+            ) : (
+              <ImageIcon size={28} className="text-slate-300" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">{specification.wigName || 'Unnamed wig'}</h3>
+                <p className="font-mono text-xs font-semibold" style={{ color: primaryColor }}>
+                  {specification.wigCode || `Wig #${specification.Wig_ID}`}
+                </p>
+              </div>
+              <span className="rounded-full px-2.5 py-1 text-[10px] font-bold text-white" style={{ backgroundColor: primaryColor }}>
+                {specification.capSize || 'Cap N/A'} cap
+              </span>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {[
+                ['Length', specification.hairLength ? `${specification.hairLength} in` : 'N/A', Ruler],
+                ['Texture', specification.hairTexture || 'N/A', Sparkles],
+                ['Color', specification.hairColor || 'N/A', Palette],
+                ['Density', specification.hairDensity || 'N/A', Package],
+              ].map(([label, value, Icon]) => (
+                <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
+                  <p className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide text-slate-500"><Icon size={10} /> {label}</p>
+                  <p className="mt-1 truncate text-xs font-semibold text-slate-800">{value}</p>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500">Style: <span className="font-semibold text-slate-700">{specification.style || 'Not specified'}</span></p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderHairRecommendations = () => (
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Sparkles size={15} style={{ color: primaryColor }} /> Suggested cut hairs</h3>
+          <p className="mt-0.5 text-[11px] text-slate-500">Ranked by length first, then texture, color, and density.</p>
+        </div>
+        <div className="text-right">
+          <p className="text-lg font-bold text-slate-900">{recommendedAvailableCount}</p>
+          <p className="text-[9px] font-bold uppercase tracking-wide text-slate-500">recommended or usable</p>
+        </div>
+      </div>
+      <div className="border-b border-sky-100 bg-sky-50 px-4 py-2 text-[11px] leading-5 text-sky-800">
+        Length below the finished wig target is marked too short. Ideally, use hair at least 2 inches longer for trimming. Cap size still follows the 8–10 approved-hair rule because individual hair weight is not recorded.
+      </div>
+      <div className="max-h-[390px] space-y-2 overflow-y-auto p-3">
+        {!selectedTargetSpecification ? (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-800">No target specification is available for comparison.</p>
+        ) : !rankedAvailableHair.length ? (
+          <p className="rounded-lg border border-dashed border-slate-300 px-3 py-8 text-center text-xs text-slate-500">No unassigned Cut-status hairs are currently available.</p>
+        ) : rankedAvailableHair.slice(0, 20).map((hair) => {
+          const detail = hair.detail || {};
+          const result = hair.compatibility;
+          return (
+            <article key={hair.Inventory_ID || hair.submissionId} className="rounded-lg border border-slate-200 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="font-mono text-xs font-bold text-slate-900">{hair.waybillCode || `Submission #${hair.submissionId}`}</p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">{hair.donorName}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${COMPATIBILITY_STYLES[result.key]}`}>{result.label}</span>
+                  {hair.waybillCode ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setScannerWaybillCode(hair.waybillCode);
+                        showToast({ type: 'info', title: 'Waybill selected', message: `${hair.waybillCode} is ready. Verify the physical label, then click Scan.` });
+                      }}
+                      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-50"
+                    >
+                      Select
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px] sm:grid-cols-4">
+                <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">Length <strong className="text-slate-800">{detail.Declared_Length ? `${detail.Declared_Length} in` : 'N/A'}</strong></span>
+                <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">Texture <strong className="text-slate-800">{detail.Declared_Texture || 'N/A'}</strong></span>
+                <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">Color <strong className="text-slate-800">{detail.Declared_Color || 'N/A'}</strong></span>
+                <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">Density <strong className="text-slate-800">{detail.Declared_Density || 'N/A'}</strong></span>
+              </div>
+              <p className="mt-2 text-[10px] leading-4 text-slate-500">{result.reasons.slice(0, 3).join(' • ')}</p>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-6" style={rootStyle}>
@@ -1318,20 +1656,6 @@ export default function BundlingPage() {
           refreshLoading={isLoading}
         />
       </header>
-
-      {notice.text && !['error', 'success'].includes(notice.kind) && (
-        <div
-          className="rounded-xl border px-3 py-2 text-sm font-medium"
-          style={
-            notice.kind === 'error' ? { borderColor: '#fecaca', backgroundColor: '#fef2f2', color: '#b91c1c' }
-              : notice.kind === 'success' ? { borderColor: '#a7f3d0', backgroundColor: '#ecfdf5', color: '#047857' }
-                : notice.kind === 'info' ? { borderColor: withColorAlpha(primaryColor, 0.35), backgroundColor: withColorAlpha(primaryColor, 0.08), color: primaryColor }
-                  : { borderColor: '#fde68a', backgroundColor: '#fffbeb', color: '#b45309' }
-          }
-        >
-          {notice.text}
-        </div>
-      )}
 
       <WaybillScanResult outcome={scanOutcome} possibleOutcomes={BUNDLING_SCAN_OUTCOMES} />
 
@@ -1529,6 +1853,8 @@ export default function BundlingPage() {
             </div>
           ) : selectedDraftRow ? (
             <>
+              {renderTargetWigCard(selectedDraftRow)}
+              {renderHairRecommendations()}
 
           {scannerBundleRow ? (
             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -1687,6 +2013,8 @@ export default function BundlingPage() {
               </div>
             </>
           ) : selectedBundleRow ? (
+            <>
+            {renderTargetWigCard(selectedBundleRow)}
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
               <div className="h-1.5 w-full" style={{ background: `linear-gradient(90deg, ${primaryColor}, ${primaryColor}99)` }} />
               <div className="px-5 py-4">
@@ -1738,6 +2066,7 @@ export default function BundlingPage() {
                 </div>
               </div>
             </div>
+            </>
           ) : null}
         </section>
       </div>

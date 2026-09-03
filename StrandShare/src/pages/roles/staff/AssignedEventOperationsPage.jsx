@@ -34,6 +34,7 @@ import {
 
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
+const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
 const USERS_TABLE = 'users';
 const USER_DETAILS_TABLE = 'user_details';
@@ -209,6 +210,28 @@ function isFinalHairDetailStatus(status) {
   return key === 'approved' || key === 'rejected' || key === 'rejectedcut';
 }
 
+function getAttendeeHairIntakeMeta(attendee, submission, details = []) {
+  if (normalizeAttendeeType(attendee?.Attendee_Type) === 'Voluntary') {
+    return { state: 'not_required', label: 'Not required' };
+  }
+
+  const finalDetail = details.find((row) => isFinalHairDetailStatus(row?.Status));
+  if (finalDetail) {
+    return { state: 'done', label: `Done · ${finalDetail.Status}` };
+  }
+
+  const submissionStatus = String(submission?.Status || '').trim();
+  if (['cut', 'cancelled', 'wiginproduction', 'wigcreated'].includes(normalizeFlowStatusKey(submissionStatus))) {
+    return { state: 'done', label: `Done · ${submissionStatus}` };
+  }
+
+  if (submission?.Submission_ID) {
+    return { state: 'pending', label: 'Pending review' };
+  }
+
+  return { state: 'not_started', label: 'Not started' };
+}
+
 function createDetailDraft(detail) {
   return {
     submissionDetailId: Number(detail?.Submission_Detail_ID || 0) || null,
@@ -235,6 +258,38 @@ function formatAiConfidence(value) {
 function displayAiValue(value, fallback = 'Not provided') {
   if (value == null || String(value).trim() === '') return fallback;
   return String(value);
+}
+
+function findChangedAiHairFields(screening, draft) {
+  if (!screening || !draft) return [];
+  const comparisons = [
+    ['length', screening.Estimated_Length, draft.declaredLength, (aiValue, staffValue) => (
+      String(staffValue ?? '').trim() !== '' && Number(aiValue) === Number(staffValue)
+    )],
+    ['color', screening.Detected_Color, draft.declaredColor],
+    ['texture', screening.Detected_Texture, draft.declaredTexture],
+    ['density', screening.Detected_Density, draft.declaredDensity],
+    ['condition', screening.Detected_Condition, draft.declaredCondition],
+  ];
+
+  return comparisons.reduce((changed, [field, aiValue, staffValue, matcher]) => {
+    if (aiValue == null || String(aiValue).trim() === '') return changed;
+    const matches = typeof matcher === 'function'
+      ? matcher(aiValue, staffValue)
+      : normalizeFlowStatusKey(aiValue) === normalizeFlowStatusKey(staffValue);
+    if (!matches) changed.push(field);
+    return changed;
+  }, []);
+}
+
+function countComparableAiHairFields(screening) {
+  return [
+    screening?.Estimated_Length,
+    screening?.Detected_Color,
+    screening?.Detected_Texture,
+    screening?.Detected_Density,
+    screening?.Detected_Condition,
+  ].filter((value) => value != null && String(value).trim() !== '').length;
 }
 
 function buildUserFullName(detailRow) {
@@ -426,8 +481,8 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
 
       const usersById = new Map();
       const detailsById = new Map();
-      if (userIds.length) {
-        const [usersResult, detailsResult] = await Promise.all([
+      const [accountResults, submissionsResult] = await Promise.all([
+        userIds.length ? Promise.all([
           supabase
             .from(USERS_TABLE)
             .select('user_id, email')
@@ -436,26 +491,77 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
             .from(USER_DETAILS_TABLE)
             .select('user_id, first_name, middle_name, last_name, suffix, contact_number')
             .in('user_id', userIds),
-        ]);
+        ]) : Promise.resolve([{ data: [], error: null }, { data: [], error: null }]),
+        supabase
+          .from(HAIR_SUBMISSIONS_TABLE)
+          .select('Submission_ID, Event_Attendee_ID, User_ID, Status')
+          .eq('Event_Request_ID', targetEventRequestId)
+          .order('Submission_ID', { ascending: false })
+          .limit(1000),
+      ]);
 
-        if (usersResult.error) throw usersResult.error;
-        if (detailsResult.error) throw detailsResult.error;
+      const [usersResult, detailsResult] = accountResults;
+      if (usersResult.error) throw usersResult.error;
+      if (detailsResult.error) throw detailsResult.error;
+      if (submissionsResult.error) throw submissionsResult.error;
 
-        for (const userRow of usersResult.data || []) {
-          usersById.set(Number(userRow.user_id || 0), userRow);
-        }
-        for (const detailRow of detailsResult.data || []) {
-          detailsById.set(Number(detailRow.user_id || 0), detailRow);
-        }
+      for (const userRow of usersResult.data || []) {
+        usersById.set(Number(userRow.user_id || 0), userRow);
+      }
+      for (const detailRow of detailsResult.data || []) {
+        detailsById.set(Number(detailRow.user_id || 0), detailRow);
+      }
+
+      const submissions = submissionsResult.data || [];
+      const submissionIds = submissions
+        .map((row) => Number(row?.Submission_ID || 0))
+        .filter((id) => id > 0);
+      let hairDetails = [];
+      if (submissionIds.length) {
+        const hairDetailsResult = await supabase
+          .from(HAIR_SUBMISSION_DETAILS_TABLE)
+          .select('Submission_Detail_ID, Submission_ID, Status')
+          .in('Submission_ID', submissionIds)
+          .order('Submission_Detail_ID', { ascending: false });
+        if (hairDetailsResult.error) throw hairDetailsResult.error;
+        hairDetails = hairDetailsResult.data || [];
+      }
+
+      const submissionsByAttendee = new Map();
+      const submissionsByUser = new Map();
+      for (const submission of submissions) {
+        const attendeeId = Number(submission?.Event_Attendee_ID || 0);
+        const userId = Number(submission?.User_ID || 0);
+        if (attendeeId > 0 && !submissionsByAttendee.has(attendeeId)) submissionsByAttendee.set(attendeeId, submission);
+        if (userId > 0 && !submissionsByUser.has(userId)) submissionsByUser.set(userId, submission);
+      }
+
+      const hairDetailsBySubmission = new Map();
+      for (const detail of hairDetails) {
+        const submissionId = Number(detail?.Submission_ID || 0);
+        const current = hairDetailsBySubmission.get(submissionId) || [];
+        current.push(detail);
+        hairDetailsBySubmission.set(submissionId, current);
       }
 
       const rows = baseRows.map((row) => {
         const userId = Number(row?.User_ID || 0);
-        return enrichAttendeeRowWithUserData(
+        const attendeeId = Number(row?.Event_Attendee_ID || 0);
+        const submission = submissionsByAttendee.get(attendeeId) || submissionsByUser.get(userId) || null;
+        const intakeMeta = getAttendeeHairIntakeMeta(
+          row,
+          submission,
+          hairDetailsBySubmission.get(Number(submission?.Submission_ID || 0)) || [],
+        );
+        return {
+          ...enrichAttendeeRowWithUserData(
           row,
           usersById.get(userId) || null,
           detailsById.get(userId) || null,
-        );
+          ),
+          Hair_Intake_State: intakeMeta.state,
+          Hair_Intake_Label: intakeMeta.label,
+        };
       });
       attendeesCacheRef.current.set(targetEventRequestId, rows);
       setAttendees(rows);
@@ -763,6 +869,20 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   }, [activeReview]);
 
   const activeAiScreening = activeReview?.aiScreening || null;
+  const changedAiHairFields = useMemo(
+    () => findChangedAiHairFields(activeAiScreening, detailDraft),
+    [activeAiScreening, detailDraft],
+  );
+  const liveAiAccuracy = useMemo(() => {
+    const comparable = countComparableAiHairFields(activeAiScreening);
+    const changed = changedAiHairFields.length;
+    const humanPercent = comparable > 0 ? (changed / comparable) * 100 : 0;
+    return {
+      comparable,
+      aiPercent: comparable > 0 ? 100 - humanPercent : 0,
+      humanPercent,
+    };
+  }, [activeAiScreening, changedAiHairFields]);
 
   const markAttendeePresentByWaybill = useCallback(async (rawValue) => {
     if (isScanProcessingRef.current || !selectedEvent || !supabase) return;
@@ -1042,11 +1162,37 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       return;
     }
 
+    const lengthRaw = String(detailDraft?.declaredLength || '').trim();
+    const parsedLength = lengthRaw === '' ? null : Number(lengthRaw);
+    if (parsedLength != null && (!Number.isFinite(parsedLength) || parsedLength < 0)) {
+      setNotice({ kind: 'error', text: 'Declared length must be a non-negative number.' });
+      return;
+    }
+
     setIsSubmittingQuality(true);
     setIsSaving(true);
     setNotice({ kind: '', text: '' });
 
     try {
+      // Persist the values currently visible in the editable form before the
+      // decision trigger calculates AI-vs-human accuracy. This also covers the
+      // common flow where staff edits a field and clicks Approve immediately.
+      const detailSaveResult = await supabase.rpc('staff_update_hair_submission_details', {
+        p_event_request_id: eventRequestId,
+        p_submission_id: submissionId,
+        p_declared_length: parsedLength,
+        p_declared_color: String(detailDraft?.declaredColor || '').trim() || null,
+        p_declared_texture: String(detailDraft?.declaredTexture || '').trim() || null,
+        p_declared_density: String(detailDraft?.declaredDensity || '').trim() || null,
+        p_declared_condition: String(detailDraft?.declaredCondition || '').trim() || null,
+        p_is_chemically_treated: Boolean(detailDraft?.isChemicallyTreated),
+        p_is_colored: Boolean(detailDraft?.isColored),
+        p_is_bleached: Boolean(detailDraft?.isBleached),
+        p_is_rebonded: Boolean(detailDraft?.isRebonded),
+        p_detail_notes: String(detailDraft?.detailNotes || '').trim() || null,
+      });
+      if (detailSaveResult.error) throw detailSaveResult.error;
+
       const result = await supabase.rpc('staff_review_hair_submission_quality', {
         p_event_request_id: eventRequestId,
         p_submission_id: submissionId,
@@ -1166,7 +1312,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       setIsSubmittingQuality(false);
       setIsSaving(false);
     }
-  }, [activeReview, qualityReason, reviewStatusMeta.isFinal, selectedEvent, selectedEventEnded, loadAttendees, startCameraScanner]);
+  }, [activeReview, detailDraft, qualityReason, reviewStatusMeta.isFinal, selectedEvent, selectedEventEnded, loadAttendees, startCameraScanner]);
 
   const handleToggleCamera = async () => {
     if (reviewStatusMeta.needsDecision) {
@@ -1437,6 +1583,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         row.Contact_Number,
         row.Waybill_Code,
         row.Attendance_Status,
+        row.Hair_Intake_Label,
       ]
         .filter(Boolean)
         .join(' ')
@@ -1849,8 +1996,9 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                       ['Rejected cut', eventSummary?.rejected_cut],
                       ['Pending review', eventSummary?.pending],
                       ['Inventory added', eventSummary?.inventory_added],
-                      ['AI corrections', eventSummary?.ai_corrections],
-                      ['AI accuracy', eventSummary?.ai_accuracy_percent == null ? 'N/A' : `${eventSummary.ai_accuracy_percent}%`],
+                      ['Corrected AI fields', eventSummary?.ai_corrections],
+                      ['AI correct', eventSummary?.ai_accuracy_percent == null ? 'N/A' : `${eventSummary.ai_accuracy_percent}%`],
+                      ['Human changes', eventSummary?.ai_accuracy_percent == null ? 'N/A' : `${Math.max(0, 100 - Number(eventSummary.ai_accuracy_percent || 0))}%`],
                     ].map(([label, value]) => (
                       <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
                         <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
@@ -2194,9 +2342,16 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                           <p className="mt-0.5 text-[11px] text-slate-500">This is the AI baseline used to measure the final staff review accuracy.</p>
                         </div>
                         {activeAiScreening ? (
-                          <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: `${primaryColor}40`, color: primaryColor, backgroundColor: `${primaryColor}0D` }}>
-                            Confidence {formatAiConfidence(activeAiScreening.Confidence_Score)}
-                          </span>
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${changedAiHairFields.length ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-emerald-300 bg-emerald-50 text-emerald-700'}`}>
+                              {liveAiAccuracy.comparable > 0
+                                ? `AI ${Number(liveAiAccuracy.aiPercent.toFixed(1))}% · Human ${Number(liveAiAccuracy.humanPercent.toFixed(1))}%${changedAiHairFields.length ? ` · Changed: ${changedAiHairFields.join(', ')}` : ''}`
+                                : 'No comparable AI fields'}
+                            </span>
+                            <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: `${primaryColor}40`, color: primaryColor, backgroundColor: `${primaryColor}0D` }}>
+                              AI confidence {formatAiConfidence(activeAiScreening.Confidence_Score)}
+                            </span>
+                          </div>
                         ) : null}
                       </div>
 
@@ -2405,6 +2560,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                           <th className="px-5 py-3 font-semibold text-slate-700">Waybill</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Attendance</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">RSVP Scanned</th>
+                          <th className="px-5 py-3 font-semibold text-slate-700">Hair Intake</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Printed At</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Actions</th>
                         </tr>
@@ -2449,6 +2605,19 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                               ) : (
                                 <span className="text-slate-400">Not scanned</span>
                               )}
+                            </td>
+                            <td className="px-5 py-3 align-top">
+                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${
+                                attendee.Hair_Intake_State === 'done'
+                                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                  : attendee.Hair_Intake_State === 'pending'
+                                    ? 'border-amber-200 bg-amber-50 text-amber-700'
+                                    : attendee.Hair_Intake_State === 'not_required'
+                                      ? 'border-sky-200 bg-sky-50 text-sky-700'
+                                      : 'border-slate-200 bg-slate-100 text-slate-600'
+                              }`}>
+                                {attendee.Hair_Intake_Label || 'Not started'}
+                              </span>
                             </td>
                             <td className="px-5 py-3 align-top text-xs text-slate-600">
                               {attendee.Waybill_Printed_At ? (

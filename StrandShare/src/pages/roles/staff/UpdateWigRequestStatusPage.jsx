@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CalendarDays, CheckCircle2, Info, Loader2, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
+import { AlertTriangle, CalendarDays, CheckCircle2, Info, Loader2, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import PageHeaderActions from '../../../components/PageHeaderActions';
+import WigReleaseAftercarePanel from '../../../components/WigReleaseAftercarePanel';
+import { useToast } from '../../../context/ToastContext';
 
 const WIG_REQUESTS_TABLE = 'Wig_Requests';
 const WIGS_TABLE = 'Wigs';
@@ -35,6 +37,7 @@ const REQUEST_STATUS = {
 };
 
 const STATUS_FILTERS = [
+  { id: 'all', label: 'All Requests' },
   { id: 'all_active', label: 'All Active Requests' },
   { id: 'pending', label: 'Pending' },
   { id: 'accepted_allocated', label: 'Accepted - Wig Allocated' },
@@ -43,6 +46,8 @@ const STATUS_FILTERS = [
   { id: 'to_be_release', label: 'To Be Release' },
   { id: 'releasing', label: 'Releasing' },
   { id: 'released', label: 'Released' },
+  { id: 'rejected', label: 'Rejected' },
+  { id: 'cancelled', label: 'Cancelled' },
 ];
 
 const ACTIVE_REQUEST_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_in_production', 'ready_for_pickup', 'to_be_release', 'releasing'];
@@ -556,6 +561,9 @@ function buildSearchBlob(row) {
     row.allocatedWigCode,
     row.allocatedWigName,
     row.allocatedWigStatus,
+    row.appealStatus,
+    row.appealReturnStatus,
+    row.appeal?.reason,
     formatDateTime(row.requestDate),
     formatDateTime(row.releaseDate),
   ]
@@ -565,15 +573,32 @@ function buildSearchBlob(row) {
 }
 
 export default function UpdateWigRequestStatusPage({ userProfile, isActivePage = true }) {
+  const { showToast } = useToast();
+  const [workspaceTab, setWorkspaceTab] = useState('requests');
   const [rows, setRows] = useState([]);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeStatusFilter, setActiveStatusFilter] = useState('all_active');
+  const [activeStatusFilter, setActiveStatusFilter] = useState('all');
   const [requestDateFrom, setRequestDateFrom] = useState('');
   const [requestDateTo, setRequestDateTo] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isApplyingAction, setIsApplyingAction] = useState(false);
   const [isReleaseWorkflowAvailable, setIsReleaseWorkflowAvailable] = useState(true);
+  const [isAppealWorkflowAvailable, setIsAppealWorkflowAvailable] = useState(true);
+
+  useEffect(() => {
+    if (!notice.text) return;
+    showToast({
+      type: notice.kind || 'info',
+      title: notice.kind === 'success'
+        ? 'Wig request updated'
+        : notice.kind === 'error'
+          ? 'Action not completed'
+          : 'Please review',
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
 
   const [selectedRow, setSelectedRow] = useState(null);
   const [selectedAction, setSelectedAction] = useState('');
@@ -614,6 +639,28 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
       if (patientsRes.error) throw patientsRes.error;
       if (hospitalsRes.error) throw hospitalsRes.error;
       if (safetyRes.error) throw safetyRes.error;
+
+      let appealsRes = await supabase
+        .from('wig_release_appeals')
+        .select('appeal_id, receipt_id, req_id, reason, status, return_status, submitted_at, reviewed_at')
+        .order('submitted_at', { ascending: false });
+      if (appealsRes.error && String(appealsRes.error.message || '').toLowerCase().includes('return_status')) {
+        appealsRes = await supabase
+          .from('wig_release_appeals')
+          .select('appeal_id, receipt_id, req_id, reason, status, submitted_at, reviewed_at')
+          .order('submitted_at', { ascending: false });
+      }
+      let appealRows = [];
+      if (appealsRes.error) {
+        if (isMissingRelationError(appealsRes.error.message) || String(appealsRes.error.message || '').toLowerCase().includes('schema cache')) {
+          setIsAppealWorkflowAvailable(false);
+        } else {
+          throw appealsRes.error;
+        }
+      } else {
+        appealRows = appealsRes.data || [];
+        setIsAppealWorkflowAvailable(true);
+      }
 
       const linkedUserIds = Array.from(
         new Set(
@@ -776,6 +823,11 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           .filter((row) => Number(row.Req_ID || 0) > 0)
           .map((row) => [Number(row.Req_ID), row]),
       );
+      const latestAppealByReqId = new Map();
+      appealRows.forEach((appeal) => {
+        const requestId = Number(appeal.req_id || 0);
+        if (requestId && !latestAppealByReqId.has(requestId)) latestAppealByReqId.set(requestId, appeal);
+      });
 
       const mappedRows = (requestsRes.data || []).map((requestRow) => {
         const reqId = Number(requestRow.Req_ID || 0);
@@ -801,6 +853,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
         const linkedPatientUser = patient ? patientUsersById[Number(patient.User_ID || 0)] : null;
         const linkedPatientDetails = Array.isArray(linkedPatientUser?.user_details) ? linkedPatientUser.user_details[0] : linkedPatientUser?.user_details;
         const safetyAssessment = safetyByReqId.get(reqId) || null;
+        const latestAppeal = latestAppealByReqId.get(reqId) || null;
 
         const statusRaw = requestRow.Status || REQUEST_STATUS.pending;
         const statusKey = getCanonicalStatusKey(statusRaw);
@@ -946,6 +999,10 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           releaseWorkflowKey: normalizeReleaseWorkflowKey(releaseWorkflowRaw),
           releaseWorkflowLabel,
           releaseDecisionReason: String(schedule?.Hospital_Decision_Reason || '').trim(),
+          appeal: latestAppeal,
+          hasAppeal: Boolean(latestAppeal),
+          appealStatus: String(latestAppeal?.status || '').trim(),
+          appealReturnStatus: String(latestAppeal?.return_status || '').trim(),
         };
       });
 
@@ -1108,6 +1165,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
       .on('postgres_changes', { event: '*', schema: 'public', table: PATIENTS_TABLE }, refreshRequests)
       .on('postgres_changes', { event: '*', schema: 'public', table: RELEASE_SCHEDULES_TABLE }, refreshRequests)
       .on('postgres_changes', { event: '*', schema: 'public', table: SAFETY_ASSESSMENTS_TABLE }, refreshRequests)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wig_release_appeals' }, refreshRequests)
       .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, refreshRequests)
       .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshRequests)
       .subscribe();
@@ -1121,6 +1179,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     const activeStatusSet = new Set(ACTIVE_REQUEST_STATUS_KEYS);
 
     const statusFiltered = rows.filter((row) => {
+      if (activeStatusFilter === 'all') return true;
       if (activeStatusFilter === 'all_active') {
         return activeStatusSet.has(row.statusKey);
       }
@@ -1142,13 +1201,13 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     });
   }, [rows, activeStatusFilter, searchTerm, requestDateFrom, requestDateTo]);
 
-  const hasActiveRequestFilters = activeStatusFilter !== 'all_active'
+  const hasActiveRequestFilters = activeStatusFilter !== 'all'
     || Boolean(requestDateFrom)
     || Boolean(requestDateTo)
     || Boolean(searchTerm.trim());
 
   const clearRequestFilters = () => {
-    setActiveStatusFilter('all_active');
+    setActiveStatusFilter('all');
     setRequestDateFrom('');
     setRequestDateTo('');
     setSearchTerm('');
@@ -1174,6 +1233,15 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
       { label: 'Released', value: String(releasedCount) },
       { label: 'Reschedule Requested', value: String(rescheduleRequestedCount) },
     ];
+  }, [rows]);
+
+  const appealSummary = useMemo(() => {
+    const withAppeals = rows.filter((row) => row.hasAppeal);
+    return {
+      total: withAppeals.length,
+      pending: withAppeals.filter((row) => row.appealStatus === 'Pending Staff Review').length,
+      activeReturns: withAppeals.filter((row) => row.appealReturnStatus && row.appealReturnStatus !== 'Completed').length,
+    };
   }, [rows]);
 
   const minimumReleaseDateTimeLocal = getMinimumReleaseDateTimeLocal();
@@ -1441,6 +1509,47 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
         />
       </div>
 
+      <div className="border-b border-slate-200">
+        <nav className="-mb-px flex gap-6 px-1" aria-label="Manage wig request sections">
+          <button type="button" onClick={() => setWorkspaceTab('requests')} className={`border-b-2 px-1 py-3 text-sm font-semibold ${workspaceTab === 'requests' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Requests</button>
+          <button type="button" onClick={() => { setWorkspaceTab('appeals'); setSelectedRow(null); }} className={`flex items-center gap-2 border-b-2 px-1 py-3 text-sm font-semibold ${workspaceTab === 'appeals' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+            Wig Appeals
+            {appealSummary.total > 0 ? (
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${appealSummary.pending > 0 ? 'bg-red-600 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                {appealSummary.total}{appealSummary.pending > 0 ? ` (${appealSummary.pending} new)` : ''}
+              </span>
+            ) : null}
+            {!isAppealWorkflowAvailable ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">Setup needed</span> : null}
+          </button>
+        </nav>
+      </div>
+
+      {workspaceTab === 'appeals' ? (
+        <WigReleaseAftercarePanel mode="staff" isActivePage={isActivePage} />
+      ) : (
+        <>
+
+      {appealSummary.pending > 0 ? (
+        <button
+          type="button"
+          onClick={() => { setWorkspaceTab('appeals'); setSelectedRow(null); }}
+          className="flex w-full items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-left text-amber-950 shadow-sm hover:bg-amber-100"
+        >
+          <span className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-200"><AlertTriangle size={18} /></span>
+            <span>
+              <strong className="block text-sm">{appealSummary.pending} wig appeal{appealSummary.pending === 1 ? '' : 's'} awaiting staff review</strong>
+              <span className="text-xs text-amber-800">Open Wig Appeals to review the issue, evidence, and return request.</span>
+            </span>
+          </span>
+          <span className="shrink-0 text-xs font-bold">Review appeals →</span>
+        </button>
+      ) : appealSummary.activeReturns > 0 ? (
+        <button type="button" onClick={() => setWorkspaceTab('appeals')} className="w-full rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-left text-sm font-semibold text-indigo-900">
+          {appealSummary.activeReturns} approved wig return{appealSummary.activeReturns === 1 ? '' : 's'} currently in the return or repair workflow. Open Wig Appeals to continue.
+        </button>
+      ) : null}
+
       <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-8">
         {quickStats.map((item) => (
           <article key={item.label} className="rounded-xl border border-slate-200 bg-white p-3">
@@ -1517,26 +1626,16 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
         </div>
         </div>
 
-      {notice.text && (
-        <div
-          className={`m-4 rounded-lg border px-3 py-2 text-sm font-medium ${
-            notice.kind === 'error'
-              ? 'border-red-200 bg-red-50 text-red-800'
-              : notice.kind === 'warning'
-                ? 'border-amber-200 bg-amber-50 text-amber-900'
-                : 'border-emerald-200 bg-emerald-50 text-emerald-900'
-          }`}
-        >
-          {notice.text}
-        </div>
-      )}
-
         {isLoading ? (
           <div className="px-4 py-8 text-sm text-slate-600 inline-flex items-center gap-2">
             <Loader2 size={16} className="animate-spin" /> Loading wig request records...
           </div>
         ) : filteredRows.length === 0 ? (
-          <div className="px-4 py-8 text-sm text-slate-600">No records matched your current filter/search.</div>
+          <div className="px-4 py-8 text-sm text-slate-600">
+            <p className="font-semibold text-slate-800">No requests match the current filters.</p>
+            <p className="mt-1 text-xs">Choose All Requests or clear the date and search filters to view the {rows.length} loaded request{rows.length === 1 ? '' : 's'}.</p>
+            {hasActiveRequestFilters ? <button type="button" onClick={clearRequestFilters} className="mt-3 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700">Show all requests</button> : null}
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -1584,6 +1683,15 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                       <span className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-semibold ${releaseWorkflowClass(row.releaseWorkflowStatus)}`}>
                         {row.releaseWorkflowLabel}
                       </span>
+                      {row.hasAppeal ? (
+                        <button
+                          type="button"
+                          onClick={(event) => { event.stopPropagation(); setWorkspaceTab('appeals'); setSelectedRow(null); }}
+                          className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-bold ${row.appealStatus === 'Pending Staff Review' ? 'bg-red-100 text-red-800' : 'bg-violet-100 text-violet-800'}`}
+                        >
+                          Appeal: {row.appealReturnStatus || row.appealStatus}
+                        </button>
+                      ) : null}
                     </td>
                     <td className="px-4 py-3 text-slate-700">{formatDateTime(row.requestDate)}</td>
                     <td className="px-4 py-3 text-slate-700">{formatDateTime(row.releaseDate)}</td>
@@ -1607,6 +1715,8 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           </div>
         )}
       </section>
+        </>
+      )}
 
       {selectedRow && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6">
@@ -1695,6 +1805,21 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                   <p><span className="font-semibold text-slate-900">Updated:</span> {formatDateTime(selectedRow.updatedAt)}</p>
                   <p><span className="font-semibold text-slate-900">Status:</span> {selectedRow.statusLabel}</p>
                 </div>
+                {selectedRow.hasAppeal ? (
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedRow(null); setWorkspaceTab('appeals'); }}
+                    className="mt-4 flex w-full items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-left text-rose-950"
+                  >
+                    <span>
+                      <strong className="block text-sm">This request has a wig appeal</strong>
+                      <span className="mt-0.5 block text-xs text-rose-800">
+                        {selectedRow.appeal?.reason || 'Issue reported'} · {selectedRow.appealReturnStatus || selectedRow.appealStatus}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-xs font-bold">Open appeal →</span>
+                  </button>
+                ) : null}
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">

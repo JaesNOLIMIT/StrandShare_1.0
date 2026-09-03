@@ -111,8 +111,6 @@ function normalizeGender(value) {
   const normalized = String(value || '').toLowerCase();
   if (/\bfemale\b|^f$/.test(normalized)) return 'Female';
   if (/\bmale\b|^m$/.test(normalized)) return 'Male';
-  if (/\b(?:non[ -]?binary|other)\b/.test(normalized)) return 'Other';
-  if (/prefer\s+not\s+to\s+say/.test(normalized)) return 'Prefer not to say';
   return '';
 }
 

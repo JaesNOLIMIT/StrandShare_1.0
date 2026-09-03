@@ -7,6 +7,8 @@ import { logAuditAction } from '../../../lib/auditLogger';
 import {
   PERSON_SUFFIX_OPTIONS,
   formatPhilippineMobile,
+  getAdultBirthdateMax,
+  isAtLeastAge,
   isValidPhilippineMobile,
   normalizePersonSuffix,
 } from '../../../lib/personIdentity';
@@ -36,7 +38,7 @@ function normalizeGenderOption(value) {
     .toLowerCase()
     .replace(/[_\s]+/g, '-');
 
-  if (['male', 'female', 'non-binary', 'other', 'prefer-not-to-say'].includes(normalized)) {
+  if (['male', 'female'].includes(normalized)) {
     return normalized;
   }
 
@@ -45,9 +47,6 @@ function normalizeGenderOption(value) {
 
 function mapGenderForStorage(value) {
   const option = normalizeGenderOption(value);
-  if (option === 'prefer-not-to-say') return 'Prefer not to say';
-  if (option === 'non-binary') return 'Non-binary';
-  if (option === 'other') return 'Other';
   if (option === 'female') return 'Female';
   if (option === 'male') return 'Male';
   return '';
@@ -1027,8 +1026,8 @@ export default function SettingsPage() {
       if (!profile.birthdate) {
         throw new Error('Birthdate is required.');
       }
-      if (new Date(profile.birthdate) > new Date()) {
-        throw new Error('Birthdate cannot be in the future.');
+      if (!isAtLeastAge(profile.birthdate, 18)) {
+        throw new Error('You must be at least 18 years old.');
       }
       if (!profile.gender) {
         throw new Error('Gender is required.');
@@ -1902,8 +1901,8 @@ export default function SettingsPage() {
                   <label className="text-sm font-semibold text-slate-700">Middle name<input autoComplete="additional-name" value={profile.middleName} onChange={(e) => setProfile({ ...profile, middleName: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
                   <label className="text-sm font-semibold text-slate-700">Last name *<input autoComplete="family-name" value={profile.lastName} onChange={(e) => setProfile({ ...profile, lastName: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
                   <label className="text-sm font-semibold text-slate-700">Suffix<select autoComplete="honorific-suffix" value={profile.suffix} onChange={(e) => setProfile({ ...profile, suffix: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900">{PERSON_SUFFIX_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}</select></label>
-                  <label className="text-sm font-semibold text-slate-700">Birthdate *<input type="date" autoComplete="bday" max={new Date().toISOString().slice(0, 10)} value={profile.birthdate} onChange={(e) => setProfile({ ...profile, birthdate: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
-                  <label className="text-sm font-semibold text-slate-700">Gender *<select autoComplete="sex" value={profile.gender} onChange={(e) => setProfile({ ...profile, gender: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900"><option value="">Select gender</option><option value="male">Male</option><option value="female">Female</option><option value="non-binary">Non-binary</option><option value="other">Other</option><option value="prefer-not-to-say">Prefer not to say</option></select></label>
+                  <label className="text-sm font-semibold text-slate-700">Birthdate *<input type="date" autoComplete="bday" max={getAdultBirthdateMax()} value={profile.birthdate} onChange={(e) => setProfile({ ...profile, birthdate: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Gender *<select autoComplete="sex" value={profile.gender} onChange={(e) => setProfile({ ...profile, gender: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900"><option value="">Select gender</option><option value="male">Male</option><option value="female">Female</option></select></label>
                   <label className="text-sm font-semibold text-slate-700 md:col-span-2">Mobile number<input type="tel" inputMode="numeric" autoComplete="tel" maxLength={16} placeholder="+63 912 345 6789" value={profile.contactNumber} onChange={(e) => setProfile({ ...profile, contactNumber: formatPhilippineMobile(e.target.value) })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
                 </div>
               </section>

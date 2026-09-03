@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Info, Loader2, Save, MapPin, Search } from 'lucide-react';
 import maplibregl from 'maplibre-gl';
 import { useTheme } from '../../../context/ThemeContext';
+import { useToast } from '../../../context/ToastContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
 import philippineAddressOptions from '../../../data/philippineAddressOptions.json';
@@ -506,12 +507,23 @@ function LogisticsLocationPinPicker({ latitude, longitude, onChange, disabled = 
 
 export default function LogisticsDestinationSettingsPage({ userProfile }) {
   const { theme } = useTheme();
+  const { showToast } = useToast();
 
   const [uiSettings, setUiSettings] = useState(null);
   const [recordId, setRecordId] = useState(null);
   const [updatedAt, setUpdatedAt] = useState('');
   const [form, setForm] = useState(DEFAULT_FORM);
   const [notice, setNotice] = useState({ kind: '', text: '' });
+
+  useEffect(() => {
+    if (!notice.text || !['error', 'success'].includes(notice.kind)) return;
+    showToast({
+      type: notice.kind,
+      title: notice.kind === 'error' ? 'Logistics Destination error' : 'Logistics Destination updated',
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -814,12 +826,6 @@ export default function LogisticsDestinationSettingsPage({ userProfile }) {
           ))}
         </div>
       </section>
-
-      {notice.text ? (
-        <div className={`rounded-lg border px-4 py-3 text-sm ${notice.kind === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-rose-200 bg-rose-50 text-rose-900'}`}>
-          {notice.kind === 'success' ? notice.text : `Error: ${notice.text}`}
-        </div>
-      ) : null}
 
       <section className="rounded-2xl border bg-white p-6 shadow-sm" style={{ borderColor: `${secondaryColor}30` }}>
         <div className="mb-4 flex items-center gap-2 text-sm" style={{ color: secondaryTextColor }}>

@@ -2,7 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { Edit2, Loader2, Power, Save, Shield, X } from 'lucide-react';
 import { toRoleLabel } from '../../../lib/roleUtils';
-import { PERSON_SUFFIX_OPTIONS } from '../../../lib/personIdentity';
+import { PERSON_SUFFIX_OPTIONS, getAdultBirthdateMax } from '../../../lib/personIdentity';
 
 const EDITABLE_ROLES = ['staff', 'specialist'];
 const fieldClass = 'mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900';
@@ -102,13 +102,11 @@ export default function UserAccountDetailsModal({
               <SelectInput label="Suffix" name="suffix" value={form.suffix} onChange={onChange} autoComplete="honorific-suffix">
                 {PERSON_SUFFIX_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
               </SelectInput>
-              <Input required autoComplete="bday" max={new Date().toISOString().slice(0, 10)} label="Birthdate *" name="birthdate" value={form.birthdate} onChange={onChange} type="date" />
+              <Input required autoComplete="bday" max={getAdultBirthdateMax()} label="Birthdate *" name="birthdate" value={form.birthdate} onChange={onChange} type="date" />
               <SelectInput required label="Gender *" name="gender" value={form.gender} onChange={onChange} autoComplete="sex">
                 <option value="">Select gender</option>
                 <option value="Male">Male</option>
                 <option value="Female">Female</option>
-                <option value="Other">Other</option>
-                <option value="Prefer not to say">Prefer not to say</option>
               </SelectInput>
               <Input autoComplete="tel" label="Contact Number" name="contactNumber" value={form.contactNumber} onChange={onChange} type="tel" />
               <Input label="Street" name="street" value={form.street} onChange={onChange} />

@@ -3,9 +3,13 @@ import { createPortal } from 'react-dom';
 import { jsPDF } from 'jspdf';
 import { AlertTriangle, CheckCircle2, FileText, Info, Loader2, Search, X } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
+import { useToast } from '../../../context/ToastContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import PageHeaderActions from '../../../components/PageHeaderActions';
 import ReleaseDateApprovalPage from './ReleaseDateApprovalPage';
+import WigReleaseAftercarePanel from '../../../components/WigReleaseAftercarePanel';
+import LegalTermsGate from '../../../components/LegalTermsGate';
+import useActiveLegalDocument from '../../../hooks/useActiveLegalDocument';
 
 const PATIENTS_TABLE = 'Patients';
 const USERS_TABLE = 'users';
@@ -19,6 +23,7 @@ const WIGS_TABLE = 'Wigs';
 const WIG_FILTERS_TABLE = 'Wig_AI_Filters';
 const RELEASE_SCHEDULES_TABLE = 'Release_Schedules';
 const SAFETY_ASSESSMENTS_TABLE = 'patient_wig_safety_assessments';
+const WIG_REQUEST_TERMS_TYPE = 'wig_request_terms';
 
 const PATIENT_ASSETS_BUCKET = 'patient_assets';
 const PROFILE_PICTURES_BUCKET = 'profile_pictures';
@@ -41,6 +46,8 @@ const REQUEST_STATUS = {
 const tabs = [
   { id: 'new-request', label: 'Request Wig' },
   { id: 'submitted', label: 'Submitted Requests' },
+  { id: 'release-approval', label: 'Release Date Approval' },
+  { id: 'aftercare', label: 'Receipt & Appeals' },
 ];
 
 const SUBMITTED_STATUS_FILTERS = [
@@ -82,6 +89,16 @@ const INPUT_CLASS =
   'w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-800 transition focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-200';
 const READONLY_INPUT_CLASS =
   'w-full rounded-lg border border-slate-300 border-dashed bg-slate-100 px-2.5 py-1.5 text-sm text-slate-500 cursor-not-allowed';
+const INVALID_INPUT_CLASS = '!border-red-500 !bg-red-50 !ring-2 !ring-red-100';
+
+function RequiredMark() {
+  return <span className="ml-0.5 text-red-600" aria-hidden="true">*</span>;
+}
+
+function FieldError({ message }) {
+  if (!message) return null;
+  return <p className="mt-1 text-[11px] font-semibold text-red-600">{message}</p>;
+}
 
 function normalizeStatusKey(value) {
   return String(value || '')
@@ -720,6 +737,8 @@ function WigPreviewImage({
 
 export default function WigRequestPage({ userProfile, isActivePage = true }) {
   const { theme } = useTheme();
+  const { showToast } = useToast();
+  const wigRequestTerms = useActiveLegalDocument(WIG_REQUEST_TERMS_TYPE);
   const [activeTab, setActiveTab] = useState('new-request');
 
   const [hospitalId, setHospitalId] = useState(null);
@@ -737,11 +756,13 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
   const [submittedStatusFilter, setSubmittedStatusFilter] = useState('all');
   const [submittedSearchTerm, setSubmittedSearchTerm] = useState('');
   const [submittedView, setSubmittedView] = useState('list');
-  const [submittedMonth, setSubmittedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [submittedMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [submittedDateFrom, setSubmittedDateFrom] = useState('');
   const [submittedDateTo, setSubmittedDateTo] = useState('');
 
   const [notice, setNotice] = useState({ kind: '', text: '' });
+  const [validationErrors, setValidationErrors] = useState({});
+  const [termsValidationError, setTermsValidationError] = useState('');
   const [isResolvingHospital, setIsResolvingHospital] = useState(false);
   const [isLoadingPatients, setIsLoadingPatients] = useState(false);
   const [isLoadingSubmitted, setIsLoadingSubmitted] = useState(false);
@@ -749,10 +770,21 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingPreview, setIsUploadingPreview] = useState(false);
   const [requestConfirmationOpen, setRequestConfirmationOpen] = useState(false);
+  const [hasAcceptedRequestTerms, setHasAcceptedRequestTerms] = useState(false);
   const [requestSuccessModal, setRequestSuccessModal] = useState({ open: false, requestCode: '', isWish: false });
   const [liveRequestPdfPreviewUrl, setLiveRequestPdfPreviewUrl] = useState('');
   const [isBuildingLivePdfPreview, setIsBuildingLivePdfPreview] = useState(false);
   const [selectedSubmittedRequest, setSelectedSubmittedRequest] = useState(null);
+
+  useEffect(() => {
+    if (!notice.text) return;
+    showToast({
+      type: notice.kind || 'info',
+      title: notice.kind === 'success' ? 'Wig request updated' : 'Please check the form',
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
 
   const patientSearchContainerRef = useRef(null);
   const livePdfPreviewUrlRef = useRef('');
@@ -1697,12 +1729,23 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       patientId: String(selectedPatientId),
       patientCode: String(patient.Patient_Code || ''),
       medicalCondition: String(patient.Medical_Condition || ''),
-      hasKnownAllergies: hasUsefulAllergyText ? 'yes' : prev.hasKnownAllergies,
-      allergyDetails: hasUsefulAllergyText ? clinicalAllergyText : prev.allergyDetails,
+      hasKnownAllergies: hasUsefulAllergyText ? 'yes' : '',
+      allergyDetails: hasUsefulAllergyText ? clinicalAllergyText : '',
+      hasSensitiveScalp: '',
+      hasScalpIrritation: '',
+      hasOpenScalpWounds: '',
+      hasMedicalRestriction: '',
+      medicalRestrictionDetails: '',
+      informationConfirmed: false,
     }));
 
     setPatientSearchTerm(getPatientFullName(patient, userDetailsByUserId[Number(patient.User_ID || 0)] || null));
     setPatientSearchOpen(false);
+    setValidationErrors((previous) => {
+      const next = { ...previous };
+      delete next.patientId;
+      return next;
+    });
   };
 
   const clearSelectedPatient = () => {
@@ -1711,6 +1754,14 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       patientId: '',
       patientCode: '',
       medicalCondition: '',
+      hasKnownAllergies: '',
+      allergyDetails: '',
+      hasSensitiveScalp: '',
+      hasScalpIrritation: '',
+      hasOpenScalpWounds: '',
+      hasMedicalRestriction: '',
+      medicalRestrictionDetails: '',
+      informationConfirmed: false,
     }));
     setPatientSearchTerm('');
     setPatientSearchOpen(false);
@@ -1736,9 +1787,14 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     setForm((prev) => ({
       ...prev,
       [name]: type === 'checkbox' ? checked : value,
-      ...(name === 'hasKnownAllergies' && value === 'no' ? { allergyDetails: '' } : {}),
-      ...(name === 'hasMedicalRestriction' && value === 'no' ? { medicalRestrictionDetails: '' } : {}),
     }));
+    setValidationErrors((previous) => {
+      const next = { ...previous };
+      delete next[name];
+      if (name === 'hasKnownAllergies' && value !== 'yes') delete next.allergyDetails;
+      if (name === 'hasMedicalRestriction' && value !== 'yes') delete next.medicalRestrictionDetails;
+      return next;
+    });
   };
 
   const handleSelectWigFamily = (family) => {
@@ -1750,6 +1806,11 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       ...previous,
       wigSpecificationId: String(preferredVariant.specificationId),
     }));
+    setValidationErrors((previous) => {
+      const next = { ...previous };
+      delete next.wigSpecificationId;
+      return next;
+    });
   };
 
   const handleCapSizeChange = (event) => {
@@ -1757,12 +1818,21 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       ...previous,
       wigSpecificationId: event.target.value,
     }));
+    if (event.target.value) {
+      setValidationErrors((previous) => {
+        const next = { ...previous };
+        delete next.wigSpecificationId;
+        return next;
+      });
+    }
   };
 
   const resetForm = () => {
     setForm(EMPTY_FORM);
     setPatientSearchTerm('');
     setPatientSearchOpen(false);
+    setValidationErrors({});
+    setTermsValidationError('');
   };
 
   const buildPreviewFileName = useCallback((reqIdValue = 0) => {
@@ -2085,18 +2155,21 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     return urlData?.publicUrl || filePath;
   }, [buildPreviewFileName, buildPreviewPdfDocument]);
 
-  const validateRequestForConfirmation = () => {
+  const collectRequestValidationErrors = () => {
+    const errors = {};
     if (!isSupabaseConfigured || !supabase) {
-      return 'Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.';
+      errors.form = 'Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.';
+      return errors;
     }
 
     if (!hospitalId) {
-      return 'You are not assigned to any hospital. Ask Admin to assign your account first.';
+      errors.form = 'You are not assigned to any hospital. Ask Admin to assign your account first.';
+      return errors;
     }
 
     const selectedPatientId = Number(form.patientId || 0);
     if (!selectedPatientId) {
-      return 'Please choose an existing patient first.';
+      errors.patientId = 'Choose an existing patient.';
     }
 
     const selectedSpecId = normalizeSpecNumber(form.wigSpecificationId);
@@ -2104,39 +2177,55 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       ? (wigSpecifications.find((row) => normalizeSpecNumber(row.specificationId) === selectedSpecId) || null)
       : null;
     if (!selectedSpec) {
-      return 'Please select a target wig specification.';
+      errors.wigSpecificationId = 'Choose a wig design and cap-size variant.';
     }
 
-    const unansweredSafetyField = [
-      form.hasKnownAllergies,
-      form.hasSensitiveScalp,
-      form.hasScalpIrritation,
-      form.hasOpenScalpWounds,
-      form.hasMedicalRestriction,
-    ].some((value) => !['yes', 'no'].includes(value));
-    if (unansweredSafetyField) return 'Answer every Yes/No field in the wig safety assessment.';
-    if (form.hasKnownAllergies === 'yes' && !String(form.allergyDetails || '').trim()) return 'Enter the patient allergy details.';
-    if (form.hasMedicalRestriction === 'yes' && !String(form.medicalRestrictionDetails || '').trim()) return 'Enter the medical restriction details.';
-    if (!form.informationConfirmed) return 'Confirm that the wig safety information was reviewed with the patient or guardian.';
-    return '';
+    if (form.hasKnownAllergies === 'yes' && !String(form.allergyDetails || '').trim()) {
+      errors.allergyDetails = 'Enter the patient allergy details.';
+    }
+    if (form.hasMedicalRestriction === 'yes' && !String(form.medicalRestrictionDetails || '').trim()) {
+      errors.medicalRestrictionDetails = 'Enter the medical restriction details.';
+    }
+    if (!form.informationConfirmed) {
+      errors.informationConfirmed = 'Confirm that the safety information was reviewed with the patient or guardian.';
+    }
+    return errors;
+  };
+
+  const focusFirstValidationError = () => {
+    window.setTimeout(() => {
+      document.querySelector('[data-validation-error="true"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 0);
   };
 
   const handleSubmit = (event) => {
     event.preventDefault();
-    const validationError = validateRequestForConfirmation();
-    if (validationError) {
-      setNotice({ kind: 'error', text: validationError });
+    const errors = collectRequestValidationErrors();
+    setValidationErrors(errors);
+    if (Object.keys(errors).length) {
+      setNotice({ kind: 'error', text: `Complete the highlighted required field${Object.keys(errors).length === 1 ? '' : 's'} before continuing.` });
+      focusFirstValidationError();
       return;
     }
     setNotice({ kind: '', text: '' });
+    setHasAcceptedRequestTerms(false);
+    setTermsValidationError('');
     setRequestConfirmationOpen(true);
   };
 
   const submitRequestNow = async () => {
-    const validationError = validateRequestForConfirmation();
-    if (validationError) {
+    if (!wigRequestTerms.document?.legal_document_id || !wigRequestTerms.previewUrl || !hasAcceptedRequestTerms) {
+      setTermsValidationError('Review and accept the Wig Request Terms before submitting.');
+      setNotice({ kind: 'error', text: 'Review and accept the active Wig Request Terms PDF before submitting.' });
+      return;
+    }
+    setTermsValidationError('');
+    const errors = collectRequestValidationErrors();
+    setValidationErrors(errors);
+    if (Object.keys(errors).length) {
       setRequestConfirmationOpen(false);
-      setNotice({ kind: 'error', text: validationError });
+      setNotice({ kind: 'error', text: `Complete the highlighted required field${Object.keys(errors).length === 1 ? '' : 's'} before submitting.` });
+      focusFirstValidationError();
       return;
     }
 
@@ -2166,9 +2255,11 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         p_hair_texture: String(selectedSpec.texture || '').trim() || null,
         p_cap_size: toCanonicalCapSize(selectedSpec.capSize) || null,
         p_style_preference: String(selectedSpec.style || '').trim() || null,
+        p_terms_document_id: wigRequestTerms.document.legal_document_id,
+        p_terms_version: wigRequestTerms.document.version,
       };
 
-      const rpcResult = await supabase.rpc('create_wig_request_with_spec', rpcPayload);
+      const rpcResult = await supabase.rpc('create_wig_request_with_terms', rpcPayload);
       if (rpcResult.error) throw rpcResult.error;
       const newReqId = Number(rpcResult.data || 0);
 
@@ -2235,6 +2326,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       }
 
       setRequestConfirmationOpen(false);
+      setHasAcceptedRequestTerms(false);
       setRequestSuccessModal({
         open: true,
         requestCode: formatRequestCode(newReqId),
@@ -2275,6 +2367,8 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       return;
     }
 
+    if (activeTab === 'release-approval' || activeTab === 'aftercare') return;
+
     await Promise.all([
       fetchPatients(),
       loadWigSpecifications(),
@@ -2292,7 +2386,6 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         <div>
           <h1 className="role-page-title text-2xl font-bold text-slate-900">Wig Requests</h1>
           <p className="text-sm text-slate-600">Submit wig preferences, monitor production, and complete release approvals.</p>
-          <p className="mt-1 text-xs text-emerald-700">Related request updates appear automatically while this page is open.</p>
         </div>
         <PageHeaderActions
           onRefresh={handleRefreshPage}
@@ -2302,7 +2395,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
           helpContent={(
             <>
               <p><strong>Request Wig</strong> lets you select a patient, confirm their safety information, and submit their preferred wig.</p>
-              <p><strong>Submitted Requests</strong> shows the latest review, production, release, and rescheduling status for your hospital.</p>
+              <p><strong>Submitted Requests</strong> tracks each request. <strong>Release Date Approval</strong> contains scheduling actions. <strong>Receipt &amp; Appeals</strong> stores receipt terms and the seven-day appeal workflow.</p>
             </>
           )}
         />
@@ -2314,7 +2407,10 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
           <button
             key={tab.id}
             type="button"
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => {
+              if (tab.id === 'submitted') setSubmittedView('list');
+              setActiveTab(tab.id);
+            }}
             className={`border-b-2 px-1 py-3 text-sm font-semibold transition-colors ${
               activeTab === tab.id
                 ? 'border-slate-900 text-slate-900'
@@ -2327,20 +2423,9 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         </nav>
       </div>
 
-      {notice.text && (
-        <div
-          className={`rounded-lg border px-3 py-2 text-sm font-medium ${
-            notice.kind === 'error'
-              ? 'border-red-200 bg-red-50 text-red-800'
-              : 'border-emerald-200 bg-emerald-50 text-emerald-900'
-          }`}
-        >
-          {notice.text}
-        </div>
-      )}
-
       {activeTab === 'new-request' && (
         <section className="rounded-2xl border border-slate-200 bg-slate-100/70 p-3 shadow-sm md:p-4">
+          <p className="mb-2 text-right text-[11px] font-semibold text-slate-500"><span className="text-red-600">*</span> Required field</p>
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-12 xl:items-start">
             <form id="wig-request-form" onSubmit={handleSubmit} className="grid grid-cols-1 gap-3 xl:col-span-9 xl:grid-cols-9 xl:items-start">
               <section ref={patientSearchContainerRef} className="overflow-visible rounded-xl border border-slate-200 bg-white shadow-sm xl:col-span-3">
@@ -2349,7 +2434,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                 </div>
                 <div className="p-3">
                 <div className="mb-1 flex items-center justify-between gap-2">
-                  <label className={`${LABEL_CLASS} mb-0`}>Search Existing Patient</label>
+                  <label className={`${LABEL_CLASS} mb-0`}>Search Existing Patient<RequiredMark /></label>
                   <span className="text-[11px] font-semibold text-slate-500">
                     {isLoadingPatients ? 'Loading...' : `${patients.length} available`}
                   </span>
@@ -2358,11 +2443,13 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                   value={patientSearchTerm}
                   onChange={handlePatientSearchChange}
                   onFocus={() => setPatientSearchOpen(true)}
-                  className={INPUT_CLASS}
+                  className={`${INPUT_CLASS} ${validationErrors.patientId ? INVALID_INPUT_CLASS : ''}`}
+                  data-validation-error={validationErrors.patientId ? 'true' : undefined}
+                  aria-invalid={Boolean(validationErrors.patientId)}
                   placeholder="Search by patient name, code, or medical condition"
                   disabled={isLoadingPatients || isSubmitting || isResolvingHospital}
-                  required={!form.patientId}
                 />
+                <FieldError message={validationErrors.patientId} />
                 <p className="mt-1 text-[11px] text-slate-500">
                   Choose from patients assigned to this hospital. Search by name, patient code, or medical condition.
                 </p>
@@ -2523,7 +2610,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
 
                 <div className="md:col-span-2">
                   <div className="mb-1 flex items-center justify-between gap-2">
-                    <label className={LABEL_CLASS}>Wig Catalog</label>
+                    <label className={LABEL_CLASS}>Wig Catalog<RequiredMark /></label>
                     <button
                       type="button"
                       onClick={() => { void loadWigSpecifications(); }}
@@ -2533,7 +2620,10 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                       {isLoadingWigSpecifications ? 'Refreshing...' : 'Refresh list'}
                     </button>
                   </div>
-                  <div className="grid max-h-[440px] grid-cols-2 gap-2 overflow-y-auto pr-1 2xl:grid-cols-3">
+                  <div
+                    className={`grid max-h-[440px] grid-cols-2 gap-2 overflow-y-auto rounded-lg pr-1 2xl:grid-cols-3 ${validationErrors.wigSpecificationId ? 'border-2 border-red-400 bg-red-50/40 p-2' : ''}`}
+                    data-validation-error={validationErrors.wigSpecificationId ? 'true' : undefined}
+                  >
                     {wigFamilies.map((family) => {
                       const isSelected = selectedWigFamily?.familyKey === family.familyKey;
                       return (
@@ -2612,12 +2702,13 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                 </div>
 
                 <div className="md:col-span-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <label className={LABEL_CLASS}>Cap Size (editable preference)</label>
+                  <label className={LABEL_CLASS}>Cap Size (editable preference)<RequiredMark /></label>
                   <select
                     name="wigSpecificationId"
                     value={form.wigSpecificationId}
                     onChange={handleCapSizeChange}
-                    className={INPUT_CLASS}
+                    className={`${INPUT_CLASS} ${validationErrors.wigSpecificationId ? INVALID_INPUT_CLASS : ''}`}
+                    aria-invalid={Boolean(validationErrors.wigSpecificationId)}
                     disabled={!selectedWigFamily || isSubmitting || isUploadingPreview}
                   >
                     <option value="">Select a wig first</option>
@@ -2705,7 +2796,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                 <div className="md:col-span-2 rounded-xl border border-sky-200 bg-sky-50/60 p-4">
                   <div>
                     <p className="text-sm font-bold text-slate-900">Wig Safety Assessment</p>
-                    <p className="mt-1 text-xs text-slate-600">Confirm the patientâ€™s current scalp condition and restrictions. These answers appear in the PDF and Staff review.</p>
+                    <p className="mt-1 text-xs text-slate-600">Record the information provided by the patient or guardian. Every field is editable, and unanswered items are saved as Not provided for Staff review.</p>
                     {selectedPatientProfile.allergiesMedications && selectedPatientProfile.allergiesMedications !== 'N/A' ? (
                       <p className="mt-2 rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs text-slate-700"><span className="font-bold">Saved clinical allergy/medication record:</span> {selectedPatientProfile.allergiesMedications}</p>
                     ) : null}
@@ -2721,8 +2812,8 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     ].map(([name, label]) => (
                       <div key={name}>
                         <label className={LABEL_CLASS}>{label}</label>
-                        <select name={name} value={form[name]} onChange={handleFieldChange} className={INPUT_CLASS} required>
-                          <option value="">Select Yes or No</option>
+                        <select name={name} value={form[name]} onChange={handleFieldChange} className={INPUT_CLASS}>
+                          <option value="">Not provided</option>
                           <option value="yes">Yes</option>
                           <option value="no">No</option>
                         </select>
@@ -2730,17 +2821,25 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     ))}
                   </div>
 
-                  {form.hasKnownAllergies === 'yes' ? (
-                    <div className="mt-3"><label className={LABEL_CLASS}>Allergy Details (required)</label><textarea name="allergyDetails" value={form.allergyDetails} onChange={handleFieldChange} rows={3} className={INPUT_CLASS} placeholder="Allergen, reaction, medication, or material to avoid" /></div>
-                  ) : null}
-                  {form.hasMedicalRestriction === 'yes' ? (
-                    <div className="mt-3"><label className={LABEL_CLASS}>Medical Restriction Details (required)</label><textarea name="medicalRestrictionDetails" value={form.medicalRestrictionDetails} onChange={handleFieldChange} rows={3} className={INPUT_CLASS} placeholder="Describe the restriction or required clearance" /></div>
-                  ) : null}
+                  <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                      <label className={LABEL_CLASS}>Allergy Details {form.hasKnownAllergies === 'yes' ? <RequiredMark /> : '(optional)'}</label>
+                      <textarea name="allergyDetails" value={form.allergyDetails} onChange={handleFieldChange} rows={3} className={`${INPUT_CLASS} ${validationErrors.allergyDetails ? INVALID_INPUT_CLASS : ''}`} data-validation-error={validationErrors.allergyDetails ? 'true' : undefined} aria-invalid={Boolean(validationErrors.allergyDetails)} placeholder="Allergen, reaction, medication, or material to avoid" />
+                      <FieldError message={validationErrors.allergyDetails} />
+                    </div>
+                    <div>
+                      <label className={LABEL_CLASS}>Medical Restriction Details {form.hasMedicalRestriction === 'yes' ? <RequiredMark /> : '(optional)'}</label>
+                      <textarea name="medicalRestrictionDetails" value={form.medicalRestrictionDetails} onChange={handleFieldChange} rows={3} className={`${INPUT_CLASS} ${validationErrors.medicalRestrictionDetails ? INVALID_INPUT_CLASS : ''}`} data-validation-error={validationErrors.medicalRestrictionDetails ? 'true' : undefined} aria-invalid={Boolean(validationErrors.medicalRestrictionDetails)} placeholder="Restriction, required clearance, or relevant instructions" />
+                      <FieldError message={validationErrors.medicalRestrictionDetails} />
+                    </div>
+                  </div>
+                  <FieldError message={validationErrors.wigSpecificationId} />
 
-                  <label className="mt-4 flex items-start gap-2 rounded-lg border border-sky-200 bg-white px-3 py-2.5 text-xs text-slate-700">
+                  <label className={`mt-4 flex items-start gap-2 rounded-lg border bg-white px-3 py-2.5 text-xs ${validationErrors.informationConfirmed ? 'border-red-500 bg-red-50 text-red-800 ring-2 ring-red-100' : 'border-sky-200 text-slate-700'}`} data-validation-error={validationErrors.informationConfirmed ? 'true' : undefined}>
                     <input type="checkbox" name="informationConfirmed" checked={form.informationConfirmed} onChange={handleFieldChange} className="mt-0.5" />
-                    <span>I confirm that these safety details were reviewed with the patient or guardian and are accurate.</span>
+                    <span>I confirm that these safety details were reviewed with the patient or guardian and are accurate.<RequiredMark /></span>
                   </label>
+                  <FieldError message={validationErrors.informationConfirmed} />
                 </div>
               </section>
             </form>
@@ -2798,8 +2897,6 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                         || isLoadingPatients
                         || isResolvingHospital
                         || isUploadingPreview
-                        || !Number(form.patientId || 0)
-                        || !normalizeSpecNumber(form.wigSpecificationId)
                       }
                       className="w-full rounded-lg px-4 py-2.5 text-sm font-bold text-white shadow-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
                       style={{ backgroundColor: theme.primaryColor }}
@@ -2862,18 +2959,34 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     <PatientDetailRow label="Open Scalp Wounds" value={yesNoValue(form.hasOpenScalpWounds)} />
                     <PatientDetailRow label="Medical Restriction" value={yesNoValue(form.hasMedicalRestriction)} />
                     <PatientDetailRow label="Restriction Details" value={form.medicalRestrictionDetails || 'N/A'} />
+                    <PatientDetailRow label="Reviewed with patient or guardian" value={form.informationConfirmed ? 'Confirmed' : 'Not confirmed'} />
                   </dl>
                 </section>
               </div>
-              <div className="p-4 sm:p-5">
+              <div className="space-y-4 p-4 sm:p-5">
                 <div className="overflow-hidden rounded-xl border border-slate-300 bg-white shadow-sm">
                   {liveRequestPdfPreviewUrl ? <iframe title="Final wig request PDF" src={`${liveRequestPdfPreviewUrl}#toolbar=0&navpanes=0&view=FitH`} className="h-[68vh] min-h-[560px] w-full bg-white" /> : <div className="flex min-h-[560px] items-center justify-center text-sm text-slate-500">Preparing PDF preview...</div>}
                 </div>
+                <section className={`rounded-xl border bg-white p-4 ${termsValidationError ? 'border-red-500 ring-2 ring-red-100' : 'border-slate-200'}`}>
+                  <LegalTermsGate
+                    title="Wig Request Terms and Conditions *"
+                    description="The hospital must review and confirm this active PDF before the request can be submitted."
+                    {...wigRequestTerms}
+                    checked={hasAcceptedRequestTerms}
+                    onCheckedChange={(checked) => {
+                      setHasAcceptedRequestTerms(checked);
+                      if (checked) setTermsValidationError('');
+                    }}
+                    onReload={wigRequestTerms.reload}
+                    accentColor={theme.primaryColor}
+                  />
+                  <FieldError message={termsValidationError} />
+                </section>
               </div>
             </div>
             <footer className="flex justify-end gap-2 border-t border-slate-200 bg-white px-5 py-4">
               <button type="button" disabled={isSubmitting || isUploadingPreview} onClick={() => setRequestConfirmationOpen(false)} className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-bold text-slate-700 disabled:opacity-50">Cancel</button>
-              <button type="button" disabled={isSubmitting || isUploadingPreview || isBuildingLivePdfPreview} onClick={() => void submitRequestNow()} className="inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50" style={{ backgroundColor: theme.primaryColor }}>{isSubmitting || isUploadingPreview ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Continue & Submit</button>
+              <button type="button" disabled={isSubmitting || isUploadingPreview || isBuildingLivePdfPreview || !wigRequestTerms.document} onClick={() => void submitRequestNow()} className="inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50" style={{ backgroundColor: theme.primaryColor }}>{isSubmitting || isUploadingPreview ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} Accept Terms & Submit</button>
             </footer>
           </section>
         </div>,
@@ -2909,11 +3022,27 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
           </div>
 
           <div className="border-b border-slate-200 bg-white px-4 py-3">
-            <h2 className="text-lg font-semibold text-slate-900">Submitted Requests &amp; Release Approvals</h2>
-            <p className="mt-0.5 text-xs text-slate-500">Filter submitted requests, review their current status, or switch to release-date actions.</p>
+            <h2 className="text-lg font-semibold text-slate-900">Submitted Requests</h2>
+            <p className="mt-0.5 text-xs text-slate-500">Find a request and open its details. Release scheduling and appeals now have their own clearly labeled tabs.</p>
 
-            <div className="mt-3 grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2 md:grid-cols-2 xl:grid-cols-6">
-              <div className="relative xl:col-span-2">
+            <div className="mt-3 grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 md:grid-cols-2 xl:grid-cols-[170px_170px_minmax(220px,1fr)_minmax(360px,2.5fr)]">
+              <label className="space-y-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">From</span>
+                <input type="date" value={submittedDateFrom} onChange={(event) => setSubmittedDateFrom(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">To</span>
+                <input type="date" value={submittedDateTo} onChange={(event) => setSubmittedDateTo(event.target.value)} min={submittedDateFrom || undefined} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Status</span>
+                <select value={submittedStatusFilter} onChange={(event) => setSubmittedStatusFilter(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700">
+                  {SUBMITTED_STATUS_FILTERS.map((filterItem) => <option key={filterItem.id} value={filterItem.id}>{filterItem.label}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Search</span>
+                <div className="relative">
                 <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   value={submittedSearchTerm}
@@ -2922,60 +3051,8 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                   placeholder="Search requests, patients, wigs..."
                 />
               </div>
-
-              <select
-                value={submittedStatusFilter}
-                onChange={(event) => setSubmittedStatusFilter(event.target.value)}
-                className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
-                aria-label="Submitted request status"
-              >
-                {SUBMITTED_STATUS_FILTERS.map((filterItem) => (
-                  <option key={filterItem.id} value={filterItem.id}>{filterItem.label}</option>
-                ))}
-              </select>
-
-              <input
-                type="date"
-                value={submittedDateFrom}
-                onChange={(event) => setSubmittedDateFrom(event.target.value)}
-                className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
-                aria-label="Submitted from date"
-                title="From date"
-              />
-
-              <input
-                type="date"
-                value={submittedDateTo}
-                onChange={(event) => setSubmittedDateTo(event.target.value)}
-                min={submittedDateFrom || undefined}
-                className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
-                aria-label="Submitted to date"
-                title="To date"
-              />
-
-              <select
-                value={submittedView}
-                onChange={(event) => setSubmittedView(event.target.value)}
-                className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-slate-500"
-                aria-label="Submitted request view"
-              >
-                <option value="list">Submitted Requests</option>
-                <option value="calendar">Calendar</option>
-                <option value="release">Release Date Approval</option>
-              </select>
+              </label>
             </div>
-
-            {submittedView === 'calendar' ? (
-              <div className="mt-2 flex justify-end">
-                <input
-                  type="month"
-                  value={submittedMonth}
-                  onChange={(event) => setSubmittedMonth(event.target.value)}
-                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700"
-                  aria-label="Calendar month"
-                />
-              </div>
-            ) : null}
           </div>
 
           {submittedView === 'release' ? (
@@ -3072,6 +3149,14 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         </section>
       )}
 
+      {activeTab === 'release-approval' && (
+        <ReleaseDateApprovalPage userProfile={userProfile} embedded />
+      )}
+
+      {activeTab === 'aftercare' && (
+        <WigReleaseAftercarePanel mode="hospital" isActivePage={isActivePage} />
+      )}
+
       {selectedSubmittedRequest && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6">
           <button
@@ -3154,9 +3239,19 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                 <p className="text-sm font-semibold text-slate-900">Wig Safety Assessment</p>
                 {selectedSubmittedRequest.safetyAssessment ? (
                   <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-3">
-                    <p><span className="font-semibold text-slate-900">Known allergies:</span> {selectedSubmittedRequest.safetyAssessment.has_known_allergies ? 'Yes' : 'No'}</p><p><span className="font-semibold text-slate-900">Sensitive scalp:</span> {selectedSubmittedRequest.safetyAssessment.has_sensitive_scalp ? 'Yes' : 'No'}</p><p><span className="font-semibold text-slate-900">Scalp irritation:</span> {selectedSubmittedRequest.safetyAssessment.has_scalp_irritation ? 'Yes' : 'No'}</p><p><span className="font-semibold text-slate-900">Open wounds:</span> {selectedSubmittedRequest.safetyAssessment.has_open_scalp_wounds ? 'Yes' : 'No'}</p><p><span className="font-semibold text-slate-900">Medical restriction:</span> {selectedSubmittedRequest.safetyAssessment.has_medical_restriction ? 'Yes' : 'No'}</p><p><span className="font-semibold text-slate-900">Review:</span> {selectedSubmittedRequest.safetyAssessment.review_status || 'Pending'}</p>
-                    {selectedSubmittedRequest.safetyAssessment.allergy_details ? <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Allergy details:</span> {selectedSubmittedRequest.safetyAssessment.allergy_details}</p> : null}
+                    <p><span className="font-semibold text-slate-900">Known allergies:</span> {yesNoValue(selectedSubmittedRequest.safetyAssessment.has_known_allergies)}</p>
+                    <p><span className="font-semibold text-slate-900">Sensitive scalp:</span> {yesNoValue(selectedSubmittedRequest.safetyAssessment.has_sensitive_scalp)}</p>
+                    <p><span className="font-semibold text-slate-900">Scalp irritation:</span> {yesNoValue(selectedSubmittedRequest.safetyAssessment.has_scalp_irritation)}</p>
+                    <p><span className="font-semibold text-slate-900">Open wounds:</span> {yesNoValue(selectedSubmittedRequest.safetyAssessment.has_open_scalp_wounds)}</p>
+                    <p><span className="font-semibold text-slate-900">Medical restriction:</span> {yesNoValue(selectedSubmittedRequest.safetyAssessment.has_medical_restriction)}</p>
+                    <p><span className="font-semibold text-slate-900">Information confirmed:</span> {selectedSubmittedRequest.safetyAssessment.information_confirmed ? 'Yes' : 'No'}</p>
+                    <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Allergy details:</span> {selectedSubmittedRequest.safetyAssessment.allergy_details || 'N/A'}</p>
+                    <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Medical restriction details:</span> {selectedSubmittedRequest.safetyAssessment.medical_restriction_details || 'N/A'}</p>
                     <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Clinical allergies/current medications:</span> {selectedSubmittedRequest.clinicalAllergiesMedications}</p>
+                    <p><span className="font-semibold text-slate-900">Staff review:</span> {selectedSubmittedRequest.safetyAssessment.review_status || 'Pending'}</p>
+                    <p><span className="font-semibold text-slate-900">Confirmed:</span> {formatRequestDateTime(selectedSubmittedRequest.safetyAssessment.confirmed_at)}</p>
+                    <p><span className="font-semibold text-slate-900">Reviewed:</span> {formatRequestDateTime(selectedSubmittedRequest.safetyAssessment.reviewed_at)}</p>
+                    <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Staff review notes:</span> {selectedSubmittedRequest.safetyAssessment.review_notes || 'No staff review notes yet.'}</p>
                   </div>
                 ) : <p className="mt-2 text-sm text-slate-500">No safety assessment was saved for this request.</p>}
               </div>
