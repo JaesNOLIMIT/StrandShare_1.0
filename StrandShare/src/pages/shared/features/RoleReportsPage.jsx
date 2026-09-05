@@ -198,7 +198,12 @@ function approvedLikeStatus(statusKey) {
 
 function rejectedLikeStatus(statusKey) {
   if (!statusKey) return false;
-  return statusKey.includes('rejected') || statusKey.includes('cancelled');
+  return statusKey.includes('rejected');
+}
+
+function cancelledLikeStatus(statusKey) {
+  if (!statusKey) return false;
+  return statusKey.includes('cancelled') || statusKey.includes('canceled') || statusKey.includes('noshow');
 }
 
 function calculateAiReviewAccuracy(screening, staffValues) {
@@ -254,13 +259,13 @@ function formatPercentage(value) {
 // distinct hues to the semantic states.
 function buildStatusPalette(theme) {
   return {
-    pendingStaff: theme?.primaryColorLight || '#0a8ef5',     // light primary  â€” in progress
-    pendingAdmin: theme?.secondaryColor || '#6B7280',         // secondary      â€” awaiting decision
-    approved: theme?.tertiaryColor || '#10b981',              // tertiary       â€” success
-    rejected: theme?.primaryColorDark || '#025aa3',           // dark primary   â€” halted / rejected
-    appealed: theme?.tertiaryColorLight || '#34d399',         // light tertiary â€” appeal
-    neutral: theme?.secondaryColorLight || '#9CA3AF',         // light secondary â€” neutral / withdrawn
-    primary: theme?.primaryColor || '#0275d8',                // primary brand  â€” total / main
+    pendingStaff: theme?.primaryColorLight || '#0a8ef5',     // light primary  - in progress
+    pendingAdmin: theme?.secondaryColor || '#6B7280',         // secondary      - awaiting decision
+    approved: theme?.tertiaryColor || '#10b981',              // tertiary       - success
+    rejected: theme?.primaryColorDark || '#025aa3',           // dark primary   - halted / rejected
+    appealed: theme?.tertiaryColorLight || '#34d399',         // light tertiary - appeal
+    neutral: theme?.secondaryColorLight || '#9CA3AF',         // light secondary - neutral / withdrawn
+    primary: theme?.primaryColor || '#0275d8',                // primary brand  - total / main
   };
 }
 
@@ -409,7 +414,8 @@ function templateCatalogForRole(roleKey, theme) {
       columns: [
         { key: 'recordId', label: 'Comparison ID' },
         { key: 'submissionId', label: 'Submission' },
-        { key: 'eventName', label: 'Event' },
+        { key: 'sourceLabel', label: 'Source Type' },
+        { key: 'eventName', label: 'Event / Source' },
         { key: 'statusLabel', label: 'Final Decision' },
         { key: 'accuracyLabel', label: 'AI Correct' },
         { key: 'humanChangeLabel', label: 'Human Changes' },
@@ -484,6 +490,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [sourceFilter, setSourceFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [staffUserId, setStaffUserId] = useState(Number(userProfile?.user_id || 0) || null);
 
@@ -741,6 +748,8 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
             recordId: `AI-${String(row.comparison_id).padStart(6, '0')}`,
             submissionId: `Submission #${row.submission_id}`,
             eventName: row.event_name || `Event #${row.event_request_id || 'N/A'}`,
+            sourceType: normalizeKey(row.source_type) === 'event' ? 'event' : 'non-event',
+            sourceLabel: normalizeKey(row.source_type) === 'event' ? 'Event' : 'Non-event',
             statusKey,
             statusLabel: labelFromKey(statusKey),
             accuracyLabel: `${formatPercentage(aiPercent)}%`,
@@ -753,7 +762,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
             updatedAt: row.reviewed_at,
             createdAtLabel: formatDateTime(row.reviewed_at),
             updatedAtLabel: formatDateTime(row.reviewed_at),
-            searchText: [row.comparison_id, row.submission_id, row.event_name, row.final_decision, aiComments, ...recordedChangedFields].filter(Boolean).join(' ').toLowerCase(),
+            searchText: [row.comparison_id, row.submission_id, row.source_type, row.event_name, row.final_decision, aiComments, ...recordedChangedFields].filter(Boolean).join(' ').toLowerCase(),
           };
         });
       } else if (selectedTemplate.id === 'user_accounts' && isAdmin) {
@@ -804,6 +813,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
 
   useEffect(() => {
     setStatusFilter('all');
+    setSourceFilter('all');
     setSearchTerm('');
     void loadTemplateRows();
   }, [loadTemplateRows, selectedTemplateId]);
@@ -816,6 +826,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
   const filteredRows = useMemo(() => {
     return rawRows.filter((row) => {
       if (statusFilter !== 'all' && row.statusLabel !== statusFilter) return false;
+      if (isAiAccuracyReport && sourceFilter !== 'all' && row.sourceType !== sourceFilter) return false;
       if ((dateFrom || dateTo) && !withinDateRange(row.createdAt, dateFrom, dateTo)) return false;
       if (searchTerm.trim()) {
         const query = searchTerm.trim().toLowerCase();
@@ -823,14 +834,15 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       }
       return true;
     });
-  }, [rawRows, statusFilter, dateFrom, dateTo, searchTerm]);
+  }, [rawRows, statusFilter, sourceFilter, dateFrom, dateTo, searchTerm, isAiAccuracyReport]);
 
   const summary = useMemo(() => {
     const total = filteredRows.length;
     const pending = filteredRows.filter((row) => pendingLikeStatus(row.statusKey)).length;
     const approved = filteredRows.filter((row) => approvedLikeStatus(row.statusKey)).length;
     const rejected = filteredRows.filter((row) => rejectedLikeStatus(row.statusKey)).length;
-    return { total, pending, approved, rejected };
+    const cancelled = filteredRows.filter((row) => cancelledLikeStatus(row.statusKey)).length;
+    return { total, pending, approved, rejected, cancelled };
   }, [filteredRows]);
 
   const aiAccuracySummary = useMemo(() => {
@@ -1015,11 +1027,19 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     },
     {
       key: 'rejected',
-      label: 'Rejected / Cancelled',
+      label: 'Rejected by Quality',
       value: summary.rejected,
       pctValue: pct(summary.rejected, summary.total),
       icon: XCircle,
       accent: palette.rejected,
+    },
+    {
+      key: 'cancelled',
+      label: 'Cancelled / No Show',
+      value: summary.cancelled,
+      pctValue: pct(summary.cancelled, summary.total),
+      icon: XCircle,
+      accent: palette.neutral,
     },
   ];
 
@@ -1105,7 +1125,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
         </div>
       )}
 
-      {/* Template selector â€” underlined tabs */}
+      {/* Template selector - underlined tabs */}
       <div className="border-b border-slate-200">
         <nav className="-mb-px flex flex-wrap gap-x-5 gap-y-1" aria-label="Report templates">
           {templates.map((template) => {
@@ -1132,7 +1152,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
 
       {/* Filters bar */}
       <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-        <div className={`grid grid-cols-1 gap-3 md:grid-cols-2 ${isAiAccuracyReport ? 'xl:grid-cols-[1fr_1fr_2fr]' : 'xl:grid-cols-[1fr_1fr_1fr_2fr]'}`}>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_2fr]">
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">From Date</span>
             <input
@@ -1166,7 +1186,16 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                 ))}
               </select>
             </label>
-          ) : null}
+          ) : (
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Donation Source</span>
+              <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100">
+                <option value="all">Events and non-events</option>
+                <option value="event">Events only</option>
+                <option value="non-event">Non-events only</option>
+              </select>
+            </label>
+          )}
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Search</span>
             <div className="relative">
@@ -1183,7 +1212,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       </div>
 
       {/* KPI tiles */}
-      <section className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${isAiAccuracyReport ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}>
+      <section className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${isAiAccuracyReport ? 'lg:grid-cols-3' : 'lg:grid-cols-5'}`}>
         {kpiTiles.map((tile) => {
           const Icon = tile.icon;
           return (

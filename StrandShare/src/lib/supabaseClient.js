@@ -77,13 +77,60 @@ function fetchWithRequestControls(input, init = {}) {
   return isDataRequest(input) ? fetchDataRequest(input, init) : fetch(input, init);
 }
 
-export const supabase = isSupabaseConfigured
-  ? createClient(supabaseUrl, supabaseAnonKey, {
-      global: {
-        fetch: fetchWithRequestControls,
-      },
-    })
-  : null;
+function createSupabaseClient() {
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    global: {
+      fetch: fetchWithRequestControls,
+    },
+  });
+}
+
+function getBrowserSupabaseSingleton() {
+  if (typeof window === 'undefined') {
+    return createSupabaseClient();
+  }
+
+  const existing = window.__donivraSupabaseClient;
+  if (existing?.url === supabaseUrl && existing?.anonKey === supabaseAnonKey && existing?.client) {
+    return existing.client;
+  }
+
+  const client = createSupabaseClient();
+  window.__donivraSupabaseClient = {
+    url: supabaseUrl,
+    anonKey: supabaseAnonKey,
+    client,
+  };
+  return client;
+}
+
+// React Fast Refresh re-evaluates modules during development. Keeping the
+// client on window prevents multiple GoTrueClient instances from competing
+// for the same Supabase auth storage key after a hot update.
+export const supabase = isSupabaseConfigured ? getBrowserSupabaseSingleton() : null;
+
+// React cleanup does not run when Chrome freezes a document in the
+// back-forward cache. Close Realtime before that freeze so the browser does
+// not abort the socket and report a misleading WebSocket console error. The
+// existing channels reconnect when the cached page is restored.
+if (typeof window !== 'undefined' && supabase && !window.__donivraRealtimePageLifecycle) {
+  window.__donivraRealtimePageLifecycle = true;
+  let reconnectAfterRestore = false;
+
+  window.addEventListener('pagehide', () => {
+    reconnectAfterRestore = supabase.realtime.getChannels().length > 0;
+    void supabase.realtime.disconnect(1000, 'page hidden');
+  });
+
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted || !reconnectAfterRestore) return;
+    window.setTimeout(() => {
+      if (supabase.realtime.getChannels().length > 0) {
+        supabase.realtime.connect();
+      }
+    }, 0);
+  });
+}
 
 export function clearLocalSupabaseSession() {
   if (typeof window === 'undefined') {

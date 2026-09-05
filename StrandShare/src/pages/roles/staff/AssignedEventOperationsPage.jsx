@@ -1953,7 +1953,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Schedule</p>
                         <p className="text-sm text-slate-800">
-                          {formatDateTime(selectedEvent.Start_Date)} â€” {formatDateTime(selectedEvent.End_Date)}
+                          {formatDateTime(selectedEvent.Start_Date)} - {formatDateTime(selectedEvent.End_Date)}
                         </p>
                       </div>
                     </div>

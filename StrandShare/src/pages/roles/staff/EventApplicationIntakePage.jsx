@@ -415,8 +415,8 @@ function ApplicationQueueCalendar({
             <p className="text-[11px] font-bold text-slate-800">{formatProgramDateLabel(selectedDate)}</p>
             <p className="text-[10px] text-slate-500">
               {selectedApplications.length > 0
-                ? `${selectedApplications.length} application${selectedApplications.length === 1 ? '' : 's'} on this date${selectedIsAvailable ? ' â€” open for a new application' : ''}`
-                : (selectedIsAvailable ? 'Open date â€” no active program scheduled' : 'No program scheduled')}
+                ? `${selectedApplications.length} application${selectedApplications.length === 1 ? '' : 's'} on this date${selectedIsAvailable ? ' - open for a new application' : ''}`
+                : (selectedIsAvailable ? 'Open date - no active program scheduled' : 'No program scheduled')}
             </p>
           </div>
           <button
@@ -1374,10 +1374,10 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
               <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Contact Priority</p>
               <div className="grid grid-cols-1 gap-4">
                 <InfoItem icon={CheckCircle2} label="Preferred Method">{preferredMethod}</InfoItem>
-                <InfoItem icon={preferredMethod === 'Email' ? Mail : Phone} label={`Primary Â· ${preferredMethod}`}>
+                <InfoItem icon={preferredMethod === 'Email' ? Mail : Phone} label={`Primary | ${preferredMethod}`}>
                   <ContactLink type={preferredMethod} value={primaryContact} />
                 </InfoItem>
-                <InfoItem icon={secondaryMethod === 'Email' ? Mail : Phone} label={`Secondary Â· ${secondaryMethod}`}>
+                <InfoItem icon={secondaryMethod === 'Email' ? Mail : Phone} label={`Secondary | ${secondaryMethod}`}>
                   <ContactLink type={secondaryMethod} value={secondaryContact} />
                 </InfoItem>
                 <p className="rounded-md border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-700">
@@ -1805,7 +1805,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
 
               {renderApplicationDetails()}
 
-              {/* Staff Notes â€” editable when not locked, read-only otherwise */}
+              {/* Staff Notes - editable when not locked, read-only otherwise */}
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
@@ -1879,7 +1879,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                 </div>
               </div>
 
-              {/* Action buttons â€” hidden when locked */}
+              {/* Action buttons - hidden when locked */}
               {!isLockedFromActions && (
                 <div className="flex flex-wrap items-center justify-end gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                   <button
@@ -2063,7 +2063,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
             open={showSubmitModal}
             onClose={() => !isSaving && setShowSubmitModal(false)}
             title={canAppealRejectedRequest ? 'Submit Appeal to Admin' : 'Submit Event Request to Admin'}
-            description={`Step ${submitStep} of ${STEPS.length} Â· ${STEPS[submitStep - 1].label}`}
+            description={`Step ${submitStep} of ${STEPS.length} | ${STEPS[submitStep - 1].label}`}
             icon={Send}
             accentColor={primaryColor}
             maxWidth="3xl"
@@ -2360,7 +2360,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                     <div className="grid grid-cols-1 gap-3 px-4 py-3 text-sm md:grid-cols-2">
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Event Name</p>
-                        <p className="text-slate-900">{requestDraft.eventName || <span className="text-slate-400">â€”</span>}</p>
+                        <p className="text-slate-900">{requestDraft.eventName || <span className="text-slate-400">-</span>}</p>
                       </div>
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Event Type</p>
@@ -2368,15 +2368,15 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                       </div>
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Start</p>
-                        <p className="text-slate-900">{requestDraft.startDate ? formatDateTime(requestDraft.startDate) : <span className="text-slate-400">â€”</span>}</p>
+                        <p className="text-slate-900">{requestDraft.startDate ? formatDateTime(requestDraft.startDate) : <span className="text-slate-400">-</span>}</p>
                       </div>
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">End</p>
-                        <p className="text-slate-900">{requestDraft.endDate ? formatDateTime(requestDraft.endDate) : <span className="text-slate-400">â€”</span>}</p>
+                        <p className="text-slate-900">{requestDraft.endDate ? formatDateTime(requestDraft.endDate) : <span className="text-slate-400">-</span>}</p>
                       </div>
                       <div className="md:col-span-2">
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Event By</p>
-                        <p className="text-slate-900">{requestDraft.eventBy || <span className="text-slate-400">â€”</span>}</p>
+                        <p className="text-slate-900">{requestDraft.eventBy || <span className="text-slate-400">-</span>}</p>
                       </div>
                     </div>
                   </div>
@@ -2388,14 +2388,14 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                     <div className="space-y-3 px-4 py-3 text-sm">
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Venue</p>
-                        <p className="text-slate-900">{requestDraft.venueName || <span className="text-slate-400">â€”</span>}</p>
+                        <p className="text-slate-900">{requestDraft.venueName || <span className="text-slate-400">-</span>}</p>
                       </div>
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Address</p>
                         <p className="text-slate-900">
                           {[requestDraft.street, requestDraft.barangay, requestDraft.cityMunicipality, requestDraft.province, requestDraft.region, requestDraft.country]
                             .filter((part) => String(part || '').trim())
-                            .join(', ') || <span className="text-slate-400">â€”</span>}
+                            .join(', ') || <span className="text-slate-400">-</span>}
                         </p>
                       </div>
                       <MapPreview
@@ -2433,11 +2433,11 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                         <div>
                           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Partnered With</p>
-                          <p className="text-slate-900">{requestDraft.partneredWith || <span className="text-slate-400">â€”</span>}</p>
+                          <p className="text-slate-900">{requestDraft.partneredWith || <span className="text-slate-400">-</span>}</p>
                         </div>
                         <div>
                           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Partner Social Media</p>
-                          <p className="break-all text-slate-900">{requestDraft.partnerSocialMediaLink || <span className="text-slate-400">â€”</span>}</p>
+                          <p className="break-all text-slate-900">{requestDraft.partnerSocialMediaLink || <span className="text-slate-400">-</span>}</p>
                         </div>
                       </div>
                     </div>

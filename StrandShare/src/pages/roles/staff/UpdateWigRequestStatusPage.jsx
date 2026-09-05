@@ -1788,12 +1788,12 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                     <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Emergency Contacts</p>
                     <div className="mt-2 space-y-1.5">
                       <p className="font-semibold text-slate-900">Primary</p>
-                      <p>{selectedRow.guardianName} Â· {selectedRow.guardianRelationship}</p>
+                      <p>{selectedRow.guardianName} | {selectedRow.guardianRelationship}</p>
                       <p>{selectedRow.guardianContact}</p>
                       {selectedRow.secondaryGuardianName || selectedRow.secondaryGuardianRelationship || selectedRow.secondaryGuardianContact ? (
                         <div className="border-t border-slate-100 pt-2">
                           <p className="font-semibold text-slate-900">Secondary</p>
-                          <p>{selectedRow.secondaryGuardianName || 'N/A'} Â· {selectedRow.secondaryGuardianRelationship || 'N/A'}</p>
+                          <p>{selectedRow.secondaryGuardianName || 'N/A'} | {selectedRow.secondaryGuardianRelationship || 'N/A'}</p>
                           <p>{selectedRow.secondaryGuardianContact || 'N/A'}</p>
                         </div>
                       ) : null}

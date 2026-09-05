@@ -118,6 +118,12 @@ function toNullableBoolean(value) {
   return null;
 }
 
+function fromNullableBoolean(value) {
+  if (value === true) return 'yes';
+  if (value === false) return 'no';
+  return '';
+}
+
 function normalizeReleaseWorkflowKey(value) {
   const key = normalizeStatusKey(value);
   if (['reschedulerequested', 'hospitalreschedulerequested', 'reschedule'].includes(key)) {
@@ -1206,7 +1212,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       requestSpecPrimaryImageCandidates: selectedRequestedSpecification?.primaryImageCandidates || [],
       specialNote: form.specialNoteTemplate,
       hasKnownAllergies: yesNoValue(form.hasKnownAllergies),
-      allergyDetails: form.allergyDetails || selectedPatientProfile.allergiesMedications,
+      allergyDetails: form.allergyDetails,
       hasSensitiveScalp: yesNoValue(form.hasSensitiveScalp),
       hasScalpIrritation: yesNoValue(form.hasScalpIrritation),
       hasOpenScalpWounds: yesNoValue(form.hasOpenScalpWounds),
@@ -1712,25 +1718,20 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     };
   }, []);
 
-  const handleSelectPatient = (patient) => {
+  const handleSelectPatient = async (patient) => {
     const selectedPatientId = Number(patient?.Patient_ID || 0);
 
     if (!selectedPatientId) {
       return;
     }
 
-    const clinicalAllergyText = String(patient.Allergies_Current_Medications || '').trim();
-    const clinicalAllergyKey = normalizeSearchText(clinicalAllergyText);
-    const hasUsefulAllergyText = Boolean(clinicalAllergyText)
-      && !['n/a', 'na', 'none', 'no known allergies', 'no known allergy'].includes(clinicalAllergyKey);
-
     setForm((prev) => ({
       ...prev,
       patientId: String(selectedPatientId),
       patientCode: String(patient.Patient_Code || ''),
       medicalCondition: String(patient.Medical_Condition || ''),
-      hasKnownAllergies: hasUsefulAllergyText ? 'yes' : '',
-      allergyDetails: hasUsefulAllergyText ? clinicalAllergyText : '',
+      hasKnownAllergies: '',
+      allergyDetails: '',
       hasSensitiveScalp: '',
       hasScalpIrritation: '',
       hasOpenScalpWounds: '',
@@ -1745,6 +1746,33 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       const next = { ...previous };
       delete next.patientId;
       return next;
+    });
+
+    const { data: savedSafety, error: savedSafetyError } = await supabase.rpc(
+      'get_patient_wig_safety_profile',
+      { p_patient_id: selectedPatientId },
+    );
+
+    if (savedSafetyError) {
+      setNotice({ kind: 'error', text: `Patient selected, but the saved safety checklist could not be loaded: ${savedSafetyError.message}` });
+      return;
+    }
+    const safetyProfile = Array.isArray(savedSafety) ? savedSafety[0] : savedSafety;
+    if (!safetyProfile?.patient_id) return;
+
+    setForm((previous) => {
+      if (Number(previous.patientId || 0) !== selectedPatientId) return previous;
+      return {
+        ...previous,
+        hasKnownAllergies: fromNullableBoolean(safetyProfile.has_known_allergies),
+        allergyDetails: String(safetyProfile.allergy_details || ''),
+        hasSensitiveScalp: fromNullableBoolean(safetyProfile.has_sensitive_scalp),
+        hasScalpIrritation: fromNullableBoolean(safetyProfile.has_scalp_irritation),
+        hasOpenScalpWounds: fromNullableBoolean(safetyProfile.has_open_scalp_wounds),
+        hasMedicalRestriction: fromNullableBoolean(safetyProfile.has_medical_restriction),
+        medicalRestrictionDetails: String(safetyProfile.medical_restriction_details || ''),
+        informationConfirmed: Boolean(safetyProfile.information_confirmed),
+      };
     });
   };
 
@@ -1977,7 +2005,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     addField('Treatment Hospital / Clinic', previewPayload.treatmentHospitalClinic);
     addField('Treatment Plan', previewPayload.treatmentPlan);
     addField('Current Treatment Status', previewPayload.treatmentStatus);
-    addField('Allergies & Medications', previewPayload.allergiesMedications);
+    addField('Current Medications', previewPayload.allergiesMedications);
     addField('Insurance / PhilHealth', previewPayload.insurancePhilHealth);
     addField('Clinical Special Note', previewPayload.clinicalSpecialNote);
     addField('Primary Guardian', `${safePreviewValue(previewPayload.guardian)} | ${safePreviewValue(previewPayload.guardianRelationship)} | ${safePreviewValue(previewPayload.guardianContact)}`);
@@ -2458,7 +2486,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                   <div className="mt-2 max-h-44 overflow-auto rounded-lg border border-slate-200 bg-white">
                     {filteredPatientOptions.length === 0 ? (
                       <div className="px-3 py-3 text-xs text-slate-500">
-                        <p>No patients match â€œ{patientSearchTerm.trim()}â€.</p>
+                        <p>No patients match "{patientSearchTerm.trim()}".</p>
                         {patientSearchTerm.trim() && patients.length > 0 ? (
                           <button
                             type="button"
@@ -2587,7 +2615,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                                 <span className="block truncate text-xs font-bold text-slate-900">{patientName}</span>
                                 <span className="block truncate text-[11px] text-slate-500">
                                   {patient.Patient_Code || `Patient #${patient.Patient_ID}`}
-                                  {patient.Medical_Condition ? ` Â· ${patient.Medical_Condition}` : ''}
+                                  {patient.Medical_Condition ? ` | ${patient.Medical_Condition}` : ''}
                                 </span>
                               </span>
                             </button>
@@ -2651,12 +2679,12 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                             <div className="flex items-start justify-between gap-2">
                               <div>
                                 <p className="line-clamp-2 text-xs font-bold text-slate-900">{family.wigName || 'Catalog wig'}</p>
-                                <p className="mt-0.5 text-xs text-slate-500">{family.style || 'Style not labeled'} Â· {family.color || 'Color N/A'}</p>
+                                <p className="mt-0.5 text-xs text-slate-500">{family.style || 'Style not labeled'} | {family.color || 'Color N/A'}</p>
                               </div>
                               {isSelected ? <CheckCircle2 size={16} className="shrink-0 text-blue-600" /> : null}
                             </div>
                             <p className="mt-2 text-[11px] text-slate-500">
-                              {family.hairLength ? `${family.hairLength} in Â· ` : ''}{family.texture || 'Texture N/A'} Â· {family.density || 'Density N/A'}
+                              {family.hairLength ? `${family.hairLength} in | ` : ''}{family.texture || 'Texture N/A'} | {family.density || 'Density N/A'}
                             </p>
                           </div>
                         </button>
@@ -2714,7 +2742,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     <option value="">Select a wig first</option>
                     {(selectedWigFamily?.variants || []).map((variant) => (
                       <option key={variant.specificationId} value={String(variant.specificationId)}>
-                        {variant.capSizeLabel || variant.capSize || 'Cap size N/A'} â€” {variant.stockCount > 0 ? `${variant.stockCount} in stock` : 'No stock (wish request)'}
+                        {variant.capSizeLabel || variant.capSize || 'Cap size N/A'} - {variant.stockCount > 0 ? `${variant.stockCount} in stock` : 'No stock (wish request)'}
                       </option>
                     ))}
                   </select>
@@ -2798,7 +2826,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     <p className="text-sm font-bold text-slate-900">Wig Safety Assessment</p>
                     <p className="mt-1 text-xs text-slate-600">Record the information provided by the patient or guardian. Every field is editable, and unanswered items are saved as Not provided for Staff review.</p>
                     {selectedPatientProfile.allergiesMedications && selectedPatientProfile.allergiesMedications !== 'N/A' ? (
-                      <p className="mt-2 rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs text-slate-700"><span className="font-bold">Saved clinical allergy/medication record:</span> {selectedPatientProfile.allergiesMedications}</p>
+                      <p className="mt-2 rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs text-slate-700"><span className="font-bold">Saved current medications:</span> {selectedPatientProfile.allergiesMedications}</p>
                     ) : null}
                   </div>
 
@@ -2942,7 +2970,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     <PatientDetailRow label="Medical Condition" value={selectedPatientProfile.medicalCondition} />
                     <PatientDetailRow label="Wig" value={selectedRequestedSpecification?.wigName} />
                     <PatientDetailRow label="Cap Size" value={selectedRequestedSpecification?.capSizeLabel || selectedRequestedSpecification?.capSize} />
-                    <PatientDetailRow label="Stock" value={selectedRequestedSpecification?.isAvailable ? `${selectedRequestedSpecification.stockCount} available` : 'No stock â€” production request if accepted'} />
+                    <PatientDetailRow label="Stock" value={selectedRequestedSpecification?.isAvailable ? `${selectedRequestedSpecification.stockCount} available` : 'No stock - production request if accepted'} />
                     <PatientDetailRow label="Special Note" value={form.specialNoteTemplate || 'N/A'} />
                   </dl>
                   <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 p-2">
@@ -3077,9 +3105,9 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                               type="button"
                               onClick={() => handleOpenSubmittedRequestPreview(row)}
                               className={`block w-full truncate rounded px-1.5 py-1 text-left text-[10px] font-semibold ${statusClass(row.status)}`}
-                              title={`${row.requestId} Â· ${row.patient} Â· ${row.statusLabel}`}
+                              title={`${row.requestId} | ${row.patient} | ${row.statusLabel}`}
                             >
-                              {row.requestId} Â· {row.patient}
+                              {row.requestId} | {row.patient}
                             </button>
                           ))}
                           {day.rows.length > 3 ? <p className="text-[10px] text-slate-500">+{day.rows.length - 3} more</p> : null}
@@ -3195,14 +3223,14 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                 <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
                   <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Personal Information</p><div className="mt-2 space-y-1.5"><p><span className="font-semibold text-slate-900">Age:</span> {selectedSubmittedRequest.patientAge}</p><p><span className="font-semibold text-slate-900">Birthdate:</span> {selectedSubmittedRequest.patientBirthdate}</p><p><span className="font-semibold text-slate-900">Gender:</span> {selectedSubmittedRequest.patientGender}</p><p><span className="font-semibold text-slate-900">Email:</span> {selectedSubmittedRequest.patientEmail}</p><p><span className="font-semibold text-slate-900">Contact:</span> {selectedSubmittedRequest.patientContact}</p><p><span className="font-semibold text-slate-900">Address:</span> {selectedSubmittedRequest.patientAddress}</p></div></section>
                   <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Clinical Information</p><div className="mt-2 space-y-1.5"><p><span className="font-semibold text-slate-900">Condition:</span> {selectedSubmittedRequest.medicalCondition}</p><p><span className="font-semibold text-slate-900">Category / Stage:</span> {selectedSubmittedRequest.conditionCategory} / {selectedSubmittedRequest.conditionStage}</p><p><span className="font-semibold text-slate-900">Physician:</span> {selectedSubmittedRequest.attendingPhysician}</p><p><span className="font-semibold text-slate-900">Treatment:</span> {selectedSubmittedRequest.treatmentPlan}</p><p><span className="font-semibold text-slate-900">Current Status:</span> {selectedSubmittedRequest.treatmentStatus}</p></div></section>
-                  <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Emergency Contacts</p><div className="mt-2 space-y-1.5"><p className="font-semibold text-slate-900">Primary</p><p>{selectedSubmittedRequest.guardianName} Â· {selectedSubmittedRequest.guardianRelationship}</p><p>{selectedSubmittedRequest.guardianContact}</p>{selectedSubmittedRequest.secondaryGuardianName || selectedSubmittedRequest.secondaryGuardianRelationship || selectedSubmittedRequest.secondaryGuardianContact ? <div className="border-t border-slate-100 pt-2"><p className="font-semibold text-slate-900">Secondary</p><p>{selectedSubmittedRequest.secondaryGuardianName || 'N/A'} Â· {selectedSubmittedRequest.secondaryGuardianRelationship || 'N/A'}</p><p>{selectedSubmittedRequest.secondaryGuardianContact || 'N/A'}</p></div> : null}</div></section>
+                  <section><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Emergency Contacts</p><div className="mt-2 space-y-1.5"><p className="font-semibold text-slate-900">Primary</p><p>{selectedSubmittedRequest.guardianName} | {selectedSubmittedRequest.guardianRelationship}</p><p>{selectedSubmittedRequest.guardianContact}</p>{selectedSubmittedRequest.secondaryGuardianName || selectedSubmittedRequest.secondaryGuardianRelationship || selectedSubmittedRequest.secondaryGuardianContact ? <div className="border-t border-slate-100 pt-2"><p className="font-semibold text-slate-900">Secondary</p><p>{selectedSubmittedRequest.secondaryGuardianName || 'N/A'} | {selectedSubmittedRequest.secondaryGuardianRelationship || 'N/A'}</p><p>{selectedSubmittedRequest.secondaryGuardianContact || 'N/A'}</p></div> : null}</div></section>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1 border-t border-slate-200 pt-3 text-xs"><p><span className="font-semibold text-slate-900">Request Date:</span> {formatRequestDateTime(selectedSubmittedRequest.requestDate)}</p><p><span className="font-semibold text-slate-900">Last Updated:</span> {formatRequestDateTime(selectedSubmittedRequest.updatedAt || selectedSubmittedRequest.requestDate)}</p></div>
                 {selectedSubmittedRequest.isWishRequest ? (
                   <p className="mt-1">
                     <span className="font-semibold text-slate-900">No-stock fulfillment:</span>{' '}
                     {String(selectedSubmittedRequest.fulfillmentStatus || 'Awaiting review').replace(/_/g, ' ')}
-                    {selectedSubmittedRequest.fulfillmentBundleId ? ` Â· Bundle #${selectedSubmittedRequest.fulfillmentBundleId}` : ''}
+                    {selectedSubmittedRequest.fulfillmentBundleId ? ` | Bundle #${selectedSubmittedRequest.fulfillmentBundleId}` : ''}
                   </p>
                 ) : null}
                 {selectedSubmittedRequest.statusReason && (
@@ -3247,7 +3275,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     <p><span className="font-semibold text-slate-900">Information confirmed:</span> {selectedSubmittedRequest.safetyAssessment.information_confirmed ? 'Yes' : 'No'}</p>
                     <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Allergy details:</span> {selectedSubmittedRequest.safetyAssessment.allergy_details || 'N/A'}</p>
                     <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Medical restriction details:</span> {selectedSubmittedRequest.safetyAssessment.medical_restriction_details || 'N/A'}</p>
-                    <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Clinical allergies/current medications:</span> {selectedSubmittedRequest.clinicalAllergiesMedications}</p>
+                    <p className="sm:col-span-2 lg:col-span-3"><span className="font-semibold text-slate-900">Current medications:</span> {selectedSubmittedRequest.clinicalAllergiesMedications}</p>
                     <p><span className="font-semibold text-slate-900">Staff review:</span> {selectedSubmittedRequest.safetyAssessment.review_status || 'Pending'}</p>
                     <p><span className="font-semibold text-slate-900">Confirmed:</span> {formatRequestDateTime(selectedSubmittedRequest.safetyAssessment.confirmed_at)}</p>
                     <p><span className="font-semibold text-slate-900">Reviewed:</span> {formatRequestDateTime(selectedSubmittedRequest.safetyAssessment.reviewed_at)}</p>

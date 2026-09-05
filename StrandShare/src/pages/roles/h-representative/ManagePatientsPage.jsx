@@ -72,6 +72,14 @@ const EMPTY_FORM = {
   allergiesCurrentMedications: '',
   insurancePhilHealthInfo: '',
   clinicalSpecialNote: '',
+  hasKnownAllergies: '',
+  allergyDetails: '',
+  hasSensitiveScalp: '',
+  hasScalpIrritation: '',
+  hasOpenScalpWounds: '',
+  hasMedicalRestriction: '',
+  medicalRestrictionDetails: '',
+  informationConfirmed: false,
 };
 
 const CONDITION_OPTIONS = ['Cancer', 'Alopecia', 'Other Hair-Loss Disease'];
@@ -105,7 +113,7 @@ const AUTOFILL_FIELD_LABELS = {
   treatmentHospitalClinic: 'Treatment hospital or clinic',
   treatmentPlan: 'Treatment plan',
   treatmentStatus: 'Treatment status',
-  allergiesCurrentMedications: 'Allergies and medications',
+  allergiesCurrentMedications: 'Current medications',
   insurancePhilHealthInfo: 'Insurance or PhilHealth',
   clinicalSpecialNote: 'Clinical special note',
 };
@@ -175,6 +183,18 @@ function normalizePatientGender(value) {
   }
 
   return '';
+}
+
+function toNullableBoolean(value) {
+  if (value === 'yes' || value === true) return true;
+  if (value === 'no' || value === false) return false;
+  return null;
+}
+
+function safetyAnswerLabel(value) {
+  if (value === 'yes' || value === true) return 'Yes';
+  if (value === 'no' || value === false) return 'No';
+  return 'Not provided';
 }
 
 function toSafeFileName(fileName) {
@@ -1014,7 +1034,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
   }, []);
 
   const handleInputChange = useCallback((event) => {
-    const { name, value } = event.target;
+    const { name, value, type, checked } = event.target;
 
     if (name === 'guardianContactNumber' || name === 'secondaryGuardianContactNumber') {
       const formattedContactNumber = formatPhilippineMobileInput(value);
@@ -1038,7 +1058,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
 
     setForm((previous) => ({
       ...previous,
-      [name]: value,
+      [name]: type === 'checkbox' ? checked : value,
     }));
   }, []);
 
@@ -1584,6 +1604,22 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
       return;
     }
 
+    if (form.hasKnownAllergies === 'yes' && !String(form.allergyDetails || '').trim()) {
+      setNotice({ kind: 'error', text: 'Enter allergy details when Known allergies is Yes.' });
+      submitLockRef.current = false;
+      return;
+    }
+    if (form.hasMedicalRestriction === 'yes' && !String(form.medicalRestrictionDetails || '').trim()) {
+      setNotice({ kind: 'error', text: 'Enter the medical restriction details.' });
+      submitLockRef.current = false;
+      return;
+    }
+    if (!form.informationConfirmed) {
+      setNotice({ kind: 'error', text: 'Confirm that the safety checklist was reviewed with the patient or guardian.' });
+      submitLockRef.current = false;
+      return;
+    }
+
     const uploadedPaths = [];
     let authAccountCreated = false;
     let createdAuthUserId = null;
@@ -1703,6 +1739,21 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
         throw new Error(`Patients insert failed: ${mappedInsertError}`);
       }
       createdPatientId = Number(insertedPatientRow?.Patient_ID || 0) || createdPatientId;
+
+      const { error: safetyProfileError } = await supabase.rpc('save_patient_wig_safety_profile', {
+        p_patient_id: createdPatientId,
+        p_has_known_allergies: toNullableBoolean(form.hasKnownAllergies),
+        p_allergy_details: String(form.allergyDetails || '').trim() || null,
+        p_has_sensitive_scalp: toNullableBoolean(form.hasSensitiveScalp),
+        p_has_scalp_irritation: toNullableBoolean(form.hasScalpIrritation),
+        p_has_open_scalp_wounds: toNullableBoolean(form.hasOpenScalpWounds),
+        p_has_medical_restriction: toNullableBoolean(form.hasMedicalRestriction),
+        p_medical_restriction_details: String(form.medicalRestrictionDetails || '').trim() || null,
+        p_information_confirmed: Boolean(form.informationConfirmed),
+      });
+      if (safetyProfileError) {
+        throw new Error(`Safety checklist failed: ${extractReadableErrorText(safetyProfileError, 'Unable to save safety checklist.')}`);
+      }
 
       const authUserId = await sendPatientInviteEmail({
         email: normalizedEmail,
@@ -1853,6 +1904,15 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
     if (new Date(form.birthdate) > new Date()) return 'Birthdate cannot be in the future.';
     if (String(form.dateOfDiagnosis || '').trim() && new Date(form.dateOfDiagnosis) > new Date()) {
       return 'Date of diagnosis cannot be in the future.';
+    }
+    if (form.hasKnownAllergies === 'yes' && !String(form.allergyDetails || '').trim()) {
+      return 'Enter allergy details when Known allergies is Yes.';
+    }
+    if (form.hasMedicalRestriction === 'yes' && !String(form.medicalRestrictionDetails || '').trim()) {
+      return 'Enter the medical restriction details.';
+    }
+    if (!form.informationConfirmed) {
+      return 'Confirm that the safety checklist was reviewed with the patient or guardian.';
     }
     return '';
   }, [documentAutofill.status, form, hospitalId]);
@@ -2681,8 +2741,8 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">Allergies & Current Medications</label>
-                    <textarea name="allergiesCurrentMedications" value={form.allergiesCurrentMedications} onChange={handleInputChange} rows={3} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Known allergies and current medication" />
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Current Medications</label>
+                    <textarea name="allergiesCurrentMedications" value={form.allergiesCurrentMedications} onChange={handleInputChange} rows={3} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Current prescribed medicines, dosage, or treatment medicines" />
                   </div>
 
                   <div>
@@ -2695,6 +2755,79 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                     <textarea name="clinicalSpecialNote" value={form.clinicalSpecialNote} onChange={handleInputChange} rows={3} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Other important clinical information" />
                   </div>
                 </div>
+
+                <div className="border-t border-gray-200 pt-4">
+                  <h3 className="text-sm font-semibold text-gray-900">Wig Safety Checklist</h3>
+                  <p className="text-xs text-gray-500">
+                    Record the answers provided by the patient or guardian. These answers will automatically prefill the patient's future wig request safety assessment.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {[
+                    ['hasKnownAllergies', 'Known allergies?'],
+                    ['hasSensitiveScalp', 'Sensitive scalp?'],
+                    ['hasScalpIrritation', 'Current scalp irritation?'],
+                    ['hasOpenScalpWounds', 'Open scalp wounds?'],
+                    ['hasMedicalRestriction', 'Medical restriction for wig use?'],
+                  ].map(([name, label]) => (
+                    <label key={name} className="rounded-lg border border-gray-200 bg-white p-3">
+                      <span className="mb-2 block text-sm font-medium text-gray-800">{label}</span>
+                      <select
+                        name={name}
+                        value={form[name]}
+                        onChange={handleInputChange}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2"
+                      >
+                        <option value="">Not provided</option>
+                        <option value="yes">Yes</option>
+                        <option value="no">No</option>
+                      </select>
+                    </label>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">
+                      Allergy Details {form.hasKnownAllergies === 'yes' ? <span className="text-red-600">*</span> : '(optional)'}
+                    </label>
+                    <textarea
+                      name="allergyDetails"
+                      value={form.allergyDetails}
+                      onChange={handleInputChange}
+                      rows={3}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      placeholder="Allergen, reaction, medicine, or wig material to avoid"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">
+                      Medical Restriction Details {form.hasMedicalRestriction === 'yes' ? <span className="text-red-600">*</span> : '(optional)'}
+                    </label>
+                    <textarea
+                      name="medicalRestrictionDetails"
+                      value={form.medicalRestrictionDetails}
+                      onChange={handleInputChange}
+                      rows={3}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      placeholder="Required clearance, restriction, or care instructions"
+                    />
+                  </div>
+                </div>
+
+                <label className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                  <input
+                    type="checkbox"
+                    name="informationConfirmed"
+                    checked={form.informationConfirmed}
+                    onChange={handleInputChange}
+                    className="mt-0.5 h-4 w-4"
+                  />
+                  <span>
+                    I confirm that this safety information was reviewed with the patient or guardian and is accurate. <span className="font-bold text-red-600">*</span>
+                  </span>
+                </label>
 
                 <div className="border-t border-gray-200 pt-4">
                   <h3 className="text-sm font-semibold text-gray-900">Primary Guardian / Emergency Contact</h3>
@@ -2832,6 +2965,20 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                 <DrawerRow label="Medical document" value={medicalDocumentFile?.name || 'Not attached'} />
               </dl>
 
+              <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
+                <h4 className="text-sm font-bold text-slate-900">Wig Safety Checklist</h4>
+                <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <DrawerRow label="Known allergies" value={safetyAnswerLabel(form.hasKnownAllergies)} />
+                  <DrawerRow label="Sensitive scalp" value={safetyAnswerLabel(form.hasSensitiveScalp)} />
+                  <DrawerRow label="Scalp irritation" value={safetyAnswerLabel(form.hasScalpIrritation)} />
+                  <DrawerRow label="Open scalp wounds" value={safetyAnswerLabel(form.hasOpenScalpWounds)} />
+                  <DrawerRow label="Medical restriction" value={safetyAnswerLabel(form.hasMedicalRestriction)} />
+                  <DrawerRow label="Information confirmed" value={form.informationConfirmed ? 'Yes' : 'No'} />
+                  <DrawerRow label="Allergy details" value={form.allergyDetails || 'Not provided'} />
+                  <DrawerRow label="Restriction details" value={form.medicalRestrictionDetails || 'Not provided'} />
+                </dl>
+              </div>
+
               <div className="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
                 <CheckCircle2 size={18} className="mt-0.5 shrink-0" />
                 <p>
@@ -2960,7 +3107,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                   <DrawerRow label="Treatment Hospital / Clinic" value={selectedPatient.Treatment_Hospital_Clinic || 'N/A'} />
                   <DrawerRow label="Treatment Plan" value={selectedPatient.Treatment_Plan || 'N/A'} />
                   <DrawerRow label="Current Status" value={selectedPatient.Current_Treatment_Status || 'N/A'} />
-                  <DrawerRow label="Allergies & Medications" value={selectedPatient.Allergies_Current_Medications || 'N/A'} />
+                  <DrawerRow label="Current Medications" value={selectedPatient.Allergies_Current_Medications || 'N/A'} />
                   <DrawerRow label="Insurance / PhilHealth" value={selectedPatient.Insurance_PhilHealth_Info || 'N/A'} />
                   <DrawerRow label="Special Note" value={selectedPatient.Clinical_Special_Note || 'N/A'} />
                 </ProfileSection>

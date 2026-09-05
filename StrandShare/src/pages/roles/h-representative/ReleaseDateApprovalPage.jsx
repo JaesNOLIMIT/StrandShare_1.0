@@ -17,6 +17,7 @@ const RELEASE_SCHEDULES_TABLE = 'Release_Schedules';
 const WIG_REQUEST_PREVIEWS_BUCKET = 'wig_request_previews';
 const WIG_AI_FILTERS_BUCKET = 'wig_ai_filters';
 const WIG_AI_SOURCES_BUCKET = 'wig_ai_sources';
+const COMPLETED_WIGS_BUCKET = 'completed_wigs';
 const PST_TIMEZONE = 'Asia/Manila';
 const PST_OFFSET = '+08:00';
 
@@ -507,7 +508,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
       );
 
       if (wigIdsForLookup.length > 0) {
-        const [wigsRes, wigSpecsRes, wigFiltersRes] = await Promise.all([
+        let [wigsRes, wigSpecsRes, wigFiltersRes] = await Promise.all([
           supabase
             .from(WIGS_TABLE)
             .select(`
@@ -515,8 +516,13 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
               wig_code:Wig_Code,
               wig_name:Wig_Name,
               wig_status:Wig_Status,
+              catalog_image_path:Catalog_Image_Path,
+              bundle_id:Bundle_ID,
               total_donated_hairs:Total_Donated_Hairs,
               total_bundles_used:Total_Bundles_Used,
+              wig_front_image_path:Wig_Front_Image_Path,
+              wig_side_image_path:Wig_Side_Image_Path,
+              wig_top_image_path:Wig_Top_Image_Path,
               created_at:Created_At,
               updated_at:Updated_At
             `)
@@ -540,7 +546,27 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
             .order('Updated_At', { ascending: false }),
         ]);
 
-        if (wigsRes.error) throw wigsRes.error;
+        if (wigsRes.error) {
+          const missingCompletedImageColumns = /wig_(front|side|top)_image_path/i.test(String(wigsRes.error.message || ''));
+          if (!missingCompletedImageColumns) throw wigsRes.error;
+
+          wigsRes = await supabase
+            .from(WIGS_TABLE)
+            .select(`
+              wig_id:Wig_ID,
+              wig_code:Wig_Code,
+              wig_name:Wig_Name,
+              wig_status:Wig_Status,
+              catalog_image_path:Catalog_Image_Path,
+              bundle_id:Bundle_ID,
+              total_donated_hairs:Total_Donated_Hairs,
+              total_bundles_used:Total_Bundles_Used,
+              created_at:Created_At,
+              updated_at:Updated_At
+            `)
+            .in('Wig_ID', wigIdsForLookup);
+          if (wigsRes.error) throw wigsRes.error;
+        }
 
         const wigRows = wigsRes.data || [];
         wigsById = new Map(
@@ -595,6 +621,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
         const requestedWigSpec = requestedWigId
           ? (wigSpecsByWigId.get(Number(requestedWigId || 0)) || {})
           : {};
+        const requestedWigFilter = requestedWigId ? (wigFiltersByWigId.get(requestedWigId) || null) : null;
         const allocatedWig = allocatedWigId ? (wigsById.get(allocatedWigId) || null) : null;
         const allocatedWigSpec = allocatedWig
           ? (wigSpecsByWigId.get(Number(allocatedWig.wig_id ?? allocatedWig.Wig_ID ?? 0)) || {})
@@ -645,6 +672,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
           allocatedWigCode: String(allocatedWig?.wig_code ?? allocatedWig?.Wig_Code ?? '').trim() || 'N/A',
           allocatedWigName: String(allocatedWig?.wig_name ?? allocatedWig?.Wig_Name ?? '').trim() || 'N/A',
           allocatedWigStatus: String(allocatedWig?.wig_status ?? allocatedWig?.Wig_Status ?? '').trim() || 'N/A',
+          allocatedWigBundleId: Number(allocatedWig?.bundle_id ?? allocatedWig?.Bundle_ID ?? 0) || null,
           allocatedWigTotalDonatedHairs: Number(allocatedWig?.total_donated_hairs ?? allocatedWig?.Total_Donated_Hairs ?? 0) || 0,
           allocatedWigTotalBundlesUsed: Number(allocatedWig?.total_bundles_used ?? allocatedWig?.Total_Bundles_Used ?? 0) || 0,
           allocatedWigLength: (allocatedWigSpec?.hair_length ?? allocatedWigSpec?.Hair_Length) === null
@@ -657,25 +685,52 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
           allocatedWigStyle: String(allocatedWigSpec?.style ?? allocatedWigSpec?.Style ?? '').trim() || 'N/A',
           allocatedWigCapSize: String(allocatedWigSpec?.cap_size ?? allocatedWigSpec?.Cap_Size ?? '').trim() || 'N/A',
           allocatedWigFrontImageUrl: resolveStoragePublicUrl(
+            COMPLETED_WIGS_BUCKET,
+            String(allocatedWig?.wig_front_image_path ?? allocatedWig?.Wig_Front_Image_Path ?? '').trim(),
+          ) || resolveStoragePublicUrl(
             WIG_AI_SOURCES_BUCKET,
             String(allocatedWigFilter?.Source_Front_Path || '').trim(),
           ) || resolveStoragePublicUrl(
             WIG_AI_FILTERS_BUCKET,
             String(allocatedWigFilter?.Source_Front_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_SOURCES_BUCKET,
+            String(requestedWigFilter?.Source_Front_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_FILTERS_BUCKET,
+            String(requestedWigFilter?.Source_Front_Path || '').trim(),
           ),
           allocatedWigSideImageUrl: resolveStoragePublicUrl(
+            COMPLETED_WIGS_BUCKET,
+            String(allocatedWig?.wig_side_image_path ?? allocatedWig?.Wig_Side_Image_Path ?? '').trim(),
+          ) || resolveStoragePublicUrl(
             WIG_AI_SOURCES_BUCKET,
             String(allocatedWigFilter?.Source_Side_Path || '').trim(),
           ) || resolveStoragePublicUrl(
             WIG_AI_FILTERS_BUCKET,
             String(allocatedWigFilter?.Source_Side_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_SOURCES_BUCKET,
+            String(requestedWigFilter?.Source_Side_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_FILTERS_BUCKET,
+            String(requestedWigFilter?.Source_Side_Path || '').trim(),
           ),
           allocatedWigTopImageUrl: resolveStoragePublicUrl(
+            COMPLETED_WIGS_BUCKET,
+            String(allocatedWig?.wig_top_image_path ?? allocatedWig?.Wig_Top_Image_Path ?? '').trim(),
+          ) || resolveStoragePublicUrl(
             WIG_AI_SOURCES_BUCKET,
             String(allocatedWigFilter?.Source_Top_Path || '').trim(),
           ) || resolveStoragePublicUrl(
             WIG_AI_FILTERS_BUCKET,
             String(allocatedWigFilter?.Source_Top_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_SOURCES_BUCKET,
+            String(requestedWigFilter?.Source_Top_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_FILTERS_BUCKET,
+            String(requestedWigFilter?.Source_Top_Path || '').trim(),
           ),
           allocatedWigBackImageUrl: resolveStoragePublicUrl(
             WIG_AI_SOURCES_BUCKET,
@@ -686,6 +741,12 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
           ) || resolveStoragePublicUrl(
             WIG_AI_FILTERS_BUCKET,
             String(allocatedWigFilter?.Source_Back_Path || allocatedWigFilter?.Layer_Back_Hair_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_SOURCES_BUCKET,
+            String(requestedWigFilter?.Source_Back_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_FILTERS_BUCKET,
+            String(requestedWigFilter?.Source_Back_Path || requestedWigFilter?.Layer_Back_Hair_Path || '').trim(),
           ),
           previewPdfUrl: String(requestRow.Pdf_Url || requestRow.Preview_Pdf_Url || '').trim(),
         };
@@ -1202,74 +1263,6 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
             </div>
           ) : filteredQueueRows.length === 0 ? (
             <div className="px-4 py-8 text-sm text-gray-600">No records in release approval queue.</div>
-          ) : embedded ? (
-            <div className="grid grid-cols-1 gap-3 bg-slate-50 p-4 lg:grid-cols-2 2xl:grid-cols-3">
-              {filteredQueueRows.map((row) => {
-                const canQuickAct = rowCanApprove(row);
-                return (
-                  <article key={row.reqId} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <button type="button" onClick={() => setSelectedRow(row)} className="block w-full text-left">
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{row.requestId}</p>
-                          <h3 className="mt-1 text-sm font-bold text-slate-900">{row.patientName}</h3>
-                          <p className="text-[11px] text-slate-500">{row.patientCode || 'No patient code'}</p>
-                        </div>
-                        <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${statusClass(row.status)}`}>
-                          {row.statusLabel}
-                        </span>
-                      </div>
-
-                      <dl className="mt-3 space-y-2 border-t border-slate-100 pt-3 text-xs">
-                        <div>
-                          <dt className="text-slate-500">Medical condition</dt>
-                          <dd className="font-semibold text-slate-800">{row.medicalCondition}</dd>
-                        </div>
-                        <div>
-                          <dt className="text-slate-500">Proposed release date</dt>
-                          <dd className="font-semibold text-slate-800">{formatDateTime(row.releaseDate)}</dd>
-                        </div>
-                      </dl>
-                    </button>
-
-                    <div className="mt-4 grid grid-cols-2 gap-2">
-                      {canQuickAct ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => setQuickApproveTarget(row)}
-                            disabled={isApplyingDecision}
-                            className="inline-flex items-center justify-center gap-1 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
-                          >
-                            <Check size={13} /> Approve
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setQuickRescheduleReason('');
-                              setQuickRescheduleAttempted(false);
-                              setQuickRescheduleTarget(row);
-                            }}
-                            disabled={isApplyingDecision}
-                            className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                          >
-                            <CalendarDays size={13} /> Reschedule
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setSelectedRow(row)}
-                          className="col-span-2 inline-flex items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                        >
-                          <Info size={13} /> View Details
-                        </button>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
@@ -1277,6 +1270,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                   <tr>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Request ID</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Patient</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Wig Model</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Medical Condition</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Proposed Release Date</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Status</th>
@@ -1298,6 +1292,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                           <p className="font-semibold text-gray-800">{row.patientName}</p>
                           <p className="text-xs text-gray-500">{row.patientCode || 'No patient code'}</p>
                         </td>
+                        <td className="px-4 py-3 text-gray-700"><p className="font-medium text-gray-800">{row.specWigName}</p><p className="text-[11px] text-gray-500">{row.specCapSize}</p></td>
                         <td className="px-4 py-3 text-gray-700">{row.medicalCondition}</td>
                         <td className="px-4 py-3 text-gray-700">{formatDateTime(row.releaseDate)}</td>
                         <td className="px-4 py-3">
@@ -1348,7 +1343,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                               }}
                               className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
                             >
-                              <Info size={13} /> Info
+                              <Info size={13} /> View Details
                             </button>
                           </div>
                         </td>
@@ -1381,10 +1376,12 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                   <tr>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Request ID</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Patient</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Wig Model</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Medical Condition</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Release Date</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Status</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Release Flow</th>
-                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Info</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Details</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1396,6 +1393,8 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                     >
                       <td className="px-4 py-3 font-semibold text-gray-800">{row.requestId}</td>
                       <td className="px-4 py-3 text-gray-700">{row.patientName}</td>
+                      <td className="px-4 py-3 text-gray-700"><p className="font-medium text-gray-800">{row.specWigName}</p><p className="text-[11px] text-gray-500">{row.specCapSize}</p></td>
+                      <td className="px-4 py-3 text-gray-700">{row.medicalCondition}</td>
                       <td className="px-4 py-3 text-gray-700">{formatDateTime(row.releaseDate)}</td>
                       <td className="px-4 py-3">
                         <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(row.status)}`}>
@@ -1416,7 +1415,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                           }}
                           className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
                         >
-                          <Info size={13} /> Info
+                          <Info size={13} /> View Details
                         </button>
                       </td>
                     </tr>
@@ -1447,10 +1446,12 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                   <tr>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Request ID</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Patient</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Wig Model</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Medical Condition</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Release Date</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Status</th>
                     <th className="px-4 py-3 text-left font-semibold text-gray-700">Released At</th>
-                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Info</th>
+                    <th className="px-4 py-3 text-left font-semibold text-gray-700">Details</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1462,6 +1463,8 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                     >
                       <td className="px-4 py-3 font-semibold text-gray-800">{row.requestId}</td>
                       <td className="px-4 py-3 text-gray-700">{row.patientName}</td>
+                      <td className="px-4 py-3 text-gray-700"><p className="font-medium text-gray-800">{row.specWigName}</p><p className="text-[11px] text-gray-500">{row.specCapSize}</p></td>
+                      <td className="px-4 py-3 text-gray-700">{row.medicalCondition}</td>
                       <td className="px-4 py-3 text-gray-700">{formatDateTime(row.releaseDate)}</td>
                       <td className="px-4 py-3">
                         <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(row.status)}`}>
@@ -1478,7 +1481,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                           }}
                           className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
                         >
-                          <Info size={13} /> Info
+                          <Info size={13} /> View Details
                         </button>
                       </td>
                     </tr>
@@ -1491,7 +1494,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
       )}
 
       {selectedRow && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 z-[90] m-0 p-0">
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6">
           <button
             type="button"
             aria-label="Close release details panel"
@@ -1499,11 +1502,8 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
             onClick={() => setSelectedRow(null)}
           />
 
-          <aside
-            className="absolute right-0 top-0 h-full w-full max-w-3xl overflow-y-auto border-l border-slate-200 bg-white shadow-2xl"
-            style={{ animation: 'hospitalReleasePanelSlideIn 0.25s ease-out' }}
-          >
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
+          <section className="relative flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="z-10 flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
               <div>
                 <h3 className="text-lg font-semibold text-slate-900">Release Review Details</h3>
                 <p className="mt-0.5 text-xs text-slate-500">
@@ -1515,7 +1515,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
               </button>
             </div>
 
-            <div className="space-y-4 p-5">
+            <div className="space-y-4 overflow-y-auto bg-slate-100 p-5">
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                 <p><span className="font-semibold text-slate-900">H-Representative:</span> {hospitalName || `H-Representative #${hospitalId}`}</p>
                 <p className="mt-1"><span className="font-semibold text-slate-900">Patient:</span> {selectedRow.patientName}</p>
@@ -1551,9 +1551,15 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                     <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-700 sm:grid-cols-2">
                       <p><span className="font-semibold text-slate-900">Wig Code:</span> {selectedRow.allocatedWigCode}</p>
                       <p><span className="font-semibold text-slate-900">Wig Name:</span> {selectedRow.allocatedWigName}</p>
-                      <p><span className="font-semibold text-slate-900">Wig Status:</span> {selectedRow.allocatedWigStatus}</p>
-                      <p><span className="font-semibold text-slate-900">Total Donated Hair:</span> {selectedRow.allocatedWigTotalDonatedHairs}</p>
-                      <p><span className="font-semibold text-slate-900">Bundles Used:</span> {selectedRow.allocatedWigTotalBundlesUsed}</p>
+                      <p><span className="font-semibold text-slate-900">Handover Status:</span> {selectedRow.statusLabel}</p>
+                      <p><span className="font-semibold text-slate-900">Inventory Availability:</span> {selectedRow.allocatedWigStatus}</p>
+                      <p><span className="font-semibold text-slate-900">Source:</span> {selectedRow.allocatedWigBundleId ? `Produced from Bundle #${selectedRow.allocatedWigBundleId}` : 'Direct wig inventory'}</p>
+                      {selectedRow.allocatedWigBundleId ? (
+                        <>
+                          <p><span className="font-semibold text-slate-900">Donated Hair Used:</span> {selectedRow.allocatedWigTotalDonatedHairs}</p>
+                          <p><span className="font-semibold text-slate-900">Bundles Used:</span> {selectedRow.allocatedWigTotalBundlesUsed}</p>
+                        </>
+                      ) : null}
                       <p><span className="font-semibold text-slate-900">Style:</span> {selectedRow.allocatedWigStyle}</p>
                       <p><span className="font-semibold text-slate-900">Color:</span> {selectedRow.allocatedWigColor}</p>
                       <p><span className="font-semibold text-slate-900">Length:</span> {selectedRow.allocatedWigLength}</p>
@@ -1562,31 +1568,37 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                       <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedRow.allocatedWigCapSize}</p>
                     </div>
 
-                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
-                      {[
+                    {[
                         { key: 'front', label: 'Front View', url: selectedRow.allocatedWigFrontImageUrl },
                         { key: 'side', label: 'Side View', url: selectedRow.allocatedWigSideImageUrl },
                         { key: 'top', label: 'Top View', url: selectedRow.allocatedWigTopImageUrl },
                         { key: 'back', label: 'Back View', url: selectedRow.allocatedWigBackImageUrl },
-                      ].map((image) => (
+                      ].some((image) => Boolean(image.url)) ? (
+                        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                          {[
+                            { key: 'front', label: 'Front View', url: selectedRow.allocatedWigFrontImageUrl },
+                            { key: 'side', label: 'Side View', url: selectedRow.allocatedWigSideImageUrl },
+                            { key: 'top', label: 'Top View', url: selectedRow.allocatedWigTopImageUrl },
+                            { key: 'back', label: 'Back View', url: selectedRow.allocatedWigBackImageUrl },
+                          ].filter((image) => Boolean(image.url)).map((image) => (
                         <div key={image.key} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                           <p className="mb-2 text-xs font-semibold text-slate-600">{image.label}</p>
-                          {image.url ? (
-                            <a href={image.url} target="_blank" rel="noreferrer">
-                              <img
-                                src={image.url}
-                                alt={`${image.label} for ${selectedRow.allocatedWigCode}`}
-                                className="h-40 w-full rounded-md border border-slate-200 object-cover"
-                              />
-                            </a>
-                          ) : (
-                            <div className="flex h-40 w-full items-center justify-center rounded-md border border-dashed border-slate-300 bg-white text-xs text-slate-500">
-                              No image uploaded
-                            </div>
-                          )}
+                          <a href={image.url} target="_blank" rel="noreferrer">
+                            <img
+                              src={image.url}
+                              alt={`${image.label} for ${selectedRow.allocatedWigCode}`}
+                              className="h-48 w-full rounded-md border border-slate-200 object-cover"
+                            />
+                          </a>
                         </div>
-                      ))}
-                    </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center">
+                          <p className="text-sm font-semibold text-slate-700">No completed wig photos were uploaded</p>
+                          <p className="mt-1 text-xs text-slate-500">The release may continue, but the specialist should add production photos for a complete record.</p>
+                        </div>
+                      )}
                   </>
                 ) : (
                   <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
@@ -1679,7 +1691,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
                 </div>
               )}
             </div>
-          </aside>
+          </section>
         </div>,
         document.body,
       )}

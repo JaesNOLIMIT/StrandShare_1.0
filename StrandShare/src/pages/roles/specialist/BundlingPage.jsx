@@ -1009,7 +1009,7 @@ export default function BundlingPage() {
           : `Scan ${BUNDLE_HAIR_COUNT_TARGET_MIN - memberCount} more eligible hair${BUNDLE_HAIR_COUNT_TARGET_MIN - memberCount === 1 ? '' : 's'} to unlock closing`,
         statusChanges: [
           { label: 'Bundle assignment', before: 'None', after: `Draft #${bundleId}` },
-          { label: 'Hair submission', before: 'Cut', after: 'Cut' },
+          { label: 'Hair submission', before: payload?.submission?.From_Event === false ? 'Available' : 'Cut', after: payload?.submission?.From_Event === false ? 'Available' : 'Cut' },
           { label: 'Cut inventory', before: 'Cut / Available', after: 'Bundling' },
         ],
       });
@@ -1681,11 +1681,11 @@ export default function BundlingPage() {
                       <p className="font-mono text-xs font-bold text-slate-900">{requestRow.Request_Code || `WR-${requestRow.Req_ID}`}</p>
                       <p className="mt-1 text-sm font-semibold text-slate-900">{specification.wigName || `Wig #${requestRow.Requested_Wig_ID}`}</p>
                       <p className="mt-0.5 text-xs text-slate-600">
-                        {requestRow.patientCode} Â· Cap {requestRow.Requested_Cap_Size || specification.capSize || 'N/A'}
+                        {requestRow.patientCode} | Cap {requestRow.Requested_Cap_Size || specification.capSize || 'N/A'}
                       </p>
                       <p className="mt-1 text-[11px] text-slate-500">
                         {specification.style || specification.hairTexture || 'Style N/A'}
-                        {requestRow.medicalCondition ? ` Â· ${requestRow.medicalCondition}` : ''}
+                        {requestRow.medicalCondition ? ` | ${requestRow.medicalCondition}` : ''}
                       </p>
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1.5">

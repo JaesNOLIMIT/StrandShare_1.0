@@ -98,10 +98,10 @@ function statusKey(value) {
 
 function statusBadgeStyle(value, primaryColor, tertiaryColor) {
   const key = statusKey(value);
-  if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase() || key.includes('approved')) {
+  if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase() || key === HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase() || key.includes('approved')) {
     return { backgroundColor: withColorAlpha(tertiaryColor, 0.16), color: tertiaryColor, borderColor: withColorAlpha(tertiaryColor, 0.4) };
   }
-  if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase() || key.includes('rejected')) {
+  if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase() || key === 'rejected' || key.includes('rejected')) {
     return { backgroundColor: '#fef2f2', color: '#b91c1c', borderColor: '#fecaca' };
   }
   if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) {
@@ -122,7 +122,9 @@ function statusBadgeStyle(value, primaryColor, tertiaryColor) {
 function actionLabelFor(submission) {
   const key = statusKey(submission.Status);
   if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()) return 'Approved / Cut';
-  if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) return 'Rejected / Cancelled';
+  if (key === HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase()) return 'Approved / Available';
+  if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) return 'Cancelled';
+  if (key === 'rejected') return 'Rejected';
   if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) return 'Pending Quality Check';
   return submission.Status || 'Updated';
 }
@@ -291,11 +293,11 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
       if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) {
         pendingQa += 1;
       }
-      if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()) {
+      if ([HAIR_SUBMISSION_STATUS.CUT.toLowerCase(), HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase()].includes(key)) {
         approvedTotal += 1;
         if (isSameDay(updated, todayAnchor)) approvedToday += 1;
       }
-      if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) {
+      if (key === 'rejected') {
         rejectedTotal += 1;
         if (isSameDay(updated, todayAnchor)) rejectedToday += 1;
       }
@@ -379,6 +381,8 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
       .filter((row) => [
         HAIR_SUBMISSION_STATUS.PENDING.toLowerCase(),
         HAIR_SUBMISSION_STATUS.CUT.toLowerCase(),
+        HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase(),
+        'rejected',
         HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase(),
         HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION.toLowerCase(),
         HAIR_SUBMISSION_STATUS.WIG_CREATED.toLowerCase(),
@@ -450,8 +454,8 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
       if (Number.isNaN(ts.getTime())) return;
       const bucket = buckets.find((b) => isSameDay(ts, b.anchor));
       if (!bucket) return;
-      if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()) bucket.approved += 1;
-      if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) bucket.rejected += 1;
+      if ([HAIR_SUBMISSION_STATUS.CUT.toLowerCase(), HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase()].includes(key)) bucket.approved += 1;
+      if (key === 'rejected') bucket.rejected += 1;
     });
 
     return buckets.map(({ label, approved, rejected }) => ({ label, Approved: approved, Rejected: rejected }));
@@ -460,14 +464,14 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
   const queueBreakdown = useMemo(() => {
     const data = [
       { name: 'Pending', value: 0, color: '#b45309' },
-      { name: 'Approved / Cut', value: 0, color: tertiaryColor },
-      { name: 'Rejected / Cancelled', value: 0, color: '#dc2626' },
+      { name: 'Approved / Available', value: 0, color: tertiaryColor },
+      { name: 'Rejected', value: 0, color: '#dc2626' },
     ];
     submissions.forEach((row) => {
       const key = statusKey(row.Status);
       if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) data[0].value += 1;
-      else if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()) data[1].value += 1;
-      else if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) data[2].value += 1;
+      else if ([HAIR_SUBMISSION_STATUS.CUT.toLowerCase(), HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase()].includes(key)) data[1].value += 1;
+      else if (key === 'rejected') data[2].value += 1;
     });
     return data.filter((d) => d.value > 0);
   }, [submissions, tertiaryColor]);

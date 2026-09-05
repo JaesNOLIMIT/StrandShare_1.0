@@ -121,7 +121,8 @@ const REPORT_TEMPLATES = [
     columns: [
       { key: 'code', label: 'Comparison' },
       { key: 'submission', label: 'Submission' },
-      { key: 'drive', label: 'Event' },
+      { key: 'source', label: 'Source Type' },
+      { key: 'drive', label: 'Event / Source' },
       { key: 'status', label: 'Final Decision' },
       { key: 'accuracy', label: 'AI Correct' },
       { key: 'humanChange', label: 'Human Changes' },
@@ -286,7 +287,7 @@ export default function GenerateReportsPage({ userProfile }) {
       const [submissionsRes, bundlesRes, wigsRes, inventoryRes, comparisonsRes, detailStatusesRes] = await Promise.all([
         supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Event_Attendee_ID, Event_Request_ID, Status, Created_At, Updated_At, Bundle_ID')
+          .select('Submission_ID, User_ID, Event_Attendee_ID, Event_Request_ID, Status, Created_At, Updated_At, Bundle_ID, From_Event')
           .order('Updated_At', { ascending: false })
           .limit(2000),
         supabase
@@ -439,7 +440,7 @@ export default function GenerateReportsPage({ userProfile }) {
     const options = Object.values(drivesById)
       .map((row) => ({ id: Number(row.Event_Request_ID), title: row.Event_Name || `Event #${row.Event_Request_ID}` }))
       .sort((a, b) => a.title.localeCompare(b.title));
-    return [{ id: 'all', title: 'All Events' }, ...options];
+    return [{ id: 'all', title: 'Events and non-events' }, { id: 'non-event', title: 'Non-events only' }, ...options];
   }, [drivesById]);
 
   const filteredRows = useMemo(() => {
@@ -532,13 +533,18 @@ export default function GenerateReportsPage({ userProfile }) {
     if (selectedTemplateId === 'ai_hair_accuracy') {
       return aiComparisons
         .filter((row) => {
+          const sourceSubmission = submissions.find((submission) => Number(submission.Submission_ID) === Number(row.Submission_ID));
+          const isNonEvent = sourceSubmission?.From_Event === false || !row.Event_Request_ID;
           if (!row.Is_AI_Source || !row.Reviewed_At) return false;
           if (statusFilter !== 'all' && statusKey(row.Final_Decision || 'pending') !== statusFilter) return false;
-          if (driveFilter !== 'all' && Number(row.Event_Request_ID || 0) !== Number(driveFilter)) return false;
+          if (driveFilter === 'non-event' && !isNonEvent) return false;
+          if (!['all', 'non-event'].includes(String(driveFilter)) && Number(row.Event_Request_ID || 0) !== Number(driveFilter)) return false;
           if ((dateFrom || dateTo) && !isWithinRange(row.Reviewed_At, dateFrom, dateTo)) return false;
           return true;
         })
         .map((row) => {
+          const sourceSubmission = submissions.find((submission) => Number(submission.Submission_ID) === Number(row.Submission_ID));
+          const isNonEvent = sourceSubmission?.From_Event === false || !row.Event_Request_ID;
           const critical = Array.isArray(row.Critical_Changed_Fields) ? row.Critical_Changed_Fields : [];
           const minor = Array.isArray(row.Minor_Changed_Fields) ? row.Minor_Changed_Fields : [];
           const changed = Array.isArray(row.Changed_Fields) ? row.Changed_Fields : [...critical, ...minor];
@@ -551,7 +557,8 @@ export default function GenerateReportsPage({ userProfile }) {
           return {
             code: `AI-${String(row.Comparison_ID).padStart(6, '0')}`,
             submission: `#${row.Submission_ID}`,
-            drive: drivesById[Number(row.Event_Request_ID)]?.Event_Name || `Event #${row.Event_Request_ID || 'N/A'}`,
+            source: isNonEvent ? 'Non-event' : 'Event',
+            drive: isNonEvent ? 'Non-event donation' : (drivesById[Number(row.Event_Request_ID)]?.Event_Name || `Event #${row.Event_Request_ID || 'N/A'}`),
             status: row.Final_Decision || 'Pending',
             accuracy: `${Number(aiPercent.toFixed(2))}%`,
             humanChange: `${Number(humanPercent.toFixed(2))}%`,
@@ -1122,9 +1129,9 @@ export default function GenerateReportsPage({ userProfile }) {
               ))}
             </select>
           </div>
-          {(selectedTemplateId === 'qa_decisions' || selectedTemplateId === 'donor_throughput') ? (
+          {(selectedTemplateId === 'qa_decisions' || selectedTemplateId === 'donor_throughput' || selectedTemplateId === 'ai_hair_accuracy') ? (
             <div>
-              <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>Event</label>
+              <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>{selectedTemplateId === 'ai_hair_accuracy' ? 'Donation source' : 'Event'}</label>
               <select
                 value={driveFilter}
                 onChange={(event) => setDriveFilter(event.target.value)}

@@ -611,7 +611,7 @@ export default function DashboardPage({ userProfile, onInitialDataReady }) {
   const recentUpdates = useMemo(() => {
     const requestEvents = requestRows.map((row) => ({
       time: row.updatedAt || row.requestDate,
-      title: `${row.requestId} Â· ${row.statusLabel}`,
+      title: `${row.requestId} | ${row.statusLabel}`,
       subtitle: row.patientName,
       source: 'Request Status',
     }));
@@ -625,7 +625,7 @@ export default function DashboardPage({ userProfile, onInitialDataReady }) {
 
         return {
           time: row.Updated_At || row.Created_At,
-          title: `${formatRequestCode(reqId)} Â· ${decisionKey ? decisionKey.replace(/_/g, ' ') : 'decision updated'}`,
+          title: `${formatRequestCode(reqId)} | ${decisionKey ? decisionKey.replace(/_/g, ' ') : 'decision updated'}`,
           subtitle: requestRow?.patientName || 'Release workflow activity',
           source: 'Release Approval',
         };
@@ -777,7 +777,7 @@ export default function DashboardPage({ userProfile, onInitialDataReady }) {
             ) : (
               pendingApprovals.map((row) => (
                 <li key={`pending-${row.reqId}`} className="rounded-lg border px-3 py-2" style={{ borderColor: hexToRgba(theme.secondaryColor, 0.25), backgroundColor: hexToRgba(theme.secondaryColor, 0.06) }}>
-                  <p className="text-xs font-semibold" style={{ color: theme.primaryTextColor }}>{row.requestId} Â· {row.patientName}</p>
+                  <p className="text-xs font-semibold" style={{ color: theme.primaryTextColor }}>{row.requestId} | {row.patientName}</p>
                   <p className="mt-0.5 text-[11px]" style={{ color: theme.secondaryTextColor }}>
                     Proposed release: {formatDateTime(row.releaseDate)}
                   </p>
@@ -812,7 +812,7 @@ export default function DashboardPage({ userProfile, onInitialDataReady }) {
                     </span>
                   </div>
                   <p className="mt-0.5 text-[11px]" style={{ color: theme.secondaryTextColor }}>
-                    {row.patientName} Â· {formatShortDate(row.releaseDate)}
+                    {row.patientName} | {formatShortDate(row.releaseDate)}
                   </p>
                 </li>
               ))
@@ -833,7 +833,7 @@ export default function DashboardPage({ userProfile, onInitialDataReady }) {
               recentUpdates.map((item) => (
                 <li key={`${item.time}-${item.title}`} className="rounded-lg border px-3 py-2" style={{ borderColor: hexToRgba(theme.tertiaryColor, 0.25), backgroundColor: hexToRgba(theme.tertiaryColor, 0.07) }}>
                   <p className="text-[10px] font-semibold uppercase" style={{ color: theme.secondaryTextColor }}>
-                    {formatDateTime(item.time)} Â· {item.source}
+                    {formatDateTime(item.time)} | {item.source}
                   </p>
                   <p className="mt-0.5 text-[11px] font-semibold" style={{ color: theme.primaryTextColor }}>{item.title}</p>
                   <p className="text-[11px]" style={{ color: theme.tertiaryTextColor }}>{item.subtitle}</p>

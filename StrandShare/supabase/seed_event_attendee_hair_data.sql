@@ -83,7 +83,7 @@ where submission."User_ID" = seed.expected_user_id
     where attendee."Event_Attendee_ID" = seed.event_attendee_id
       and attendee."Attendee_Type" = 'Donor'
       and public.normalize_flow_key(attendee."Registration_Status") = 'registered'
-      and public.normalize_flow_key(attendee."Attendance_Status") = 'present'
+      and public.normalize_flow_key(attendee."Attendance_Status") = 'Pending'
       and attendee."RSVP_Scanned_At" is not null
   )
   and not exists (

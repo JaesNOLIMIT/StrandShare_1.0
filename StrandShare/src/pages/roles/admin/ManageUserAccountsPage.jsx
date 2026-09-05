@@ -907,7 +907,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
                             day: 'numeric',
                             year: 'numeric',
                           })
-                        : 'â€”'}
+                        : '-'}
                     </td>
                     <td className="p-4 text-gray-600 text-sm">
                       <div className="flex items-center gap-2">

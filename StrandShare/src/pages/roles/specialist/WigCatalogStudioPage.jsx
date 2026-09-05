@@ -66,7 +66,7 @@ function StockAdjustmentModal({ state, setState, onClose, onSubmit }) {
   const nextStock = Number(row.stockCount || 0) + signedChange;
   return (
     <ModalFrame
-      title={`Adjust stock Â· ${row.wigCode || row.wigName}`}
+      title={`Adjust stock | ${row.wigCode || row.wigName}`}
       icon={<PackagePlus size={17} className="text-slate-700" />}
       onClose={state.saving ? undefined : onClose}
     >
@@ -158,7 +158,7 @@ function StockHistoryModal({ state, onClose }) {
   if (!state.open || !state.row) return null;
   return (
     <ModalFrame
-      title={`Stock history Â· ${state.row.wigCode || state.row.wigName}`}
+      title={`Stock history | ${state.row.wigCode || state.row.wigName}`}
       icon={<History size={17} className="text-slate-700" />}
       onClose={onClose}
       width="max-w-2xl"
@@ -193,7 +193,7 @@ function StockHistoryModal({ state, onClose }) {
                       {Number(item.Quantity_Change) > 0 ? '+' : ''}{item.Quantity_Change}
                     </td>
                     <td className="px-4 py-3 text-slate-700">
-                      {item.Previous_Stock} â†’ {item.New_Stock}
+                      {item.Previous_Stock} -> {item.New_Stock}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{item.Reason || 'Inventory adjustment'}</td>
                   </tr>

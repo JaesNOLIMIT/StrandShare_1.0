@@ -20,7 +20,6 @@ import WaybillScanResult from '../../../components/scanning/WaybillScanResult';
 import {
   HAIR_SUBMISSION_STATUS,
   WAYBILL_CODE_LENGTH,
-  buildWaybillCode,
   isValidWaybillCode,
   normalizeWaybillCodeInput,
   parseWaybillQrPayload,
@@ -29,18 +28,19 @@ import {
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
 const HAIR_SUBMISSION_IMAGES_TABLE = 'Hair_Submission_Images';
-const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
+const HAIR_SUBMISSION_LOGISTICS_TABLE = 'Hair_Submission_Logistics';
+const AI_SCREENINGS_TABLE = 'AI_Screenings';
 const USER_DETAILS_TABLE = 'user_details';
 const PROFILE_PICTURES_BUCKET = 'profile_pictures';
 const HAIR_SUBMISSIONS_BUCKET = 'hair-submissions';
 const SCAN_DEBOUNCE_MS = 2500;
 const QUALITY_SCAN_OUTCOMES = [
-  'Eligible non-event Cut hair: submission details load and await Approve or Reject.',
-  'Approved: hair remains Cut and becomes available for specialist Bundling.',
-  'Rejected: submission becomes Cancelled and is removed from the bundling workflow.',
+  'Received non-event hair: submission details load and await Approve or Reject.',
+  'Approved: the non-event submission becomes Available for specialist Bundling.',
+  'Rejected: the quality result is Rejected; it is not recorded as a donor cancellation.',
   'Already approved or rejected: the final locked result is shown without changing it.',
-  'Event waybill: redirected to Staff Assigned Event Operations; no specialist change is made.',
-  'Already bundled, cancelled, not Cut, unknown, or malformed waybill: scan is blocked with the exact reason.',
+  'Only Hair_Submissions.Waybill_Code is accepted on this page.',
+  'Not received, already bundled, cancelled, unknown, or malformed waybill: scan is blocked with the exact reason.',
 ];
 
 const EMPTY_DETAIL_DRAFT = Object.freeze({
@@ -59,7 +59,9 @@ const EMPTY_DETAIL_DRAFT = Object.freeze({
 const ACTIVE_STATUSES = [
   HAIR_SUBMISSION_STATUS.PENDING,
   HAIR_SUBMISSION_STATUS.CUT,
+  HAIR_SUBMISSION_STATUS.AVAILABLE,
   HAIR_SUBMISSION_STATUS.CANCELLED,
+  'Rejected',
 ];
 
 function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
@@ -85,7 +87,7 @@ function buildFullName(first, middle, last, suffix) {
 
 function statusBadgeStyle(status, primaryColor, tertiaryColor) {
   const key = String(status || '').toLowerCase().replace(/[_\s-]+/g, '');
-  if (key === 'cut' || key === 'approved') {
+  if (key === 'cut' || key === 'available' || key === 'approved') {
     return { backgroundColor: withColorAlpha(tertiaryColor, 0.16), color: tertiaryColor, borderColor: withColorAlpha(tertiaryColor, 0.4) };
   }
   if (key === 'cancelled' || key === 'rejected') {
@@ -97,10 +99,15 @@ function statusBadgeStyle(status, primaryColor, tertiaryColor) {
   return { backgroundColor: '#f1f5f9', color: '#475569', borderColor: '#cbd5e1' };
 }
 
-function deriveSubmissionLabel(submissionId) {
-  const id = Number(submissionId || 0);
-  if (!id) return '#N/A';
-  return buildWaybillCode({ submissionId: id }) || `#${id}`;
+function logisticsIsReceived(row) {
+  if (!row) return false;
+  const type = String(row.Logistics_Type || '').toLowerCase();
+  const dropoff = String(row.Dropoff_Status || '').toLowerCase().replace(/[_\s-]+/g, '');
+  const shipment = String(row.Shipment_Status || '').toLowerCase().replace(/[_\s-]+/g, '');
+  if (type.includes('walk-in') || type.includes('dropoff')) {
+    return dropoff === 'completed' && Boolean(row.Completed_At || row.Received_At);
+  }
+  return Boolean(row.Received_At) || ['received', 'completed', 'delivered'].includes(shipment);
 }
 
 function formatDateTime(value) {
@@ -129,12 +136,59 @@ function humanizeLabel(value) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+function normalizeComparisonValue(value) {
+  return String(value ?? '').trim().toLowerCase().replace(/[_\s-]+/g, '');
+}
+
+function calculateLiveAiAccuracy(screening, draft) {
+  if (!screening) return { comparable: 0, matched: 0, changed: [], aiPercent: 0, humanPercent: 0 };
+  const comparisons = [
+    ['length', screening.Estimated_Length, draft.declaredLength, (ai, human) => String(human ?? '').trim() !== '' && Number(ai) === Number(human)],
+    ['color', screening.Detected_Color, draft.declaredColor],
+    ['texture', screening.Detected_Texture, draft.declaredTexture],
+    ['density', screening.Detected_Density, draft.declaredDensity],
+    ['condition', screening.Detected_Condition, draft.declaredCondition],
+  ].filter(([, ai]) => ai != null && String(ai).trim() !== '');
+  const changed = comparisons.filter(([, ai, human, matcher]) => (
+    matcher ? !matcher(ai, human) : normalizeComparisonValue(ai) !== normalizeComparisonValue(human)
+  )).map(([field]) => field);
+  const comparable = comparisons.length;
+  const matched = comparable - changed.length;
+  const aiPercent = comparable ? (matched / comparable) * 100 : 0;
+  return { comparable, matched, changed, aiPercent, humanPercent: comparable ? 100 - aiPercent : 0 };
+}
+
+function draftFromAiScreening(screening) {
+  return {
+    ...EMPTY_DETAIL_DRAFT,
+    declaredLength: screening?.Estimated_Length == null ? '' : String(screening.Estimated_Length),
+    declaredColor: String(screening?.Detected_Color || ''),
+    declaredTexture: String(screening?.Detected_Texture || ''),
+    declaredDensity: String(screening?.Detected_Density || ''),
+    declaredCondition: String(screening?.Detected_Condition || ''),
+  };
+}
+
+function detailDraftWithAiFallback(detail, screening) {
+  if (!detail) return draftFromAiScreening(screening);
+  const saved = detailRowToDraft(detail);
+  const ai = draftFromAiScreening(screening);
+  return {
+    ...saved,
+    declaredLength: saved.declaredLength || ai.declaredLength,
+    declaredColor: saved.declaredColor || ai.declaredColor,
+    declaredTexture: saved.declaredTexture || ai.declaredTexture,
+    declaredDensity: saved.declaredDensity || ai.declaredDensity,
+    declaredCondition: saved.declaredCondition || ai.declaredCondition,
+  };
+}
+
 function formatAnswerValue(value) {
   if (value === null || value === undefined || value === '') return 'Not provided';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (Array.isArray(value)) return value.length ? value.map(formatAnswerValue).join(', ') : 'None';
   if (typeof value === 'object') return 'Recorded';
-  return humanizeLabel(value).replace(/(\d)\s+(\d)/g, '$1â€“$2');
+  return humanizeLabel(value).replace(/(\d)\s+(\d)/g, '$1-$2');
 }
 
 function splitLeadingJson(rawValue) {
@@ -418,7 +472,7 @@ export default function QualityCheckPage() {
     try {
       const submissionsResult = await supabase
         .from(HAIR_SUBMISSIONS_TABLE)
-        .select('Submission_ID, User_ID, Status, Created_At, Updated_At, Bundle_ID, From_Event, Donor_Notes')
+        .select('Submission_ID, User_ID, Status, Created_At, Updated_At, Bundle_ID, From_Event, Donor_Notes, Waybill_Code, AI_Screening_ID')
         .eq('From_Event', false)
         .in('Status', ACTIVE_STATUSES)
         .is('Bundle_ID', null)
@@ -433,6 +487,7 @@ export default function QualityCheckPage() {
 
       let usersByUserId = {};
       let detailsBySubmissionId = {};
+      let logisticsBySubmissionId = {};
       if (userIds.length) {
         const { data, error } = await supabase
           .from(USER_DETAILS_TABLE)
@@ -445,12 +500,17 @@ export default function QualityCheckPage() {
         }, {});
       }
       if (submissionIds.length) {
-        const { data, error } = await supabase
-          .from(HAIR_SUBMISSION_DETAILS_TABLE)
-          .select('Submission_ID, Status')
-          .in('Submission_ID', submissionIds);
-        if (error) throw error;
-        detailsBySubmissionId = (data || []).reduce((acc, row) => {
+        const [detailsResult, logisticsResult] = await Promise.all([
+          supabase.from(HAIR_SUBMISSION_DETAILS_TABLE).select('Submission_ID, Status').in('Submission_ID', submissionIds),
+          supabase.from(HAIR_SUBMISSION_LOGISTICS_TABLE).select('*').in('Submission_ID', submissionIds),
+        ]);
+        if (detailsResult.error) throw detailsResult.error;
+        if (logisticsResult.error) throw logisticsResult.error;
+        detailsBySubmissionId = (detailsResult.data || []).reduce((acc, row) => {
+          acc[Number(row.Submission_ID)] = row;
+          return acc;
+        }, {});
+        logisticsBySubmissionId = (logisticsResult.data || []).reduce((acc, row) => {
           acc[Number(row.Submission_ID)] = row;
           return acc;
         }, {});
@@ -460,14 +520,17 @@ export default function QualityCheckPage() {
         const userId = Number(row.User_ID || 0);
         const userDetails = usersByUserId[userId] || {};
         const qualityDetail = detailsBySubmissionId[Number(row.Submission_ID)] || {};
+        const logistics = logisticsBySubmissionId[Number(row.Submission_ID)] || null;
+        const isCancelled = String(row.Status || '').toLowerCase() === 'cancelled';
         return {
           submissionId: row.Submission_ID,
           userId,
           status: row.Status,
-          qualityStatus: String(row.Status || '').toLowerCase() === 'cancelled'
-            ? 'Rejected'
-            : (qualityDetail.Status || 'Pending'),
-          submissionCode: deriveSubmissionLabel(row.Submission_ID),
+          qualityStatus: isCancelled ? 'Cancelled' : (qualityDetail.Status || 'Pending'),
+          submissionCode: String(row.Waybill_Code || '').trim().toUpperCase() || `Submission #${row.Submission_ID}`,
+          logistics,
+          aiScreeningId: row.AI_Screening_ID,
+          isPhysicallyReceived: logisticsIsReceived(logistics),
           createdAt: row.Created_At,
           updatedAt: row.Updated_At,
           donorNotes: row.Donor_Notes || '',
@@ -476,17 +539,20 @@ export default function QualityCheckPage() {
         };
       });
 
-      setQueue(enriched);
+      const visibleQueue = enriched.filter((row) => (
+        row.isPhysicallyReceived || String(row.status || '').toLowerCase() === 'cancelled'
+      ));
+      setQueue(visibleQueue);
 
-      if (enriched.length && !enriched.some((r) => r.submissionId === activeSubmissionId)) {
-        setActiveSubmissionId(enriched[0].submissionId);
-      } else if (!enriched.length) {
+      if (visibleQueue.length && !visibleQueue.some((r) => r.submissionId === activeSubmissionId)) {
+        setActiveSubmissionId(visibleQueue[0].submissionId);
+      } else if (!visibleQueue.length) {
         setActiveSubmissionId(null);
         setActiveDetail(null);
       }
 
       const photoPaths = Array.from(new Set(
-        enriched.map((r) => r.donorPhotoPath).filter((path) => path && !imageUrlsByPath[path]),
+        visibleQueue.map((r) => r.donorPhotoPath).filter((path) => path && !imageUrlsByPath[path]),
       ));
       if (photoPaths.length) {
         const resolved = await Promise.all(
@@ -533,6 +599,22 @@ export default function QualityCheckPage() {
 
       if (detailsResult.error) throw detailsResult.error;
       const detailRows = detailsResult.data || [];
+      const submissionResult = await supabase
+        .from(HAIR_SUBMISSIONS_TABLE)
+        .select('AI_Screening_ID')
+        .eq('Submission_ID', submissionId)
+        .maybeSingle();
+      if (submissionResult.error) throw submissionResult.error;
+      let aiScreening = null;
+      if (submissionResult.data?.AI_Screening_ID) {
+        const aiResult = await supabase
+          .from(AI_SCREENINGS_TABLE)
+          .select('*')
+          .eq('AI_Screening_ID', submissionResult.data.AI_Screening_ID)
+          .maybeSingle();
+        if (aiResult.error) throw aiResult.error;
+        aiScreening = aiResult.data || null;
+      }
       const detailIds = detailRows.map((row) => Number(row.Submission_Detail_ID || 0)).filter(Boolean);
 
       let imagesByDetailId = {};
@@ -580,8 +662,9 @@ export default function QualityCheckPage() {
       setActiveDetail({
         details: detailRows,
         imagesByDetailId,
+        aiScreening,
       });
-      setDetailDraft(detailRowToDraft(detailRows[0]));
+      setDetailDraft(detailDraftWithAiFallback(detailRows[0], aiScreening));
     } catch (error) {
       setNotice({ kind: 'error', text: error?.message || 'Unable to load submission detail.' });
       setActiveDetail(null);
@@ -602,7 +685,7 @@ export default function QualityCheckPage() {
 
   useRealtimeRefresh({
     channelName: 'specialist-quality-check-live',
-    tables: [HAIR_SUBMISSIONS_TABLE, HAIR_SUBMISSION_DETAILS_TABLE, HAIR_SUBMISSION_IMAGES_TABLE],
+    tables: [HAIR_SUBMISSIONS_TABLE, HAIR_SUBMISSION_DETAILS_TABLE, HAIR_SUBMISSION_IMAGES_TABLE, HAIR_SUBMISSION_LOGISTICS_TABLE, AI_SCREENINGS_TABLE],
     onChange: () => {
       void loadQueue();
       if (activeSubmissionId) {
@@ -629,120 +712,64 @@ export default function QualityCheckPage() {
 
     try {
       const waybill = parseWaybillQrPayload(decodedText);
-      if (!waybill || (!waybill.submissionId && !waybill.waybillCode && !waybill.userId)) {
+      const compact = String(waybill?.waybillCode || decodedText || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!isValidWaybillCode(compact)) {
         setCameraStatus({ tone: 'error', message: 'Scan did not match a hair submission waybill.' });
-        setScanOutcome({ tone: 'error', title: 'Invalid waybill', action: 'No database change', status: 'Blocked', nextStep: 'Use an 8-character WB waybill or its QR code' });
+        setScanOutcome({ tone: 'error', title: 'Invalid waybill', action: 'No database change', status: 'Blocked', nextStep: 'Use the WB + 6-character code printed for this hair submission' });
         return;
       }
 
-      let lookup = null;
-      if (waybill.submissionId) {
-        lookup = await supabase
-          .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Status, From_Event, Bundle_ID')
-          .eq('Submission_ID', waybill.submissionId)
-          .maybeSingle();
-      } else if (waybill.waybillCode) {
-        const normalizedCode = String(waybill.waybillCode || '').trim().toUpperCase();
-        const compact = normalizedCode.replace(/[^A-Z0-9]/g, '');
-        if (/^WB[A-Z0-9]{6}$/.test(compact)) {
-          const attendeeLookup = await supabase
-            .from(EVENT_ATTENDEES_TABLE)
-            .select('Event_Attendee_ID')
-            .eq('Waybill_Code', compact)
-            .maybeSingle();
-          if (attendeeLookup.error) throw attendeeLookup.error;
-          if (attendeeLookup.data?.Event_Attendee_ID) {
-            setCameraStatus({
-              tone: 'warning',
-              message: `Waybill ${compact} belongs to an event donation. Use Assigned Event Operations.`,
-            });
-            setScanOutcome({
-              tone: 'warning', title: 'Event waybill detected', waybill: compact,
-              action: 'No specialist quality change', status: 'Use event workflow',
-              nextStep: 'Open Staff Assigned Event Operations',
-            });
-            return;
-          }
-
-          const decodedId = Number.parseInt(compact.slice(2), 36);
-          if (Number.isInteger(decodedId) && decodedId > 0) {
-            lookup = await supabase
-              .from(HAIR_SUBMISSIONS_TABLE)
-              .select('Submission_ID, User_ID, Status, From_Event, Bundle_ID')
-              .eq('Submission_ID', decodedId)
-              .maybeSingle();
-          }
-        }
-        if (!lookup) {
-          setCameraStatus({
-            tone: 'warning',
-            message: 'This QR contains only waybill code. Please scan QR with submission ID payload.',
-          });
-          return;
-        }
-      } else {
-        lookup = await supabase
-          .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Status, From_Event, Bundle_ID, Updated_At')
-          .eq('User_ID', waybill.userId)
-          .eq('From_Event', false)
-          .is('Bundle_ID', null)
-          .in('Status', [HAIR_SUBMISSION_STATUS.CUT, HAIR_SUBMISSION_STATUS.PENDING])
-          .order('Updated_At', { ascending: false })
-          .limit(2);
-      }
+      const lookup = await supabase
+        .from(HAIR_SUBMISSIONS_TABLE)
+        .select('Submission_ID, User_ID, Status, From_Event, Bundle_ID, Waybill_Code')
+        .eq('Waybill_Code', compact)
+        .maybeSingle();
 
       if (lookup?.error) throw lookup.error;
-      const submission = Array.isArray(lookup?.data)
-        ? (lookup.data.length === 1 ? lookup.data[0] : null)
-        : lookup?.data;
-
-      if (Array.isArray(lookup?.data) && lookup.data.length > 1) {
-        setCameraStatus({
-          tone: 'error',
-          message: `Multiple unbundled non-event submissions found for user #${waybill.userId}. Scan the exact waybill code.`,
-        });
-        return;
-      }
+      const submission = lookup?.data;
 
       if (!submission?.Submission_ID) {
-        setCameraStatus({ tone: 'error', message: `No non-event submission found for ${waybill.waybillCode || waybill.submissionId || `user #${waybill.userId}`}.` });
+        setCameraStatus({ tone: 'error', message: `No Hair_Submissions record uses waybill ${compact}.` });
         setScanOutcome({
-          tone: 'error', title: 'Submission not found', waybill: waybill.waybillCode,
+          tone: 'error', title: 'Submission not found', waybill: compact,
           action: 'No database change', status: 'Blocked', nextStep: 'Check the waybill and scan again',
         });
         return;
       }
 
       if (submission.From_Event !== false) {
-        const submissionLabel = deriveSubmissionLabel(submission.Submission_ID);
         setCameraStatus({
           tone: 'warning',
-          message: `Waybill ${submissionLabel} belongs to an event donation. Use Assigned Event Operations.`,
+          message: `Waybill ${compact} is not a non-event Hair_Submissions waybill.`,
         });
         setScanOutcome({
-          tone: 'warning', title: 'Event donation detected', waybill: submissionLabel,
+          tone: 'warning', title: 'Unsupported waybill', waybill: compact,
           action: 'No specialist quality change', status: 'Use event workflow', nextStep: 'Use Staff Assigned Event Operations',
         });
         return;
       }
 
       if (submission.Bundle_ID) {
-        const submissionLabel = deriveSubmissionLabel(submission.Submission_ID);
         setCameraStatus({
           tone: 'info',
-          message: `Waybill ${submissionLabel} is already assigned to a bundle.`,
+          message: `Waybill ${compact} is already assigned to a bundle.`,
         });
         setScanOutcome({
-          tone: 'info', title: 'Hair is already bundled', waybill: submissionLabel,
+          tone: 'info', title: 'Hair is already bundled', waybill: compact,
           action: 'Loaded current state only', status: 'Bundling', nextStep: 'Manage it from the Bundling page',
         });
         return;
       }
 
       const statusKey = String(submission.Status || '').toLowerCase().replace(/[_\s-]+/g, '');
-      const submissionLabel = deriveSubmissionLabel(submission.Submission_ID);
+      const submissionLabel = compact;
+      const logisticsResult = await supabase
+        .from(HAIR_SUBMISSION_LOGISTICS_TABLE)
+        .select('*')
+        .eq('Submission_ID', submission.Submission_ID)
+        .maybeSingle();
+      if (logisticsResult.error) throw logisticsResult.error;
+      const received = logisticsIsReceived(logisticsResult.data);
       const detailResult = await supabase
         .from(HAIR_SUBMISSION_DETAILS_TABLE)
         .select('Status')
@@ -757,7 +784,10 @@ export default function QualityCheckPage() {
           message: `Waybill ${submissionLabel} is Cancelled and cannot be bundled.`,
         });
         setScanOutcome({ tone: 'warning', title: 'Cancelled hair', waybill: submissionLabel, action: 'No database change', status: 'Cancelled', nextStep: 'No further processing allowed' });
-      } else if (statusKey === 'cut' && qualityStatusKey === 'pending') {
+      } else if (!received) {
+        setCameraStatus({ tone: 'warning', message: `Waybill ${submissionLabel} has not been received yet.` });
+        setScanOutcome({ tone: 'warning', title: 'Hair not received', waybill: submissionLabel, action: 'No database change', status: 'Awaiting arrival', nextStep: 'Complete receiving in Salon Schedule or courier receiving first' });
+      } else if (['pending', 'cut'].includes(statusKey) && qualityStatusKey === 'pending') {
         setCameraStatus({
           tone: 'info',
           message: `Waybill ${submissionLabel} loaded. Inspect the hair and choose Approve or Reject below.`,
@@ -775,12 +805,12 @@ export default function QualityCheckPage() {
           message: `Waybill ${submissionLabel} is Rejected and cannot be bundled.`,
         });
         setScanOutcome({ tone: 'warning', title: 'Quality review already complete', waybill: submissionLabel, action: 'Loaded locked result', status: 'Rejected', nextStep: 'No further processing allowed' });
-      } else if (statusKey !== 'cut') {
+      } else if (!['pending', 'cut'].includes(statusKey)) {
         setCameraStatus({
           tone: 'warning',
-          message: `Waybill ${submissionLabel} has not reached Cut status and cannot be quality reviewed yet.`,
+          message: `Waybill ${submissionLabel} is not awaiting specialist quality review.`,
         });
-        setScanOutcome({ tone: 'warning', title: 'Hair is not ready for quality review', waybill: submissionLabel, action: 'No database change', status: submission.Status || 'Not ready', nextStep: 'Wait until the submission reaches Cut' });
+        setScanOutcome({ tone: 'warning', title: 'Hair is not ready for quality review', waybill: submissionLabel, action: 'No database change', status: submission.Status || 'Not ready', nextStep: 'Staff must receive it in Salon Schedule first' });
       } else {
         setCameraStatus({
           tone: 'info',
@@ -789,8 +819,8 @@ export default function QualityCheckPage() {
         setScanOutcome({ tone: 'info', title: 'Current waybill state loaded', waybill: submissionLabel, action: 'Read-only lookup', status: submission.Status || 'Read-only', nextStep: 'No quality action is available' });
       }
 
-      setActiveSubmissionId(submission.Submission_ID);
       await loadQueue();
+      setActiveSubmissionId(submission.Submission_ID);
     } catch (error) {
       setCameraStatus({ tone: 'error', message: error?.message || 'Unable to load scanned waybill.' });
       setScanOutcome({ tone: 'error', title: 'Waybill could not be processed', action: 'No database change', status: 'Blocked', nextStep: error?.message || 'Try scanning again' });
@@ -923,7 +953,7 @@ export default function QualityCheckPage() {
     setIsProcessingAction(true);
     setNotice({ kind: '', text: '' });
     try {
-      const result = await supabase.rpc('specialist_review_non_event_hair_quality', {
+      const result = await supabase.rpc('specialist_review_non_event_hair_quality_v2', {
         p_submission_id: activeQueueRow.submissionId,
         p_decision: 'Approved',
         p_rejection_reason: null,
@@ -937,6 +967,7 @@ export default function QualityCheckPage() {
         setActiveDetail((prev) => ({
           details: updatedDetails,
           imagesByDetailId: prev?.imagesByDetailId || {},
+          aiScreening: prev?.aiScreening || null,
         }));
         setDetailDraft(detailRowToDraft(updatedDetails[0]));
       }
@@ -947,15 +978,15 @@ export default function QualityCheckPage() {
       });
       setScanOutcome({
         tone: 'success', title: 'Quality review approved', waybill: activeQueueRow.submissionCode,
-        subject: activeQueueRow.donorName, action: 'Saved final quality decision', status: 'Approved / Cut',
+        subject: activeQueueRow.donorName, action: 'Saved final quality decision', status: 'Approved / Available',
         nextStep: 'Hair is now available for Bundling',
         statusChanges: [
           { label: 'Quality detail', before: activeQualityStatus || 'Pending', after: 'Approved' },
-          { label: 'Hair submission', before: activeQueueRow.status || 'Cut', after: 'Cut' },
+          { label: 'Hair submission', before: activeQueueRow.status || 'Pending', after: 'Available' },
           { label: 'Cut inventory', before: 'Not available', after: 'Cut / Available' },
         ],
       });
-      setNotice({ kind: 'success', text: 'Quality review approved. The existing Cut status was not changed.' });
+      setNotice({ kind: 'success', text: 'Quality review approved. The non-event hair is now Available for bundling.' });
       await loadQueue();
       await loadDetail(activeQueueRow.submissionId);
     } catch (error) {
@@ -976,7 +1007,7 @@ export default function QualityCheckPage() {
     setIsProcessingAction(true);
     setNotice({ kind: '', text: '' });
     try {
-      const result = await supabase.rpc('specialist_review_non_event_hair_quality', {
+      const result = await supabase.rpc('specialist_review_non_event_hair_quality_v2', {
         p_submission_id: activeQueueRow.submissionId,
         p_decision: 'Rejected',
         p_rejection_reason: reason,
@@ -990,6 +1021,7 @@ export default function QualityCheckPage() {
         setActiveDetail((prev) => ({
           details: updatedDetails,
           imagesByDetailId: prev?.imagesByDetailId || {},
+          aiScreening: prev?.aiScreening || null,
         }));
         setDetailDraft(detailRowToDraft(updatedDetails[0]));
       }
@@ -1000,15 +1032,15 @@ export default function QualityCheckPage() {
       });
       setScanOutcome({
         tone: 'warning', title: 'Quality review rejected', waybill: activeQueueRow.submissionCode,
-        subject: activeQueueRow.donorName, action: 'Saved final quality decision', status: 'Rejected / Cancelled',
+        subject: activeQueueRow.donorName, action: 'Saved final quality decision', status: 'Rejected',
         nextStep: 'No further bundling or production is allowed',
         statusChanges: [
           { label: 'Quality detail', before: activeQualityStatus || 'Pending', after: 'Rejected' },
-          { label: 'Hair submission', before: activeQueueRow.status || 'Cut', after: 'Cancelled' },
+          { label: 'Hair submission', before: activeQueueRow.status || 'Pending', after: activeQueueRow.status || 'Pending' },
           { label: 'Cut inventory', before: 'Not available', after: 'Not available' },
         ],
       });
-      setNotice({ kind: 'success', text: 'Quality review rejected. This Cut hair is no longer eligible for Bundling.' });
+      setNotice({ kind: 'success', text: 'Quality review rejected. The submission is marked Rejected and cannot enter Bundling.' });
       setShowRejectionInput(false);
       setRejectionReason('');
       await loadQueue();
@@ -1053,12 +1085,13 @@ export default function QualityCheckPage() {
   };
 
   const queueByStatus = useMemo(() => {
-    const groups = { Pending: [], Approved: [], Rejected: [] };
+    const groups = { Pending: [], Approved: [], Rejected: [], Cancelled: [] };
     queue.forEach((row) => {
       const key = String(row.qualityStatus || '').toLowerCase().replace(/[_\s-]+/g, '');
-      if (key === 'pending') groups.Pending.push(row);
+      if (key === 'pending' && row.isPhysicallyReceived) groups.Pending.push(row);
       else if (key === 'approved') groups.Approved.push(row);
       else if (key === 'rejected') groups.Rejected.push(row);
+      else if (key === 'cancelled') groups.Cancelled.push(row);
     });
     return groups;
   }, [queue]);
@@ -1079,9 +1112,13 @@ export default function QualityCheckPage() {
   const activeImages = Object.values(activeDetail?.imagesByDetailId || {}).flat();
   const activeDetailRow = activeDetail?.details?.[0] || null;
   const activeStatusKey = String(activeQueueRow?.status || '').toLowerCase().replace(/[_\s-]+/g, '');
-  const activeQualityStatus = activeDetailRow?.Status || activeQueueRow?.qualityStatus || 'Pending';
+  const activeQualityStatus = activeStatusKey === 'cancelled'
+    ? 'Cancelled'
+    : (activeDetailRow?.Status || activeQueueRow?.qualityStatus || 'Pending');
   const activeQualityStatusKey = String(activeQualityStatus).toLowerCase().replace(/[_\s-]+/g, '');
-  const canDecide = activeStatusKey === 'cut' && activeQualityStatusKey === 'pending';
+  const canDecide = activeQueueRow?.isPhysicallyReceived && ['pending', 'cut'].includes(activeStatusKey) && activeQualityStatusKey === 'pending';
+  const activeAiScreening = activeDetail?.aiScreening || null;
+  const liveAiAccuracy = calculateLiveAiAccuracy(activeAiScreening, detailDraft);
 
   return (
     <div className="min-w-0 space-y-6 overflow-x-hidden" style={rootStyle}>
@@ -1089,14 +1126,14 @@ export default function QualityCheckPage() {
         <div>
           <h1 className="role-page-title text-2xl font-bold" style={headingStyle}>Hair Quality Check</h1>
           <p className="text-sm" style={{ color: secondaryTextColor }}>
-            Scan a waybill, compare the received hair with the submitted details, then approve or reject.
+            Scan the exact Hair Submissions waybill. Only physically received hair can be reviewed.
           </p>
         </div>
         <PageHeaderActions
           onRefresh={() => loadQueue()}
           refreshLoading={isLoadingQueue}
           helpTitle="About Hair Quality Check"
-          helpContent={<p>Scan a donor waybill, compare the physical hair with the submitted details, and record the final quality decision.</p>}
+          helpContent={<p>This page accepts only Hair_Submissions.Waybill_Code. Walk-in hair must be completed in Salon Schedule and courier hair must be received before quality review.</p>}
         />
       </header>
 
@@ -1332,7 +1369,7 @@ export default function QualityCheckPage() {
                     <p className="mb-4 mt-0.5 text-xs" style={{ color: secondaryTextColor }}>
                       {canDecide
                         ? 'Correct any donor-declared values. Changes save when you approve or reject.'
-                        : 'This review is complete â€” inspection details are read-only.'}
+                        : 'This review is complete - inspection details are read-only.'}
                     </p>
 
                     {!activeDetailRow ? (
@@ -1449,6 +1486,53 @@ export default function QualityCheckPage() {
                       </div>
                     ) : null}
                   </section>
+
+                  <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-900">Original AI Screening vs Human Inspection</h3>
+                        <p className="mt-0.5 text-xs text-slate-500">Changing any comparable human field immediately updates the percentages below.</p>
+                      </div>
+                      {activeAiScreening && liveAiAccuracy.comparable > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                            AI correct {Number(liveAiAccuracy.aiPercent.toFixed(1))}%
+                          </span>
+                          <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
+                            Human changes {Number(liveAiAccuracy.humanPercent.toFixed(1))}%
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+                    {!activeAiScreening ? (
+                      <p className="m-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">No AI screening is linked to this submission. Human quality review is still available, but AI accuracy cannot be calculated.</p>
+                    ) : (
+                      <div className="p-4">
+                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                          {[
+                            ['Length', `${activeAiScreening.Estimated_Length ?? 'N/A'} in`, detailDraft.declaredLength ? `${detailDraft.declaredLength} in` : 'Not provided', 'length'],
+                            ['Color', activeAiScreening.Detected_Color, detailDraft.declaredColor || 'Not provided', 'color'],
+                            ['Texture', activeAiScreening.Detected_Texture, detailDraft.declaredTexture || 'Not provided', 'texture'],
+                            ['Density', activeAiScreening.Detected_Density, detailDraft.declaredDensity || 'Not provided', 'density'],
+                            ['Condition', activeAiScreening.Detected_Condition, detailDraft.declaredCondition || 'Not provided', 'condition'],
+                          ].map(([label, aiValue, humanValue, field]) => {
+                            const changed = liveAiAccuracy.changed.includes(field);
+                            return (
+                              <div key={field} className={`rounded-lg border p-3 ${changed ? 'border-amber-300 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+                                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+                                <p className="mt-2 text-[10px] font-semibold uppercase text-slate-400">AI</p>
+                                <p className="truncate text-xs font-semibold text-slate-900" title={String(aiValue || '')}>{aiValue || 'Not provided'}</p>
+                                <p className="mt-2 text-[10px] font-semibold uppercase text-slate-400">Human</p>
+                                <p className="truncate text-xs font-semibold text-slate-900" title={String(humanValue)}>{humanValue}</p>
+                                <p className={`mt-2 text-[10px] font-bold ${changed ? 'text-amber-700' : 'text-emerald-700'}`}>{changed ? 'Changed by human' : 'Matches AI'}</p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {liveAiAccuracy.changed.length ? <p className="mt-3 text-xs text-amber-700">Changed fields: {liveAiAccuracy.changed.join(', ')}</p> : null}
+                      </div>
+                    )}
+                  </section>
                 </>
               )}
 
@@ -1521,9 +1605,9 @@ export default function QualityCheckPage() {
       <div className="overflow-hidden rounded-2xl border bg-white shadow-sm" style={{ borderColor: '#e2e8f0' }}>
         <div className="flex items-center justify-between gap-2 border-b px-5 py-4" style={{ borderColor: '#e2e8f0' }}>
           <div>
-            <h2 className="text-lg font-semibold" style={headingStyle}>Non-event submission queue</h2>
+            <h2 className="text-lg font-semibold" style={headingStyle}>Received hair review queue</h2>
             <p className="mt-0.5 text-xs" style={{ color: secondaryTextColor }}>
-              Select any unbundled submission to inspect its saved review.
+              Clear groups separate work awaiting review from final quality decisions and cancellations.
             </p>
           </div>
           <span className="text-xs" style={{ color: tertiaryTextColor }}>{queue.length} non-event submissions</span>
@@ -1612,8 +1696,8 @@ export default function QualityCheckPage() {
                 <p className="mt-1 text-sm leading-6 text-slate-600">
                   Waybill <span className="font-mono font-semibold text-slate-800">{decisionConfirmation.submissionCode}</span>
                   {decisionConfirmation.decision === 'Approved'
-                    ? ' will have its quality result marked Approved. Its existing Cut status will stay unchanged, and it will become eligible for Bundling.'
-                    : ' will have its quality result marked Rejected. Its existing Cut status will stay unchanged, but it cannot be scanned or added during Bundling.'}
+                    ? ' will be marked Approved and its non-event submission status will become Available for Bundling.'
+                    : ' will be marked Rejected. It will not be treated as Cancelled and cannot enter Bundling.'}
                 </p>
               </div>
             </div>

@@ -1044,7 +1044,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[11px] font-semibold" style={{ color: palette.heading }}>{row.Event_Name || 'Untitled Event'}</span>
                       <span className="block truncate text-[10px]" style={{ color: palette.bodyText }}>
-                        ER-{row.Event_Request_ID} Â· {applicantName(row.application)}
+                        ER-{row.Event_Request_ID} | {applicantName(row.application)}
                       </span>
                     </span>
                     <span className="flex-none text-[10px] font-semibold" style={{ color: palette.bodyText }}>{formatShortDate(row.Created_At)}</span>
