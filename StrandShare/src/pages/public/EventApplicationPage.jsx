@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowLeft, CalendarDays, Camera, CheckCircle2, ChevronLeft, ChevronRight, Loader2, MailCheck, Ruler, Search, ShieldCheck, Upload, Users, X } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import maplibregl from 'maplibre-gl';
@@ -927,6 +928,7 @@ export default function EventApplicationPage() {
   const fieldRefs = useRef({});
   const programDateAvailabilityChannelRef = useRef(null);
   const idPreviewRefreshSessionRef = useRef('');
+  const submitConfirmationScrollRef = useRef(null);
 
   const incomingTransition = (() => {
     try {
@@ -941,6 +943,16 @@ export default function EventApplicationPage() {
       try { sessionStorage.removeItem('Donivra:incoming-transition'); } catch { /* ignore */ }
     }
   }, [incomingTransition]);
+
+  useEffect(() => {
+    if (!isSubmitConfirmationOpen) return undefined;
+    submitConfirmationScrollRef.current?.scrollTo({ top: 0 });
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isSubmitConfirmationOpen]);
 
   useEffect(() => {
     let isCurrent = true;
@@ -3284,7 +3296,7 @@ export default function EventApplicationPage() {
         </form>
       </div>
 
-      {isSubmitConfirmationOpen && (
+      {isSubmitConfirmationOpen && createPortal((
         <div
           className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 p-4"
           role="presentation"
@@ -3298,7 +3310,8 @@ export default function EventApplicationPage() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="submit-confirmation-title"
-            className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            className="flex h-[min(90vh,860px)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            style={{ backgroundColor: '#ffffff' }}
           >
             <div className="flex flex-none items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
               <div className="flex items-start gap-3">
@@ -3328,7 +3341,7 @@ export default function EventApplicationPage() {
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+            <div ref={submitConfirmationScrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain bg-white px-5 py-4 sm:px-6">
               <ConfirmationSection title="Applicant and verification">
                 <ConfirmationItem
                   label="Full name"
@@ -3399,68 +3412,68 @@ export default function EventApplicationPage() {
                 />
               </ConfirmationSection>
 
-              <ConfirmationSection title="Submitted images">
-                <ConfirmationItem
-                  label="Government ID"
-                  value={verifiedIdPreviewUrl ? 'Verified ID image attached' : 'Refreshing secure preview may be required'}
-                />
-                <ConfirmationItem
-                  label="Program place photo"
-                  value={eventPlacePhotoFile?.name || 'Selected place photo'}
-                />
-                <ConfirmationItem
-                  label="Program poster photo"
-                  value={eventPosterPhotoFile?.name || 'Not provided'}
-                />
-                {eventPlacePhotoPreviewUrl && (
-                  <div>
-                    <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Place photo preview</p>
-                    <img
-                      src={eventPlacePhotoPreviewUrl}
-                      alt="Submitted program place"
-                      className="h-40 w-full rounded-lg border border-slate-200 bg-white object-contain"
-                    />
-                  </div>
-                )}
-                {verifiedIdPreviewUrl && (
-                  <div className="md:col-span-2">
-                    <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Government ID preview</p>
-                    <img
-                      src={verifiedIdPreviewUrl}
-                      alt="Verified submitted government ID"
-                      onError={() => setVerifiedIdPreviewUrl('')}
-                      className="max-h-72 w-full rounded-lg border border-slate-200 bg-white object-contain"
-                    />
-                  </div>
-                )}
-                {!verifiedIdPreviewUrl && (
-                  <div className="md:col-span-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
-                    <p className="text-xs text-amber-900">The verified ID image has not loaded yet.</p>
-                    <button
-                      type="button"
-                      onClick={() => checkDiditStatus()}
-                      disabled={isCheckingDiditStatus}
-                      className="mt-2 inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
-                    >
-                      {isCheckingDiditStatus && <Loader2 size={13} className="animate-spin" />}
-                      Refresh ID preview
-                    </button>
-                  </div>
-                )}
-                {eventPosterPhotoPreviewUrl && (
-                  <div>
-                    <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Poster photo preview</p>
-                    <img
-                      src={eventPosterPhotoPreviewUrl}
-                      alt="Submitted program poster"
-                      className="h-40 w-full rounded-lg border border-slate-200 bg-white object-contain"
-                    />
-                  </div>
-                )}
-              </ConfirmationSection>
+              <section className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="mb-3">
+                  <h3 className="text-xs font-bold uppercase tracking-[0.14em] text-slate-700">Submitted images</h3>
+                  <p className="mt-1 text-xs text-slate-500">Check that each image is clear and belongs to this application.</p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <article className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                    <div className="border-b border-slate-100 px-3 py-2.5">
+                      <p className="text-xs font-bold text-slate-800">Government ID</p>
+                      <p className="mt-0.5 truncate text-[11px] text-slate-500">Secure verified identity image</p>
+                    </div>
+                    {verifiedIdPreviewUrl ? (
+                      <img
+                        src={verifiedIdPreviewUrl}
+                        alt="Verified government ID"
+                        onError={() => setVerifiedIdPreviewUrl('')}
+                        className="h-44 w-full bg-slate-100 object-contain"
+                      />
+                    ) : (
+                      <div className="flex h-44 flex-col items-center justify-center gap-2 bg-amber-50 px-4 text-center">
+                        <p className="text-xs font-semibold text-amber-900">Secure preview is not available yet.</p>
+                        <button
+                          type="button"
+                          onClick={() => checkDiditStatus()}
+                          disabled={isCheckingDiditStatus}
+                          className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+                        >
+                          {isCheckingDiditStatus && <Loader2 size={13} className="animate-spin" />}
+                          Refresh preview
+                        </button>
+                      </div>
+                    )}
+                  </article>
+
+                  <article className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                    <div className="border-b border-slate-100 px-3 py-2.5">
+                      <p className="text-xs font-bold text-slate-800">Venue photo</p>
+                      <p className="mt-0.5 truncate text-[11px] text-slate-500" title={eventPlacePhotoFile?.name}>{eventPlacePhotoFile?.name || 'Selected venue photo'}</p>
+                    </div>
+                    {eventPlacePhotoPreviewUrl ? (
+                      <img src={eventPlacePhotoPreviewUrl} alt="Program venue" className="h-44 w-full bg-slate-100 object-contain" />
+                    ) : (
+                      <div className="flex h-44 items-center justify-center bg-slate-100 px-4 text-center text-xs text-slate-500">Preview unavailable</div>
+                    )}
+                  </article>
+
+                  <article className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                    <div className="border-b border-slate-100 px-3 py-2.5">
+                      <p className="text-xs font-bold text-slate-800">Program poster</p>
+                      <p className="mt-0.5 truncate text-[11px] text-slate-500" title={eventPosterPhotoFile?.name}>{eventPosterPhotoFile?.name || 'Optional poster not provided'}</p>
+                    </div>
+                    {eventPosterPhotoPreviewUrl ? (
+                      <img src={eventPosterPhotoPreviewUrl} alt="Program poster" className="h-44 w-full bg-slate-100 object-contain" />
+                    ) : (
+                      <div className="flex h-44 items-center justify-center bg-slate-100 px-4 text-center text-xs text-slate-500">No poster attached</div>
+                    )}
+                  </article>
+                </div>
+              </section>
 
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-900">
-                No application has been created yet. Click <strong>Confirm &amp; Submit Program Application</strong> below only after checking every detail.
+                Nothing has been submitted yet. Review the information above, then submit the application when everything is correct.
               </div>
             </div>
 
@@ -3471,7 +3484,7 @@ export default function EventApplicationPage() {
                 disabled={isSubmitting}
                 className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
               >
-                Go Back
+                Back to edit
               </button>
               <button
                 type="button"
@@ -3481,12 +3494,12 @@ export default function EventApplicationPage() {
                 style={{ backgroundColor: primaryColor }}
               >
                 {isSubmitting && <Loader2 size={15} className="animate-spin" />}
-                {isSubmitting ? 'Submitting...' : 'Confirm & Submit Program Application'}
+                {isSubmitting ? 'Submitting...' : 'Submit application'}
               </button>
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
 
       {isDiditModalOpen && diditSession?.verificationUrl && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-2 md:p-5">

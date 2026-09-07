@@ -32,6 +32,8 @@ const REQUEST_STATUS = {
   toBeRelease: 'To Be Release',
   releasing: 'Releasing',
   released: 'Released',
+  appealed: 'Concern Reported',
+  returnedCompleted: 'Returned - Completed',
   rejected: 'Rejected',
   cancelled: 'Cancelled',
 };
@@ -46,11 +48,13 @@ const STATUS_FILTERS = [
   { id: 'to_be_release', label: 'To Be Release' },
   { id: 'releasing', label: 'Releasing' },
   { id: 'released', label: 'Released' },
+  { id: 'appealed', label: 'Concern Reported' },
+  { id: 'returned_completed', label: 'Returned - Completed' },
   { id: 'rejected', label: 'Rejected' },
   { id: 'cancelled', label: 'Cancelled' },
 ];
 
-const ACTIVE_REQUEST_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_in_production', 'ready_for_pickup', 'to_be_release', 'releasing'];
+const ACTIVE_REQUEST_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_in_production', 'ready_for_pickup', 'to_be_release', 'releasing', 'appealed'];
 
 const ACTION_DEFINITIONS = {
   accept_allocated: {
@@ -157,6 +161,14 @@ function getCanonicalStatusKey(statusValue) {
     return 'released';
   }
 
+  if (['appealed', 'appeal', 'underappeal'].includes(key)) {
+    return 'appealed';
+  }
+
+  if (['returnedcompleted', 'returnedclosed'].includes(key)) {
+    return 'returned_completed';
+  }
+
   if (['rejected', 'declined', 'denied'].includes(key)) {
     return 'rejected';
   }
@@ -181,6 +193,8 @@ function getStatusLabel(statusValue) {
   if (key === 'to_be_release') return REQUEST_STATUS.toBeRelease;
   if (key === 'releasing') return REQUEST_STATUS.releasing;
   if (key === 'released') return REQUEST_STATUS.released;
+  if (key === 'appealed') return REQUEST_STATUS.appealed;
+  if (key === 'returned_completed') return REQUEST_STATUS.returnedCompleted;
   if (key === 'rejected') return REQUEST_STATUS.rejected;
   if (key === 'cancelled') return REQUEST_STATUS.cancelled;
   return REQUEST_STATUS.pending;
@@ -195,6 +209,8 @@ function statusClass(statusValue) {
   if (key === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (key === 'releasing') return 'bg-teal-100 text-teal-700';
   if (key === 'released') return 'bg-green-100 text-green-700';
+  if (key === 'returned_completed') return 'bg-slate-200 text-slate-800';
+  if (key === 'appealed') return 'bg-violet-100 text-violet-800';
   if (key === 'rejected') return 'bg-red-100 text-red-700';
   if (key === 'cancelled') return 'bg-slate-200 text-slate-700';
   return 'bg-amber-100 text-amber-700';
@@ -642,7 +658,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
 
       let appealsRes = await supabase
         .from('wig_release_appeals')
-        .select('appeal_id, receipt_id, req_id, reason, status, return_status, submitted_at, reviewed_at')
+        .select('appeal_id, receipt_id, req_id, reason, requested_resolution, status, return_status, submitted_at, reviewed_at')
         .order('submitted_at', { ascending: false });
       if (appealsRes.error && String(appealsRes.error.message || '').toLowerCase().includes('return_status')) {
         appealsRes = await supabase
@@ -1221,6 +1237,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     const toBeReleaseCount = rows.filter((row) => row.statusKey === 'to_be_release').length;
     const releasingCount = rows.filter((row) => row.statusKey === 'releasing').length;
     const releasedCount = rows.filter((row) => row.statusKey === 'released').length;
+    const appealedCount = rows.filter((row) => row.statusKey === 'appealed').length;
     const rescheduleRequestedCount = rows.filter((row) => row.releaseWorkflowKey === 'hospital_reschedule_requested').length;
 
     return [
@@ -1231,6 +1248,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
       { label: 'To Be Release', value: String(toBeReleaseCount) },
       { label: 'Releasing', value: String(releasingCount) },
       { label: 'Released', value: String(releasedCount) },
+      { label: 'Concern Reported', value: String(appealedCount) },
       { label: 'Reschedule Requested', value: String(rescheduleRequestedCount) },
     ];
   }, [rows]);
@@ -1240,7 +1258,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     return {
       total: withAppeals.length,
       pending: withAppeals.filter((row) => row.appealStatus === 'Pending Staff Review').length,
-      activeReturns: withAppeals.filter((row) => row.appealReturnStatus && row.appealReturnStatus !== 'Completed').length,
+      activeReturns: withAppeals.filter((row) => row.appealReturnStatus && !['Completed', 'Return Completed'].includes(row.appealReturnStatus)).length,
     };
   }, [rows]);
 
@@ -1513,7 +1531,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
         <nav className="-mb-px flex gap-6 px-1" aria-label="Manage wig request sections">
           <button type="button" onClick={() => setWorkspaceTab('requests')} className={`border-b-2 px-1 py-3 text-sm font-semibold ${workspaceTab === 'requests' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Requests</button>
           <button type="button" onClick={() => { setWorkspaceTab('appeals'); setSelectedRow(null); }} className={`flex items-center gap-2 border-b-2 px-1 py-3 text-sm font-semibold ${workspaceTab === 'appeals' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
-            Wig Appeals
+            After-release Concerns
             {appealSummary.total > 0 ? (
               <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${appealSummary.pending > 0 ? 'bg-red-600 text-white' : 'bg-slate-200 text-slate-700'}`}>
                 {appealSummary.total}{appealSummary.pending > 0 ? ` (${appealSummary.pending} new)` : ''}
@@ -1538,19 +1556,19 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           <span className="flex items-center gap-3">
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-200"><AlertTriangle size={18} /></span>
             <span>
-              <strong className="block text-sm">{appealSummary.pending} wig appeal{appealSummary.pending === 1 ? '' : 's'} awaiting staff review</strong>
-              <span className="text-xs text-amber-800">Open Wig Appeals to review the issue, evidence, and return request.</span>
+              <strong className="block text-sm">{appealSummary.pending} after-release concern{appealSummary.pending === 1 ? '' : 's'} awaiting Staff review</strong>
+              <span className="text-xs text-amber-800">Open After-release Concerns to confirm the problem and requested outcome.</span>
             </span>
           </span>
-          <span className="shrink-0 text-xs font-bold">Review appeals →</span>
+          <span className="shrink-0 text-xs font-bold">Review concerns →</span>
         </button>
       ) : appealSummary.activeReturns > 0 ? (
         <button type="button" onClick={() => setWorkspaceTab('appeals')} className="w-full rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-left text-sm font-semibold text-indigo-900">
-          {appealSummary.activeReturns} approved wig return{appealSummary.activeReturns === 1 ? '' : 's'} currently in the return or repair workflow. Open Wig Appeals to continue.
+          {appealSummary.activeReturns} confirmed wig return{appealSummary.activeReturns === 1 ? '' : 's'} currently in progress. Open After-release Concerns to continue.
         </button>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-8">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-5 xl:grid-cols-9">
         {quickStats.map((item) => (
           <article key={item.label} className="rounded-xl border border-slate-200 bg-white p-3">
             <p className="text-[11px] uppercase tracking-wide text-slate-500">{item.label}</p>
@@ -1680,16 +1698,16 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(row.status)}`}>
                         {row.statusLabel}
                       </span>
-                      <span className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-semibold ${releaseWorkflowClass(row.releaseWorkflowStatus)}`}>
+                      {row.releaseWorkflowLabel !== 'N/A' ? <span className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-semibold ${releaseWorkflowClass(row.releaseWorkflowStatus)}`}>
                         {row.releaseWorkflowLabel}
-                      </span>
+                      </span> : null}
                       {row.hasAppeal ? (
                         <button
                           type="button"
                           onClick={(event) => { event.stopPropagation(); setWorkspaceTab('appeals'); setSelectedRow(null); }}
                           className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-bold ${row.appealStatus === 'Pending Staff Review' ? 'bg-red-100 text-red-800' : 'bg-violet-100 text-violet-800'}`}
                         >
-                          Appeal: {row.appealReturnStatus || row.appealStatus}
+                          Concern: {row.appealReturnStatus || row.appealStatus}
                         </button>
                       ) : null}
                     </td>
@@ -1812,12 +1830,12 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                     className="mt-4 flex w-full items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-left text-rose-950"
                   >
                     <span>
-                      <strong className="block text-sm">This request has a wig appeal</strong>
+                      <strong className="block text-sm">This request has an after-release concern</strong>
                       <span className="mt-0.5 block text-xs text-rose-800">
                         {selectedRow.appeal?.reason || 'Issue reported'} · {selectedRow.appealReturnStatus || selectedRow.appealStatus}
                       </span>
                     </span>
-                    <span className="shrink-0 text-xs font-bold">Open appeal →</span>
+                    <span className="shrink-0 text-xs font-bold">Open concern →</span>
                   </button>
                 ) : null}
               </div>

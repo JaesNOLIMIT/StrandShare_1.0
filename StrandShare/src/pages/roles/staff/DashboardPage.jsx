@@ -88,6 +88,8 @@ function canonicalWigStatus(statusValue) {
   if (['toberelease', 'readyforrelease', 'readyforevent'].includes(key)) return 'to_be_release';
   if (['releasing', 'forrelease'].includes(key)) return 'releasing';
   if (['released', 'completed', 'done'].includes(key)) return 'released';
+  if (['appealed', 'appeal', 'underappeal'].includes(key)) return 'appealed';
+  if (['returnedcompleted', 'returnedclosed'].includes(key)) return 'returned_completed';
   if (['rejected', 'declined', 'denied'].includes(key)) return 'rejected';
   if (['cancelled', 'canceled', 'cancel'].includes(key)) return 'cancelled';
   return 'pending';
@@ -102,6 +104,8 @@ function wigStatusLabel(statusKey) {
   if (statusKey === 'to_be_release') return 'Ready';
   if (statusKey === 'releasing') return 'Releasing';
   if (statusKey === 'released') return 'Released';
+  if (statusKey === 'appealed') return 'Concern Reported';
+  if (statusKey === 'returned_completed') return 'Returned - Completed';
   if (statusKey === 'rejected') return 'Rejected';
   if (statusKey === 'cancelled') return 'Cancelled';
   return 'Pending';
@@ -366,6 +370,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
         ready_for_pickup: 0,
         to_be_release: 0,
         releasing: 0,
+        appealed: 0,
       };
       wigRows.forEach((row) => {
         const key = canonicalWigStatus(row.Status);

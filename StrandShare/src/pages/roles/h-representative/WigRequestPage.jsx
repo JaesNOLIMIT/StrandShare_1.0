@@ -23,6 +23,7 @@ const WIGS_TABLE = 'Wigs';
 const WIG_FILTERS_TABLE = 'Wig_AI_Filters';
 const RELEASE_SCHEDULES_TABLE = 'Release_Schedules';
 const SAFETY_ASSESSMENTS_TABLE = 'patient_wig_safety_assessments';
+const WIG_RELEASE_APPEALS_TABLE = 'wig_release_appeals';
 const WIG_REQUEST_TERMS_TYPE = 'wig_request_terms';
 
 const PATIENT_ASSETS_BUCKET = 'patient_assets';
@@ -39,6 +40,8 @@ const REQUEST_STATUS = {
   toBeRelease: 'To Be Release',
   releasing: 'Releasing',
   released: 'Released',
+  appealed: 'Concern Reported',
+  returnedCompleted: 'Returned - Completed',
   rejected: 'Rejected',
   cancelled: 'Cancelled',
 };
@@ -47,7 +50,7 @@ const tabs = [
   { id: 'new-request', label: 'Request Wig' },
   { id: 'submitted', label: 'Submitted Requests' },
   { id: 'release-approval', label: 'Release Date Approval' },
-  { id: 'aftercare', label: 'Receipt & Appeals' },
+  { id: 'aftercare', label: 'Receipt & Concerns' },
 ];
 
 const SUBMITTED_STATUS_FILTERS = [
@@ -58,6 +61,8 @@ const SUBMITTED_STATUS_FILTERS = [
   { id: 'to_be_release', label: 'To Be Release' },
   { id: 'releasing', label: 'Releasing' },
   { id: 'released', label: 'Released' },
+  { id: 'appealed', label: 'Concern Reported' },
+  { id: 'returned_completed', label: 'Returned - Completed' },
   { id: 'rejected', label: 'Rejected' },
   { id: 'cancelled', label: 'Cancelled' },
 ];
@@ -346,6 +351,14 @@ function getCanonicalStatusKey(status) {
     return 'released';
   }
 
+  if (['appealed', 'appeal', 'underappeal'].includes(key)) {
+    return 'appealed';
+  }
+
+  if (['returnedcompleted', 'returnedclosed'].includes(key)) {
+    return 'returned_completed';
+  }
+
   if (['rejected', 'declined', 'denied'].includes(key)) {
     return 'rejected';
   }
@@ -370,6 +383,8 @@ function getStatusLabel(status) {
   if (key === 'to_be_release') return REQUEST_STATUS.toBeRelease;
   if (key === 'releasing') return REQUEST_STATUS.releasing;
   if (key === 'released') return REQUEST_STATUS.released;
+  if (key === 'appealed') return REQUEST_STATUS.appealed;
+  if (key === 'returned_completed') return REQUEST_STATUS.returnedCompleted;
   if (key === 'rejected') return REQUEST_STATUS.rejected;
   if (key === 'cancelled') return REQUEST_STATUS.cancelled;
   return REQUEST_STATUS.pending;
@@ -382,9 +397,22 @@ function statusClass(status) {
   if (key === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (key === 'releasing') return 'bg-teal-100 text-teal-700';
   if (key === 'released') return 'bg-green-100 text-green-700';
+  if (key === 'appealed') return 'bg-violet-100 text-violet-800';
+  if (key === 'returned_completed') return 'bg-slate-200 text-slate-800';
   if (key === 'rejected') return 'bg-red-100 text-red-700';
   if (key === 'cancelled') return 'bg-slate-200 text-slate-700';
   return 'bg-amber-100 text-amber-700';
+}
+
+function getAppealDisplay(appeal) {
+  if (!appeal) return { label: 'No concern', className: 'bg-slate-100 text-slate-600' };
+  if (appeal.return_status === 'Return Completed') return { label: 'Return completed', className: 'bg-slate-200 text-slate-800' };
+  if (appeal.return_status === 'Completed') return { label: 'Completed', className: 'bg-emerald-100 text-emerald-800' };
+  if (appeal.return_status === 'Ready for Re-release') return { label: 'Ready for re-release', className: 'bg-indigo-100 text-indigo-800' };
+  if (appeal.return_status) return { label: appeal.return_status, className: 'bg-violet-100 text-violet-800' };
+  if (appeal.status === 'Rejected') return { label: 'Problem not confirmed', className: 'bg-red-100 text-red-800' };
+  if (appeal.status === 'Approved for Replacement') return { label: 'Problem confirmed', className: 'bg-emerald-100 text-emerald-800' };
+  return { label: 'Awaiting Staff', className: 'bg-amber-100 text-amber-900' };
 }
 
 function getJourneyPath(statusKey) {
@@ -471,6 +499,29 @@ function getJourneyPath(statusKey) {
     },
   ];
 
+  const appealedPath = [
+    ...productionPath.slice(0, -1),
+    {
+      id: 'released',
+      title: REQUEST_STATUS.released,
+      note: 'The wig was released and received.',
+    },
+    {
+      id: 'appealed',
+      title: REQUEST_STATUS.appealed,
+      note: 'A problem was reported and is awaiting confirmation or return handling.',
+    },
+  ];
+
+  const returnedCompletedPath = [
+    ...appealedPath,
+    {
+      id: 'returned_completed',
+      title: REQUEST_STATUS.returnedCompleted,
+      note: 'The returned wig was received and this request was closed without re-release.',
+    },
+  ];
+
   if (statusKey === 'accepted_allocated') {
     return { steps: allocatedPath, currentStepId: 'accepted_allocated' };
   }
@@ -489,6 +540,14 @@ function getJourneyPath(statusKey) {
 
   if (statusKey === 'released') {
     return { steps: productionPath, currentStepId: 'released' };
+  }
+
+  if (statusKey === 'appealed') {
+    return { steps: appealedPath, currentStepId: 'appealed' };
+  }
+
+  if (statusKey === 'returned_completed') {
+    return { steps: returnedCompletedPath, currentStepId: 'returned_completed' };
   }
 
   if (statusKey === 'rejected') {
@@ -754,6 +813,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
   const [wigRequests, setWigRequests] = useState([]);
   const [currentReleaseSchedules, setCurrentReleaseSchedules] = useState([]);
   const [safetyAssessmentsByReqId, setSafetyAssessmentsByReqId] = useState({});
+  const [appealsByReqId, setAppealsByReqId] = useState({});
   const [wigSpecifications, setWigSpecifications] = useState([]);
 
   const [form, setForm] = useState(EMPTY_FORM);
@@ -939,6 +999,18 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     )) || null;
   }, [selectedRequestedSpecification, wigFamilies]);
 
+  const activeRequestByPatientId = useMemo(() => {
+    const map = new Map();
+    wigRequests.forEach((requestRow) => {
+      const patientId = Number(requestRow.Patient_ID || 0);
+      const statusKey = getCanonicalStatusKey(requestRow.Status);
+      if (patientId && !['released', 'returned_completed', 'rejected', 'cancelled'].includes(statusKey)) {
+        map.set(patientId, requestRow);
+      }
+    });
+    return map;
+  }, [wigRequests]);
+
   const filteredPatientOptions = useMemo(() => {
     const query = normalizeSearchText(patientSearchTerm);
 
@@ -1001,6 +1073,8 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         : requestedWigId
           ? (wigSpecifications.find((row) => normalizeSpecNumber(row.wigId) === requestedWigId) || null)
           : null;
+      const appeal = appealsByReqId[reqId] || null;
+      const appealDisplay = getAppealDisplay(appeal);
 
         return {
           reqId,
@@ -1038,6 +1112,10 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         statusKey: getCanonicalStatusKey(requestRow.Status || REQUEST_STATUS.pending),
         statusLabel: getStatusLabel(requestRow.Status || REQUEST_STATUS.pending),
         rawStatus: requestRow.Status || REQUEST_STATUS.pending,
+        appeal,
+        hasAppeal: Boolean(appeal),
+        appealLabel: appealDisplay.label,
+        appealClassName: appealDisplay.className,
           isWishRequest: Boolean(requestRow.Is_Wish_Request),
           fulfillmentStatus: String(requestRow.Fulfillment_Status || '').trim(),
           fulfillmentBundleId: Number(requestRow.Fulfillment_Bundle_ID || 0) || null,
@@ -1061,7 +1139,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         requestSpecPrimaryImageCandidates: requestedSpecRow?.primaryImageCandidates || [],
       };
     });
-  }, [wigRequests, patientById, safetyAssessmentsByReqId, userDetailsByUserId, usersById, wigSpecifications]);
+  }, [appealsByReqId, wigRequests, patientById, safetyAssessmentsByReqId, userDetailsByUserId, usersById, wigSpecifications]);
 
   const submittedQuickStats = useMemo(() => {
     const rescheduleRequestIds = new Set(
@@ -1092,6 +1170,10 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         label: 'Released',
         value: submittedRows.filter((row) => row.statusKey === 'released').length,
       },
+      {
+        label: 'Active Concerns',
+        value: submittedRows.filter((row) => row.statusKey === 'appealed').length,
+      },
     ];
   }, [currentReleaseSchedules, submittedRows]);
 
@@ -1121,6 +1203,8 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         row.medicalCondition,
         row.statusLabel,
         row.statusReason,
+        row.appealLabel,
+        row.appeal?.reason,
         row.requestSpecId,
         row.requestSpecWigName,
         row.requestSpecStyle,
@@ -1431,6 +1515,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       setWigRequests([]);
       setCurrentReleaseSchedules([]);
       setSafetyAssessmentsByReqId({});
+      setAppealsByReqId({});
       return;
     }
 
@@ -1455,8 +1540,9 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       if (requestIds.length === 0) {
         setCurrentReleaseSchedules([]);
         setSafetyAssessmentsByReqId({});
+        setAppealsByReqId({});
       } else {
-        const [scheduleResult, safetyResult] = await Promise.all([
+        const [scheduleResult, safetyResult, appealResult] = await Promise.all([
           supabase
             .from(RELEASE_SCHEDULES_TABLE)
             .select('Req_ID, Hospital_Decision, Is_Current')
@@ -1466,13 +1552,24 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
             .from(SAFETY_ASSESSMENTS_TABLE)
             .select('*')
             .in('req_id', requestIds),
+          supabase
+            .from(WIG_RELEASE_APPEALS_TABLE)
+            .select('appeal_id,req_id,reason,requested_resolution,status,return_status,submitted_at')
+            .in('req_id', requestIds)
+            .order('submitted_at', { ascending: false }),
         ]);
 
         if (scheduleResult.error) throw scheduleResult.error;
         if (safetyResult.error) throw safetyResult.error;
+        if (appealResult.error) throw appealResult.error;
         setCurrentReleaseSchedules(scheduleResult.data || []);
         setSafetyAssessmentsByReqId((safetyResult.data || []).reduce((accumulator, row) => {
           accumulator[Number(row.req_id)] = row;
+          return accumulator;
+        }, {}));
+        setAppealsByReqId((appealResult.data || []).reduce((accumulator, row) => {
+          const requestId = Number(row.req_id || 0);
+          if (requestId > 0 && !accumulator[requestId]) accumulator[requestId] = row;
           return accumulator;
         }, {}));
       }
@@ -1480,6 +1577,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       setNotice({ kind: 'error', text: error.message || 'Unable to load submitted wig requests.' });
       setCurrentReleaseSchedules([]);
       setSafetyAssessmentsByReqId({});
+      setAppealsByReqId({});
     } finally {
       setIsLoadingSubmitted(false);
     }
@@ -1659,6 +1757,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       setUserDetailsByUserId({});
       setWigRequests([]);
       setCurrentReleaseSchedules([]);
+      setAppealsByReqId({});
       setWigSpecifications([]);
       return;
     }
@@ -1698,6 +1797,17 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
           void fetchSubmittedRequests();
         },
       )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: WIG_RELEASE_APPEALS_TABLE,
+        },
+        () => {
+          void fetchSubmittedRequests();
+        },
+      )
       .subscribe();
 
     return () => {
@@ -1722,6 +1832,15 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     const selectedPatientId = Number(patient?.Patient_ID || 0);
 
     if (!selectedPatientId) {
+      return;
+    }
+
+    const activeRequest = activeRequestByPatientId.get(selectedPatientId);
+    if (activeRequest) {
+      setValidationErrors((previous) => ({
+        ...previous,
+        patientId: `This patient already has ongoing request ${activeRequest.Request_Code || `#${activeRequest.Req_ID}`}. Finish or close it before starting another.`,
+      }));
       return;
     }
 
@@ -2198,6 +2317,9 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     const selectedPatientId = Number(form.patientId || 0);
     if (!selectedPatientId) {
       errors.patientId = 'Choose an existing patient.';
+    } else if (activeRequestByPatientId.has(selectedPatientId)) {
+      const activeRequest = activeRequestByPatientId.get(selectedPatientId);
+      errors.patientId = `This patient already has ongoing request ${activeRequest.Request_Code || `#${activeRequest.Req_ID}`}.`;
     }
 
     const selectedSpecId = normalizeSpecNumber(form.wigSpecificationId);
@@ -2423,7 +2545,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
           helpContent={(
             <>
               <p><strong>Request Wig</strong> lets you select a patient, confirm their safety information, and submit their preferred wig.</p>
-              <p><strong>Submitted Requests</strong> tracks each request. <strong>Release Date Approval</strong> contains scheduling actions. <strong>Receipt &amp; Appeals</strong> stores receipt terms and the seven-day appeal workflow.</p>
+              <p><strong>Submitted Requests</strong> tracks each request. <strong>Release Date Approval</strong> contains scheduling actions. <strong>Receipt &amp; Concerns</strong> stores receipt terms and the seven-day problem-reporting workflow.</p>
             </>
           )}
         />
@@ -2500,6 +2622,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     ) : (
                       filteredPatientOptions.map((patient) => {
                         const isSelected = Number(form.patientId) === Number(patient.Patient_ID);
+                        const activeRequest = activeRequestByPatientId.get(Number(patient.Patient_ID));
                         const linkedDetails = userDetailsByUserId[Number(patient.User_ID || 0)];
                         const patientName = getPatientFullName(patient, linkedDetails);
                         const patientPicUrl = resolveStoragePublicUrl(PATIENT_ASSETS_BUCKET, patient.Patient_Picture)
@@ -2510,8 +2633,9 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                           <button
                             key={patient.Patient_ID}
                             type="button"
+                            disabled={Boolean(activeRequest)}
                             onClick={() => handleSelectPatient(patient)}
-                            className={`block w-full border-b border-slate-100 px-3 py-2 text-left last:border-b-0 hover:bg-slate-50 ${
+                            className={`block w-full border-b border-slate-100 px-3 py-2 text-left last:border-b-0 hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:opacity-60 ${
                               isSelected ? 'bg-slate-50' : ''
                             }`}
                           >
@@ -2523,6 +2647,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                                   {patient.Patient_Code || `Patient #${patient.Patient_ID}`}
                                   {patient.Medical_Condition ? ` - ${patient.Medical_Condition}` : ''}
                                 </p>
+                                {activeRequest ? <p className="mt-0.5 text-[11px] font-semibold text-amber-700">Ongoing: {activeRequest.Request_Code || `Request #${activeRequest.Req_ID}`}</p> : null}
                               </div>
                             </div>
                           </button>
@@ -2597,6 +2722,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     ) : (
                       <div className="max-h-64 divide-y divide-slate-200 overflow-y-auto">
                         {filteredPatientOptions.map((patient) => {
+                          const activeRequest = activeRequestByPatientId.get(Number(patient.Patient_ID));
                           const linkedDetails = userDetailsByUserId[Number(patient.User_ID || 0)];
                           const patientName = getPatientFullName(patient, linkedDetails);
                           const patientPicUrl = resolveStoragePublicUrl(PATIENT_ASSETS_BUCKET, patient.Patient_Picture)
@@ -2607,8 +2733,9 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                             <button
                               key={`directory-${patient.Patient_ID}`}
                               type="button"
+                              disabled={Boolean(activeRequest)}
                               onClick={() => handleSelectPatient(patient)}
-                              className="flex w-full items-center gap-2 bg-white px-3 py-2 text-left hover:bg-blue-50"
+                              className="flex w-full items-center gap-2 bg-white px-3 py-2 text-left hover:bg-blue-50 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:opacity-60"
                             >
                               <AvatarCircle photoUrl={patientPicUrl} name={patientName} sizeClass="h-9 w-9" />
                               <span className="min-w-0 flex-1">
@@ -2617,6 +2744,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                                   {patient.Patient_Code || `Patient #${patient.Patient_ID}`}
                                   {patient.Medical_Condition ? ` | ${patient.Medical_Condition}` : ''}
                                 </span>
+                                {activeRequest ? <span className="block truncate text-[11px] font-semibold text-amber-700">Ongoing: {activeRequest.Request_Code || `Request #${activeRequest.Req_ID}`}</span> : null}
                               </span>
                             </button>
                           );
@@ -3036,7 +3164,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
 
       {activeTab === 'submitted' && (
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-sm">
-          <div className="grid grid-cols-2 gap-2 border-b border-slate-200 bg-slate-50 p-3 lg:grid-cols-3 xl:grid-cols-5">
+          <div className="grid grid-cols-2 gap-2 border-b border-slate-200 bg-slate-50 p-3 lg:grid-cols-3 xl:grid-cols-6">
             {submittedQuickStats.map((item) => (
               <article key={item.label} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{item.label}</p>
@@ -3051,7 +3179,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
 
           <div className="border-b border-slate-200 bg-white px-4 py-3">
             <h2 className="text-lg font-semibold text-slate-900">Submitted Requests</h2>
-            <p className="mt-0.5 text-xs text-slate-500">Find a request and open its details. Release scheduling and appeals now have their own clearly labeled tabs.</p>
+            <p className="mt-0.5 text-xs text-slate-500">Find a request and open its details. Release scheduling and after-release concerns have their own tabs.</p>
 
             <div className="mt-3 grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 md:grid-cols-2 xl:grid-cols-[170px_170px_minmax(220px,1fr)_minmax(360px,2.5fr)]">
               <label className="space-y-1">
@@ -3155,6 +3283,9 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                         <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(row.status)}`}>
                           {row.statusLabel}
                         </span>
+                        {row.hasAppeal ? <span className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-semibold ${row.appealClassName}`} title={row.appeal?.reason}>
+                          Concern: {row.appealLabel}
+                        </span> : null}
                       </td>
                       <td className="px-4 py-3">
                         <button
@@ -3238,6 +3369,11 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     <span className="font-semibold text-slate-900">Status Reason:</span> {selectedSubmittedRequest.statusReason}
                   </p>
                 )}
+                <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-3 text-xs">
+                  <span className="font-semibold text-slate-900">After-release concern:</span>
+                  <span className={`inline-flex rounded-full px-2.5 py-1 font-semibold ${selectedSubmittedRequest.appealClassName}`}>{selectedSubmittedRequest.appealLabel}</span>
+                  {selectedSubmittedRequest.hasAppeal ? <span className="text-slate-500">Problem: {selectedSubmittedRequest.appeal?.reason} · Requested outcome: {selectedSubmittedRequest.appeal?.requested_resolution || 'Repair or Replace'}</span> : null}
+                </div>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">

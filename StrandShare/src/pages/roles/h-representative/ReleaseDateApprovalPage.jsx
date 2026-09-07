@@ -28,6 +28,7 @@ const REQUEST_STATUS = {
   toBeRelease: 'To Be Release',
   releasing: 'Releasing',
   released: 'Released',
+  appealed: 'Appealed',
 };
 
 const tabs = [
@@ -111,6 +112,10 @@ function getCanonicalStatusKey(statusValue) {
     return 'released';
   }
 
+  if (['appealed', 'appeal', 'underappeal'].includes(key)) {
+    return 'appealed';
+  }
+
   return 'pending';
 }
 
@@ -122,6 +127,7 @@ function getStatusLabel(statusValue) {
   if (key === 'to_be_release') return REQUEST_STATUS.toBeRelease;
   if (key === 'releasing') return REQUEST_STATUS.releasing;
   if (key === 'released') return REQUEST_STATUS.released;
+  if (key === 'appealed') return REQUEST_STATUS.appealed;
   return REQUEST_STATUS.pending;
 }
 
@@ -133,6 +139,7 @@ function statusClass(statusValue) {
   if (key === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (key === 'releasing') return 'bg-teal-100 text-teal-700';
   if (key === 'released') return 'bg-green-100 text-green-700';
+  if (key === 'appealed') return 'bg-violet-100 text-violet-800';
   return 'bg-amber-100 text-amber-700';
 }
 
@@ -699,6 +706,13 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
           ) || resolveStoragePublicUrl(
             WIG_AI_FILTERS_BUCKET,
             String(requestedWigFilter?.Source_Front_Path || '').trim(),
+          ) || resolveStoragePublicUrl(
+            WIG_AI_FILTERS_BUCKET,
+            String(
+              wigsById.get(Number(requestedWigId || 0))?.catalog_image_path
+              ?? wigsById.get(Number(requestedWigId || 0))?.Catalog_Image_Path
+              ?? '',
+            ).trim(),
           ),
           allocatedWigSideImageUrl: resolveStoragePublicUrl(
             COMPLETED_WIGS_BUCKET,

@@ -35,6 +35,8 @@ const STATUS_LABELS = {
   to_be_release: 'To Be Release',
   releasing: 'Releasing',
   completed: 'Completed',
+  appealed: 'Concern Reported',
+  returned_completed: 'Returned - Completed',
   rejected: 'Rejected',
   cancelled: 'Cancelled',
 };
@@ -94,6 +96,14 @@ function getCanonicalStatusKey(statusValue) {
 
   if (['completed', 'complete', 'released', 'releasecompleted', 'done'].includes(key)) {
     return 'completed';
+  }
+
+  if (['appealed', 'appeal', 'underappeal'].includes(key)) {
+    return 'appealed';
+  }
+
+  if (['returnedcompleted', 'returnedclosed'].includes(key)) {
+    return 'returned_completed';
   }
 
   if (['rejected', 'declined', 'denied'].includes(key)) {
@@ -218,6 +228,7 @@ function hexToRgba(hexValue, alpha = 1) {
 
 function statusBadgeClass(statusKey) {
   if (statusKey === 'completed') return 'bg-emerald-100 text-emerald-700';
+  if (statusKey === 'appealed') return 'bg-violet-100 text-violet-800';
   if (statusKey === 'releasing') return 'bg-teal-100 text-teal-700';
   if (statusKey === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (statusKey === 'in_production') return 'bg-sky-100 text-sky-700';
@@ -570,6 +581,7 @@ export default function DashboardPage({ userProfile, onInitialDataReady }) {
       'to_be_release',
       'releasing',
       'completed',
+      'appealed',
       'rejected',
       'cancelled',
     ];

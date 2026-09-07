@@ -159,7 +159,8 @@ function labelFromKey(key) {
   if (key === 'pendingadmindecision') return 'Pending Admin Decision';
   if (key === 'approved') return 'Approved';
   if (key === 'rejected') return 'Rejected';
-  if (key === 'appealed') return 'Appealed';
+  if (key === 'appealed') return 'Concern Reported';
+  if (key === 'returnedcompleted') return 'Returned - Completed';
   if (key === 'cancelled') return 'Cancelled';
   if (key === 'ended') return 'Ended';
   if (key === 'cut') return 'Cut';
