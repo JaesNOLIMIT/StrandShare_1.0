@@ -1051,35 +1051,6 @@ export default function GenerateReportsPage({ userProfile }) {
         </div>
       </header>
 
-      <section
-        className="flex flex-wrap items-center gap-3 rounded-xl border bg-white px-4 py-3 shadow-sm"
-        style={{ borderColor: withColorAlpha(secondaryColor, 0.24) }}
-        aria-label="Specialist report access"
-      >
-        <div className="flex min-w-[220px] items-center gap-3">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ backgroundColor: withColorAlpha(primaryColor, 0.08), color: primaryColor }}>
-            <ShieldCheck size={18} />
-          </span>
-          <div>
-            <p className="text-sm font-semibold" style={headingStyle}>Specialist report access</p>
-            <p className="text-xs" style={{ color: secondaryTextColor }}>Only hair-quality, production, inventory, wig, and AI-review records.</p>
-          </div>
-        </div>
-        <div className="flex flex-1 flex-wrap gap-2 md:justify-end">
-          {[
-            { label: 'QA Decisions', icon: ShieldCheck },
-            { label: 'Hair Bundles', icon: Package },
-            { label: 'Cut Hair Inventory', icon: Boxes },
-            { label: 'Wig Production', icon: Boxes },
-            { label: 'AI Comparisons', icon: AlertCircle },
-          ].map(({ label, icon: AccessIcon }) => (
-            <span key={label} className="inline-flex items-center gap-1.5 rounded-lg border bg-slate-50 px-2.5 py-1.5 text-xs font-semibold" style={{ borderColor: withColorAlpha(secondaryColor, 0.24), color: secondaryTextColor }}>
-              <AccessIcon size={13} style={{ color: primaryColor }} /> {label}
-            </span>
-          ))}
-        </div>
-      </section>
-
       {notice.text ? (
         <div
           className="flex items-start gap-2 rounded-lg border px-3 py-2 text-sm"
@@ -1193,13 +1164,23 @@ export default function GenerateReportsPage({ userProfile }) {
                 ? '#d97706'
                 : index === 0 ? primaryColor : secondaryColor;
           return (
-            <article key={item.label} className="rounded-xl border bg-white p-4 shadow-sm" style={{ borderColor: withColorAlpha(secondaryColor, 0.24) }}>
-              <div className="mb-3 h-1 rounded-full" style={{ backgroundColor: accent }} />
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[10px] font-bold uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{item.label}</p>
-                <SummaryIcon size={17} style={{ color: accent }} />
+            <article
+              key={item.label}
+              className="overflow-hidden rounded-xl border p-4 shadow-sm"
+              style={{
+                borderColor: withColorAlpha(accent, 0.24),
+                background: `linear-gradient(135deg, ${withColorAlpha(accent, 0.11)} 0%, #ffffff 72%)`,
+              }}
+            >
+              <div className="flex items-center gap-3">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: withColorAlpha(accent, 0.14), color: accent }}>
+                  <SummaryIcon size={19} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-bold uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{item.label}</p>
+                  <p className="mt-1 text-2xl font-bold leading-none" style={{ color: primaryTextColor }}>{item.value}</p>
+                </div>
               </div>
-              <p className="mt-1 text-2xl font-bold leading-none" style={{ color: primaryTextColor }}>{item.value}</p>
             </article>
           );
         })}

@@ -774,6 +774,59 @@ function formatRequestDateTime(value) {
   });
 }
 
+function formatRequestDateOnly(value) {
+  if (!value) return 'N/A';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'N/A';
+  return parsed.toLocaleDateString('en-PH', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  });
+}
+
+function getRequestEstimateWindow(hasAvailableWig, baseDate = new Date()) {
+  const earliest = new Date(baseDate);
+  const latest = new Date(baseDate);
+  if (hasAvailableWig) {
+    earliest.setDate(earliest.getDate() + 7);
+    latest.setDate(latest.getDate() + 14);
+  } else {
+    earliest.setMonth(earliest.getMonth() + 1);
+    latest.setMonth(latest.getMonth() + 2);
+  }
+  return `${formatRequestDateOnly(earliest)} – ${formatRequestDateOnly(latest)}`;
+}
+
+function getExpectedReleaseDuration(hasAvailableWig) {
+  return hasAvailableWig ? '1–2 weeks' : '1–2 months';
+}
+
+function hasStaffApprovedRequest(statusKey) {
+  return [
+    'accepted_allocated',
+    'accepted_in_production',
+    'ready_for_pickup',
+    'to_be_release',
+    'releasing',
+    'released',
+    'appealed',
+    'returned_completed',
+  ].includes(statusKey);
+}
+
+function getSubmittedExpectedReleaseDuration(requestRow) {
+  const note = String(requestRow?.expectedReleaseNote || '').toLowerCase();
+  if (note.includes('3-9 days') || requestRow?.statusKey === 'accepted_allocated') {
+    return '3–9 days after Staff approval';
+  }
+  if (note.includes('1-2 months') || requestRow?.statusKey === 'accepted_in_production') {
+    return '1–2 months after Staff approval';
+  }
+  return getExpectedReleaseDuration(!requestRow?.isWishRequest);
+}
+
 function AvatarCircle({ photoUrl, name, sizeClass = 'h-10 w-10' }) {
   const fallbackSrc = useMemo(() => getAvatarFallbackDataUrl(name), [name]);
   const [imageSrc, setImageSrc] = useState(photoUrl || fallbackSrc);
@@ -1150,6 +1203,9 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         safetyAssessment: safetyAssessmentsByReqId[reqId] || null,
         requestDate: requestRow.Request_Date,
         updatedAt: requestRow.Updated_At || requestRow.updated_at || requestRow.Request_Date,
+        expectedReleaseEarliestAt: requestRow.Expected_Release_Earliest_At || null,
+        expectedReleaseLatestAt: requestRow.Expected_Release_Latest_At || requestRow.Expected_Release_At || null,
+        expectedReleaseNote: String(requestRow.Expected_Release_Note || '').trim(),
         previewPdfUrl: String(requestRow.Pdf_Url || requestRow.Preview_Pdf_Url || '').trim(),
         statusReason: rawStatusReason.startsWith('SSMETA:') ? '' : rawStatusReason,
         status: requestRow.Status || REQUEST_STATUS.pending,
@@ -1645,7 +1701,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     try {
       setIsLoadingWigSpecifications(true);
 
-      const [specRes, wigsRes, filtersRes] = await Promise.all([
+      const [specRes, wigsRes, filtersRes, physicalBundlesRes] = await Promise.all([
         supabase
           .from(WIG_SPECS_TABLE)
           .select('Wig_Specification_ID, Wig_ID, Hair_Length, Hair_Color, Hair_Texture, Hair_Density, Cap_Size, Style')
@@ -1657,11 +1713,21 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
           .from(WIG_FILTERS_TABLE)
           .select('Wig_ID, Is_Active, Status, Source_Front_Path, Source_Side_Path, Source_Top_Path, Source_Back_Path, Updated_At')
           .order('Updated_At', { ascending: false }),
+        supabase.rpc('get_available_physical_wig_counts'),
       ]);
 
       if (specRes.error) throw specRes.error;
       if (wigsRes.error) throw wigsRes.error;
       if (filtersRes.error) throw filtersRes.error;
+      if (physicalBundlesRes.error) throw physicalBundlesRes.error;
+
+      const availableBundleCountBySpecId = new Map();
+      (physicalBundlesRes.data || []).forEach((row) => {
+        const specificationId = Number(row.Wig_Specification_ID || 0);
+        if (specificationId > 0) {
+          availableBundleCountBySpecId.set(specificationId, Number(row.Available_Count || 0));
+        }
+      });
 
       const wigById = new Map(
         (wigsRes.data || [])
@@ -1713,7 +1779,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         const wigRow = wigById.get(wigId) || null;
         const filterRow = filterByWigId.get(wigId) || null;
 
-        const stockCount = Number(wigRow?.Stock_Count || 0);
+        const stockCount = Number(availableBundleCountBySpecId.get(Number(specRow.Wig_Specification_ID || 0)) || 0);
         const wigStatus = String(wigRow?.Wig_Status || '').trim();
         const isAvailable = normalizeStatusKey(wigStatus) === 'available' && stockCount > 0;
 
@@ -2788,7 +2854,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     </button>
                   </div>
                   <div
-                    className={`grid max-h-[440px] grid-cols-2 gap-2 overflow-y-auto rounded-lg pr-1 2xl:grid-cols-3 ${validationErrors.wigSpecificationId ? 'border-2 border-red-400 bg-red-50/40 p-2' : ''}`}
+                    className={`grid max-h-[260px] grid-cols-2 gap-1.5 overflow-y-auto rounded-lg pr-1 sm:grid-cols-3 xl:grid-cols-4 ${validationErrors.wigSpecificationId ? 'border-2 border-red-400 bg-red-50/40 p-1.5' : ''}`}
                     data-validation-error={validationErrors.wigSpecificationId ? 'true' : undefined}
                   >
                     {wigFamilies.map((family) => {
@@ -2799,30 +2865,30 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                           type="button"
                           onClick={() => handleSelectWigFamily(family)}
                           disabled={isSubmitting || isUploadingPreview}
-                          className={`group overflow-hidden rounded-lg border p-1.5 text-left transition ${
+                          className={`group overflow-hidden rounded-md border p-1 text-left transition ${
                             isSelected
                               ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-100'
                               : 'border-slate-200 bg-white hover:border-blue-300 hover:shadow-sm'
                           }`}
                         >
-                          <div className="relative overflow-hidden rounded-md bg-slate-100">
+                          <div className="relative overflow-hidden rounded bg-slate-100">
                             <WigPreviewImage
                               label={family.wigName || 'Catalog wig'}
                               candidates={family.primaryImageCandidates}
-                              imageClassName="h-36 sm:h-40"
+                              imageClassName="h-20 sm:h-24"
                               showLabel={false}
                               containerClassName="border-0 bg-transparent p-0"
                             />
                           </div>
-                          <div className="px-1 pb-1 pt-2">
+                          <div className="px-1 pb-1 pt-1.5">
                             <div className="flex items-start justify-between gap-2">
                               <div>
-                                <p className="line-clamp-2 text-xs font-bold text-slate-900">{family.wigName || 'Catalog wig'}</p>
-                                <p className="mt-0.5 text-xs text-slate-500">{family.style || 'Style not labeled'} | {family.color || 'Color N/A'}</p>
+                                <p className="line-clamp-1 text-[11px] font-bold text-slate-900">{family.wigName || 'Catalog wig'}</p>
+                                <p className="mt-0.5 line-clamp-1 text-[10px] text-slate-500">{family.style || 'Style not labeled'} | {family.color || 'Color N/A'}</p>
                               </div>
-                              {isSelected ? <CheckCircle2 size={16} className="shrink-0 text-blue-600" /> : null}
+                              {isSelected ? <CheckCircle2 size={14} className="shrink-0 text-blue-600" /> : null}
                             </div>
-                            <p className="mt-2 text-[11px] text-slate-500">
+                            <p className="mt-1 line-clamp-1 text-[10px] text-slate-500">
                               {family.hairLength ? `${family.hairLength} in | ` : ''}{family.texture || 'Texture N/A'} | {family.density || 'Density N/A'}
                             </p>
                           </div>
@@ -2893,8 +2959,17 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     <AlertTriangle size={18} className="mt-0.5 shrink-0" />
                     <div>
                       <p className="font-semibold">This cap-size variant is out of stock.</p>
-                      <p className="mt-0.5 text-xs">You may still submit it as a wish request, but availability and completion dates are not guaranteed.</p>
+                      <p className="mt-0.5 text-xs">You may still submit it so Staff can approve it for production.</p>
                     </div>
+                  </div>
+                ) : null}
+
+                {selectedRequestedSpecification ? (
+                  <div className="md:col-span-2 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
+                    <p className="font-semibold">Expected release date</p>
+                    <p className="mt-1 text-base font-bold">{getExpectedReleaseDuration(Boolean(selectedRequestedSpecification.isAvailable))}</p>
+                    <p className="mt-1 text-xs"><span className="font-semibold">Initial estimated dates:</span> {getRequestEstimateWindow(Boolean(selectedRequestedSpecification.isAvailable))}</p>
+                    <p className="mt-1 text-[11px] text-blue-800">These dates are provisional and will be recalculated from the date Staff approves the request.</p>
                   </div>
                 ) : null}
 
@@ -3375,6 +3450,22 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     {selectedSubmittedRequest.fulfillmentBundleId ? ` | Bundle #${selectedSubmittedRequest.fulfillmentBundleId}` : ''}
                   </p>
                 ) : null}
+
+                <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-3 text-blue-950">
+                  <p className="font-semibold">Expected release date</p>
+                  <p className="mt-1 text-base font-bold">
+                    {getSubmittedExpectedReleaseDuration(selectedSubmittedRequest)}
+                  </p>
+                  <p className="mt-1 text-xs">
+                    <span className="font-semibold">Expected dates:</span>{' '}
+                    {formatRequestDateOnly(selectedSubmittedRequest.expectedReleaseEarliestAt)} – {formatRequestDateOnly(selectedSubmittedRequest.expectedReleaseLatestAt)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-blue-800">
+                    {hasStaffApprovedRequest(selectedSubmittedRequest.statusKey)
+                      ? 'These dates were recalculated from the Staff approval date.'
+                      : 'These dates are provisional and will be recalculated from the date Staff approves the request.'}
+                  </p>
+                </div>
                 {selectedSubmittedRequest.statusReason && (
                   <p className="mt-1 whitespace-pre-line">
                     <span className="font-semibold text-slate-900">Status Reason:</span> {selectedSubmittedRequest.statusReason}

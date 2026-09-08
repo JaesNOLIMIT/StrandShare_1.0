@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Camera, CameraOff, CheckCircle2, Clock3, Loader2, MapPin, Save, ScanLine, Search, UserCheck, UserX, XCircle } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Camera, CameraOff, CheckCircle2, Loader2, MapPin, Save, ScanLine, Search, UserCheck, UserX, XCircle } from 'lucide-react';
 import jsQR from 'jsqr';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import PageHeaderActions from '../../../components/PageHeaderActions';
+import { useToast } from '../../../context/ToastContext';
 import { isValidWaybillCode, normalizeWaybillCodeInput, parseWaybillQrPayload } from '../../../lib/hairSubmissionWorkflow';
 
 const LOGISTICS_TABLE = 'Hair_Submission_Logistics';
@@ -47,7 +49,9 @@ function receivingStatus(row) {
     if (['cancelled', 'canceled', 'noshow'].includes(key)) return 'Cancelled';
     return 'Expected';
   }
-  return row?.Dropoff_Status || 'Expected';
+  const status = String(row?.Dropoff_Status || 'Expected').trim();
+  if (status === 'Completed') return 'Received';
+  return status;
 }
 function badgeClass(status) {
   if (status === 'Expected') return 'border-blue-200 bg-blue-50 text-blue-700';
@@ -59,9 +63,46 @@ function badgeClass(status) {
 function address(row) {
   return row ? [row.Destination_Name, row.Street, row.Barangay, row.City, row.Province, row.Region, row.Country].filter(Boolean).join(', ') : 'Salon address has not been configured.';
 }
+function compactAddress(row) {
+  if (!row) return 'Location not configured';
+  const place = row.Destination_Name || 'Main Office';
+  const locality = [row.City, row.Province].filter(Boolean).join(', ');
+  return [place, locality].filter(Boolean).join(' · ');
+}
+function expectedArrivalLabel(row) {
+  if (!row?.Expected_Dropoff_Date && !row?.Expected_Arrival_Time) return 'Not set';
+  return [
+    row?.Expected_Dropoff_Date ? formatDate(row.Expected_Dropoff_Date) : null,
+    row?.Expected_Arrival_Time ? formatTime(row.Expected_Arrival_Time) : null,
+  ].filter(Boolean).join(' · ');
+}
+function receivingTimeline(row) {
+  if (!row) return [];
+  const status = receivingStatus(row);
+  const receivedAt = row.Completed_At || row.Received_At;
+  const submissionStatus = String(row.submission?.Status || '').trim();
+  const submissionKey = submissionStatus.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const qualityDone = ['approved', 'accepted', 'hairaccepted', 'qualityapproved', 'forbundling', 'bundled', 'inproduction', 'wigcreated', 'wigcompleted']
+    .some((key) => submissionKey.includes(key));
+  const completed = ['bundled', 'inproduction', 'wigcreated', 'wigcompleted'].some((key) => submissionKey.includes(key));
+  const stages = [
+    { label: 'Expected Arrival', detail: expectedArrivalLabel(row), done: ['Checked In', 'Received'].includes(status) },
+    { label: 'Checked In', detail: row.Checked_In_At ? formatDateTime(row.Checked_In_At) : '—', done: Boolean(row.Checked_In_At) },
+    { label: 'Hair Received', detail: receivedAt ? formatDateTime(receivedAt) : '—', done: Boolean(receivedAt) },
+    { label: 'Quality Check', detail: qualityDone ? submissionStatus : receivedAt ? 'Waiting for Specialist' : '—', done: qualityDone },
+    { label: 'Completed', detail: completed ? submissionStatus : '—', done: completed },
+  ];
+  let currentAssigned = false;
+  return stages.map((stage) => {
+    const current = !['Cancelled', 'No Show'].includes(status) && !stage.done && !currentAssigned;
+    if (current) currentAssigned = true;
+    return { ...stage, current };
+  });
+}
 
 export default function SalonSchedulePage({ isActivePage = true }) {
   const { theme } = useTheme();
+  const { showToast } = useToast();
   const primaryColor = theme?.primaryColor || '#7c2d12';
   const primaryTextColor = theme?.primaryTextColor || '#0f172a';
   const secondaryTextColor = theme?.secondaryTextColor || '#64748b';
@@ -88,6 +129,16 @@ export default function SalonSchedulePage({ isActivePage = true }) {
   const canvasRef = useRef(null);
   const scanBusyRef = useRef(false);
   const lastScanRef = useRef({ value: '', at: 0 });
+
+  useEffect(() => {
+    if (!notice.text) return;
+    showToast({
+      type: notice.kind === 'error' ? 'error' : 'success',
+      title: notice.kind === 'error' ? 'Action not completed' : 'Receiving updated',
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
 
   const loadPage = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) return;
@@ -183,6 +234,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
       if (error) throw error;
       const submissionId = Number(data?.submission?.Submission_ID || 0);
       setScannerCode('');
+      stopCamera();
       setNotice({ kind: 'success', text: `${data?.route || 'Donation'} ${waybill} received. It is now waiting for Specialist Quality Check.` });
       await loadPage();
       if (submissionId) setSelectedId(submissionId);
@@ -192,7 +244,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
       setSaving(false);
       scanBusyRef.current = false;
     }
-  }, [loadPage, notes]);
+  }, [loadPage, notes, stopCamera]);
 
   const toggleCamera = async () => {
     if (isCameraOn) { stopCamera(); return; }
@@ -216,6 +268,18 @@ export default function SalonSchedulePage({ isActivePage = true }) {
       stopCamera();
     } finally { setIsStartingCamera(false); }
   };
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (!isCameraOn || !video || !stream) return;
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+    void video.play().catch(() => {
+      setNotice({ kind: 'error', text: 'The camera opened but its preview could not start. Please close it and try again.' });
+    });
+  }, [isCameraOn]);
 
   useEffect(() => {
     if (!isCameraOn) return undefined;
@@ -275,39 +339,77 @@ export default function SalonSchedulePage({ isActivePage = true }) {
 
   const inputClass = 'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-slate-500';
   return <div className="min-w-0 space-y-5" style={{ color: primaryTextColor }}>
-    <header className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="role-page-title text-2xl font-bold" style={{ fontFamily: `${headingFont}, sans-serif` }}>Salon Receiving Schedule</h1><p className="max-w-3xl text-sm" style={{ color: secondaryTextColor }}>Expected arrival times help staff prepare. They are not appointments, and late donors may still check in.</p><p className="mt-2 flex items-start gap-2 text-xs text-slate-500"><MapPin size={14} className="mt-0.5 shrink-0" />{address(office)}</p></div><PageHeaderActions onRefresh={() => void loadPage()} refreshLoading={loading} helpTitle="Expected walk-ins" helpContent={<p>Check in arrivals, complete physical receiving, and manage hours or closures. Quality approval happens separately.</p>} /></header>
-    {notice.text ? <div className={`rounded-xl border px-4 py-3 text-sm ${notice.kind === 'error' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>{notice.text}</div> : null}
+    <header className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="role-page-title text-2xl font-bold" style={{ fontFamily: `${headingFont}, sans-serif` }}>Receiving Schedule</h1><p className="max-w-3xl text-sm" style={{ color: secondaryTextColor }}>Expected arrivals help staff prepare; late donors may still check in.</p><p title={address(office)} className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500"><MapPin size={13} className="shrink-0" />{compactAddress(office)}</p></div><PageHeaderActions onRefresh={() => void loadPage()} refreshLoading={loading} helpTitle="Expected arrivals" helpContent={<p>Check in arrivals, complete physical receiving, and manage hours or closures. Quality approval happens separately.</p>} /></header>
     <div className="flex w-fit gap-1 rounded-xl border border-slate-200 bg-white p-1">{[['arrivals', 'Expected arrivals'], ['settings', 'Hours & closures']].map(([key, label]) => <button key={key} onClick={() => setTab(key)} className={`rounded-lg px-4 py-2 text-sm font-semibold ${tab === key ? 'text-white' : 'text-slate-600'}`} style={tab === key ? { backgroundColor: primaryColor } : undefined}>{label}</button>)}</div>
 
     {tab === 'arrivals' ? <>
-      <section className="grid gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:grid-cols-[minmax(280px,0.8fr)_minmax(320px,1.2fr)]">
-        <div>
-          <div className="flex items-center gap-2"><ScanLine size={18} style={{ color: primaryColor }} /><h2 className="font-semibold">Receive donated hair</h2></div>
-          <p className="mt-1 text-xs text-slate-500">Scan only the code stored in Hair_Submissions.Waybill_Code. Event waybills are handled in Assigned Events.</p>
-          <div className="mt-3 flex gap-2">
-            <input value={scannerCode} onChange={(event) => setScannerCode(normalizeWaybillCodeInput(event.target.value))} onKeyDown={(event) => { if (event.key === 'Enter') void receiveScannedWaybill(scannerCode); }} placeholder="WBXXXXXX" maxLength={8} className={`${inputClass} font-mono uppercase`} />
-            <button type="button" disabled={saving || !isValidWaybillCode(scannerCode)} onClick={() => void receiveScannedWaybill(scannerCode)} className="rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" style={{ backgroundColor: primaryColor }}>Receive</button>
+      <section className="rounded-2xl bg-white px-4 py-4 shadow-sm">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2"><ScanLine size={18} style={{ color: primaryColor }} /><h2 className="font-semibold">Receive donation</h2></div>
+            <p className="mt-1 text-xs text-slate-500">Enter or scan the waybill attached to the donated hair.</p>
+            <div className="mt-3 flex max-w-3xl flex-col gap-2 sm:flex-row">
+              <input value={scannerCode} onChange={(event) => setScannerCode(normalizeWaybillCodeInput(event.target.value))} onKeyDown={(event) => { if (event.key === 'Enter') void receiveScannedWaybill(scannerCode); }} placeholder="Enter waybill or scan QR" maxLength={8} className={`${inputClass} min-w-0 flex-1 font-mono uppercase`} />
+              <button type="button" disabled={saving || !isValidWaybillCode(scannerCode)} onClick={() => void receiveScannedWaybill(scannerCode)} className="rounded-lg px-5 py-2 text-sm font-semibold text-white disabled:opacity-50" style={{ backgroundColor: primaryColor }}>{saving ? 'Receiving…' : 'Receive'}</button>
+              <button type="button" disabled={isStartingCamera} onClick={() => void toggleCamera()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"><Camera size={16} />{isStartingCamera ? 'Starting…' : isCameraOn ? 'Stop scanner' : 'Scan QR'}</button>
+            </div>
           </div>
-          <p className="mt-2 text-xs text-slate-500">Courier and Drop-off both remain Pending until this staff receiving scan succeeds.</p>
-        </div>
-        <div className="overflow-hidden rounded-xl bg-slate-950">
-          <div className="relative h-44">
-            <video ref={videoRef} className={`h-full w-full object-cover ${isCameraOn ? '' : 'hidden'}`} />
-            {!isCameraOn ? <div className="flex h-full flex-col items-center justify-center text-slate-300"><CameraOff size={28} /><p className="mt-2 text-sm font-semibold">Camera scanner is off</p></div> : null}
-          </div>
-          <button type="button" disabled={isStartingCamera} onClick={() => void toggleCamera()} className="flex w-full items-center justify-center gap-2 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white">{isCameraOn ? <CameraOff size={16} /> : <Camera size={16} />}{isStartingCamera ? 'Starting camera...' : isCameraOn ? 'Stop camera' : 'Start QR scanner'}</button>
+          <p className="max-w-xs text-xs leading-relaxed text-slate-400">Non-event courier and drop-off donations only. Event receiving stays in Assigned Events.</p>
         </div>
       </section>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[['Waiting', counts.Expected || 0], ['Checked In', counts['Checked In'] || 0], ['Received', (counts.Received || 0) + (counts.Completed || 0)], ['Cancelled / No Show', (counts.Cancelled || 0) + (counts['No Show'] || 0)]].map(([label, count]) => <div key={label} className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p><p className="mt-1 text-2xl font-bold">{count}</p></div>)}</div>
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="grid gap-3 border-b border-slate-200 p-4 md:grid-cols-[1fr_180px_180px]"><label className="relative"><Search size={16} className="absolute left-3 top-2.5 text-slate-400" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search donor, route, waybill, or ID" className={`${inputClass} pl-9`} /></label><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={inputClass}>{['Active', 'Expected', 'Checked In', 'Received', 'Completed', 'Cancelled', 'No Show', 'All'].map((item) => <option key={item}>{item}</option>)}</select><input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className={inputClass} /></div>
-        <div className="grid min-h-[420px] lg:grid-cols-[minmax(330px,0.85fr)_minmax(420px,1.15fr)]"><div className="max-h-[650px] overflow-y-auto border-b lg:border-b-0 lg:border-r">{loading ? <p className="flex items-center gap-2 p-5 text-sm text-slate-500"><Loader2 size={16} className="animate-spin" />Loading donations...</p> : null}{!loading && !filtered.length ? <p className="p-8 text-center text-sm text-slate-500">No Courier or Drop-off records match these filters.</p> : null}{filtered.map((row) => <button key={row.Submission_ID} onClick={() => setSelectedId(row.Submission_ID)} className={`w-full border-b border-slate-100 p-4 text-left ${selectedId === row.Submission_ID ? 'bg-amber-50' : 'hover:bg-slate-50'}`}><div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-slate-900">{fullName(row.profile)}</p><p className="font-mono text-xs text-slate-500">{row.submission.Waybill_Code || `Submission #${row.Submission_ID}`}</p><p className="mt-1 text-xs font-semibold text-slate-500">{routeKind(row)}</p></div><span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${badgeClass(receivingStatus(row))}`}>{receivingStatus(row)}</span></div>{routeKind(row) === 'Drop-off' ? <p className="mt-2 flex items-center gap-1.5 text-xs text-slate-600"><CalendarDays size={13} />{formatDate(row.Expected_Dropoff_Date)} <Clock3 size={13} className="ml-2" />{formatTime(row.Expected_Arrival_Time)}</p> : <p className="mt-2 text-xs text-slate-600">{row.Courier_Name || 'Courier'}{row.Tracking_Number ? ` · ${row.Tracking_Number}` : ''}</p>}</button>)}</div>
-          <div className="p-5">{!selected ? <p className="text-sm text-slate-500">Select an arrival to see its complete receiving record.</p> : <div className="space-y-5"><div className="flex flex-wrap justify-between gap-3"><div><p className="text-lg font-semibold">{fullName(selected.profile)}</p><p className="text-sm text-slate-500">{selected.account?.email || 'No email'} · {selected.profile?.contact_number || 'No phone'}</p></div><div className="text-right"><p className="font-mono font-bold">{selected.submission.Waybill_Code}</p><p className="text-xs text-slate-500">Submission #{selected.Submission_ID}</p></div></div><div className="rounded-xl border border-blue-100 bg-blue-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-blue-700">Expected arrival — not an appointment</p><p className="mt-1 font-semibold text-blue-950">{formatDate(selected.Expected_Dropoff_Date)} at {formatTime(selected.Expected_Arrival_Time)}</p><p className="mt-1 text-xs text-blue-700">Late arrival is allowed. Passing this time never marks No Show automatically.</p></div><div className="grid gap-3 sm:grid-cols-3">{[['Checked in', selected.Checked_In_At], ['Receiving completed', selected.Completed_At || selected.Received_At], ['Cancelled', selected.Cancelled_At]].map(([label, value]) => <div key={label} className="rounded-lg border border-slate-200 p-3"><p className="text-xs font-semibold text-slate-500">{label}</p><p className="mt-1 text-xs">{formatDateTime(value)}</p></div>)}</div>{selected.Cancellation_Reason ? <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800"><strong>{selected.Dropoff_Status}</strong> by {selected.Cancellation_Source || 'Staff'}: {selected.Cancellation_Reason}</div> : null}
-            {['Expected', 'Checked In'].includes(selected.Dropoff_Status) ? <><label className="block text-sm font-medium text-slate-700">Staff note / required reason<textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} placeholder="Required for cancellation or No Show" className={`${inputClass} mt-1`} /></label><div className="flex flex-wrap gap-2">{selected.Dropoff_Status === 'Expected' ? <button disabled={saving} onClick={() => void runAction('check_in')} className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white"><UserCheck size={16} />Check in</button> : null}{selected.Dropoff_Status === 'Checked In' ? <button disabled={saving} onClick={() => void runAction('complete')} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white"><CheckCircle2 size={16} />Complete receiving</button> : null}{selected.Dropoff_Status === 'Expected' ? <button disabled={saving} onClick={() => void runAction('no_show')} className="inline-flex items-center gap-2 rounded-lg border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700"><UserX size={16} />Mark No Show</button> : null}<button disabled={saving} onClick={() => void runAction('cancel')} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold"><XCircle size={16} />Cancel</button></div></> : <div className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">This record is final. Completed hair continues to Quality Check; cancelled/no-show donations remain history and cannot be reopened.</div>}</div>}</div></div>
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">{[
+        ['Waiting', counts.Expected || 0, 'bg-amber-50 text-amber-800'],
+        ['Checked In', counts['Checked In'] || 0, 'bg-blue-50 text-blue-800'],
+        ['Received', counts.Received || 0, 'bg-emerald-50 text-emerald-800'],
+        ['Cancelled / No Show', (counts.Cancelled || 0) + (counts['No Show'] || 0), 'bg-rose-50 text-rose-800'],
+      ].map(([label, count, tone]) => <div key={label} className={`flex items-center justify-between rounded-xl px-4 py-2.5 ${tone}`}><p className="text-[11px] font-semibold uppercase tracking-wide">{label}</p><p className="text-xl font-bold">{count}</p></div>)}</div>
+      <section className="overflow-hidden rounded-2xl bg-white shadow-sm">
+        <div className="grid gap-2 bg-slate-50/80 p-3 md:grid-cols-[1fr_170px_170px]"><label className="relative"><Search size={16} className="absolute left-3 top-2.5 text-slate-400" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search donor, waybill, route, or ID" className={`${inputClass} pl-9`} /></label><select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={inputClass}>{['Active', 'Expected', 'Checked In', 'Received', 'Cancelled', 'No Show', 'All'].map((item) => <option key={item}>{item}</option>)}</select><input type="date" aria-label="Filter by expected date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className={inputClass} /></div>
+        <div className="grid min-h-[500px] lg:grid-cols-[minmax(300px,0.72fr)_minmax(480px,1.28fr)]">
+          <div className="max-h-[680px] overflow-y-auto border-b border-slate-100 lg:border-b-0 lg:border-r">
+            <div className="sticky top-0 z-10 bg-white/95 px-4 py-3 backdrop-blur"><h2 className="font-semibold text-slate-900">Donor Queue</h2><p className="text-xs text-slate-500">{filtered.length} matching donations</p></div>
+            {loading ? <p className="flex items-center gap-2 p-5 text-sm text-slate-500"><Loader2 size={16} className="animate-spin" />Loading donations...</p> : null}
+            {!loading && !filtered.length ? <p className="p-8 text-center text-sm text-slate-500">No courier or drop-off records match these filters.</p> : null}
+            {filtered.map((row) => {
+              const isSelected = selectedId === row.Submission_ID;
+              return <button key={row.Submission_ID} onClick={() => setSelectedId(row.Submission_ID)} className={`w-full border-b border-l-[3px] border-b-slate-100 px-4 py-3 text-left transition-colors ${isSelected ? 'bg-rose-50/70' : 'border-l-transparent hover:bg-slate-50'}`} style={isSelected ? { borderLeftColor: primaryColor } : undefined}><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate font-semibold text-slate-900">{fullName(row.profile)}</p><p className="mt-0.5 font-mono text-xs text-slate-500">{row.submission.Waybill_Code || `Submission #${row.Submission_ID}`}</p><p className="mt-1 text-xs font-medium text-slate-500">{routeKind(row)}</p></div><span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${badgeClass(receivingStatus(row))}`}>{receivingStatus(row)}</span></div></button>;
+            })}
+          </div>
+          <div className="p-5 lg:p-6">
+            {!selected ? <div className="flex h-full min-h-80 items-center justify-center text-sm text-slate-500">Select a donor to view the receiving record.</div> : <div className="mx-auto max-w-3xl space-y-6">
+              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 pb-5"><div><p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Selected donation</p><h2 className="mt-1 text-xl font-bold text-slate-900">{fullName(selected.profile)}</h2><p className="mt-1 text-sm text-slate-500">{selected.account?.email || 'No email'} · {selected.profile?.contact_number || 'No phone'}</p></div><div className="text-right"><p className="font-mono text-base font-bold" style={{ color: primaryColor }}>{selected.submission.Waybill_Code || 'No waybill'}</p><p className="mt-1 text-xs text-slate-500">Submission #{selected.Submission_ID} · {routeKind(selected)}</p></div></div>
+
+              <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_minmax(260px,0.8fr)]">
+                <div><h3 className="text-sm font-semibold text-slate-900">Receiving progress</h3><div className="mt-4 space-y-0">{receivingTimeline(selected).map((stage, index, stages) => <div key={stage.label} className="relative flex gap-3 pb-5 last:pb-0">{index < stages.length - 1 ? <span className={`absolute left-[9px] top-5 h-full w-px ${stage.done ? 'bg-emerald-300' : 'bg-slate-200'}`} /> : null}<span className={`relative z-[1] mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${stage.done ? 'bg-emerald-600 text-white' : stage.current ? 'ring-2 ring-offset-2 text-white' : 'bg-slate-200 text-slate-400'}`} style={stage.current ? { backgroundColor: primaryColor, '--tw-ring-color': primaryColor } : undefined}>{stage.done ? <CheckCircle2 size={13} /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}</span><div><p className={`text-sm font-semibold ${stage.current ? 'text-slate-900' : stage.done ? 'text-slate-800' : 'text-slate-400'}`}>{stage.label}</p><p className="mt-0.5 text-xs text-slate-500">{stage.detail}</p></div></div>)}</div></div>
+                <div className="space-y-4"><div className="rounded-xl bg-slate-50 p-4"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Expected arrival</p><p className="mt-1 text-sm font-semibold text-slate-900">{expectedArrivalLabel(selected)}</p><p className="mt-1 text-xs leading-relaxed text-slate-500">This is a preparation estimate, not an appointment. Late check-in remains allowed.</p></div>{selected.Cancellation_Reason ? <div className="rounded-xl bg-rose-50 p-4 text-sm text-rose-800"><p className="text-xs font-bold uppercase tracking-wide">Exception · {selected.Dropoff_Status}</p><p className="mt-1">{selected.Cancellation_Reason}</p><p className="mt-1 text-xs text-rose-600">Recorded by {selected.Cancellation_Source || 'Staff'}</p></div> : null}</div>
+              </div>
+
+              {['Expected', 'Checked In'].includes(selected.Dropoff_Status) ? <div className="border-t border-slate-100 pt-5"><label className="block text-sm font-medium text-slate-700">Staff note <span className="font-normal text-slate-400">(required for cancellation or No Show)</span><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} placeholder="Add a receiving note or exception reason" className={`${inputClass} mt-2`} /></label><div className="mt-3 flex flex-wrap gap-2">{selected.Dropoff_Status === 'Expected' ? <button disabled={saving} onClick={() => void runAction('check_in')} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" style={{ backgroundColor: primaryColor }}><UserCheck size={16} />Check In</button> : null}{selected.Dropoff_Status === 'Checked In' ? <button disabled={saving} onClick={() => void runAction('complete')} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"><CheckCircle2 size={16} />Mark Received</button> : null}{selected.Dropoff_Status === 'Expected' ? <button disabled={saving} onClick={() => void runAction('no_show')} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50"><UserX size={16} />No Show</button> : null}<button disabled={saving} onClick={() => void runAction('cancel')} className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100"><XCircle size={16} />Cancel</button></div></div> : <div className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600">This receiving record is final. Received hair continues to Specialist Quality Check; cancelled and no-show records remain in history.</div>}
+            </div>}
+          </div>
+        </div>
       </section>
     </> : <div className="grid gap-5 xl:grid-cols-2">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-semibold">Regular receiving hours</h2><p className="mt-1 text-xs text-slate-500">No slot capacity, duration, end time, or grace period is used.</p><div className="mt-4 space-y-4">{hours.map((row) => <div key={row.Operating_Hours_ID} className="rounded-xl border border-slate-200 p-4"><div className="flex justify-between"><strong>{row.Day_Group}</strong><label className="flex gap-2 text-sm"><input type="checkbox" checked={row.Is_Open} onChange={(e) => updateHour(row.Operating_Hours_ID, 'Is_Open', e.target.checked)} />Open</label></div><div className="mt-3 grid grid-cols-2 gap-3">{[['Opening_Time', 'Opens'], ['Closing_Time', 'Closes'], ['Break_Start_Time', 'Break starts'], ['Break_End_Time', 'Break ends']].map(([field, label]) => <label key={field} className="text-xs font-semibold text-slate-600">{label}<input type="time" value={row[field]} onChange={(e) => updateHour(row.Operating_Hours_ID, field, e.target.value)} className={`${inputClass} mt-1`} /></label>)}</div><div className="mt-3 grid grid-cols-2 gap-3">{[['Minimum_Booking_Notice_Days', 'Minimum notice (days)'], ['Maximum_Booking_Days', 'Maximum days ahead']].map(([field, label]) => <label key={field} className="text-xs font-semibold text-slate-600">{label}<input type="number" min="0" value={row[field]} onChange={(e) => updateHour(row.Operating_Hours_ID, field, e.target.value)} className={`${inputClass} mt-1`} /></label>)}</div></div>)}</div><button disabled={saving} onClick={() => void saveHours()} className="mt-4 inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white" style={{ backgroundColor: primaryColor }}><Save size={16} />Save hours</button></section>
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-semibold">Closures & special hours</h2><p className="mt-1 text-xs text-slate-500">Date overrides take priority over regular hours.</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-xs font-semibold text-slate-600">Date<input type="date" value={overrideDraft.date} onChange={(e) => setOverrideDraft((old) => ({ ...old, date: e.target.value }))} className={`${inputClass} mt-1`} /></label><label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={overrideDraft.isClosed} onChange={(e) => setOverrideDraft((old) => ({ ...old, isClosed: e.target.checked }))} />Closed all day</label>{!overrideDraft.isClosed ? [['openingTime', 'Opens'], ['closingTime', 'Closes'], ['breakStartTime', 'Break starts'], ['breakEndTime', 'Break ends']].map(([field, label]) => <label key={field} className="text-xs font-semibold text-slate-600">{label}<input type="time" value={overrideDraft[field]} onChange={(e) => setOverrideDraft((old) => ({ ...old, [field]: e.target.value }))} className={`${inputClass} mt-1`} /></label>) : null}<label className="text-xs font-semibold text-slate-600 sm:col-span-2">Reason<input value={overrideDraft.reason} onChange={(e) => setOverrideDraft((old) => ({ ...old, reason: e.target.value }))} className={`${inputClass} mt-1`} /></label></div><button disabled={saving} onClick={() => void saveOverride()} className="mt-4 inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white" style={{ backgroundColor: primaryColor }}><Save size={16} />Save override</button><div className="mt-5 space-y-2">{overrides.map((row) => <div key={row.Schedule_Override_ID} className="flex justify-between rounded-lg border border-slate-200 p-3"><div><p className="text-sm font-semibold">{formatDate(row.Override_Date)}</p><p className="text-xs text-slate-500">{row.Is_Closed ? 'Closed all day' : `${formatTime(row.Opening_Time)} - ${formatTime(row.Closing_Time)}`}{row.Reason ? ` · ${row.Reason}` : ''}</p></div><span className={`h-fit rounded-full border px-2 py-0.5 text-xs ${row.Is_Closed ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-blue-200 bg-blue-50 text-blue-700'}`}>{row.Is_Closed ? 'Closed' : 'Special hours'}</span></div>)}</div></section>
     </div>}
+
+    {isCameraOn && typeof document !== 'undefined' ? createPortal(
+      <div className="fixed inset-0 z-[2147483000] flex items-center justify-center p-4">
+        <button type="button" aria-label="Close QR scanner" onClick={stopCamera} className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm" />
+        <section role="dialog" aria-modal="true" aria-labelledby="receiving-scanner-title" className="relative w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <header className="flex items-start justify-between gap-3 px-4 py-3">
+            <div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Receiving scanner</p><h2 id="receiving-scanner-title" className="mt-0.5 font-semibold text-slate-900">Scan donation waybill</h2><p className="mt-0.5 text-xs text-slate-500">Hold the complete QR code inside the guide.</p></div>
+            <button type="button" onClick={stopCamera} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><XCircle size={18} /></button>
+          </header>
+          <div className="relative aspect-[4/3] bg-slate-950">
+            <video ref={videoRef} className="h-full w-full object-cover" />
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center"><div className="h-44 w-44 rounded-2xl border-2 border-white/90 shadow-[0_0_0_999px_rgba(2,6,23,0.28)]" /></div>
+          </div>
+          <footer className="flex items-center justify-between gap-3 px-4 py-3"><p className="text-xs text-slate-500">Scanning automatically…</p><button type="button" onClick={stopCamera} className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white"><CameraOff size={14} />Close scanner</button></footer>
+        </section>
+      </div>,
+      document.body,
+    ) : null}
   </div>;
 }

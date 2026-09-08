@@ -5,10 +5,12 @@ import { logAuditAction } from '../../../lib/auditLogger';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import PageHeaderActions from '../../../components/PageHeaderActions';
 import WigReleaseAftercarePanel from '../../../components/WigReleaseAftercarePanel';
+import BundleCompletionScanner from '../specialist/wigCatalog/BundleCompletionScanner';
 import { useToast } from '../../../context/ToastContext';
 import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 
 const WIG_REQUESTS_TABLE = 'Wig_Requests';
+const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
 const WIGS_TABLE = 'Wigs';
 const WIG_SPECS_TABLE = 'Wig_Specifications';
 const WIG_FILTERS_TABLE = 'Wig_AI_Filters';
@@ -302,13 +304,27 @@ function parseSpecialNotesPayload(specialNotesValue) {
   }
 }
 
+function parseManilaDate(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const normalized = raw.replace(' ', 'T');
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(normalized);
+  const parsed = new Date(hasTimezone
+    ? normalized
+    : dateOnly
+      ? `${normalized}T00:00:00${PST_OFFSET}`
+      : `${normalized}${PST_OFFSET}`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function formatDateTime(value) {
   if (!value) {
     return 'N/A';
   }
 
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
+  const parsed = parseManilaDate(value);
+  if (!parsed) {
     return 'N/A';
   }
 
@@ -322,9 +338,21 @@ function formatDateTime(value) {
   });
 }
 
+function formatDateOnly(value) {
+  if (!value) return 'N/A';
+  const parsed = parseManilaDate(value);
+  if (!parsed) return 'N/A';
+  return parsed.toLocaleDateString('en-PH', {
+    timeZone: PST_TIMEZONE,
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  });
+}
+
 function toDateTimeLocalValue(value) {
-  const parsed = new Date(value || Date.now());
-  if (Number.isNaN(parsed.getTime())) {
+  const parsed = value ? parseManilaDate(value) : new Date();
+  if (!parsed) {
     return '';
   }
 
@@ -470,6 +498,10 @@ function mapActionError(rawMessage) {
     return 'Release scheduling has a database schema mismatch. Apply the latest release-scheduling migration, then retry.';
   }
 
+  if (lowerMessage.includes('invalid input value for enum') && lowerMessage.includes('wig_cap_size')) {
+    return 'The wig cap-size comparison needs the latest database fix. Apply migration 20260908170000, refresh, and scan again.';
+  }
+
   if (
     lowerMessage.includes('release_schedules')
     && (lowerMessage.includes('could not find the table') || lowerMessage.includes('relation "release_schedules" does not exist'))
@@ -516,10 +548,6 @@ function actionRequiresReason(actionId) {
   return Boolean(ACTION_DEFINITIONS[actionId]?.requiresReason);
 }
 
-function actionRequiresWigSelection(actionId) {
-  return Boolean(ACTION_DEFINITIONS[actionId]?.requiresWigSelection);
-}
-
 function getCanonicalWigStatusLabel(statusValue) {
   const key = normalizeStatusKey(statusValue);
   if (['readyforrelease', 'readyforevent', 'available'].includes(key)) return 'Available';
@@ -542,7 +570,9 @@ function getAllowedActionsForRow(row) {
   }
 
   if (row.statusKey === 'accepted_in_production') {
-    return [];
+    // Staff may scan the request's completed bundle themselves. If Specialist
+    // scanned first, the same action verifies and allocates the stocked wig.
+    return ['accept_allocated'];
   }
 
   if (row.statusKey === 'accepted_allocated') {
@@ -581,6 +611,7 @@ function buildSearchBlob(row) {
     row.requestedWigSpecificationId,
     row.specSpecialNote,
     row.allocatedWigCode,
+    row.allocatedWigCatalogCode,
     row.allocatedWigName,
     row.allocatedWigStatus,
     row.appealStatus,
@@ -631,9 +662,14 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
   const [isLoadingAvailableWigs, setIsLoadingAvailableWigs] = useState(false);
   const [actionReason, setActionReason] = useState('');
   const [actionReleaseDate, setActionReleaseDate] = useState('');
-  const [safetyReviewStatus, setSafetyReviewStatus] = useState('Pending');
-  const [safetyReviewNotes, setSafetyReviewNotes] = useState('');
+  const [actionConfirmationOpen, setActionConfirmationOpen] = useState(false);
   const [releaseConfirmationStep, setReleaseConfirmationStep] = useState('');
+  const [approvalConfirmation, setApprovalConfirmation] = useState(null);
+  const [allocationScanCode, setAllocationScanCode] = useState('');
+  const [allocationScanPreview, setAllocationScanPreview] = useState(null);
+  const [allocationScanner, setAllocationScanner] = useState({
+    open: false, manualCode: '', saving: false, error: '', success: '',
+  });
 
   const loadReviewRows = useCallback(async (keepSelectedReqId = null) => {
     if (!isSupabaseConfigured || !supabase) {
@@ -649,7 +685,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
       setIsLoading(true);
       setNotice({ kind: '', text: '' });
 
-      const [requestsRes, patientsRes, hospitalsRes, safetyRes] = await Promise.all([
+      const [requestsRes, patientsRes, hospitalsRes, safetyRes, physicalBundlesRes, allocatedBundlesRes] = await Promise.all([
         supabase
           .from(WIG_REQUESTS_TABLE)
           .select('*')
@@ -657,12 +693,25 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
         supabase.from(PATIENTS_TABLE).select('*'),
         supabase.from(HOSPITALS_TABLE).select('Hospital_ID,Hospital_Name'),
         supabase.from(SAFETY_ASSESSMENTS_TABLE).select('*'),
+        supabase.rpc('get_available_physical_wig_counts'),
+        supabase
+          .from(HAIR_SUBMISSION_BUNDLES_TABLE)
+          .select('Bundle_ID, Bundle_Waybill_Code, Allocated_To_Wig_Request_ID'),
       ]);
 
       if (requestsRes.error) throw requestsRes.error;
       if (patientsRes.error) throw patientsRes.error;
       if (hospitalsRes.error) throw hospitalsRes.error;
       if (safetyRes.error) throw safetyRes.error;
+      if (physicalBundlesRes.error) throw physicalBundlesRes.error;
+      if (allocatedBundlesRes.error) throw allocatedBundlesRes.error;
+
+      const availablePhysicalSpecIds = new Set(
+        (physicalBundlesRes.data || [])
+          .filter((row) => Number(row.Available_Count || 0) > 0)
+          .map((row) => Number(row.Wig_Specification_ID || 0))
+          .filter((specificationId) => specificationId > 0),
+      );
 
       let appealsRes = await supabase
         .from('wig_release_appeals')
@@ -792,6 +841,21 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
       const patientById = new Map((patientsRes.data || []).map((row) => [Number(row.Patient_ID), row]));
       const safetyByReqId = new Map((safetyRes.data || []).map((row) => [Number(row.req_id), row]));
       const hospitalById = new Map((hospitalsRes.data || []).map((row) => [Number(row.Hospital_ID), row]));
+      const physicalBundleById = new Map(
+        (allocatedBundlesRes.data || [])
+          .map((row) => ({
+            bundleId: Number(row.Bundle_ID || 0),
+            bundleWaybillCode: String(row.Bundle_Waybill_Code || '').trim(),
+            requestId: Number(row.Allocated_To_Wig_Request_ID || 0),
+          }))
+          .filter((row) => row.bundleId > 0)
+          .map((row) => [row.bundleId, row]),
+      );
+      const physicalBundleByRequestId = new Map(
+        Array.from(physicalBundleById.values())
+          .filter((row) => row.requestId > 0)
+          .map((row) => [row.requestId, row]),
+      );
       const allocatedWigById = new Map(
         allocatedWigs
           .map((row) => ({
@@ -866,11 +930,15 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           : {};
         const requestedWigId = Number(requestRow.Requested_Wig_ID || 0) || null;
         const allocatedWigId = Number(requestRow.Allocated_Wig_ID || 0) || null;
+        const fulfillmentBundleId = Number(requestRow.Fulfillment_Bundle_ID || 0) || null;
         const requestedSpec = requestedWigId ? (allocatedSpecByWigId.get(requestedWigId) || null) : null;
         const requestedWig = requestedWigId ? (allocatedWigById.get(requestedWigId) || null) : null;
         const requestedWigFilter = requestedWigId ? (allocatedFilterByWigId.get(requestedWigId) || null) : null;
         const requestedSpecId = toPositiveNumber(requestedSpec?.Wig_Specification_ID || 0);
         const allocatedWig = allocatedWigId ? (allocatedWigById.get(allocatedWigId) || null) : null;
+        const allocatedPhysicalBundle = (fulfillmentBundleId ? physicalBundleById.get(fulfillmentBundleId) : null)
+          || physicalBundleByRequestId.get(reqId)
+          || null;
         const allocatedWigSpec = allocatedWigId ? (allocatedSpecByWigId.get(allocatedWigId) || null) : null;
         const allocatedWigFilter = allocatedWigId ? (allocatedFilterByWigId.get(allocatedWigId) || null) : null;
         const schedule = currentScheduleByReqId.get(reqId) || null;
@@ -919,6 +987,9 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           clinicalAllergiesMedications: String(patient?.Allergies_Current_Medications || '').trim() || 'N/A',
           requestDate: requestRow.Request_Date,
           updatedAt: requestRow.Updated_At || requestRow.Request_Date,
+          expectedReleaseEarliestAt: requestRow.Expected_Release_Earliest_At || null,
+          expectedReleaseLatestAt: requestRow.Expected_Release_Latest_At || requestRow.Expected_Release_At || null,
+          expectedReleaseNote: String(requestRow.Expected_Release_Note || '').trim(),
           status: statusRaw,
           statusKey,
           statusLabel: getStatusLabel(statusRaw),
@@ -935,8 +1006,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           specCapSize: String(requestedSpec?.Cap_Size || '').trim() || 'N/A',
           specSpecialNote: String(specialNotesPayload?.specialNoteTemplate || '').trim() || 'N/A',
           requestedStockCount: requestedWig?.stockCount ?? 0,
-          requestedStockAvailable: Number(requestedWig?.stockCount || 0) > 0
-            && normalizeStatusKey(requestedWig?.wigStatus) === 'available',
+          requestedStockAvailable: availablePhysicalSpecIds.has(requestedSpecId),
           safetyAssessment,
           requestedWigFrontImageUrl: signedSourceUrlByPath.get(String(requestedWigFilter?.Source_Front_Path || '').trim())
             || resolveStoragePublicUrl(
@@ -975,7 +1045,9 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
               String(requestedWigFilter?.Layer_Back_Hair_Path || '').trim(),
             ),
           allocatedWigId,
-          allocatedWigCode: allocatedWig?.wigCode || '',
+          allocatedBundleId: allocatedPhysicalBundle?.bundleId || fulfillmentBundleId,
+          allocatedWigCode: allocatedPhysicalBundle?.bundleWaybillCode || '',
+          allocatedWigCatalogCode: allocatedWig?.wigCode || '',
           allocatedWigName: allocatedWig?.wigName || '',
           allocatedWigStatus: allocatedWig?.wigStatus || '',
           allocatedWigStockCount: allocatedWig?.stockCount ?? null,
@@ -1197,11 +1269,11 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     const query = normalizeText(searchTerm);
 
     return statusFiltered.filter((row) => {
-      const requestDate = new Date(row.requestDate);
-      if (requestDateFrom && !Number.isNaN(requestDate.getTime()) && requestDate < new Date(`${requestDateFrom}T00:00:00`)) {
+      const requestDate = parseManilaDate(row.requestDate);
+      if (requestDateFrom && requestDate && requestDate < new Date(`${requestDateFrom}T00:00:00${PST_OFFSET}`)) {
         return false;
       }
-      if (requestDateTo && !Number.isNaN(requestDate.getTime()) && requestDate > new Date(`${requestDateTo}T23:59:59`)) {
+      if (requestDateTo && requestDate && requestDate > new Date(`${requestDateTo}T23:59:59${PST_OFFSET}`)) {
         return false;
       }
       return !query || buildSearchBlob(row).includes(query);
@@ -1283,6 +1355,15 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
   }, [assignableWigs, selectedWigSpecificationId]);
 
   const selectedAllowedActions = useMemo(() => getAllowedActionsForRow(selectedRow), [selectedRow]);
+  const primaryFooterAction = useMemo(
+    () => selectedAllowedActions.find((actionId) => actionId !== 'reject') || '',
+    [selectedAllowedActions],
+  );
+  const allocatedApprovalTime = Date.now();
+  const allocatedApprovalWindow = {
+    earliest: new Date(allocatedApprovalTime + (3 * 24 * 60 * 60 * 1000)),
+    latest: new Date(allocatedApprovalTime + (9 * 24 * 60 * 60 * 1000)),
+  };
 
   useEffect(() => {
     setSelectedAction('');
@@ -1290,9 +1371,11 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     setAvailableWigs([]);
     setActionReason('');
     setActionReleaseDate('');
-    setSafetyReviewStatus(selectedRow?.safetyAssessment?.review_status || 'Pending');
-    setSafetyReviewNotes(selectedRow?.safetyAssessment?.review_notes || '');
-  }, [selectedRow?.reqId, selectedRow?.safetyAssessment?.review_notes, selectedRow?.safetyAssessment?.review_status]);
+    setActionConfirmationOpen(false);
+    setAllocationScanCode('');
+    setAllocationScanPreview(null);
+    setAllocationScanner({ open: false, manualCode: '', saving: false, error: '', success: '' });
+  }, [selectedRow?.reqId]);
 
   useEffect(() => {
     setSelectedWigSpecificationId('');
@@ -1342,16 +1425,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
       return false;
     }
 
-    if (actionRequiresWigSelection(selectedAction) && !Number(selectedWigSpecificationId || 0)) {
-      return false;
-    }
-
-    if (
-      selectedAction === 'accept_allocated'
-      && requestedSpecIdForSelection
-      && Number(selectedWigSpecificationId || 0)
-      && Number(selectedWigSpecificationId || 0) !== requestedSpecIdForSelection
-    ) {
+    if (selectedAction === 'accept_allocated' && !allocationScanPreview?.can_allocate) {
       return false;
     }
 
@@ -1363,8 +1437,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     isReleaseWorkflowAvailable,
     actionReleaseDate,
     actionReason,
-    selectedWigSpecificationId,
-    requestedSpecIdForSelection,
+    allocationScanPreview,
     minimumReleaseDateTimeLocal,
   ]);
 
@@ -1377,6 +1450,37 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     if (result.error) throw result.error;
     return result.data;
   }, []);
+
+  const previewAllocationScan = useCallback(async (rawPayload) => {
+    const payload = String(rawPayload || '').trim();
+    if (!selectedRow?.reqId || !payload) return false;
+    setAllocationScanner((previous) => ({ ...previous, saving: true, error: '', success: '' }));
+    try {
+      const result = await supabase.rpc('preview_wig_request_bundle_scan', {
+        p_req_id: selectedRow.reqId,
+        p_waybill_payload: payload,
+      });
+      if (result.error) throw result.error;
+      const preview = result.data || null;
+      setAllocationScanCode(payload);
+      setAllocationScanPreview(preview);
+      setAllocationScanner((previous) => ({
+        ...previous,
+        saving: false,
+        success: preview?.can_allocate
+          ? 'Physical wig verified. Close this scanner, review every match, then approve the allocation.'
+          : '',
+        error: preview?.can_allocate
+          ? ''
+          : 'QR read successfully, but this wig is unavailable or has a specification mismatch.',
+      }));
+      return Boolean(preview?.can_allocate);
+    } catch (error) {
+      setAllocationScanPreview(null);
+      setAllocationScanner((previous) => ({ ...previous, saving: false, error: mapActionError(error?.message), success: '' }));
+      return false;
+    }
+  }, [selectedRow?.reqId]);
 
   const handleApplyAction = async () => {
     if (!selectedRow || !selectedAction) {
@@ -1408,17 +1512,28 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     try {
       setIsApplyingAction(true);
       setNotice({ kind: '', text: '' });
+      let approvedRequest = null;
 
-      if (['accept_allocated', 'accept_in_production', 'reject'].includes(selectedAction)) {
+      if (selectedAction === 'accept_allocated') {
+        const allocationResult = await supabase.rpc('allocate_scanned_wig_to_request', {
+          p_req_id: selectedRow.reqId,
+          p_waybill_payload: allocationScanCode,
+          p_safety_review_status: null,
+          p_safety_review_notes: null,
+        });
+        if (allocationResult.error) throw allocationResult.error;
+        approvedRequest = allocationResult.data?.request || null;
+      } else if (['accept_in_production', 'reject'].includes(selectedAction)) {
         const transactionalResult = await supabase.rpc('review_wig_request_transactional', {
           p_req_id: selectedRow.reqId,
           p_action: selectedAction === 'accept_in_production' ? 'accept_production_required' : selectedAction,
-          p_wig_specification_id: selectedAction === 'accept_allocated' ? Number(selectedWigSpecificationId || 0) : null,
+          p_wig_specification_id: null,
           p_reason: reasonText || null,
-          p_safety_review_status: safetyReviewStatus || null,
-          p_safety_review_notes: String(safetyReviewNotes || '').trim() || null,
+          p_safety_review_status: null,
+          p_safety_review_notes: null,
         });
         if (transactionalResult.error) throw transactionalResult.error;
+        approvedRequest = transactionalResult.data?.request || null;
       }
 
       if (selectedAction === 'mark_ready_for_pickup') {
@@ -1454,6 +1569,16 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
       setSelectedWigSpecificationId('');
       setActionReason('');
       setActionReleaseDate('');
+      setActionConfirmationOpen(false);
+      if (['accept_allocated', 'accept_in_production'].includes(selectedAction) && approvedRequest) {
+        setApprovalConfirmation({
+          requestCode,
+          status: approvedRequest.Status,
+          earliest: approvedRequest.Expected_Release_Earliest_At,
+          latest: approvedRequest.Expected_Release_Latest_At || approvedRequest.Expected_Release_At,
+          note: approvedRequest.Expected_Release_Note,
+        });
+      }
       setNotice({ kind: 'success', text: `${requestCode} updated successfully using "${actionLabel}".` });
     } catch (error) {
       await logAuditAction({
@@ -1472,6 +1597,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
 
   const handleOpenReleaseConfirmation = () => {
     if (!selectedRow || !['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)) return;
+    setActionReason('');
     setReleaseConfirmationStep('confirm');
   };
 
@@ -1486,6 +1612,14 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
         p_req_id: selectedRow.reqId,
       });
       if (result.error) throw result.error;
+
+      await logAuditAction({
+        action: 'staff_complete_wig_release',
+        description: `${selectedRow.requestId}: final wig handover confirmed${String(actionReason || '').trim() ? ` | notes: ${String(actionReason).trim()}` : ''}`,
+        resource: 'Wig_Requests',
+        status: 'success',
+        userProfile,
+      });
 
       await loadReviewRows(selectedRow.reqId);
       setReleaseConfirmationStep('success');
@@ -1695,6 +1829,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                         {row.requestedStockAvailable ? `${row.requestedStockCount} in stock` : 'No matching stock'}
                       </span>
                       {row.allocatedWigCode ? <p className="text-xs font-semibold text-emerald-700">Allocated Wig: {row.allocatedWigCode}</p> : null}
+                      {row.allocatedWigCatalogCode ? <p className="text-[11px] text-slate-500">Catalog variant: {row.allocatedWigCatalogCode}</p> : null}
                     </td>
                     <td className="px-4 py-3">
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(row.status)}`}>
@@ -1758,9 +1893,12 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                   {selectedRow.requestId} | {selectedRow.patientName}
                 </p>
               </div>
-              <button type="button" onClick={() => { setReleaseConfirmationStep(''); setSelectedRow(null); }} className="text-slate-400 hover:text-red-500">
-                <X size={22} />
-              </button>
+              <div className="flex items-center gap-3">
+                <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass(selectedRow.status)}`}>{selectedRow.statusLabel}</span>
+                <button type="button" onClick={() => { setReleaseConfirmationStep(''); setSelectedRow(null); }} className="text-slate-400 hover:text-red-500">
+                  <X size={22} />
+                </button>
+              </div>
             </div>
 
             <div className="flex flex-1 flex-col gap-4 overflow-y-auto bg-slate-100 p-5">
@@ -1878,15 +2016,53 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                       <p><span className="font-semibold text-slate-900">Texture:</span> {selectedRow.specTexture}</p>
                       <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedRow.specCapSize}</p>
                     </div>
-                    <p className="mt-3 text-sm text-slate-700"><span className="font-semibold text-slate-900">Allocated Wig:</span> {selectedRow.allocatedWigCode || 'Not assigned yet'}</p>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div className="text-sm text-slate-700">
+                        <p><span className="font-semibold text-slate-900">Physical wig serial:</span> {selectedRow.allocatedWigCode || 'Not assigned yet'}</p>
+                        {selectedRow.allocatedWigCatalogCode ? <p className="mt-0.5 text-xs text-slate-500">Catalog variant: {selectedRow.allocatedWigCatalogCode}</p> : null}
+                      </div>
+                      {!selectedRow.allocatedWigId && selectedAllowedActions.includes('accept_allocated') ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedAction('accept_allocated');
+                            setAllocationScanner({ open: true, manualCode: '', saving: false, error: '', success: '' });
+                          }}
+                          className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                        >
+                          Assign Wig
+                        </button>
+                      ) : null}
+                    </div>
                     <p className="mt-2 whitespace-pre-line text-sm text-slate-700"><span className="font-semibold text-slate-900">Special Note:</span> {selectedRow.specSpecialNote}</p>
                   </div>
                 </div>
+                {allocationScanPreview ? (
+                  <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className={`rounded-lg border px-3 py-2 text-xs font-semibold ${allocationScanPreview.can_allocate ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
+                      {allocationScanPreview.can_allocate
+                        ? `Physical wig matched: ${allocationScanPreview.bundle_code || `Bundle #${allocationScanPreview.bundle_id}`}`
+                        : 'The scanned physical wig is unavailable or does not match this request.'}
+                    </div>
+                    <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+                      {(allocationScanPreview.fields || []).map((field) => (
+                        <div key={field.key} className={`rounded-lg border px-2.5 py-2 text-[11px] ${field.match ? 'border-emerald-200 bg-white' : 'border-red-200 bg-red-50'}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-slate-800">{field.label}</span>
+                            <span className={field.match ? 'text-emerald-700' : 'text-red-700'}>{field.match ? 'Match' : 'Mismatch'}</span>
+                          </div>
+                          <p className="mt-1 text-slate-600">Requested: {field.requested ?? 'N/A'} | Scanned: {field.actual ?? 'N/A'}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 {selectedRow.allocatedWigId ? (
                   <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
                     <p className="font-semibold text-slate-900">
-                      {selectedRow.allocatedWigCode || `Wig #${selectedRow.allocatedWigId}`} | {selectedRow.allocatedWigName || 'Unnamed Wig'}
+                      {selectedRow.allocatedWigCode || 'Physical serial unavailable'} | {selectedRow.allocatedWigName || 'Unnamed Wig'}
                     </p>
+                    {selectedRow.allocatedWigCatalogCode ? <p className="mt-1">Catalog variant: {selectedRow.allocatedWigCatalogCode}</p> : null}
                     <p className="mt-1">
                       Status: {selectedRow.allocatedWigStatus || 'N/A'} | Stock: {selectedRow.allocatedWigStockCount ?? 'N/A'}
                     </p>
@@ -1919,17 +2095,8 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                     {selectedRow.safetyAssessment.allergy_details ? <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Allergy details:</span> {selectedRow.safetyAssessment.allergy_details}</p> : null}
                     {selectedRow.safetyAssessment.medical_restriction_details ? <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Restriction details:</span> {selectedRow.safetyAssessment.medical_restriction_details}</p> : null}
                     <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Clinical allergies/current medications:</span> {selectedRow.clinicalAllergiesMedications}</p>
-                    <div className="grid grid-cols-1 gap-3 border-t border-slate-200 pt-3 sm:grid-cols-2">
-                      <div>
-                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-600">Safety Review</label>
-                        <select value={safetyReviewStatus} onChange={(event) => setSafetyReviewStatus(event.target.value)} disabled={isApplyingAction} className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm text-slate-800">
-                          {['Pending', 'Cleared', 'Needs Clarification', 'Requires Medical Clearance'].map((value) => <option key={value} value={value}>{value}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-600">Review Notes</label>
-                        <textarea value={safetyReviewNotes} onChange={(event) => setSafetyReviewNotes(event.target.value)} disabled={isApplyingAction} rows={2} className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm text-slate-800" />
-                      </div>
+                    <div className="flex items-center gap-2 border-t border-slate-200 pt-3 text-sm font-semibold text-emerald-700">
+                      <CheckCircle2 size={17} /> Confirmed by the hospital
                     </div>
                   </div>
                 ) : (
@@ -1945,6 +2112,10 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                     <span><span className="font-semibold text-slate-900">Release Date:</span> {formatDateTime(selectedRow.releaseDate)}</span>
                   </p>
                   <p><span className="font-semibold text-slate-900">Flow Status:</span> {selectedRow.releaseWorkflowLabel}</p>
+                  <p className="inline-flex items-center gap-1.5">
+                    <CalendarDays size={14} className="text-slate-500" />
+                    <span><span className="font-semibold text-slate-900">Required distribution window:</span> {formatDateOnly(selectedRow.expectedReleaseEarliestAt)} – {formatDateOnly(selectedRow.expectedReleaseLatestAt)}</span>
+                  </p>
                   {selectedRow.releaseDecisionReason && (
                     <p className="whitespace-pre-line"><span className="font-semibold text-slate-900">H-Representative Reason:</span> {selectedRow.releaseDecisionReason}</p>
                   )}
@@ -1954,7 +2125,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                 </div>
               </div>
 
-              <div className="order-last rounded-xl border border-slate-300 bg-white p-4 shadow-sm">
+              {false && <div className="rounded-xl border border-slate-300 bg-white p-4 shadow-sm">
                 <p className="text-sm font-semibold text-slate-900">Apply Review Action</p>
                 <p className="mt-1 text-xs text-slate-500">
                   {selectedRow.statusKey === 'pending'
@@ -1975,14 +2146,9 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                         ? 'This patient has no hospital. Confirm only after the patient or authorized recipient has picked up the wig.'
                         : 'The hospital approved the release schedule. Confirm only after the wig has been physically handed over to the patient or authorized recipient.'}
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleOpenReleaseConfirmation}
-                      disabled={isApplyingAction}
-                      className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
-                    >
-                      <CheckCircle2 size={16} /> {selectedRow.statusKey === 'ready_for_pickup' ? 'Confirm Pick-up' : 'Release Wig'}
-                    </button>
+                    <p className="text-xs font-medium text-slate-600">
+                      Use the fixed footer below to confirm this final handover.
+                    </p>
                   </div>
                 ) : selectedRow.statusKey === 'released' ? (
                   <div className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-900">
@@ -2011,6 +2177,43 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
 
                     {selectedAction === 'accept_allocated' && (
                       <div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="text-xs font-semibold text-slate-900">Required physical wig scan</p>
+                              <p className="mt-0.5 text-[11px] text-slate-600">Scan the completed wig/bundle QR. Approval stays locked until every requested specification matches.</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setAllocationScanner({ open: true, manualCode: '', saving: false, error: '', success: '' })}
+                              disabled={isApplyingAction}
+                              className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                            >
+                              Scan Wig QR
+                            </button>
+                          </div>
+                          {allocationScanPreview ? (
+                            <div className="mt-3 space-y-2">
+                              <div className={`rounded-lg border px-3 py-2 text-xs font-semibold ${allocationScanPreview.can_allocate ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
+                                {allocationScanPreview.can_allocate
+                                  ? `Match confirmed: ${allocationScanPreview.bundle_code || `Bundle #${allocationScanPreview.bundle_id}`}`
+                                  : 'This scanned wig cannot be allocated to this request.'}
+                              </div>
+                              <div className="grid gap-1.5 sm:grid-cols-2">
+                                {(allocationScanPreview.fields || []).map((field) => (
+                                  <div key={field.key} className={`rounded-lg border px-2.5 py-2 text-[11px] ${field.match ? 'border-emerald-200 bg-white' : 'border-red-200 bg-red-50'}`}>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-semibold text-slate-800">{field.label}</span>
+                                      <span className={field.match ? 'text-emerald-700' : 'text-red-700'}>{field.match ? 'Match' : 'Mismatch'}</span>
+                                    </div>
+                                    <p className="mt-1 text-slate-600">Requested: {field.requested ?? 'N/A'} · Scanned: {field.actual ?? 'N/A'}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="hidden">
                         <div className="mb-1 flex items-center justify-between gap-2">
                           <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-600">Select Wig Specification (required)</label>
                           <button
@@ -2069,6 +2272,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                             No matching stock is available. Use "Accept - In Production" to send this request to the specialist priority queue.
                           </p>
                         )}
+                        </div>
                       </div>
                     )}
 
@@ -2116,16 +2320,24 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                       type="button"
                       onClick={handleApplyAction}
                       disabled={!canApplyAction}
-                      className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                      className="hidden rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-60"
                     >
-                      {isApplyingAction ? 'Applying...' : 'Apply Action'}
+                      {isApplyingAction
+                        ? 'Applying...'
+                        : selectedAction === 'accept_allocated'
+                          ? 'Approve - Wig Allocated'
+                          : 'Apply Action'}
                     </button>
                   </div>
                 )}
-              </div>
+              </div>}
 
               {selectedPreviewUrl ? (
                 <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="mb-3">
+                    <p className="text-sm font-semibold text-slate-900">Request History</p>
+                    <p className="mt-0.5 text-xs text-slate-500">Original request document and saved patient submission.</p>
+                  </div>
                   <iframe
                     title="Wig request PDF preview"
                     src={selectedPreviewUrl}
@@ -2142,9 +2354,200 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                 </div>
               ) : (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  No preview PDF URL is saved for this request yet.
+                  <p className="font-semibold">Request History</p>
+                  <p className="mt-1">No preview PDF URL is saved for this request yet.</p>
                 </div>
               )}
+            </div>
+
+            <footer className="z-20 flex shrink-0 flex-col gap-3 border-t border-slate-200 bg-white px-5 py-3 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-slate-500">Last updated <strong className="font-semibold text-slate-700">{formatDateTime(selectedRow.updatedAt)}</strong> <span className="font-medium">(Philippine time, UTC+8)</span></p>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {primaryFooterAction === 'accept_allocated' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAction('accept_allocated');
+                      setAllocationScanner({ open: true, manualCode: '', saving: false, error: '', success: '' });
+                    }}
+                    disabled={isApplyingAction}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    {allocationScanPreview?.can_allocate ? 'Rescan Wig QR' : 'Scan Wig QR'}
+                  </button>
+                ) : null}
+                {selectedAllowedActions.includes('reject') ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAction('reject');
+                      setActionReason('');
+                      setActionConfirmationOpen(true);
+                    }}
+                    disabled={isApplyingAction}
+                    className="rounded-lg border border-red-300 bg-white px-4 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    Reject
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)) {
+                      handleOpenReleaseConfirmation();
+                      return;
+                    }
+                    if (!primaryFooterAction) return;
+                    setSelectedAction(primaryFooterAction);
+                    setActionReason('');
+                    if (primaryFooterAction === 'accept_allocated' && !allocationScanPreview?.can_allocate) {
+                      setAllocationScanner({ open: true, manualCode: '', saving: false, error: '', success: '' });
+                      return;
+                    }
+                    setActionConfirmationOpen(true);
+                  }}
+                  disabled={['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)
+                    ? isApplyingAction
+                    : !primaryFooterAction || isApplyingAction}
+                  className="min-w-[112px] rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isApplyingAction
+                    ? 'Saving...'
+                    : ['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)
+                      ? selectedRow.statusKey === 'ready_for_pickup' ? 'Confirm Pick-up' : 'Release Wig'
+                      : primaryFooterAction === 'accept_allocated'
+                        ? allocationScanPreview?.can_allocate ? 'Approve - Wig Allocated' : 'Scan & Verify Wig'
+                        : ACTION_DEFINITIONS[primaryFooterAction]?.label || 'No Action Available'}
+                </button>
+              </div>
+            </footer>
+
+            <BundleCompletionScanner
+              open={allocationScanner.open}
+              manualCode={allocationScanner.manualCode}
+              saving={allocationScanner.saving}
+              error={allocationScanner.error}
+              success={allocationScanner.success}
+              onManualCodeChange={(value) => setAllocationScanner((previous) => ({
+                ...previous, manualCode: value, error: '', success: '',
+              }))}
+              onSubmit={previewAllocationScan}
+              onClose={() => setAllocationScanner((previous) => (
+                previous.saving ? previous : { ...previous, open: false }
+              ))}
+              primaryColor="#7f1d1d"
+              purpose="allocation"
+              contained
+            />
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {actionConfirmationOpen && selectedRow && selectedAction && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Close action confirmation"
+            className="absolute inset-0 border-0 bg-slate-950/65 backdrop-blur-sm"
+            onClick={() => { if (!isApplyingAction) setActionConfirmationOpen(false); }}
+          />
+          <section className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="wig-action-confirmation-title">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Final confirmation</p>
+                <h3 id="wig-action-confirmation-title" className="mt-1 text-lg font-bold text-slate-900">
+                  {ACTION_DEFINITIONS[selectedAction]?.label || 'Confirm Next Step'}
+                </h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  {actionRequiresReason(selectedAction)
+                    ? 'Review the request and provide the required reason before continuing.'
+                    : 'Review these details before confirming the next workflow step.'}
+                </p>
+              </div>
+              <button type="button" onClick={() => setActionConfirmationOpen(false)} disabled={isApplyingAction} className="text-slate-400 hover:text-red-600 disabled:opacity-50"><X size={20} /></button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 sm:grid-cols-2">
+                <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Request</span>{selectedRow.requestId}</p>
+                <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Patient</span>{selectedRow.patientName}</p>
+                <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Current status</span>{selectedRow.statusLabel}</p>
+                <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Next status</span>{ACTION_DEFINITIONS[selectedAction]?.label}</p>
+              </div>
+
+              {selectedAction === 'accept_allocated' && allocationScanPreview?.can_allocate ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                    <CheckCircle2 size={18} /> Physical wig {allocationScanPreview.bundle_code || `#${allocationScanPreview.bundle_id}`} matches every requested specification.
+                  </div>
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-blue-950">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-blue-700">Expected release after this approval</p>
+                    <p className="mt-1 text-base font-bold">3–9 days</p>
+                    <p className="mt-1 text-sm font-semibold">
+                      {formatDateOnly(allocatedApprovalWindow.earliest)} – {formatDateOnly(allocatedApprovalWindow.latest)}
+                    </p>
+                    <p className="mt-1 text-xs text-blue-800">These dates will be saved automatically from the actual Staff approval time.</p>
+                  </div>
+                </div>
+              ) : null}
+
+              {actionRequiresReleaseDate(selectedAction) ? (
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-blue-950">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-blue-700">Expected patient receipt</p>
+                    <p className="mt-1 text-sm font-semibold">
+                      {formatDateOnly(selectedRow.expectedReleaseEarliestAt)} – {formatDateOnly(selectedRow.expectedReleaseLatestAt)}
+                    </p>
+                    <p className="mt-1 text-xs text-blue-800">Choose the release schedule with this expected receipt window in mind.</p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-600">Release date and time (Philippines, UTC+8)</label>
+                    <input
+                      type="datetime-local"
+                      value={actionReleaseDate}
+                      min={minimumReleaseDateTimeLocal}
+                      onChange={(event) => setActionReleaseDate(event.target.value)}
+                      disabled={isApplyingAction || !isReleaseWorkflowAvailable}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
+                    />
+                    <p className="mt-1 text-xs text-slate-500">Earliest allowed date: {minimumReleaseDateTimeLocal.slice(0, 10)}.</p>
+                  </div>
+                </div>
+              ) : null}
+
+              {actionRequiresReason(selectedAction) ? (
+                <div>
+                  <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-600">Rejection reason (required)</label>
+                  <textarea
+                    value={actionReason}
+                    onChange={(event) => setActionReason(event.target.value)}
+                    disabled={isApplyingAction}
+                    rows={4}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
+                    placeholder="Explain clearly why this request is being rejected."
+                  />
+                </div>
+              ) : null}
+
+              {selectedAction === 'reject' ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                  Rejecting closes this request. Confirm that the reason is complete and appropriate for the patient record.
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => setActionConfirmationOpen(false)} disabled={isApplyingAction} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50">Cancel</button>
+              <button
+                type="button"
+                onClick={handleApplyAction}
+                disabled={!canApplyAction}
+                className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 ${selectedAction === 'reject' ? 'bg-red-700 hover:bg-red-800' : 'bg-slate-900 hover:bg-slate-800'}`}
+              >
+                {isApplyingAction ? <Loader2 size={16} className="animate-spin" /> : selectedAction === 'reject' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+                {isApplyingAction ? 'Saving...' : `Confirm ${ACTION_DEFINITIONS[selectedAction]?.label || 'Action'}`}
+              </button>
             </div>
           </section>
         </div>,
@@ -2168,12 +2571,23 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Current Status</span>{selectedRow.statusLabel}</p>
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Patient</span>{selectedRow.patientName}</p>
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Hospital</span>{selectedRow.hospitalName}</p>
-                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Allocated Wig</span>{selectedRow.allocatedWigCode || selectedRow.specWigName}</p>
+                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Physical Wig Serial</span>{selectedRow.allocatedWigCode || 'Unavailable'}</p>
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">{selectedRow.statusKey === 'ready_for_pickup' ? 'Pickup Type' : 'Approved Release Date'}</span>{selectedRow.statusKey === 'ready_for_pickup' ? 'Direct patient pickup' : formatDateTime(selectedRow.releaseDate)}</p>
                     </div>
                   </div>
                   <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                     Continuing confirms the wig was handed over. The request will move permanently from <strong>{selectedRow.statusLabel}</strong> to <strong>Released</strong>.
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-600">Final handover notes (optional)</label>
+                    <textarea
+                      value={actionReason}
+                      onChange={(event) => setActionReason(event.target.value)}
+                      disabled={isApplyingAction}
+                      rows={3}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
+                      placeholder="Add the recipient, handover condition, or other final confirmation notes."
+                    />
                   </div>
                 </div>
                 <div className="flex flex-col-reverse gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:justify-end">
@@ -2214,6 +2628,26 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                 </button>
               </div>
             )}
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {approvalConfirmation && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[2147483100] flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
+          <section className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <span className="rounded-full bg-emerald-100 p-2 text-emerald-700"><CheckCircle2 size={20} /></span>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-lg font-bold text-slate-900">Request Approved</h3>
+                <p className="mt-1 text-sm text-slate-600">{approvalConfirmation.requestCode} is now {approvalConfirmation.status}.</p>
+                <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-950">
+                  <p className="text-xs font-bold uppercase tracking-wide">Required distribution / receipt window</p>
+                  <p className="mt-1 text-sm font-semibold">{formatDateOnly(approvalConfirmation.earliest)} – {formatDateOnly(approvalConfirmation.latest)}</p>
+                </div>
+              </div>
+            </div>
+            <button type="button" onClick={() => setApprovalConfirmation(null)} className="mt-5 w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white">Close</button>
           </section>
         </div>,
         document.body,

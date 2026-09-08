@@ -71,6 +71,7 @@ const INITIAL_CONFIRM_MODAL = {
   bundleId: null,
   submissionId: null,
   submissionCode: '',
+  donorName: '',
   tone: 'primary',
 };
 
@@ -387,13 +388,29 @@ export default function BundlingPage() {
       const availableSubmissionIds = Array.from(new Set(
         availableInventory.map((row) => Number(row.Submission_ID || 0)).filter(Boolean),
       ));
+      const availableSubmissionsResult = availableSubmissionIds.length
+        ? await supabase
+          .from(HAIR_SUBMISSIONS_TABLE)
+          .select('Submission_ID, User_ID, Event_Attendee_ID, Event_Request_ID, From_Event, Waybill_Code')
+          .in('Submission_ID', availableSubmissionIds)
+        : { data: [], error: null };
+      if (availableSubmissionsResult.error) throw availableSubmissionsResult.error;
+      const availableSubmissionById = (availableSubmissionsResult.data || []).reduce((acc, row) => {
+        acc[Number(row.Submission_ID || 0)] = row;
+        return acc;
+      }, {});
       const availableAttendeeIds = Array.from(new Set(
-        availableInventory.map((row) => Number(row.Event_Attendee_ID || 0)).filter(Boolean),
+        availableInventory.flatMap((row) => {
+          const submission = availableSubmissionById[Number(row.Submission_ID || 0)] || {};
+          return [Number(row.Event_Attendee_ID || 0), Number(submission.Event_Attendee_ID || 0)];
+        }).filter(Boolean),
       ));
       const availableDonorIds = Array.from(new Set(
-        availableInventory.map((row) => Number(row.Donor_User_ID || 0)).filter(Boolean),
+        availableInventory.flatMap((row) => {
+          const submission = availableSubmissionById[Number(row.Submission_ID || 0)] || {};
+          return [Number(row.Donor_User_ID || 0), Number(submission.User_ID || 0)];
+        }).filter(Boolean),
       ));
-
       const [availableDetailsResult, availableAttendeesResult, availableDonorsResult] = await Promise.all([
         availableSubmissionIds.length
           ? supabase
@@ -404,9 +421,7 @@ export default function BundlingPage() {
           : Promise.resolve({ data: [], error: null }),
         availableAttendeeIds.length
           ? supabase
-            .from(EVENT_ATTENDEES_TABLE)
-            .select('Event_Attendee_ID, Waybill_Code')
-            .in('Event_Attendee_ID', availableAttendeeIds)
+            .rpc('get_cut_hair_inventory_waybills', { p_event_attendee_ids: availableAttendeeIds })
           : Promise.resolve({ data: [], error: null }),
         availableDonorIds.length
           ? supabase
@@ -424,10 +439,22 @@ export default function BundlingPage() {
         if (submissionId && !acc[submissionId]) acc[submissionId] = row;
         return acc;
       }, {});
-      const availableWaybillByAttendee = (availableAttendeesResult.data || []).reduce((acc, row) => {
+      const availableAttendeeRows = (availableAttendeesResult.data || []).map((row) => ({
+        Event_Attendee_ID: row.event_attendee_id,
+        Event_Request_ID: row.event_request_id,
+        User_ID: row.user_id,
+        Waybill_Code: row.waybill_code,
+      }));
+      const availableWaybillByAttendee = availableAttendeeRows.reduce((acc, row) => {
         acc[Number(row.Event_Attendee_ID || 0)] = String(row.Waybill_Code || '').trim().toUpperCase();
         return acc;
       }, {});
+      const availableAttendeeByEventUser = new Map(
+        availableAttendeeRows.map((row) => [
+          `${Number(row.Event_Request_ID || 0)}:${Number(row.User_ID || 0)}`,
+          row,
+        ]),
+      );
       const availableDonorById = (availableDonorsResult.data || []).reduce((acc, row) => {
         acc[Number(row.user_id || 0)] = row;
         return acc;
@@ -435,14 +462,26 @@ export default function BundlingPage() {
 
       setAvailableCutHair(availableInventory.map((row) => {
         const submissionId = Number(row.Submission_ID || 0);
-        const attendeeId = Number(row.Event_Attendee_ID || 0);
-        const donor = availableDonorById[Number(row.Donor_User_ID || 0)] || {};
+        const submission = availableSubmissionById[submissionId] || {};
+        const donorId = Number(row.Donor_User_ID || submission.User_ID || 0);
+        const linkedAttendeeId = Number(row.Event_Attendee_ID || submission.Event_Attendee_ID || 0);
+        const attendee = availableAttendeeRows.find(
+          (candidate) => Number(candidate.Event_Attendee_ID || 0) === linkedAttendeeId,
+        ) || availableAttendeeByEventUser.get(`${Number(submission.Event_Request_ID || 0)}:${donorId}`) || null;
+        const attendeeId = Number(attendee?.Event_Attendee_ID || linkedAttendeeId || 0);
+        const donor = availableDonorById[donorId] || {};
+        const isEventHair = Boolean(attendeeId || submission.From_Event);
+        const attendeeWaybillCode = String(attendee?.Waybill_Code || availableWaybillByAttendee[attendeeId] || '').trim().toUpperCase();
         return {
           ...row,
           submissionId,
-          waybillCode: availableWaybillByAttendee[attendeeId] || buildWaybillCode({ submissionId }),
+          eventAttendeeId: attendeeId || null,
+          isEventHair,
+          waybillCode: isEventHair
+            ? attendeeWaybillCode
+            : String(submission.Waybill_Code || '').trim().toUpperCase() || buildWaybillCode({ submissionId }),
           donorName: buildFullName(donor.first_name, donor.middle_name, donor.last_name, donor.suffix)
-            || `Donor #${row.Donor_User_ID}`,
+            || `Donor #${donorId}`,
           detail: availableDetailsBySubmission[submissionId] || null,
         };
       }));
@@ -493,17 +532,9 @@ export default function BundlingPage() {
 
       let bundlesResult = await supabase
         .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-        .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At, Created_By, Wig_Specification_ID, Wig_Request_ID')
+        .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At, Created_By, Wig_Specification_ID, Allocated_To_Wig_Request_ID')
         .order('Created_At', { ascending: false })
         .limit(100);
-
-      if (bundlesResult.error && String(bundlesResult.error.message || '').toLowerCase().includes('wig_request_id')) {
-        bundlesResult = await supabase
-          .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-          .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At, Created_By, Wig_Specification_ID')
-          .order('Created_At', { ascending: false })
-          .limit(100);
-      }
 
       if (bundlesResult.error) throw bundlesResult.error;
       const bundleRows = bundlesResult.data || [];
@@ -515,7 +546,7 @@ export default function BundlingPage() {
       if (bundleIds.length) {
         const membersResult = await supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Status, Bundle_ID, Event_Attendee_ID, Event_Request_ID, Updated_At')
+          .select('Submission_ID, User_ID, Status, Bundle_ID, Event_Attendee_ID, Event_Request_ID, From_Event, Waybill_Code, Updated_At')
           .in('Bundle_ID', bundleIds);
         if (membersResult.error) throw membersResult.error;
 
@@ -537,27 +568,36 @@ export default function BundlingPage() {
           }, {});
         }
 
-        let attendeeToRequestId = {};
-        let attendeeToWaybillCode = {};
-        if (attendeeIds.length) {
-          const { data, error } = await supabase
-            .from(EVENT_ATTENDEES_TABLE)
-            .select('Event_Attendee_ID, Event_Request_ID, Waybill_Code')
-            .in('Event_Attendee_ID', attendeeIds);
-          if (error) throw error;
-          attendeeToRequestId = (data || []).reduce((acc, r) => {
-            const attendeeId = Number(r.Event_Attendee_ID || 0);
-            if (!attendeeId) return acc;
-            acc[attendeeId] = Number(r.Event_Request_ID || 0) || null;
-            return acc;
-          }, {});
-          attendeeToWaybillCode = (data || []).reduce((acc, r) => {
-            const attendeeId = Number(r.Event_Attendee_ID || 0);
-            if (!attendeeId) return acc;
-            acc[attendeeId] = String(r.Waybill_Code || '').trim() || null;
-            return acc;
-          }, {});
-        }
+        const attendeeResults = attendeeIds.length
+          ? [await supabase.rpc('get_cut_hair_inventory_waybills', { p_event_attendee_ids: attendeeIds })]
+          : [];
+        const attendeeRowsById = new Map();
+        attendeeResults.forEach((result) => {
+          if (result.error) throw result.error;
+          (result.data || []).forEach((row) => {
+            const attendeeId = Number(row.event_attendee_id || 0);
+            if (attendeeId) {
+              attendeeRowsById.set(attendeeId, {
+                Event_Attendee_ID: row.event_attendee_id,
+                Event_Request_ID: row.event_request_id,
+                User_ID: row.user_id,
+                Waybill_Code: row.waybill_code,
+              });
+            }
+          });
+        });
+        const attendeeByEventUser = new Map(
+          Array.from(attendeeRowsById.values()).map((row) => [
+            `${Number(row.Event_Request_ID || 0)}:${Number(row.User_ID || 0)}`,
+            row,
+          ]),
+        );
+        const attendeeToRequestId = Object.fromEntries(
+          Array.from(attendeeRowsById.entries()).map(([attendeeId, row]) => [
+            attendeeId,
+            Number(row.Event_Request_ID || 0) || null,
+          ]),
+        );
 
         const requestIds = Array.from(new Set(
           memberRows
@@ -603,9 +643,14 @@ export default function BundlingPage() {
           if (!acc[key]) acc[key] = [];
 
           const userId = Number(row.User_ID || 0);
-          const attendeeId = Number(row.Event_Attendee_ID || 0);
-          const requestId = Number(attendeeToRequestId[attendeeId] || row.Event_Request_ID || 0);
-          const waybillCode = String(attendeeToWaybillCode[attendeeId] || '').trim();
+          const linkedAttendeeId = Number(row.Event_Attendee_ID || 0);
+          const fallbackAttendee = attendeeByEventUser.get(`${Number(row.Event_Request_ID || 0)}:${userId}`) || null;
+          const attendee = attendeeRowsById.get(linkedAttendeeId) || fallbackAttendee;
+          const attendeeId = Number(attendee?.Event_Attendee_ID || linkedAttendeeId || 0);
+          const requestId = Number(attendee?.Event_Request_ID || attendeeToRequestId[attendeeId] || row.Event_Request_ID || 0);
+          const attendeeWaybillCode = String(attendee?.Waybill_Code || '').trim().toUpperCase();
+          const waybillCode = attendeeWaybillCode
+            || (!row.From_Event ? String(row.Waybill_Code || '').trim().toUpperCase() : '');
           const userDetails = usersByUserId[userId] || {};
           const eventRequest = eventsByRequestId[requestId] || {};
           const detail = detailsBySubmissionId[Number(row.Submission_ID || 0)] || null;
@@ -613,7 +658,9 @@ export default function BundlingPage() {
           acc[key].push({
             submissionId: Number(row.Submission_ID || 0),
             userId,
-            submissionCode: waybillCode || `#${Number(row.Submission_ID || 0)}`,
+            submissionCode: waybillCode || (row.From_Event
+              ? 'Event waybill unavailable'
+              : buildWaybillCode({ submissionId: Number(row.Submission_ID || 0) })),
             status: row.Status || '',
             eventAttendeeId: attendeeId || null,
             eventRequestId: requestId || null,
@@ -812,6 +859,11 @@ export default function BundlingPage() {
         submissionCode: bundleCode,
         notes: closedBundle.Notes || '',
         memberCount,
+        members: bundleMembersByBundleId[draft.Bundle_ID] || [],
+        specification: wigSpecOptions.find((option) => (
+          Number(option.Wig_Specification_ID || 0) === Number(closedBundle.Wig_Specification_ID || draft.Wig_Specification_ID || 0)
+        )) || null,
+        status: closedBundle.Status || 'In Production',
         createdAt: closedBundle.Created_At || new Date().toISOString(),
         qrDataUrl: '',
       });
@@ -820,7 +872,7 @@ export default function BundlingPage() {
     } finally {
       setIsFinalizingDraftId(null);
     }
-  }, [bundleMembersByBundleId, isCameraOn, loadData, scannerDraftBundleId, stopCamera]);
+  }, [bundleMembersByBundleId, isCameraOn, loadData, scannerDraftBundleId, stopCamera, wigSpecOptions]);
 
   const handleDeleteDraftNow = useCallback(async (draft) => {
     if (!draft?.Bundle_ID) return;
@@ -948,16 +1000,15 @@ export default function BundlingPage() {
     try {
       let rpcWaybillPayload = waybill;
       if (isValidWaybillCode(waybill)) {
-        const attendeeLookup = await supabase
-          .from(EVENT_ATTENDEES_TABLE)
-          .select('Event_Attendee_ID')
-          .eq('Waybill_Code', waybill)
-          .maybeSingle();
-        if (attendeeLookup.error) throw attendeeLookup.error;
+        const knownEventHair = availableCutHair.find((hair) => (
+          hair.isEventHair
+          && String(hair.waybillCode || '').trim().toUpperCase() === waybill
+        ));
 
-        // Non-event waybills encode Submission_ID in base 36 and do not have an
-        // Event_Attendees row. Give the RPC the decoded ID so both paths work.
-        if (!attendeeLookup.data?.Event_Attendee_ID) {
+        // Event codes must be sent unchanged because bundle_scan_add_waybill
+        // resolves them from Event_Attendees.Waybill_Code. Only decode locally
+        // generated non-event waybills into their Hair_Submissions ID.
+        if (!knownEventHair) {
           const decodedSubmissionId = Number.parseInt(waybill.slice(2), 36);
           if (Number.isInteger(decodedSubmissionId) && decodedSubmissionId > 0) {
             const submissionLookup = await supabase
@@ -986,6 +1037,9 @@ export default function BundlingPage() {
       const payload = result.data || {};
       const memberCount = Number(payload?.member_count || 0);
       const submissionCode = payload?.submission?.Waybill_Code || waybill;
+      const scannedHair = availableCutHair.find(
+        (hair) => String(hair.waybillCode || '').trim().toUpperCase() === String(submissionCode || '').trim().toUpperCase(),
+      ) || null;
 
       setScannerWaybillCode('');
       await loadData();
@@ -1001,7 +1055,7 @@ export default function BundlingPage() {
       });
       setScanOutcome({
         tone: 'success', title: 'Hair added to draft', waybill: submissionCode,
-        subject: `Submission #${payload?.submission?.Submission_ID || 'N/A'}`,
+        subject: scannedHair?.donorName || 'Donor hair',
         action: `Added to bundle #${bundleId}; count is now ${memberCount}`,
         status: 'Bundling',
         nextStep: memberCount >= BUNDLE_HAIR_COUNT_TARGET_MIN
@@ -1025,7 +1079,7 @@ export default function BundlingPage() {
       setIsScanningWaybill(false);
       isScanProcessingRef.current = false;
     }
-  }, [loadData, scannerDraftBundleId]);
+  }, [availableCutHair, loadData, scannerDraftBundleId]);
 
   const handleCloseScannerBundleNow = useCallback(async (bundleIdInput) => {
     const bundleId = Number(bundleIdInput || scannerDraftBundleId || 0);
@@ -1071,6 +1125,11 @@ export default function BundlingPage() {
         submissionCode: code,
         notes: closedBundle.Notes || '',
         memberCount,
+        members: bundleMembersByBundleId[bundleId] || [],
+        specification: wigSpecOptions.find((option) => (
+          Number(option.Wig_Specification_ID || 0) === Number(closedBundle.Wig_Specification_ID || scannerBundleRow?.Wig_Specification_ID || 0)
+        )) || null,
+        status: closedBundle.Status || 'In Production',
         createdAt: closedBundle.Created_At || new Date().toISOString(),
         qrDataUrl: '',
       });
@@ -1079,7 +1138,7 @@ export default function BundlingPage() {
     } finally {
       setIsClosingScannerBundle(false);
     }
-  }, [isCameraOn, loadData, scannerBundleMemberCount, scannerDraftBundleId, stopCamera]);
+  }, [bundleMembersByBundleId, isCameraOn, loadData, scannerBundleMemberCount, scannerBundleRow, scannerDraftBundleId, stopCamera, wigSpecOptions]);
 
   const handleFinalizeDraft = (draft) => {
     const draftIds = (bundleMembersByBundleId[draft.Bundle_ID] || [])
@@ -1120,13 +1179,14 @@ export default function BundlingPage() {
       bundleId: Number(bundleId),
       submissionId,
       submissionCode: member?.submissionCode || '',
+      donorName: member?.donorName || '',
       tone: 'warning',
       title: `Remove ${member?.submissionCode || 'waybill'} from draft?`,
       message: 'This will remove the hair from this draft and clear its Bundle_ID.',
     });
   }, [openConfirmModal]);
 
-  const handleRemoveDraftMemberNow = useCallback(async ({ bundleId, submissionId, submissionCode }) => {
+  const handleRemoveDraftMemberNow = useCallback(async ({ bundleId, submissionId, submissionCode, donorName }) => {
     if (!bundleId || !submissionId) return;
     if (removingSubmissionIdRef.current) return;
     removingSubmissionIdRef.current = Number(submissionId);
@@ -1149,11 +1209,11 @@ export default function BundlingPage() {
       await loadData();
       setNotice({
         kind: 'success',
-        text: `${submissionCode || `Submission #${submissionId}`} removed from draft #${bundleId}. Current count: ${memberCount}.`,
+        text: `${submissionCode || 'The selected hair'} removed from draft #${bundleId}. Current count: ${memberCount}.`,
       });
       setScanOutcome({
         tone: 'info', title: 'Hair removed from draft', waybill: submissionCode,
-        subject: `Submission #${submissionId}`, action: `Removed from bundle #${bundleId}`,
+        subject: donorName || 'Donor hair', action: `Removed from bundle #${bundleId}`,
         status: 'Cut / Available', nextStep: 'The hair may be scanned into another eligible draft',
         statusChanges: [
           { label: 'Bundle assignment', before: `Draft #${bundleId}`, after: 'None' },
@@ -1196,6 +1256,7 @@ export default function BundlingPage() {
       bundleId,
       submissionId,
       submissionCode,
+      donorName,
     } = confirmModal;
     closeConfirmModal();
     if (!action || !bundleId) return;
@@ -1230,6 +1291,7 @@ export default function BundlingPage() {
         bundleId,
         submissionId,
         submissionCode,
+        donorName,
       });
     }
   };
@@ -1302,6 +1364,11 @@ export default function BundlingPage() {
       submissionCode: code,
       notes: bundleRow.Notes || '',
       memberCount: (bundleMembersByBundleId[bundleRow.Bundle_ID] || []).length,
+      members: bundleMembersByBundleId[bundleRow.Bundle_ID] || [],
+      specification: wigSpecOptions.find((option) => (
+        Number(option.Wig_Specification_ID || 0) === Number(bundleRow.Wig_Specification_ID || 0)
+      )) || null,
+      status: bundleRow.Status || '',
       createdAt: bundleRow.Created_At,
       qrDataUrl,
     });
@@ -1331,41 +1398,139 @@ export default function BundlingPage() {
     if (!activePrintBundle?.qrDataUrl) return;
     setIsExportingPdf(true);
     try {
-      const pdf = new jsPDF({ unit: 'mm', format: 'a5', orientation: 'portrait' });
+      const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
-      const margin = 8;
+      const margin = 12;
+      const contentWidth = pageWidth - (margin * 2);
+      const members = Array.isArray(activePrintBundle.members) ? activePrintBundle.members : [];
+      const specification = activePrintBundle.specification || {};
+      const safe = (value, fallback = 'Not provided') => {
+        const normalized = String(value ?? '').trim();
+        return normalized || fallback;
+      };
+      const yesNo = (value) => (value ? 'Yes' : 'No');
+      let y = margin;
 
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(14);
-      pdf.text('Donivra WIG BUNDLE WAYBILL', pageWidth / 2, margin + 6, { align: 'center' });
-
-      pdf.setFontSize(10);
-      pdf.setFont('helvetica', 'normal');
-      pdf.text('Scan on Upload Wig Stocks after wig completion', pageWidth / 2, margin + 12, { align: 'center' });
-
-      const qrSize = 70;
-      pdf.addImage(activePrintBundle.qrDataUrl, 'PNG', (pageWidth - qrSize) / 2, margin + 18, qrSize, qrSize);
-
-      pdf.setFontSize(13);
-      pdf.setFont('helvetica', 'bold');
-      pdf.text(activePrintBundle.submissionCode, pageWidth / 2, margin + 96, { align: 'center' });
-
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(10);
-      pdf.text(`Hairs in bundle: ${activePrintBundle.memberCount}`, pageWidth / 2, margin + 104, { align: 'center' });
-      if (activePrintBundle.notes) {
+      const addPageIfNeeded = (requiredHeight = 18) => {
+        if (y + requiredHeight <= pageHeight - 14) return;
+        pdf.addPage();
+        y = margin;
+        pdf.setFont('helvetica', 'bold');
         pdf.setFontSize(9);
-        pdf.text(activePrintBundle.notes, pageWidth / 2, margin + 110, { align: 'center', maxWidth: pageWidth - 2 * margin });
+        pdf.text(`Bundle ${activePrintBundle.submissionCode} - contributor details continued`, margin, y);
+        y += 7;
+      };
+
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(16);
+      pdf.text('DONIVRA WIG BUNDLE TRACEABILITY WAYBILL', margin, y + 5);
+
+      pdf.setFontSize(9);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('Keep this document with the physical bundle throughout wig production.', margin, y + 11);
+
+      const qrSize = 42;
+      pdf.addImage(activePrintBundle.qrDataUrl, 'PNG', pageWidth - margin - qrSize, y, qrSize, qrSize);
+
+      y += 19;
+      pdf.setFontSize(15);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(activePrintBundle.submissionCode, margin, y);
+
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(9);
+      y += 6;
+      pdf.text(`Bundle ID: ${activePrintBundle.bundleId}`, margin, y);
+      y += 5;
+      pdf.text(`Status: ${safe(activePrintBundle.status, 'In Production')}`, margin, y);
+      y += 5;
+      pdf.text(`Created: ${formatDateTime(activePrintBundle.createdAt)}`, margin, y);
+      y += 5;
+      pdf.text(`Verified hair submissions: ${activePrintBundle.memberCount}`, margin, y);
+      y = margin + qrSize + 8;
+
+      pdf.setDrawColor(203, 213, 225);
+      pdf.line(margin, y, pageWidth - margin, y);
+      y += 7;
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(11);
+      pdf.text('TARGET WIG SPECIFICATION', margin, y);
+      y += 6;
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8.5);
+      const specificationLines = [
+        `Wig: ${safe(specification.wigName)}${specification.wigCode ? ` (${specification.wigCode})` : ''}`,
+        `Specification ID: ${safe(specification.Wig_Specification_ID)}  |  Style: ${safe(specification.style || specification.Style)}  |  Cap size: ${safe(specification.capSize || specification.Cap_Size)}`,
+        `Length: ${safe(specification.hairLength || specification.Hair_Length)} in  |  Color: ${safe(specification.hairColor || specification.Hair_Color)}  |  Texture: ${safe(specification.hairTexture || specification.Hair_Texture)}  |  Density: ${safe(specification.hairDensity || specification.Hair_Density)}`,
+      ];
+      specificationLines.forEach((line) => {
+        pdf.text(line, margin, y, { maxWidth: contentWidth });
+        y += 5;
+      });
+
+      y += 2;
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(11);
+      pdf.text(`CONTRIBUTING HAIR RECORDS (${members.length})`, margin, y);
+      y += 6;
+
+      members.forEach((member, index) => {
+        const detail = member.detail || {};
+        const notes = safe(detail.Detail_Notes, 'None');
+        const estimatedHeight = notes === 'None' ? 22 : 28;
+        addPageIfNeeded(estimatedHeight);
+
+        pdf.setFillColor(index % 2 === 0 ? 248 : 255, index % 2 === 0 ? 250 : 255, index % 2 === 0 ? 252 : 255);
+        pdf.roundedRect(margin, y - 3.5, contentWidth, estimatedHeight - 2, 1.5, 1.5, 'F');
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(8.5);
+        pdf.text(
+          `${index + 1}. ${safe(member.submissionCode)} | Submission #${safe(member.submissionId)} | ${safe(member.donorName, 'Unknown donor')}`,
+          margin + 2,
+          y + 1,
+          { maxWidth: contentWidth - 4 },
+        );
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(7.5);
+        pdf.text(`Source: ${safe(member.eventTitle)} | Submission status: ${safe(member.status)}`, margin + 2, y + 6, { maxWidth: contentWidth - 4 });
+        pdf.text(
+          `Verified hair: ${safe(detail.Declared_Length)} in | ${safe(detail.Declared_Color)} | ${safe(detail.Declared_Texture)} | ${safe(detail.Declared_Density)} | ${safe(detail.Declared_Condition)}`,
+          margin + 2,
+          y + 11,
+          { maxWidth: contentWidth - 4 },
+        );
+        pdf.text(
+          `Treatments: Chemical ${yesNo(detail.Is_Chemically_Treated)} | Colored ${yesNo(detail.Is_Colored)} | Bleached ${yesNo(detail.Is_Bleached)} | Rebonded ${yesNo(detail.Is_Rebonded)} | Quality: ${safe(detail.Status)}`,
+          margin + 2,
+          y + 16,
+          { maxWidth: contentWidth - 4 },
+        );
+        if (notes !== 'None') {
+          pdf.text(`Notes: ${notes}`, margin + 2, y + 21, { maxWidth: contentWidth - 4 });
+        }
+        y += estimatedHeight;
+      });
+
+      if (activePrintBundle.notes) {
+        addPageIfNeeded(20);
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(9);
+        pdf.text('BUNDLE NOTES', margin, y);
+        y += 5;
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        const noteLines = pdf.splitTextToSize(activePrintBundle.notes, contentWidth);
+        pdf.text(noteLines, margin, y);
       }
 
       pdf.setFontSize(8);
       pdf.setTextColor(120);
       pdf.text(
-        'Keep this waybill with the bundle. After the wig is finished, scan it on Upload Wig Stocks > Complete Wig from Bundle to fan-notify donors.',
+        'After completion, scan this QR in Upload Wig Stocks to register the physical wig. Do not recreate or replace this code.',
         pageWidth / 2,
-        pageHeight - margin,
-        { align: 'center', maxWidth: pageWidth - 2 * margin },
+        pageHeight - 7,
+        { align: 'center', maxWidth: contentWidth },
       );
 
       pdf.save(`bundle-${activePrintBundle.submissionCode}.pdf`);
@@ -1453,6 +1618,7 @@ export default function BundlingPage() {
             <div key={`${bundle.Bundle_ID}-${member.submissionId}`} className="rounded-lg border bg-white p-3" style={{ borderColor: '#e2e8f0' }}>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
+                  <p className="text-[9px] font-bold uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{member.eventAttendeeId ? 'Event attendee waybill' : 'Submission waybill'}</p>
                   <p className="font-mono text-xs font-semibold" style={{ color: primaryTextColor }}>{member.submissionCode}</p>
                   <p className="text-sm font-semibold" style={{ color: primaryTextColor }}>{member.donorName}</p>
                   <p className="text-xs" style={{ color: tertiaryTextColor }}>{member.eventTitle}</p>
@@ -1607,7 +1773,8 @@ export default function BundlingPage() {
             <article key={hair.Inventory_ID || hair.submissionId} className="rounded-lg border border-slate-200 p-3">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
-                  <p className="font-mono text-xs font-bold text-slate-900">{hair.waybillCode || `Submission #${hair.submissionId}`}</p>
+                  <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">{hair.isEventHair ? 'Event attendee waybill' : 'Submission waybill'}</p>
+                  <p className="mt-0.5 font-mono text-xs font-bold text-slate-900">{hair.waybillCode || (hair.isEventHair ? 'Event waybill unavailable' : buildWaybillCode({ submissionId: hair.submissionId }))}</p>
                   <p className="mt-0.5 text-[11px] text-slate-500">{hair.donorName}</p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1617,6 +1784,16 @@ export default function BundlingPage() {
                       type="button"
                       onClick={() => {
                         setScannerWaybillCode(hair.waybillCode);
+                        setScanOutcome({
+                          tone: 'info',
+                          title: 'Event waybill selected',
+                          waybill: hair.waybillCode,
+                          subject: hair.donorName,
+                          action: 'Ready to scan into the active draft',
+                          status: 'Selected',
+                          nextStep: 'Verify the same code on the physical QR label, then click Scan',
+                          statusChanges: [],
+                        });
                         showToast({ type: 'info', title: 'Waybill selected', message: `${hair.waybillCode} is ready. Verify the physical label, then click Scan.` });
                       }}
                       className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-50"
@@ -1656,8 +1833,6 @@ export default function BundlingPage() {
           refreshLoading={isLoading}
         />
       </header>
-
-      <WaybillScanResult outcome={scanOutcome} possibleOutcomes={BUNDLING_SCAN_OUTCOMES} />
 
       {wishRequests.length > 0 ? (
       <section className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
@@ -1981,6 +2156,10 @@ export default function BundlingPage() {
                   </p>
                 </div>
               </div>
+
+              <div className="mt-3">
+                <WaybillScanResult outcome={scanOutcome} possibleOutcomes={BUNDLING_SCAN_OUTCOMES} />
+              </div>
             </div>
           ) : null}
               <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -2177,7 +2356,7 @@ export default function BundlingPage() {
 
       {activePrintBundle ? renderPortal(
         <div className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-900/70 p-4 print:static print:bg-white print:p-0">
-          <div className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl shadow-2xl print:max-h-none print:max-w-none print:rounded-none print:shadow-none" style={{ backgroundColor: '#ffffff' }}>
+          <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl shadow-2xl print:max-h-none print:max-w-none print:rounded-none print:shadow-none" style={{ backgroundColor: '#ffffff' }}>
             <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 print:hidden" style={{ borderColor: '#e2e8f0' }}>
               <div>
                 <h3 className="text-base font-semibold" style={headingStyle}>Bundle Waybill</h3>
@@ -2216,33 +2395,116 @@ export default function BundlingPage() {
 
             <div className="Donivra-bundle-print-area flex-1 overflow-y-auto bg-slate-100 p-4 print:overflow-visible print:bg-white print:p-0">
               <article
-                className="mx-auto max-w-md rounded-2xl border-2 border-dashed bg-white p-6 text-center shadow-sm print:m-0 print:rounded-none print:border-2 print:border-solid print:shadow-none"
+                className="mx-auto max-w-3xl rounded-2xl border-2 border-dashed bg-white p-6 text-left shadow-sm print:m-0 print:max-w-none print:rounded-none print:border-2 print:border-solid print:shadow-none"
                 style={{ borderColor: withColorAlpha(primaryColor, 0.5) }}
               >
-                <p className="text-[10px] font-bold uppercase tracking-[0.3em]" style={{ color: primaryColor }}>
-                  Donivra Wig Bundle Waybill
-                </p>
-                <p className="mt-1 text-xs font-semibold" style={{ color: secondaryTextColor }}>
-                  Scan on Upload Wig Stocks when wig is completed
-                </p>
-
-                {activePrintBundle.qrDataUrl ? (
-                  <img src={activePrintBundle.qrDataUrl} alt={`QR for ${activePrintBundle.submissionCode}`} className="mx-auto my-4 h-48 w-48" />
-                ) : (
-                  <div className="mx-auto my-4 flex h-48 w-48 items-center justify-center text-xs" style={{ color: tertiaryTextColor }}>
-                    <ImageIcon size={24} />
-                    <span className="ml-1">Generating QR...</span>
+                <header className="grid grid-cols-1 gap-5 border-b border-slate-200 pb-5 sm:grid-cols-[1fr,180px]">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.3em]" style={{ color: primaryColor }}>
+                      Donivra Wig Bundle Traceability Waybill
+                    </p>
+                    <p className="mt-1 text-xs font-semibold" style={{ color: secondaryTextColor }}>
+                      Keep with the physical bundle throughout production
+                    </p>
+                    <p className="mt-5 text-2xl font-bold" style={{ color: primaryTextColor }}>{activePrintBundle.submissionCode}</p>
+                    <dl className="mt-3 grid grid-cols-[auto,1fr] gap-x-3 gap-y-1.5 text-xs">
+                      <dt style={{ color: tertiaryTextColor }}>Bundle ID</dt>
+                      <dd className="font-semibold" style={{ color: primaryTextColor }}>#{activePrintBundle.bundleId}</dd>
+                      <dt style={{ color: tertiaryTextColor }}>Status</dt>
+                      <dd className="font-semibold" style={{ color: primaryTextColor }}>{activePrintBundle.status || 'In Production'}</dd>
+                      <dt style={{ color: tertiaryTextColor }}>Created</dt>
+                      <dd className="font-semibold" style={{ color: primaryTextColor }}>{formatDateTime(activePrintBundle.createdAt)}</dd>
+                      <dt style={{ color: tertiaryTextColor }}>Hair records</dt>
+                      <dd className="font-semibold" style={{ color: primaryTextColor }}>{activePrintBundle.memberCount}</dd>
+                    </dl>
                   </div>
-                )}
+                  <div className="text-center">
+                    {activePrintBundle.qrDataUrl ? (
+                      <img src={activePrintBundle.qrDataUrl} alt={`QR for ${activePrintBundle.submissionCode}`} className="mx-auto h-40 w-40" />
+                    ) : (
+                      <div className="mx-auto flex h-40 w-40 items-center justify-center text-xs" style={{ color: tertiaryTextColor }}>
+                        <ImageIcon size={24} />
+                        <span className="ml-1">Generating QR...</span>
+                      </div>
+                    )}
+                    <p className="mt-1 text-[10px] font-semibold" style={{ color: tertiaryTextColor }}>Scan only after wig completion</p>
+                  </div>
+                </header>
 
-                <p className="text-lg font-bold" style={{ color: primaryTextColor }}>{activePrintBundle.submissionCode}</p>
-                <p className="mt-1 text-sm" style={{ color: secondaryTextColor }}>Hairs in bundle: {activePrintBundle.memberCount}</p>
-                {activePrintBundle.notes ? (
-                  <p className="mt-2 text-xs italic" style={{ color: tertiaryTextColor }}>{activePrintBundle.notes}</p>
+                {activePrintBundle.specification ? (
+                  <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.16em]" style={{ color: primaryColor }}>Target wig specification</p>
+                    <div className="mt-2 flex flex-wrap items-end justify-between gap-2">
+                      <div>
+                        <p className="text-base font-bold" style={{ color: primaryTextColor }}>{activePrintBundle.specification.wigName || 'Unnamed wig'}</p>
+                        <p className="text-xs" style={{ color: tertiaryTextColor }}>
+                          {activePrintBundle.specification.wigCode || 'No wig code'} · Specification #{activePrintBundle.specification.Wig_Specification_ID}
+                        </p>
+                      </div>
+                      <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-bold text-slate-700">
+                        Cap {activePrintBundle.specification.capSize || 'N/A'}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
+                      {[
+                        ['Style', activePrintBundle.specification.style],
+                        ['Length', activePrintBundle.specification.hairLength ? `${activePrintBundle.specification.hairLength} in` : 'N/A'],
+                        ['Color', activePrintBundle.specification.hairColor],
+                        ['Texture', activePrintBundle.specification.hairTexture],
+                        ['Density', activePrintBundle.specification.hairDensity],
+                      ].map(([label, value]) => (
+                        <div key={label} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+                          <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">{label}</p>
+                          <p className="mt-0.5 font-semibold text-slate-800">{value || 'N/A'}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
                 ) : null}
 
-                <p className="mt-4 text-[10px] leading-snug" style={{ color: tertiaryTextColor }}>
-                  Keep this waybill with the bundle. After the wig is completed, scan it on Upload Wig Stocks &gt; Complete Wig from Bundle to fan-notify donors.
+                <section className="mt-5">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.16em]" style={{ color: primaryColor }}>Contributing verified hair records</p>
+                    <span className="text-xs font-bold text-slate-700">{(activePrintBundle.members || []).length} total</span>
+                  </div>
+                  <div className="mt-2 space-y-2">
+                    {(activePrintBundle.members || []).map((member, index) => {
+                      const detail = member.detail || {};
+                      return (
+                        <div key={`${activePrintBundle.bundleId}-${member.submissionId}`} className="rounded-lg border border-slate-200 p-3 break-inside-avoid">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <p className="font-mono text-xs font-bold text-slate-900">{index + 1}. {member.submissionCode} · Submission #{member.submissionId}</p>
+                              <p className="mt-0.5 text-xs font-semibold text-slate-700">{member.donorName}</p>
+                              <p className="text-[10px] text-slate-500">{member.eventTitle}</p>
+                            </div>
+                            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">{detail.Status || 'Verified'}</span>
+                          </div>
+                          <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] sm:grid-cols-5">
+                            <p><span className="text-slate-400">Length:</span> <strong>{detail.Declared_Length ? `${detail.Declared_Length} in` : 'N/A'}</strong></p>
+                            <p><span className="text-slate-400">Color:</span> <strong>{detail.Declared_Color || 'N/A'}</strong></p>
+                            <p><span className="text-slate-400">Texture:</span> <strong>{detail.Declared_Texture || 'N/A'}</strong></p>
+                            <p><span className="text-slate-400">Density:</span> <strong>{detail.Declared_Density || 'N/A'}</strong></p>
+                            <p><span className="text-slate-400">Condition:</span> <strong>{detail.Declared_Condition || 'N/A'}</strong></p>
+                          </div>
+                          <p className="mt-2 text-[10px] text-slate-600">
+                            Treatments: Chemical <strong>{detail.Is_Chemically_Treated ? 'Yes' : 'No'}</strong> · Colored <strong>{detail.Is_Colored ? 'Yes' : 'No'}</strong> · Bleached <strong>{detail.Is_Bleached ? 'Yes' : 'No'}</strong> · Rebonded <strong>{detail.Is_Rebonded ? 'Yes' : 'No'}</strong>
+                          </p>
+                          {detail.Detail_Notes ? <p className="mt-1 text-[10px] text-slate-500">Notes: {detail.Detail_Notes}</p> : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                {activePrintBundle.notes ? (
+                  <section className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    <strong>Bundle notes:</strong> {activePrintBundle.notes}
+                  </section>
+                ) : null}
+
+                <p className="mt-5 border-t border-slate-200 pt-3 text-center text-[10px] leading-snug" style={{ color: tertiaryTextColor }}>
+                  After the wig is completed, scan this QR in Upload Wig Stocks. This code identifies the exact bundle, target specification, and contributing verified hair records.
                 </p>
               </article>
             </div>

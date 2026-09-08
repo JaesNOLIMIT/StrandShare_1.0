@@ -24,9 +24,12 @@ export const EMPTY_WIG_FORM = Object.freeze({
   hairColor: '',
   hairTexture: '',
   hairDensity: '',
-  capSize: '',
+  // Catalog creation defines the whole Small/Medium/Large family. Medium is
+  // only the internal code-reservation anchor; users no longer choose a cap.
+  capSize: 'Medium',
   style: '',
-  stockCount: '1',
+  // Physical stock is created only by scanning a completed bundle.
+  stockCount: '0',
 });
 
 export function withAlpha(colorValue, alpha, fallback = '#7f1d1d') {

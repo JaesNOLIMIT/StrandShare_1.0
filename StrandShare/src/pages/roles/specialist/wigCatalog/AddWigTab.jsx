@@ -27,7 +27,6 @@ import { supabase } from '../../../../lib/supabaseClient';
 import { logAuditAction } from '../../../../lib/auditLogger';
 import PhotoTryOn, { DEFAULT_TRY_ON_FIT } from './PhotoTryOn';
 import {
-  CAP_SIZE_OPTIONS,
   COLOR_OPTIONS,
   DENSITY_OPTIONS,
   DUPLICATE_WARNING_THRESHOLD,
@@ -227,21 +226,6 @@ function WigDetailsForm({
       </FieldShell>
 
       <FieldShell
-        label="Cap size"
-        required
-        hint="Cannot be identified reliably from a photo"
-      >
-        <select
-          value={form.capSize}
-          onChange={(event) => setField('capSize', event.target.value)}
-          className={fieldClass}
-        >
-          <option value="">Select cap size</option>
-          {CAP_SIZE_OPTIONS.map((option) => <option key={option}>{option}</option>)}
-        </select>
-      </FieldShell>
-
-      <FieldShell
         label="Style"
         required={requireAllDetails}
         suggestion={suggestions.style}
@@ -252,17 +236,6 @@ function WigDetailsForm({
           value={form.style}
           onChange={(event) => setField('style', event.target.value)}
           placeholder="e.g. Layered Bob"
-          className={fieldClass}
-        />
-      </FieldShell>
-
-      <FieldShell label="Starting stock" required>
-        <input
-          type="number"
-          min="0"
-          step="1"
-          value={form.stockCount}
-          onChange={(event) => setField('stockCount', event.target.value)}
           className={fieldClass}
         />
       </FieldShell>
@@ -489,10 +462,9 @@ export default function AddWigTab({
   const stepOneMissing = [
     ['wigName', 'Wig name'],
     ['hairDensity', 'Hair density'],
-    ['capSize', 'Cap size'],
   ].filter(([field]) => !String(form[field] || '').trim());
-  const parsedStartingStock = Number.parseInt(form.stockCount, 10);
-  const startingStockValid = Number.isFinite(parsedStartingStock) && parsedStartingStock >= 0;
+  const parsedStartingStock = 0;
+  const startingStockValid = true;
 
   const handleAnalyze = async () => {
     if (!wigPhoto || !supabase || submitting) return;
@@ -504,9 +476,8 @@ export default function AddWigTab({
       setNotice({ kind: 'error', message: 'Use a wig photo smaller than 15 MB.' });
       return;
     }
-    if (stepOneMissing.length || !startingStockValid) {
+    if (stepOneMissing.length) {
       const missingLabels = stepOneMissing.map(([, label]) => label);
-      if (!startingStockValid) missingLabels.push('Starting stock');
       setNotice({
         kind: 'error',
         message: `Complete the required Step 1 fields: ${missingLabels.join(', ')}.`,
@@ -1167,11 +1138,6 @@ export default function AddWigTab({
                     Complete: {missing.join(', ')}
                   </span>
                 ) : null}
-                {!stockValid ? (
-                  <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-700">
-                    Enter a valid starting stock
-                  </span>
-                ) : null}
                 {!codeMatchesDetails ? (
                   <span className="rounded-full bg-slate-100 px-2.5 py-1">Generating matching wig code</span>
                 ) : null}
@@ -1218,10 +1184,9 @@ export default function AddWigTab({
                     Final confirmation
                   </span>
                   <span className="mt-0.5 block max-w-2xl text-[11px] leading-relaxed text-slate-500">
-                    I checked the transparent image, wig details, generated code, stock, duplicate
-                    review, and portrait try-on. Low stock is automatic below 3. This creates Small,
-                    Medium, and Large variants with the same four-digit family number; starting
-                    stock goes only to the selected {form.capSize || 'cap size'} variant.
+                    I checked the transparent image, wig details, generated code, duplicate review,
+                    and portrait try-on. This creates Small, Medium, and Large catalog specifications
+                    at zero stock. Physical stock is added only when a completed bundle QR is scanned.
                   </span>
                 </span>
               </label>

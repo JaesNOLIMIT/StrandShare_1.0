@@ -89,11 +89,14 @@ export default function RoleDashboardShell({
             cachedPageIds.map((pageId) => {
               const CachedPageComponent = pageComponents[pageId];
               const isActive = pageId === currentPage;
+              const pageManagesOwnScroll = navItems.some(
+                (item) => item.id === pageId && item.scrollMode === 'contained',
+              );
               return (
                 <div
                   key={pageId}
                   className={isActive
-                    ? 'h-full min-h-0 min-w-0 overflow-y-auto overscroll-y-contain'
+                    ? `h-full min-h-0 min-w-0 ${pageManagesOwnScroll ? 'overflow-hidden' : 'overflow-y-auto overscroll-y-contain'}`
                     : 'pointer-events-none absolute inset-0 min-h-0 min-w-0 overflow-hidden select-none opacity-0'}
                   aria-hidden={!isActive}
                   inert={isActive ? undefined : ''}

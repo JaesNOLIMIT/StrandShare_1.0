@@ -2,16 +2,20 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
+  ArrowRight,
   Camera,
   CameraOff,
   Calendar,
   CheckCircle2,
   Inbox,
   Loader2,
+  Mail,
   MapPin,
+  Phone,
   Printer,
   ScanLine,
   Search,
+  Sparkles,
   Users,
   X,
 } from 'lucide-react';
@@ -38,6 +42,7 @@ const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
 const USERS_TABLE = 'users';
 const USER_DETAILS_TABLE = 'user_details';
+const PROFILE_PICTURES_BUCKET = 'profile_pictures';
 const SCAN_DEBOUNCE_MS = 2500;
 const EVENT_FILTERS = [
   { id: 'all_active', label: 'All active events' },
@@ -260,6 +265,16 @@ function displayAiValue(value, fallback = 'Not provided') {
   return String(value);
 }
 
+function isAbsoluteUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function getInitials(value) {
+  const parts = String(value || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return 'D';
+  return parts.slice(0, 2).map((part) => part.charAt(0).toUpperCase()).join('');
+}
+
 function findChangedAiHairFields(screening, draft) {
   if (!screening || !draft) return [];
   const comparisons = [
@@ -319,6 +334,9 @@ function enrichAttendeeRowWithUserData(attendeeRow, userRow, detailRow, fallback
     Full_Name: fullName,
     Email: email || null,
     Contact_Number: contactNumber || null,
+    Photo_Path: detailRow?.photo_path || fallbackRow?.Photo_Path || null,
+    Birthdate: detailRow?.birthdate || fallbackRow?.Birthdate || null,
+    Gender: detailRow?.gender || fallbackRow?.Gender || null,
   };
 }
 
@@ -364,7 +382,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   const cameraStreamRef = useRef(null);
   const scannerCanvasRef = useRef(null);
   const isScanProcessingRef = useRef(false);
-  const lastScanRef = useRef({ raw: '', at: 0 });
+  const lastScanRef = useRef({ raw: '', at: 0, mode: '', locked: false });
   const attendeesCacheRef = useRef(new Map());
   const attendeeLoadSeqRef = useRef(0);
 
@@ -489,7 +507,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
             .in('user_id', userIds),
           supabase
             .from(USER_DETAILS_TABLE)
-            .select('user_id, first_name, middle_name, last_name, suffix, contact_number')
+            .select('user_id, first_name, middle_name, last_name, suffix, contact_number, photo_path, birthdate, gender')
             .in('user_id', userIds),
         ]) : Promise.resolve([{ data: [], error: null }, { data: [], error: null }]),
         supabase
@@ -630,10 +648,12 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     }
   }, [filteredEvents, selectedRequestId]);
 
-  // Load attendees whenever the selected event changes
+  // Load attendees only when the selected event ID changes. Realtime updates
+  // replace the event object, but must not clear the latest scan message.
   useEffect(() => {
-    if (selectedEvent?.Event_Request_ID) {
-      loadAttendees(selectedEvent?.Event_Request_ID);
+    const eventRequestId = Number(selectedEvent?.Event_Request_ID || 0);
+    if (eventRequestId) {
+      loadAttendees(eventRequestId);
     } else {
       setAttendees([]);
     }
@@ -643,7 +663,8 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     setDetailDraft(createDetailDraft(null));
     setEventSummary(null);
     setScanOutcome(null);
-  }, [selectedEvent, loadAttendees]);
+    lastScanRef.current = { raw: '', at: 0, mode: '', locked: false };
+  }, [selectedEvent?.Event_Request_ID, loadAttendees]);
 
   useEffect(() => {
     if (!supabase || !selectedEvent?.Event_Request_ID || !selectedEventEnded) {
@@ -883,6 +904,44 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       humanPercent,
     };
   }, [activeAiScreening, changedAiHairFields]);
+
+  const donorPhotoUrl = useMemo(() => {
+    const path = String(activeReview?.attendee?.Photo_Path || '').trim();
+    if (!path) return '';
+    if (isAbsoluteUrl(path)) return path;
+    return supabase?.storage?.from(PROFILE_PICTURES_BUCKET).getPublicUrl(path)?.data?.publicUrl || '';
+  }, [activeReview?.attendee?.Photo_Path]);
+
+  const aiStaffComparisonRows = useMemo(() => {
+    if (!activeAiScreening) return [];
+    const definitions = [
+      { key: 'length', label: 'Length', ai: activeAiScreening.Estimated_Length, staff: detailDraft.declaredLength, suffix: ' in', numeric: true },
+      { key: 'color', label: 'Color', ai: activeAiScreening.Detected_Color, staff: detailDraft.declaredColor },
+      { key: 'texture', label: 'Texture', ai: activeAiScreening.Detected_Texture, staff: detailDraft.declaredTexture },
+      { key: 'density', label: 'Density', ai: activeAiScreening.Detected_Density, staff: detailDraft.declaredDensity },
+      { key: 'condition', label: 'Condition', ai: activeAiScreening.Detected_Condition, staff: detailDraft.declaredCondition },
+    ];
+
+    return definitions.map((row) => {
+      const comparable = row.ai != null && String(row.ai).trim() !== '';
+      const hasStaffValue = row.staff != null && String(row.staff).trim() !== '';
+      const matches = comparable && hasStaffValue && (row.numeric
+        ? Number(row.ai) === Number(row.staff)
+        : normalizeFlowStatusKey(row.ai) === normalizeFlowStatusKey(row.staff));
+      const formatValue = (value) => {
+        if (value == null || String(value).trim() === '') return 'Not provided';
+        return `${value}${row.suffix || ''}`;
+      };
+      return {
+        ...row,
+        comparable,
+        hasStaffValue,
+        matches,
+        aiDisplay: formatValue(row.ai),
+        staffDisplay: formatValue(row.staff),
+      };
+    });
+  }, [activeAiScreening, detailDraft]);
 
   const markAttendeePresentByWaybill = useCallback(async (rawValue) => {
     if (isScanProcessingRef.current || !selectedEvent || !supabase) return;
@@ -1369,6 +1428,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     stopCamera();
     setIsCameraOn(false);
     setScanMode(nextMode);
+    lastScanRef.current = { raw: '', at: 0, mode: '', locked: false };
     setManualWaybillCode('');
     setCameraStatus({
       kind: 'info',
@@ -1414,9 +1474,14 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         if (!decoded) return;
 
         const now = Date.now();
-        if (lastScanRef.current.raw === decoded && now - lastScanRef.current.at < SCAN_DEBOUNCE_MS) return;
-        lastScanRef.current = { raw: decoded, at: now };
-        void markAttendeePresentByWaybill(decoded);
+        const isSameScan = lastScanRef.current.raw === decoded && lastScanRef.current.mode === scanMode;
+        if (isSameScan && (lastScanRef.current.locked || now - lastScanRef.current.at < SCAN_DEBOUNCE_MS)) return;
+        lastScanRef.current = { raw: decoded, at: now, mode: scanMode, locked: false };
+        void markAttendeePresentByWaybill(decoded).then((succeeded) => {
+          if (succeeded && lastScanRef.current.raw === decoded && lastScanRef.current.mode === scanMode) {
+            lastScanRef.current.locked = true;
+          }
+        });
       } catch {
         // ignore frame-level scan errors
       }
@@ -1425,7 +1490,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [isCameraOn, markAttendeePresentByWaybill]);
+  }, [isCameraOn, markAttendeePresentByWaybill, scanMode]);
 
   useEffect(() => {
     return () => {
@@ -1771,8 +1836,8 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   }, [attendees, resolveStaffUserId, selectedEvent]);
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden">
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Assigned Events</h1>
           <p className="text-sm text-slate-600">View events admin assigned to you, search attendees, and print waybills.</p>
@@ -1786,9 +1851,9 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[340px,1fr]">
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-4 py-3">
+      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(220px,35%),minmax(0,1fr)] gap-4 overflow-hidden lg:grid-cols-[340px,minmax(0,1fr)] lg:grid-rows-1">
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="shrink-0 border-b border-slate-200 px-4 py-3">
             <div className="flex items-center justify-between">
               <h2 className="flex items-center gap-2 text-sm font-bold text-slate-800">
                 <Inbox size={14} />
@@ -1849,7 +1914,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
               </div>
             )}
           </div>
-          <div className="max-h-[640px] overflow-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
             {isLoadingEvents && filteredEvents.length === 0 ? (
               <div className="flex items-center gap-2 px-4 py-5 text-sm text-slate-600">
                 <Loader2 size={15} className="animate-spin" />Loading...
@@ -1910,7 +1975,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
           </div>
         </section>
 
-        <section className="space-y-4">
+        <section className="min-h-0 space-y-4 overflow-y-auto overscroll-y-contain pr-1">
           {!selectedEvent ? (
             <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white px-6 py-20 text-center shadow-sm">
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-400">
@@ -2166,27 +2231,72 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                   </div>
                 ) : (
                   <div className="mt-3 space-y-3">
-                    <div className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs md:grid-cols-2">
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Donor</p>
-                        <p className="text-sm font-semibold text-slate-900">{activeReview?.attendee?.Full_Name || 'N/A'}</p>
-                        <p className="text-slate-600">{activeReview?.attendee?.Email || 'No email'}</p>
-                      </div>
-                      <div className="md:text-right">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Codes</p>
-                        <p className="font-mono text-slate-800">{activeReview?.waybillCode || activeReview?.attendee?.Waybill_Code || 'N/A'}</p>
-                        <p className="font-mono text-slate-700">
-                          {activeReview?.submission?.Submission_ID
-                            ? `Submission #${activeReview.submission.Submission_ID}`
-                            : 'No submission linked'}
-                        </p>
-                        <p className="text-slate-600">Submission status: <strong>{activeReview?.submission?.Status || 'Pending'}</strong></p>
-                        <p className="text-slate-600">
-                          Decision:
-                          {' '}
-                          <strong>{reviewStatusMeta.finalStatusLabel || 'Pending'}</strong>
-                        </p>
-                      </div>
+                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.35fr,1fr]">
+                      <section className="rounded-xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4">
+                        <div className="flex items-start gap-3">
+                          <div
+                            className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 bg-white text-base font-bold shadow-sm"
+                            style={{ borderColor: `${primaryColor}35`, color: primaryColor, backgroundColor: `${primaryColor}0D` }}
+                          >
+                            {getInitials(activeReview?.attendee?.Full_Name)}
+                            {donorPhotoUrl ? (
+                              <img
+                                src={donorPhotoUrl}
+                                alt={`${activeReview?.attendee?.Full_Name || 'Donor'} profile`}
+                                className="absolute inset-0 h-full w-full object-cover"
+                              />
+                            ) : null}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Donor profile</p>
+                                <p className="mt-0.5 truncate text-base font-bold text-slate-900">{activeReview?.attendee?.Full_Name || 'Unknown donor'}</p>
+                              </div>
+                              <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700">
+                                {activeReview?.attendee?.Attendee_Type || 'Donor'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid gap-1.5 text-xs text-slate-600 sm:grid-cols-2">
+                              <span className="inline-flex min-w-0 items-center gap-1.5">
+                                <Mail size={12} className="shrink-0 text-slate-400" />
+                                <span className="truncate">{activeReview?.attendee?.Email || 'No email provided'}</span>
+                              </span>
+                              <span className="inline-flex items-center gap-1.5">
+                                <Phone size={12} className="shrink-0 text-slate-400" />
+                                {activeReview?.attendee?.Contact_Number || 'No contact number'}
+                              </span>
+                              <span className="inline-flex items-center gap-1.5">
+                                <Users size={12} className="shrink-0 text-slate-400" />
+                                {activeReview?.attendee?.Gender || 'Gender not provided'}
+                              </span>
+                              <span className="inline-flex items-center gap-1.5">
+                                <Calendar size={12} className="shrink-0 text-slate-400" />
+                                {activeReview?.attendee?.Birthdate ? formatDateShort(activeReview.attendee.Birthdate) : 'Birthdate not provided'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section className="rounded-xl border border-slate-200 bg-white p-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Submission details</p>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${reviewStatusMeta.isFinal ? 'bg-slate-200 text-slate-700' : 'bg-amber-100 text-amber-800'}`}>
+                            {reviewStatusMeta.finalStatusLabel || activeReview?.submission?.Status || 'Pending review'}
+                          </span>
+                        </div>
+                        <dl className="mt-3 grid grid-cols-[auto,1fr] gap-x-3 gap-y-2 text-xs">
+                          <dt className="text-slate-500">Waybill</dt>
+                          <dd className="text-right font-mono font-semibold text-slate-900">{activeReview?.waybillCode || activeReview?.attendee?.Waybill_Code || 'N/A'}</dd>
+                          <dt className="text-slate-500">Submission</dt>
+                          <dd className="text-right font-semibold text-slate-900">#{activeReview.submission.Submission_ID}</dd>
+                          <dt className="text-slate-500">Submitted</dt>
+                          <dd className="text-right font-medium text-slate-700">{formatDateTime(activeReview?.submission?.Created_At)}</dd>
+                          <dt className="text-slate-500">AI screening</dt>
+                          <dd className="text-right font-medium text-slate-700">{activeAiScreening ? `#${activeAiScreening.AI_Screening_ID || activeReview?.submission?.AI_Screening_ID || 'Linked'}` : 'Not linked'}</dd>
+                        </dl>
+                      </section>
                     </div>
 
                     <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -2335,11 +2445,72 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                       </div>
                     </div>
 
+                    {activeAiScreening ? (
+                      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+                          <div className="flex items-start gap-2">
+                            <Sparkles size={16} className="mt-0.5 shrink-0" style={{ color: primaryColor }} />
+                            <div>
+                              <h4 className="text-sm font-bold text-slate-900">AI vs Staff Comparison</h4>
+                              <p className="mt-0.5 text-[11px] text-slate-500">Staff values update live as you edit the hair details above.</p>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+                              {liveAiAccuracy.comparable - changedAiHairFields.length}/{liveAiAccuracy.comparable} match
+                            </span>
+                            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${changedAiHairFields.length ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                              {changedAiHairFields.length ? `${changedAiHairFields.length} staff change${changedAiHairFields.length === 1 ? '' : 's'}` : 'No staff changes'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="p-3">
+                          <div className="hidden grid-cols-[1fr,1.2fr,28px,1.2fr,92px] items-center gap-2 px-3 pb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500 md:grid">
+                            <span>Field</span>
+                            <span>Original AI</span>
+                            <span />
+                            <span>Staff review</span>
+                            <span className="text-right">Result</span>
+                          </div>
+                          <div className="space-y-2">
+                            {aiStaffComparisonRows.map((row) => {
+                              const resultLabel = !row.comparable ? 'Not compared' : !row.hasStaffValue ? 'Needs value' : row.matches ? 'Match' : 'Changed';
+                              const resultClass = !row.comparable
+                                ? 'border-slate-200 bg-slate-100 text-slate-600'
+                                : !row.hasStaffValue
+                                  ? 'border-amber-200 bg-amber-50 text-amber-800'
+                                  : row.matches
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    : 'border-amber-200 bg-amber-50 text-amber-800';
+                              return (
+                                <div key={row.key} className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-white p-3 md:grid-cols-[1fr,1.2fr,28px,1.2fr,92px] md:items-center">
+                                  <p className="text-xs font-bold text-slate-800">{row.label}</p>
+                                  <div className="rounded-md bg-slate-100 px-2.5 py-2">
+                                    <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400 md:hidden">Original AI</p>
+                                    <p className="text-xs font-semibold text-slate-700">{row.aiDisplay}</p>
+                                  </div>
+                                  <ArrowRight size={14} className="hidden justify-self-center text-slate-400 md:block" />
+                                  <div className={`rounded-md border px-2.5 py-2 ${row.matches ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-200 bg-amber-50/60'}`}>
+                                    <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400 md:hidden">Staff review</p>
+                                    <p className="text-xs font-semibold text-slate-900">{row.staffDisplay}</p>
+                                  </div>
+                                  <span className={`justify-self-start rounded-full border px-2 py-1 text-[10px] font-bold md:justify-self-end ${resultClass}`}>
+                                    {resultLabel}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </section>
+                    ) : null}
+
                     <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
                       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
                         <div>
-                          <h4 className="text-sm font-bold text-slate-900">Original AI Hair Review</h4>
-                          <p className="mt-0.5 text-[11px] text-slate-500">This is the AI baseline used to measure the final staff review accuracy.</p>
+                          <h4 className="text-sm font-bold text-slate-900">Detailed AI Assessment</h4>
+                          <p className="mt-0.5 text-[11px] text-slate-500">Supporting observations from the original AI screening. The five comparable fields are summarized above.</p>
                         </div>
                         {activeAiScreening ? (
                           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -2357,7 +2528,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
 
                       <div className="flex gap-1 border-b border-slate-200 bg-white px-3 pt-3" role="tablist" aria-label="AI review information">
                         {[
-                          { id: 'screening', label: 'AI Screening' },
+                          { id: 'screening', label: 'AI Observations' },
                           { id: 'comments', label: 'AI Comments' },
                         ].map((tab) => {
                           const isSelected = aiReviewTab === tab.id;
@@ -2384,11 +2555,6 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                       ) : aiReviewTab === 'screening' ? (
                         <div className="grid grid-cols-2 gap-2 p-4 md:grid-cols-3 xl:grid-cols-5" role="tabpanel">
                           {[
-                            ['Estimated length', `${displayAiValue(activeAiScreening.Estimated_Length, '0')} in`],
-                            ['Detected color', displayAiValue(activeAiScreening.Detected_Color)],
-                            ['Texture', displayAiValue(activeAiScreening.Detected_Texture)],
-                            ['Density', displayAiValue(activeAiScreening.Detected_Density)],
-                            ['Condition', displayAiValue(activeAiScreening.Detected_Condition)],
                             ['Hair density score', `${displayAiValue(activeAiScreening.Hair_Density_Score, '0')}%`],
                             ['Shine level', `${displayAiValue(activeAiScreening.Shine_Level, '0')}/10`],
                             ['Frizz level', `${displayAiValue(activeAiScreening.Frizz_Level, '0')}/10`],

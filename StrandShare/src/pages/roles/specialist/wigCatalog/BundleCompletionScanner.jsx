@@ -77,7 +77,10 @@ export default function BundleCompletionScanner({
   onSubmit,
   onClose,
   primaryColor,
+  purpose = 'stock',
+  contained = false,
 }) {
+  const isAllocation = purpose === 'allocation';
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const scannerCanvasRef = useRef(null);
@@ -120,24 +123,30 @@ export default function BundleCompletionScanner({
     if (stopAfterRead) stopCamera();
     setCameraStatus({
       kind: 'info',
-      message: `${waybillLabel || 'Bundle QR'} detected. Verifying and updating inventory...`,
+      message: isAllocation
+        ? `${waybillLabel || 'Wig QR'} detected. Comparing it with the request...`
+        : `${waybillLabel || 'Bundle QR'} detected. Verifying and updating inventory...`,
     });
 
     const completed = await onSubmit?.(value);
     if (completed) {
       setCameraStatus({
         kind: 'success',
-        message: `${waybillLabel || 'Bundle QR'} was completed successfully. The scanner stopped to prevent a duplicate scan.`,
+        message: isAllocation
+          ? `${waybillLabel || 'Wig QR'} matches the request. Close the scanner and approve the allocation from the footer.`
+          : `${waybillLabel || 'Bundle QR'} was completed successfully. The scanner stopped to prevent a duplicate scan.`,
       });
       return true;
     }
 
     setCameraStatus({
       kind: 'error',
-      message: 'The QR was read, but the bundle was not completed. Review the error below, then try again.',
+      message: isAllocation
+        ? 'The QR was read, but this wig cannot be allocated. Review the comparison and try another wig.'
+        : 'The QR was read, but the bundle was not completed. Review the error below, then try again.',
     });
     return false;
-  }, [onManualCodeChange, onSubmit, stopCamera]);
+  }, [isAllocation, onManualCodeChange, onSubmit, stopCamera]);
 
   const startCamera = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -347,7 +356,7 @@ export default function BundleCompletionScanner({
 
   const modal = (
     <div
-      className="fixed inset-0 z-[2147483000] m-0 flex h-screen w-screen items-center justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm"
+      className={`${contained ? 'absolute z-30 h-full w-full' : 'fixed z-[2147483000] h-screen w-screen'} inset-0 m-0 flex items-center justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm`}
       role="dialog"
       aria-modal="true"
       aria-labelledby="bundle-scanner-title"
@@ -356,13 +365,15 @@ export default function BundleCompletionScanner({
         <div className="flex items-start justify-between border-b border-slate-200 px-5 py-4">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
-              Wig catalog stock scanner
+              {isAllocation ? 'Staff wig allocation scanner' : 'Wig catalog stock scanner'}
             </p>
             <h2 id="bundle-scanner-title" className="mt-1 text-lg font-semibold text-slate-900">
-              Scan Completed Bundle
+              {isAllocation ? 'Scan Physical Wig' : 'Scan Completed Bundle'}
             </h2>
             <p className="mt-1 text-xs text-slate-500">
-              Scan the bundle waybill—not a donor QR—to complete the selected wig variant.
+              {isAllocation
+                ? 'Scan the completed wig QR to compare it with every requested specification.'
+                : 'Scan the bundle waybill—not a donor QR—to complete the selected wig variant.'}
             </p>
           </div>
           <button
@@ -490,7 +501,7 @@ export default function BundleCompletionScanner({
                     className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-45"
                   >
                     {saving ? <Loader2 size={13} className="animate-spin" /> : <ScanLine size={13} />}
-                    Complete
+                    {isAllocation ? 'Verify' : 'Complete'}
                   </button>
                 </div>
                 <p className="mt-1 text-[10px] text-slate-500">
@@ -499,10 +510,11 @@ export default function BundleCompletionScanner({
               </div>
 
               <div className="rounded-lg bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-600">
-                A valid scan adds <strong>+1</strong> only to the wig specification selected
-                during bundling. It marks the bundle and all linked submissions as
-                <strong> Wig Created</strong>. The scanner stops immediately after reading one
-                valid QR to prevent duplicate submissions.
+                {isAllocation ? (
+                  <>This scan only verifies the physical wig. Review the match results, then click <strong>Approve - Wig Allocated</strong>. A mismatch keeps approval locked.</>
+                ) : (
+                  <>A valid Specialist scan adds <strong>+1 physical wig</strong> to the exact specification selected during bundling and notifies Staff. It does not allocate the wig to a patient request. Staff must perform the allocation scan separately.</>
+                )}
               </div>
             </div>
           </div>
@@ -536,6 +548,6 @@ export default function BundleCompletionScanner({
     </div>
   );
 
-  if (typeof document === 'undefined') return modal;
+  if (contained || typeof document === 'undefined') return modal;
   return createPortal(modal, document.body);
 }

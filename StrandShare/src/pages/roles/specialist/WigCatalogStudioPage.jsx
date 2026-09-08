@@ -58,6 +58,9 @@ function createBundleScannerState() {
   };
 }
 
+// Kept temporarily for reading historical deployments; manual stock controls
+// are intentionally not rendered because physical bundle scans own quantity.
+// eslint-disable-next-line no-unused-vars
 function StockAdjustmentModal({ state, setState, onClose, onSubmit }) {
   if (!state.open || !state.row) return null;
   const row = state.row;
@@ -316,6 +319,7 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
     };
   }, [isActivePage, loadInventory]);
 
+  // eslint-disable-next-line no-unused-vars
   const openStockModal = (row) => {
     setStockModal({
       open: true,
@@ -328,11 +332,13 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
     });
   };
 
+  // eslint-disable-next-line no-unused-vars
   const closeStockModal = () => {
     if (stockModal.saving) return;
     setStockModal((previous) => ({ ...previous, open: false }));
   };
 
+  // eslint-disable-next-line no-unused-vars
   const submitStockAdjustment = async () => {
     if (!supabase || !stockModal.row) return;
     const quantity = Number.parseInt(stockModal.quantity, 10);
@@ -418,16 +424,9 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
     }));
 
     try {
-      let result = await supabase.rpc('complete_wig_request_or_stock_from_bundle_scan', {
+      const result = await supabase.rpc('complete_wig_stock_from_bundle_scan', {
         p_waybill_payload: payload,
       });
-      const missingWorkflowFunction = result.error
-        && String(result.error.message || '').toLowerCase().includes('complete_wig_request_or_stock_from_bundle_scan');
-      if (missingWorkflowFunction) {
-        result = await supabase.rpc('complete_wig_stock_from_bundle_scan', {
-          p_waybill_payload: payload,
-        });
-      }
       if (result.error) throw result.error;
 
       const data = result.data || {};
@@ -441,12 +440,10 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
       const previousStock = Number(data.previous_stock ?? 0);
       const nextStock = Number(data.next_stock ?? previousStock + 1);
       const memberCount = Number(data.member_count || 0);
-      const directToRequest = Boolean(data.direct_to_request);
-      const request = data.request || {};
 
       void logAuditAction({
         action: 'wig_catalog_bundle_scan_completed',
-        description: `bundle_id=${bundle.Bundle_ID} bundle_code=${bundleCode} wig_id=${wig.Wig_ID} stock:${previousStock}->${nextStock} members=${memberCount} direct_to_request=${directToRequest}`,
+        description: `bundle_id=${bundle.Bundle_ID} bundle_code=${bundleCode} wig_id=${wig.Wig_ID} stock:${previousStock}->${nextStock} members=${memberCount} stock_only=true`,
         resource: 'wig_catalog_studio',
         userProfile,
       });
@@ -456,9 +453,7 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
         manualCode: '',
         saving: false,
         error: '',
-        success: directToRequest
-          ? `Bundle ${bundleCode} completed and was reserved directly for ${request.Request_Code || `request #${request.Req_ID}`}. It was not added to general stock; the request is now Accepted - Wig Allocated and ready for the next staff action.`
-          : `Bundle ${bundleCode} completed. ${wigLabel}${capLabel} stock increased from ${previousStock} to ${nextStock}; ${memberCount} linked submission${memberCount === 1 ? '' : 's'} now show Wig Created.`,
+        success: `Bundle ${bundleCode} completed. ${wigLabel}${capLabel} stock increased from ${previousStock} to ${nextStock}; ${memberCount} linked submission${memberCount === 1 ? '' : 's'} now show Wig Created. Staff were notified and must scan this physical wig before allocation.`,
       }));
       await loadInventory();
       return true;
@@ -501,7 +496,7 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
               refreshLoading={loading}
               autoRefreshOnChanges={false}
               helpTitle="About Wig Catalog Studio"
-              helpContent={<p>Review wig inventory or open Add Wig to create catalog-ready wig records and starting stock.</p>}
+              helpContent={<p>Create catalog specifications at zero stock. Physical stock is added only after a completed bundle QR is scanned.</p>}
             />
             <button
               type="button"
@@ -556,7 +551,6 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
         <WigInventoryTab
           rows={inventory}
           loading={loading}
-          onAdjustStock={openStockModal}
           onOpenHistory={openHistory}
           onOpenBundleScanner={openBundleScanner}
           primaryColor={accent}
@@ -575,18 +569,12 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
             setTab(TAB_INVENTORY);
             setNotice({
               kind: 'success',
-              message: `${created.wigName} was added in Small, Medium, and Large. Starting stock was applied only to ${created.selectedCapSize} (${created.wigCode}).`,
+              message: `${created.wigName} was added in Small, Medium, and Large at zero stock. Scan a completed bundle to add one physical wig.`,
             });
           }}
         />
       </div>
 
-      <StockAdjustmentModal
-        state={stockModal}
-        setState={setStockModal}
-        onClose={closeStockModal}
-        onSubmit={submitStockAdjustment}
-      />
       <StockHistoryModal
         state={historyModal}
         onClose={() => setHistoryModal((previous) => ({ ...previous, open: false }))}

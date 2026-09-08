@@ -24,9 +24,9 @@ const CutHairInventoryPage = lazy(() => import('../../shared/features/CutHairInv
 
 const staffNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'salon-schedule', label: 'Salon Schedule', icon: CalendarDays },
+  { id: 'salon-schedule', label: 'Receiving Schedule', icon: CalendarDays },
   { id: 'event-application-intake', label: 'Manage Event Application', icon: CheckCircle },
-  { id: 'assigned-event-operations', label: 'Manage Assigned Events', icon: FileText },
+  { id: 'assigned-event-operations', label: 'Manage Assigned Events', icon: FileText, scrollMode: 'contained' },
   { id: 'cut-hair-inventory', label: 'Cut Hair Inventory', icon: Boxes },
   { id: 'update-wig-request-status', label: 'Manage Wig Request', icon: Package },
   { id: 'manage-requirements', label: 'Manage Requirements', icon: SlidersHorizontal },

@@ -12,7 +12,6 @@ import {
   PieChart as PieChartIcon,
   PlayCircle,
   Plus,
-  ShieldCheck,
   Trash2,
   Users,
 } from 'lucide-react';
@@ -42,6 +41,19 @@ const RELEASE_SCHEDULES_TABLE = 'Release_Schedules';
 
 const SCHEDULES_STORAGE_KEY = 'Donivra.hrep.report.schedules';
 const HISTORY_STORAGE_KEY = 'Donivra.hrep.report.history';
+
+function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
+  const safeAlpha = Math.max(0, Math.min(1, Number.isFinite(alpha) ? alpha : 1));
+  const input = String(colorValue || '').trim();
+  const hexMatch = input.match(/^#([0-9a-f]{6})$/i);
+  if (hexMatch) {
+    const r = parseInt(hexMatch[1].slice(0, 2), 16);
+    const g = parseInt(hexMatch[1].slice(2, 4), 16);
+    const b = parseInt(hexMatch[1].slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+  }
+  return withColorAlpha(fallback, safeAlpha, '#0275d8');
+}
 
 const tabs = [
   { id: 'quick', label: 'Quick Generate', icon: BarChart3 },
@@ -1454,34 +1466,6 @@ export default function GenerateReportsPage({ userProfile }) {
         </div>
       </header>
 
-      <section
-        className="flex flex-wrap items-center gap-3 rounded-xl border bg-white px-4 py-3 shadow-sm"
-        style={{ borderColor: theme?.secondaryColorLight || '#d1d5db' }}
-        aria-label="H-Representative report access"
-      >
-        <div className="flex min-w-[220px] items-center gap-3">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ backgroundColor: `${primaryColor}14`, color: primaryColor }}>
-            <ShieldCheck size={18} />
-          </span>
-          <div>
-            <p className="text-sm font-semibold" style={{ color: primaryTextColor }}>H-Representative report access</p>
-            <p className="text-xs" style={{ color: secondaryTextColor }}>Only records belonging to {hospitalName || 'your assigned hospital'}.</p>
-          </div>
-        </div>
-        <div className="flex flex-1 flex-wrap gap-2 md:justify-end">
-          {[
-            { label: 'Hospital Patients', icon: Users },
-            { label: 'Wig Requests', icon: ClipboardList },
-            { label: 'Release Schedules', icon: CalendarClock },
-            { label: 'Turnaround & SLA', icon: BarChart3 },
-          ].map(({ label, icon: AccessIcon }) => (
-            <span key={label} className="inline-flex items-center gap-1.5 rounded-lg border bg-gray-50 px-2.5 py-1.5 text-xs font-semibold" style={{ borderColor: theme?.secondaryColorLight || '#d1d5db', color: secondaryTextColor }}>
-              <AccessIcon size={13} style={{ color: primaryColor }} /> {label}
-            </span>
-          ))}
-        </div>
-      </section>
-
       {notice.text && (
         <div
           className={`rounded-lg border px-3 py-2 text-sm font-medium ${
@@ -1623,13 +1607,23 @@ export default function GenerateReportsPage({ userProfile }) {
                     ? '#d97706'
                     : index === 0 ? primaryColor : (theme?.secondaryColor || '#6B7280');
               return (
-                <article key={item.label} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                  <div className="mb-3 h-1 rounded-full" style={{ backgroundColor: accent }} />
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">{item.label}</p>
-                    <SummaryIcon size={17} style={{ color: accent }} />
+                <article
+                  key={item.label}
+                  className="overflow-hidden rounded-xl border p-4 shadow-sm"
+                  style={{
+                    borderColor: withColorAlpha(accent, 0.24),
+                    background: `linear-gradient(135deg, ${withColorAlpha(accent, 0.11)} 0%, #ffffff 72%)`,
+                  }}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: withColorAlpha(accent, 0.14), color: accent }}>
+                      <SummaryIcon size={19} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">{item.label}</p>
+                      <p className="mt-1 text-2xl font-bold leading-none text-gray-900">{item.value}</p>
+                    </div>
                   </div>
-                  <p className="mt-1 text-2xl font-bold leading-none text-gray-900">{item.value}</p>
                 </article>
               );
             })}

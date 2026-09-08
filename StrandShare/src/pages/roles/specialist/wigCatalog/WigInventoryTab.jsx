@@ -7,7 +7,6 @@ import {
   Clock3,
   History,
   ImageOff,
-  PackagePlus,
   RefreshCw,
   ScanLine,
   Search,
@@ -49,7 +48,6 @@ function StatusBadge({ row }) {
 export default function WigInventoryTab({
   rows,
   loading,
-  onAdjustStock,
   onOpenHistory,
   onOpenBundleScanner,
   primaryColor,
@@ -269,13 +267,6 @@ export default function WigInventoryTab({
                     <td className="px-4 py-3"><StatusBadge row={row} /></td>
                     <td className="px-5 py-3">
                       <div className="flex justify-end gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => onAdjustStock(row)}
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-white"
-                        >
-                          <PackagePlus size={12} /> Adjust
-                        </button>
                         <button
                           type="button"
                           onClick={() => onOpenHistory(row)}
