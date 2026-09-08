@@ -10,6 +10,7 @@ import ReleaseDateApprovalPage from './ReleaseDateApprovalPage';
 import WigReleaseAftercarePanel from '../../../components/WigReleaseAftercarePanel';
 import LegalTermsGate from '../../../components/LegalTermsGate';
 import useActiveLegalDocument from '../../../hooks/useActiveLegalDocument';
+import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 
 const PATIENTS_TABLE = 'Patients';
 const USERS_TABLE = 'users';
@@ -406,8 +407,8 @@ function statusClass(status) {
 
 function getAppealDisplay(appeal) {
   if (!appeal) return { label: 'No concern', className: 'bg-slate-100 text-slate-600' };
-  if (appeal.return_status === 'Return Completed') return { label: 'Return completed', className: 'bg-slate-200 text-slate-800' };
-  if (appeal.return_status === 'Completed') return { label: 'Completed', className: 'bg-emerald-100 text-emerald-800' };
+  if (appeal.return_status === 'Return Completed') return { label: 'Problem Solved', className: 'bg-emerald-100 text-emerald-800' };
+  if (appeal.return_status === 'Completed') return { label: 'Problem Solved', className: 'bg-emerald-100 text-emerald-800' };
   if (appeal.return_status === 'Ready for Re-release') return { label: 'Ready for re-release', className: 'bg-indigo-100 text-indigo-800' };
   if (appeal.return_status) return { label: appeal.return_status, className: 'bg-violet-100 text-violet-800' };
   if (appeal.status === 'Rejected') return { label: 'Problem not confirmed', className: 'bg-red-100 text-red-800' };
@@ -415,139 +416,180 @@ function getAppealDisplay(appeal) {
   return { label: 'Awaiting Staff', className: 'bg-amber-100 text-amber-900' };
 }
 
-function getJourneyPath(statusKey) {
+function formatConcernNumber(appealId) {
+  const numericId = Number(appealId || 0);
+  return numericId > 0 ? `CON-${String(numericId).padStart(6, '0')}` : '';
+}
 
-  const allocatedPath = [
-    {
-      id: 'pending',
-      title: REQUEST_STATUS.pending,
-      note: 'Request submitted and queued for review.',
-    },
-    {
-      id: 'accepted_allocated',
-      title: REQUEST_STATUS.acceptedWithAllocatedWig,
-      note: 'Request accepted and an available wig has been allocated.',
-    },
-    {
-      id: 'to_be_release',
-      title: REQUEST_STATUS.toBeRelease,
-      note: 'Request is waiting for hospital release approval and scheduling confirmation.',
-    },
-    {
-      id: 'releasing',
-      title: REQUEST_STATUS.releasing,
-      note: 'H-Representative approved schedule and release processing is ongoing.',
-    },
-    {
-      id: 'released',
-      title: REQUEST_STATUS.released,
-      note: 'Release is completed and request has reached its final state.',
-    },
-  ];
+function getJourneyPath(statusKey, appeal = null, usedProduction = false) {
+  const submittedStep = {
+    id: 'pending',
+    actor: 'H-Representative',
+    title: REQUEST_STATUS.pending,
+    note: 'Hospital confirms the patient, safety assessment, requested wig, and PDF before submitting the request to Staff.',
+  };
+  const allocatedStep = {
+    id: 'accepted_allocated',
+    actor: 'Staff',
+    title: REQUEST_STATUS.acceptedWithAllocatedWig,
+    note: 'Staff approves the request and reserves a matching available wig for this patient.',
+  };
+  const productionStep = {
+    id: 'accepted_in_production',
+    actor: 'Staff → Specialist',
+    title: REQUEST_STATUS.acceptedInProduction,
+    note: 'Staff approves priority production because no matching stock is available. Specialist produces and reserves the requested wig.',
+  };
+  const scheduleStep = {
+    id: 'to_be_release',
+    actor: 'Staff',
+    title: REQUEST_STATUS.toBeRelease,
+    note: 'Staff proposes a release date. A hospital request cannot proceed until the H-Representative approves that schedule.',
+  };
+  const hospitalConfirmationStep = {
+    id: 'releasing',
+    actor: 'H-Representative',
+    title: REQUEST_STATUS.releasing,
+    note: 'H-Representative gives the final schedule confirmation. A reschedule request sends it back to Staff for a new date.',
+  };
+  const finalReleaseStep = {
+    id: 'released',
+    actor: 'Staff — final handover confirmation',
+    title: REQUEST_STATUS.released,
+    note: 'Staff confirms that the wig was physically handed over. This is the final confirmation that marks the request Released.',
+  };
+  const receiptStep = {
+    id: 'receipt_confirmation',
+    actor: 'H-Representative',
+    title: 'Receipt and Terms Confirmation',
+    note: 'Hospital confirms receipt for the patient and accepts the recorded seven-day after-release concern terms.',
+  };
+  const concernStep = {
+    id: 'appealed',
+    actor: 'H-Representative',
+    title: REQUEST_STATUS.appealed,
+    note: 'Within seven days, the hospital may report a problem with 1–4 photos and request Repair or Replace, or Return and Close.',
+  };
+  const concernReviewStep = {
+    id: 'appeal_review',
+    actor: 'Staff',
+    title: 'Problem Confirmation',
+    note: 'Staff reviews the evidence. If not confirmed, the original release remains complete. If confirmed, return instructions appear.',
+  };
+  const returnStep = {
+    id: 'return_handling',
+    actor: 'H-Representative → Staff',
+    title: appeal?.return_status || 'Return Handling',
+    note: appeal?.requested_resolution === 'Return and Close'
+      ? 'Hospital ships the wig. Staff confirms receipt and closes the request as Returned - Completed.'
+      : 'Hospital ships the wig; Staff confirms receipt, repairs or replaces it, then sends it through release scheduling again.',
+  };
+  const resolvedStep = {
+    id: 'returned_completed',
+    actor: appeal?.return_status === 'Ready for Re-release'
+      ? (statusKey === 'releasing' ? 'H-Representative' : 'Staff')
+      : 'Staff',
+    title: appeal?.status === 'Rejected'
+      ? 'Concern Not Confirmed'
+      : appeal?.return_status === 'Ready for Re-release'
+        ? (statusKey === 'releasing' ? 'Re-release Schedule Approved' : 'Ready for Re-release')
+        : appeal?.requested_resolution === 'Return and Close' ? REQUEST_STATUS.returnedCompleted : 'Resolved / Re-released',
+    note: appeal?.status === 'Rejected'
+      ? 'Staff did not confirm the reported problem, so the original Released result remains final.'
+      : appeal?.return_status === 'Ready for Re-release'
+        ? (statusKey === 'releasing'
+          ? 'The H-Representative approved the new release schedule. Staff must perform the final handover confirmation again.'
+          : 'Repair or replacement is complete. Staff must propose a new date, then the H-Representative must approve it.')
+        : appeal?.requested_resolution === 'Return and Close'
+      ? 'Staff received the returned wig and closed the request without another release.'
+      : 'After repair or replacement, Staff proposes another date, the H-Representative approves it, and Staff confirms the new handover.',
+  };
 
-  const productionPath = [
-    {
-      id: 'pending',
-      title: REQUEST_STATUS.pending,
-      note: 'Request submitted and queued for review.',
-    },
-    {
-      id: 'accepted_in_production',
-      title: REQUEST_STATUS.acceptedInProduction,
-      note: 'No matching stock was available. The request is queued for priority specialist production.',
-    },
-    {
-      id: 'to_be_release',
-      title: REQUEST_STATUS.toBeRelease,
-      note: 'Request is waiting for hospital release approval and scheduling confirmation.',
-    },
-    {
-      id: 'releasing',
-      title: REQUEST_STATUS.releasing,
-      note: 'H-Representative approved schedule and release processing is ongoing.',
-    },
-    {
-      id: 'released',
-      title: REQUEST_STATUS.released,
-      note: 'Release is completed and request has reached its final state.',
-    },
-  ];
+  const allocatedCorePath = [submittedStep, allocatedStep, scheduleStep, hospitalConfirmationStep, finalReleaseStep];
+  const productionCorePath = [submittedStep, productionStep, allocatedStep, scheduleStep, hospitalConfirmationStep, finalReleaseStep];
+  const selectedCorePath = usedProduction ? productionCorePath : allocatedCorePath;
+  const fullAppealPath = [...selectedCorePath, receiptStep, concernStep, concernReviewStep, returnStep, resolvedStep];
+  const rejectedConcernPath = [...selectedCorePath, receiptStep, concernStep, concernReviewStep, resolvedStep];
 
   const rejectedPath = [
     {
       id: 'pending',
+      actor: 'H-Representative',
       title: REQUEST_STATUS.pending,
-      note: 'Request submitted and queued for review.',
+      note: 'Hospital submitted the patient wig request for Staff review.',
     },
     {
       id: 'rejected',
+      actor: 'Staff',
       title: REQUEST_STATUS.rejected,
-      note: 'Request was rejected during review and will not proceed.',
+      note: 'Staff rejected the request with a required reason. It will not proceed to allocation or production.',
     },
   ];
 
   const cancelledPath = [
     {
       id: 'pending',
+      actor: 'H-Representative',
       title: REQUEST_STATUS.pending,
-      note: 'Request submitted and queued for review.',
+      note: 'Hospital submitted the patient wig request for Staff review.',
     },
     {
       id: 'cancelled',
+      actor: 'System / Authorized User',
       title: REQUEST_STATUS.cancelled,
       note: 'Request was cancelled and closed.',
     },
   ];
 
-  const appealedPath = [
-    ...productionPath.slice(0, -1),
-    {
-      id: 'released',
-      title: REQUEST_STATUS.released,
-      note: 'The wig was released and received.',
-    },
-    {
-      id: 'appealed',
-      title: REQUEST_STATUS.appealed,
-      note: 'A problem was reported and is awaiting confirmation or return handling.',
-    },
-  ];
-
-  const returnedCompletedPath = [
-    ...appealedPath,
-    {
-      id: 'returned_completed',
-      title: REQUEST_STATUS.returnedCompleted,
-      note: 'The returned wig was received and this request was closed without re-release.',
-    },
-  ];
+  const activePath = appeal?.status === 'Rejected' ? rejectedConcernPath : fullAppealPath;
 
   if (statusKey === 'accepted_allocated') {
-    return { steps: allocatedPath, currentStepId: 'accepted_allocated' };
+    return { steps: activePath, currentStepId: 'accepted_allocated' };
   }
 
   if (statusKey === 'accepted_in_production') {
-    return { steps: productionPath, currentStepId: 'accepted_in_production' };
+    return {
+      steps: [...productionCorePath, receiptStep, concernStep, concernReviewStep, returnStep, resolvedStep],
+      currentStepId: 'accepted_in_production',
+    };
   }
 
   if (statusKey === 'to_be_release') {
-    return { steps: productionPath, currentStepId: 'to_be_release' };
+    return {
+      steps: activePath,
+      currentStepId: appeal?.return_status === 'Ready for Re-release' ? 'returned_completed' : 'to_be_release',
+    };
   }
 
   if (statusKey === 'releasing') {
-    return { steps: productionPath, currentStepId: 'releasing' };
+    return {
+      steps: activePath,
+      currentStepId: appeal?.return_status === 'Ready for Re-release' ? 'returned_completed' : 'releasing',
+    };
   }
 
   if (statusKey === 'released') {
-    return { steps: productionPath, currentStepId: 'released' };
+    return {
+      steps: activePath,
+      currentStepId: appeal?.status === 'Rejected' || appeal?.return_status === 'Completed'
+        ? 'returned_completed'
+        : 'released',
+    };
   }
 
   if (statusKey === 'appealed') {
-    return { steps: appealedPath, currentStepId: 'appealed' };
+    const returnStatus = String(appeal?.return_status || '').trim();
+    const appealStatus = String(appeal?.status || '').trim();
+    const currentStepId = appealStatus === 'Pending Staff Review'
+      ? 'appeal_review'
+      : returnStatus
+        ? 'return_handling'
+        : 'appeal_review';
+    return { steps: activePath, currentStepId };
   }
 
   if (statusKey === 'returned_completed') {
-    return { steps: returnedCompletedPath, currentStepId: 'returned_completed' };
+    return { steps: activePath, currentStepId: 'returned_completed' };
   }
 
   if (statusKey === 'rejected') {
@@ -558,7 +600,7 @@ function getJourneyPath(statusKey) {
     return { steps: cancelledPath, currentStepId: 'cancelled' };
   }
 
-  return { steps: productionPath, currentStepId: 'pending' };
+  return { steps: fullAppealPath, currentStepId: 'pending' };
 }
 
 function mapWigRequestInsertError(rawMessage) {
@@ -833,6 +875,8 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
   const [isLoadingPatients, setIsLoadingPatients] = useState(false);
   const [isLoadingSubmitted, setIsLoadingSubmitted] = useState(false);
   const [isLoadingWigSpecifications, setIsLoadingWigSpecifications] = useState(false);
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
+  const [childRefreshToken, setChildRefreshToken] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingPreview, setIsUploadingPreview] = useState(false);
   const [requestConfirmationOpen, setRequestConfirmationOpen] = useState(false);
@@ -1114,6 +1158,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
         rawStatus: requestRow.Status || REQUEST_STATUS.pending,
         appeal,
         hasAppeal: Boolean(appeal),
+        appealNumber: formatConcernNumber(appeal?.appeal_id),
         appealLabel: appealDisplay.label,
         appealClassName: appealDisplay.className,
           isWishRequest: Boolean(requestRow.Is_Wish_Request),
@@ -1140,6 +1185,12 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       };
     });
   }, [appealsByReqId, wigRequests, patientById, safetyAssessmentsByReqId, userDetailsByUserId, usersById, wigSpecifications]);
+
+  useEffect(() => {
+    if (!selectedSubmittedRequest?.reqId) return;
+    const refreshedSelection = submittedRows.find((row) => row.reqId === selectedSubmittedRequest.reqId);
+    setSelectedSubmittedRequest(refreshedSelection || null);
+  }, [selectedSubmittedRequest?.reqId, submittedRows]);
 
   const submittedQuickStats = useMemo(() => {
     const rescheduleRequestIds = new Set(
@@ -1322,6 +1373,8 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
 
     return getJourneyPath(
       selectedSubmittedRequest.statusKey || getCanonicalStatusKey(selectedSubmittedRequest.status),
+      selectedSubmittedRequest.appeal,
+      Boolean(selectedSubmittedRequest.isWishRequest || selectedSubmittedRequest.fulfillmentBundleId),
     );
   }, [selectedSubmittedRequest]);
 
@@ -1767,53 +1820,13 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     loadWigSpecifications();
   }, [hospitalId, fetchPatients, fetchSubmittedRequests, loadWigSpecifications]);
 
-  useEffect(() => {
-    if (!isActivePage || !isSupabaseConfigured || !supabase || !hospitalId) {
-      return undefined;
-    }
-
-    const channel = supabase
-      .channel(`hrep-wig-requests-${hospitalId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: WIG_REQUESTS_TABLE,
-          filter: `Hospital_ID=eq.${hospitalId}`,
-        },
-        () => {
-          void fetchSubmittedRequests();
-        },
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: RELEASE_SCHEDULES_TABLE,
-        },
-        () => {
-          void fetchSubmittedRequests();
-        },
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: WIG_RELEASE_APPEALS_TABLE,
-        },
-        () => {
-          void fetchSubmittedRequests();
-        },
-      )
-      .subscribe();
-
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [hospitalId, fetchSubmittedRequests, isActivePage]);
+  useRealtimeRefresh({
+    channelName: `hrep-wig-requests-${hospitalId || 'pending'}`,
+    tables: [WIG_REQUESTS_TABLE, RELEASE_SCHEDULES_TABLE, WIG_RELEASE_APPEALS_TABLE,
+      PATIENTS_TABLE, SAFETY_ASSESSMENTS_TABLE, WIGS_TABLE, WIG_SPECS_TABLE, WIG_FILTERS_TABLE],
+    enabled: Boolean(isActivePage && hospitalId),
+    onChange: () => Promise.all([fetchPatients(), fetchSubmittedRequests(), loadWigSpecifications()]),
+  });
 
   useEffect(() => {
     const handlePointerDown = (event) => {
@@ -2506,26 +2519,24 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
 
   const handleRefreshPage = async () => {
     setNotice({ kind: '', text: '' });
-
-    if (!hospitalId) {
-      await resolveAssignedHospital();
-      return;
+    setIsManualRefreshing(true);
+    try {
+      if (!hospitalId) {
+        await resolveAssignedHospital();
+      } else {
+        await Promise.all([
+          fetchPatients(),
+          fetchSubmittedRequests(),
+          loadWigSpecifications(),
+        ]);
+      }
+      setChildRefreshToken((current) => current + 1);
+    } finally {
+      setIsManualRefreshing(false);
     }
-
-    if (activeTab === 'submitted') {
-      await fetchSubmittedRequests();
-      return;
-    }
-
-    if (activeTab === 'release-approval' || activeTab === 'aftercare') return;
-
-    await Promise.all([
-      fetchPatients(),
-      loadWigSpecifications(),
-    ]);
   };
 
-  const isRefreshingPage = isResolvingHospital
+  const isRefreshingPage = isManualRefreshing || isResolvingHospital
     || (activeTab === 'submitted'
       ? isLoadingSubmitted
       : isLoadingPatients || isLoadingWigSpecifications);
@@ -3213,7 +3224,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
 
           {submittedView === 'release' ? (
             <div className="bg-slate-50 p-4">
-              <ReleaseDateApprovalPage userProfile={userProfile} embedded />
+              <ReleaseDateApprovalPage userProfile={userProfile} embedded refreshToken={childRefreshToken} />
             </div>
           ) : submittedView === 'calendar' ? (
             <div className="p-4">
@@ -3284,7 +3295,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                           {row.statusLabel}
                         </span>
                         {row.hasAppeal ? <span className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-semibold ${row.appealClassName}`} title={row.appeal?.reason}>
-                          Concern: {row.appealLabel}
+                          {row.appealNumber}: {row.appealLabel}
                         </span> : null}
                       </td>
                       <td className="px-4 py-3">
@@ -3309,11 +3320,11 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
       )}
 
       {activeTab === 'release-approval' && (
-        <ReleaseDateApprovalPage userProfile={userProfile} embedded />
+        <ReleaseDateApprovalPage userProfile={userProfile} embedded refreshToken={childRefreshToken} />
       )}
 
       {activeTab === 'aftercare' && (
-        <WigReleaseAftercarePanel mode="hospital" isActivePage={isActivePage} />
+        <WigReleaseAftercarePanel mode="hospital" isActivePage={isActivePage} refreshToken={childRefreshToken} />
       )}
 
       {selectedSubmittedRequest && typeof document !== 'undefined' && createPortal(
@@ -3370,7 +3381,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                   </p>
                 )}
                 <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-3 text-xs">
-                  <span className="font-semibold text-slate-900">After-release concern:</span>
+                  <span className="font-semibold text-slate-900">{selectedSubmittedRequest.hasAppeal ? `After-release concern ${selectedSubmittedRequest.appealNumber}:` : 'After-release concern:'}</span>
                   <span className={`inline-flex rounded-full px-2.5 py-1 font-semibold ${selectedSubmittedRequest.appealClassName}`}>{selectedSubmittedRequest.appealLabel}</span>
                   {selectedSubmittedRequest.hasAppeal ? <span className="text-slate-500">Problem: {selectedSubmittedRequest.appeal?.reason} · Requested outcome: {selectedSubmittedRequest.appeal?.requested_resolution || 'Repair or Replace'}</span> : null}
                 </div>
@@ -3422,8 +3433,8 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
 
               {selectedSubmittedRequestJourney && (
                 <div className="rounded-xl border border-slate-200 bg-white p-4">
-                  <p className="text-sm font-semibold text-slate-900">Patient Journey</p>
-                  <p className="mt-1 text-xs text-slate-500">Current position in the request workflow.</p>
+                  <p className="text-sm font-semibold text-slate-900">Full Request and Appeal Timeline</p>
+                  <p className="mt-1 text-xs text-slate-500">Every stage shows who is responsible. Future after-release stages remain visible so the complete process is clear.</p>
 
                   {(() => {
                     const currentIndex = selectedSubmittedRequestJourney.steps.findIndex(
@@ -3447,7 +3458,12 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                                     : 'border-slate-200 bg-slate-50 text-slate-700'
                               }`}
                             >
-                              <p className="text-xs font-semibold">{step.title}</p>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-xs font-semibold">{index + 1}. {step.title}</p>
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${isActive ? 'bg-white/15 text-white' : isDone ? 'bg-emerald-100 text-emerald-800' : 'bg-white text-slate-600'}`}>
+                                  {step.actor}
+                                </span>
+                              </div>
                               <p className={`mt-0.5 text-[11px] ${isActive ? 'text-slate-200' : isDone ? 'text-emerald-700' : 'text-slate-500'}`}>
                                 {step.note}
                               </p>

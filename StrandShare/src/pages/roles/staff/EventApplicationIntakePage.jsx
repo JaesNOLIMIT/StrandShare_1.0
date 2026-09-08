@@ -22,6 +22,7 @@ import {
   Send,
   ShieldAlert,
   User,
+  UserCheck,
   Users,
   X,
   XCircle,
@@ -60,7 +61,12 @@ function normalizeStatus(value) {
 
 function formatDateTime(value) {
   if (!value) return 'N/A';
-  const d = new Date(value);
+  const raw = String(value).trim();
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const hasExplicitTimezone = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(normalized);
+  const d = value instanceof Date
+    ? value
+    : new Date(hasExplicitTimezone ? normalized : `${normalized}+08:00`);
   if (Number.isNaN(d.getTime())) return 'N/A';
   return d.toLocaleString('en-PH', {
     timeZone: 'Asia/Manila',
@@ -78,6 +84,7 @@ function statusLabel(value) {
   if (key === 'pendingadmindecision') return 'Pending Admin Decision';
   if (key === 'approved') return 'Approved';
   if (key === 'rejected') return 'Rejected';
+  if (key === 'cancelled') return 'Cancelled';
   if (key === 'appealed') return 'Appealed';
   if (key === 'withdrawn') return 'Withdrawn';
   if (key === 'closed') return 'Closed';
@@ -90,6 +97,7 @@ function statusPillClass(value) {
   if (key === 'pendingadmindecision') return 'border border-sky-200 bg-sky-50 text-sky-700';
   if (key === 'approved') return 'border border-emerald-200 bg-emerald-50 text-emerald-700';
   if (key === 'rejected') return 'border border-rose-200 bg-rose-50 text-rose-700';
+  if (key === 'cancelled') return 'border border-slate-300 bg-slate-100 text-slate-700';
   if (key === 'appealed') return 'border border-violet-200 bg-violet-50 text-violet-700';
   return 'border border-slate-200 bg-slate-100 text-slate-700';
 }
@@ -643,13 +651,13 @@ function MapPreview({ latitude, longitude, label }) {
 
 function InfoItem({ icon: Icon, label, children, span }) {
   return (
-    <div className={`flex items-start gap-2.5 ${span === 2 ? 'md:col-span-2' : ''}`}>
-      <div className="mt-0.5 flex h-7 w-7 flex-none items-center justify-center rounded-md bg-slate-100 text-slate-500">
+    <div className={`flex items-start gap-3 ${span === 2 ? 'sm:col-span-2' : ''}`}>
+      <div className="mt-1 flex h-5 w-5 flex-none items-center justify-center text-slate-400">
         <Icon size={13} />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-        <div className="text-sm text-slate-800 break-words">{children}</div>
+        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+        <div className="break-words text-sm leading-relaxed text-slate-800">{children}</div>
       </div>
     </div>
   );
@@ -658,7 +666,7 @@ function InfoItem({ icon: Icon, label, children, span }) {
 function AttachmentTile({ url, label }) {
   if (!url) {
     return (
-      <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-5 text-center">
+      <div className="flex aspect-[4/3] w-full max-w-[280px] flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 text-center">
         <ImageIcon size={18} className="text-slate-400" />
         <p className="mt-1.5 text-xs font-semibold text-slate-600">{label}</p>
         <p className="text-[11px] text-slate-400">Not provided</p>
@@ -670,7 +678,7 @@ function AttachmentTile({ url, label }) {
       href={url}
       target="_blank"
       rel="noreferrer"
-      className="group block overflow-hidden rounded-lg border border-slate-200 bg-slate-50 transition hover:border-slate-400 hover:shadow-md"
+      className="group block w-full max-w-[280px] overflow-hidden rounded-xl border border-slate-200 bg-white transition hover:border-slate-400 hover:shadow-md"
     >
       <div className="aspect-[4/3] w-full overflow-hidden bg-slate-100">
         <img
@@ -685,6 +693,33 @@ function AttachmentTile({ url, label }) {
         <ExternalLink size={12} className="text-slate-400 group-hover:text-slate-700" />
       </div>
     </a>
+  );
+}
+
+function DetailSection({ icon: Icon, title, subtitle, children, theme }) {
+  const accent = theme?.primaryColor || '#0f766e';
+  return (
+    <section>
+      <div className="mb-4 flex items-center gap-3">
+        <span className="grid h-9 w-9 place-items-center rounded-xl" style={{ backgroundColor: `${accent}14`, color: accent }}>
+          <Icon size={17} />
+        </span>
+        <div>
+          <h3 className="text-base font-bold" style={{ color: theme?.primaryTextColor }}>{title}</h3>
+          <p className="text-xs" style={{ color: theme?.secondaryTextColor }}>{subtitle}</p>
+        </div>
+      </div>
+      <div className="rounded-2xl border bg-white p-6 md:p-8" style={{ borderColor: `${theme?.secondaryColor || '#64748b'}38` }}>{children}</div>
+    </section>
+  );
+}
+
+function RequirementItem({ complete, label }) {
+  return (
+    <div className={`flex items-center gap-2 text-sm font-semibold ${complete ? 'text-emerald-700' : 'text-slate-500'}`}>
+      {complete ? <CheckCircle2 size={17} /> : <Clock3 size={17} />}
+      <span>{label}</span>
+    </div>
   );
 }
 
@@ -716,6 +751,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
     const [year, month] = todayProgramDateKey().split('-').map(Number);
     return new Date(year, month - 1, 1);
   });
+  const pageRootRef = useRef(null);
   const initializedApplicationIdRef = useRef(null);
 
   const resolveStaffUserId = useCallback(async () => {
@@ -770,7 +806,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
       if (linkedRequestIds.length > 0) {
         const requestResult = await supabase
           .from(EVENT_REQUESTS_TABLE)
-          .select('Event_Request_ID, Status, Admin_Decision_Reason, Admin_Reviewed_At, Updated_At')
+          .select('Event_Request_ID, Status, Admin_Decision_Reason, Cancellation_Reason, Auto_Cancelled_At, Admin_Reviewed_At, Updated_At')
           .in('Event_Request_ID', linkedRequestIds);
 
         if (requestResult.error) throw requestResult.error;
@@ -794,6 +830,20 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
   useEffect(() => {
     loadRows();
   }, [loadRows]);
+
+  useEffect(() => {
+    if (!isActivePage) return undefined;
+    const pageScrollContainer = pageRootRef.current?.parentElement;
+    if (!pageScrollContainer) return undefined;
+
+    const previousOverflow = pageScrollContainer.style.overflow;
+    pageScrollContainer.scrollTop = 0;
+    pageScrollContainer.style.overflow = 'hidden';
+
+    return () => {
+      pageScrollContainer.style.overflow = previousOverflow;
+    };
+  }, [isActivePage]);
 
   // Realtime: keep applications + linked requests in sync without refetching
   useEffect(() => {
@@ -891,11 +941,12 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
 
   const isLinkedToAdmin = Boolean(selectedRow?.Linked_Event_Request_ID);
   const applicationStatusKey = normalizeStatus(selectedRow?.Status);
-  const isAutomaticallyRejectedApplication = applicationStatusKey === 'rejected'
-    && Boolean(selectedRow?.Auto_Rejected_At);
+  const isAutomaticallyCancelledApplication = applicationStatusKey === 'cancelled'
+    && Boolean(selectedRow?.Auto_Cancelled_At);
   const isStaffRejectedApplication = applicationStatusKey === 'rejected'
     && Number(selectedRow?.Staff_Rejected_By_User_ID || 0) > 0;
-  const isFinalRejectedApplication = isStaffRejectedApplication || isAutomaticallyRejectedApplication;
+  const isCancelledApplication = applicationStatusKey === 'cancelled';
+  const isFinalRejectedApplication = isStaffRejectedApplication;
   const canAppealRejectedRequest = Boolean(
     isLinkedToAdmin
     && linkedRequestStatusKey === 'rejected'
@@ -906,6 +957,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
     && !isLinkedToAdmin
   ) || canAppealRejectedRequest;
   const isLockedFromActions = isFinalRejectedApplication
+    || isCancelledApplication
     || (isLinkedToAdmin && !canAppealRejectedRequest);
   const notesHaveUnsavedChanges = normalizeNote(staffNotes) !== normalizeNote(savedStaffNotes)
     || normalizeNote(contactNotes) !== normalizeNote(savedContactNotes);
@@ -943,7 +995,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
   }, [selectedId]);
 
   const queueRows = useMemo(() => {
-    const ALLOWED = ['pendingstaffreview', 'pendingadmindecision', 'rejected', 'appealed', 'approved'];
+    const ALLOWED = ['pendingstaffreview', 'pendingadmindecision', 'rejected', 'appealed', 'approved', 'cancelled'];
     return rows
       .filter((row) => ALLOWED.includes(normalizeStatus(row.Status)))
       .slice()
@@ -1350,28 +1402,29 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
       .join(', ');
     const socialUrl = String(selectedRow.Social_Page_URL || '').trim();
     const safeSocialUrl = socialUrl && /^https?:\/\//i.test(socialUrl) ? socialUrl : socialUrl ? `https://${socialUrl}` : '';
+    const hasContactDetails = Boolean(email || phone || preferredFallback);
+    const hasValidId = Boolean(
+      privateIdUrl
+      || selectedRow.Applicant_Valid_ID_URL
+      || selectedRow.Applicant_Valid_ID_Path
+      || selectedRow.Applicant_ID_Document_Number,
+    );
 
     return (
-      <div className="space-y-5">
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Applicant & Identity</p>
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.8fr)]">
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_250px]">
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <InfoItem icon={User} label="Full Name" span={2}>{applicantFullName(selectedRow)}</InfoItem>
-                  <InfoItem icon={User} label="Gender">{selectedRow.Applicant_Gender || 'Not provided'}</InfoItem>
-                  <InfoItem icon={FileText} label="Verified ID Type">{validIdTypeLabel(selectedRow.Applicant_Valid_ID_Type)}</InfoItem>
-                  <InfoItem icon={CheckCircle2} label="ID Verification">{selectedRow.Didit_Verification_Status || 'Legacy application'}</InfoItem>
-                  <InfoItem icon={FileText} label="ID Number">{selectedRow.Applicant_ID_Document_Number || 'Not provided'}</InfoItem>
-                  <InfoItem icon={MapPin} label="Address on ID" span={2}>{selectedRow.Applicant_ID_Address || 'Not provided'}</InfoItem>
-                </div>
-                <AttachmentTile url={privateIdUrl || selectedRow.Applicant_Valid_ID_URL} label="Verified ID Front" />
-              </div>
+      <div className="space-y-10 p-6 md:p-8">
+        <DetailSection icon={User} title="Applicant and identity" subtitle="Applicant identity, verification, and contact information" theme={theme}>
+          <div className="grid grid-cols-1 items-start gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.55fr)_280px] xl:gap-10">
+            <div className="grid grid-cols-1 gap-x-8 gap-y-6 sm:grid-cols-2">
+              <InfoItem icon={User} label="Full Name" span={2}>{applicantFullName(selectedRow)}</InfoItem>
+              <InfoItem icon={User} label="Gender">{selectedRow.Applicant_Gender || 'Not provided'}</InfoItem>
+              <InfoItem icon={FileText} label="Verified ID Type">{validIdTypeLabel(selectedRow.Applicant_Valid_ID_Type)}</InfoItem>
+              <InfoItem icon={CheckCircle2} label="ID Verification">{selectedRow.Didit_Verification_Status || 'Legacy application'}</InfoItem>
+              <InfoItem icon={FileText} label="ID Number">{selectedRow.Applicant_ID_Document_Number || 'Not provided'}</InfoItem>
+              <InfoItem icon={MapPin} label="Address on ID" span={2}>{selectedRow.Applicant_ID_Address || 'Not provided'}</InfoItem>
             </div>
 
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-              <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Contact Priority</p>
+            <div>
+              <p className="mb-5 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Contact Priority</p>
               <div className="grid grid-cols-1 gap-4">
                 <InfoItem icon={CheckCircle2} label="Preferred Method">{preferredMethod}</InfoItem>
                 <InfoItem icon={preferredMethod === 'Email' ? Mail : Phone} label={`Primary | ${preferredMethod}`}>
@@ -1380,19 +1433,18 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                 <InfoItem icon={secondaryMethod === 'Email' ? Mail : Phone} label={`Secondary | ${secondaryMethod}`}>
                   <ContactLink type={secondaryMethod} value={secondaryContact} />
                 </InfoItem>
-                <p className="rounded-md border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-700">
-                  Contact the primary option first. Use the secondary option if the applicant cannot be reached.
-                </p>
               </div>
             </div>
-          </div>
-        </section>
 
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Program Details</p>
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="flex justify-start xl:justify-end">
+              <AttachmentTile url={privateIdUrl || selectedRow.Applicant_Valid_ID_URL} label="Verified ID Front" />
+            </div>
+          </div>
+        </DetailSection>
+
+        <DetailSection icon={FileText} title="Program details" subtitle="Program purpose, visibility, organizer, and poster" theme={theme}>
+          <div className="grid grid-cols-1 items-start gap-8 xl:grid-cols-[minmax(0,1fr)_280px] xl:gap-10">
+            <div className="grid grid-cols-1 gap-x-10 gap-y-6 sm:grid-cols-2">
                 <InfoItem icon={FileText} label="Program Name" span={2}>{selectedRow.Event_Name || 'Untitled program'}</InfoItem>
                 <InfoItem icon={Info} label="Program Type">{normalizeEventVisibility(selectedRow.Event_Visibility)}</InfoItem>
                 <InfoItem icon={Users} label="Expected Attendees">
@@ -1407,21 +1459,18 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                     <a href={safeSocialUrl} target="_blank" rel="noreferrer" className="font-semibold text-teal-700 hover:underline">Open social page</a>
                   ) : 'Not provided'}
                 </InfoItem>
-              </div>
             </div>
-            <AttachmentTile url={selectedRow.Event_Poster_Photo_URL} label="Program Poster" />
+            <div className="flex justify-start xl:justify-end"><AttachmentTile url={selectedRow.Event_Poster_Photo_URL} label="Program Poster" /></div>
           </div>
-        </section>
+        </DetailSection>
 
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Schedule & Venue</p>
-          <div className="mb-4 grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2">
+        <DetailSection icon={MapPin} title="Schedule and venue" subtitle="Program date, complete address, place photo, and map" theme={theme}>
+          <div className="mb-8 grid max-w-3xl grid-cols-1 gap-6 sm:grid-cols-2">
             <InfoItem icon={Calendar} label="Proposed Start">{formatDateTime(selectedRow.Proposed_Start_At)}</InfoItem>
             <InfoItem icon={Calendar} label="Proposed End">{formatDateTime(selectedRow.Proposed_End_At)}</InfoItem>
           </div>
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 items-start gap-8 xl:grid-cols-[minmax(0,1fr)_280px] xl:gap-10">
+            <div className="grid grid-cols-1 gap-x-10 gap-y-6 sm:grid-cols-2">
                 <InfoItem icon={MapPin} label="Venue Name" span={2}>{extractVenueName(selectedRow.Venue_Address)}</InfoItem>
                 <InfoItem icon={MapPin} label="Street">{selectedRow.Street || 'Not provided'}</InfoItem>
                 <InfoItem icon={MapPin} label="Barangay">{selectedRow.Barangay || 'Not provided'}</InfoItem>
@@ -1430,35 +1479,77 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                 <InfoItem icon={MapPin} label="Region">{selectedRow.Region || 'Not provided'}</InfoItem>
                 <InfoItem icon={MapPin} label="Country">{selectedRow.Country || 'Philippines'}</InfoItem>
                 <InfoItem icon={MapPin} label="Complete Address" span={2}>{venueAddress || selectedRow.Venue_Address || 'Not provided'}</InfoItem>
-              </div>
             </div>
-            <AttachmentTile url={selectedRow.Event_Place_Photo_URL} label="Program Place" />
+            <div className="flex justify-start xl:justify-end"><AttachmentTile url={selectedRow.Event_Place_Photo_URL} label="Program Place" /></div>
           </div>
           <div className="mt-4">
             <MapPreview latitude={selectedRow.Latitude} longitude={selectedRow.Longitude} label={`${selectedRow.Event_Name || 'Program'} venue`} />
           </div>
-        </section>
+        </DetailSection>
 
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="mb-3 text-[11px] font-bold uppercase tracking-wide text-slate-500">Application Progress</p>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <InfoItem icon={Info} label="Application Status">{statusLabel(selectedRow.Status)}</InfoItem>
-            <InfoItem icon={Clock3} label="Submitted">{formatDateTime(selectedRow.Created_At)}</InfoItem>
-            <InfoItem icon={Clock3} label="Last Updated">{formatDateTime(selectedRow.Updated_At)}</InfoItem>
-            <InfoItem icon={FileText} label="Resubmissions">{Number(selectedRow.Resubmission_Count || 0)}</InfoItem>
-            <InfoItem icon={Phone} label="Staff Contacted">{formatDateTime(selectedRow.Staff_Contacted_At)}</InfoItem>
-            <InfoItem icon={CheckCircle2} label="Staff Reviewed">{formatDateTime(selectedRow.Staff_Reviewed_At)}</InfoItem>
-            <InfoItem icon={Send} label="Admin Review">{isLinkedToAdmin ? statusLabel(selectedLinkedRequest?.Status || 'Pending Admin Approval') : 'Not submitted yet'}</InfoItem>
-            {selectedRow.Staff_Rejection_Reason && (
-              <InfoItem icon={ShieldAlert} label="Staff Rejection Reason" span={2}>{selectedRow.Staff_Rejection_Reason}</InfoItem>
-            )}
-            {canAppealRejectedRequest && (
-              <InfoItem icon={ShieldAlert} label="Admin Rejection Reason" span={2}>
-                {selectedLinkedRequest?.Admin_Decision_Reason || 'No reason provided by admin.'}
-              </InfoItem>
-            )}
+        <DetailSection icon={CheckCircle2} title="Requirements" subtitle="Required information supplied with this application" theme={theme}>
+          <div className="grid grid-cols-1 gap-x-10 gap-y-5 sm:grid-cols-2">
+            <RequirementItem complete={hasValidId} label="Valid ID" />
+            <RequirementItem complete={Boolean(selectedRow.Event_Poster_Photo_URL)} label="Program poster" />
+            <RequirementItem complete={hasContactDetails} label="Contact details" />
+            <RequirementItem
+              complete={Boolean(selectedRow.Social_Page_Name || safeSocialUrl)}
+              label={selectedRow.Social_Page_Name || safeSocialUrl ? 'Social page' : 'Social page not provided'}
+            />
           </div>
-        </section>
+        </DetailSection>
+
+        <DetailSection icon={UserCheck} title="Review and decision" subtitle="Staff processing, administrator review, and the recorded final result" theme={theme}>
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+            <div className="lg:border-r lg:border-slate-200 lg:pr-8">
+              <h4 className="mb-5 flex items-center gap-2 text-sm font-bold text-slate-800">
+                <UserCheck size={16} className="text-slate-500" />
+                Staff review
+              </h4>
+              <div className="grid grid-cols-1 gap-x-8 gap-y-6 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                <InfoItem icon={Info} label="Application Status">{statusLabel(selectedRow.Status)}</InfoItem>
+                <InfoItem icon={Clock3} label="Submitted">{formatDateTime(selectedRow.Created_At)}</InfoItem>
+                <InfoItem icon={Clock3} label="Last Updated">{formatDateTime(selectedRow.Updated_At)}</InfoItem>
+                <InfoItem icon={FileText} label="Resubmissions">{Number(selectedRow.Resubmission_Count || 0)}</InfoItem>
+                <InfoItem icon={Phone} label="Contacted At">{formatDateTime(selectedRow.Staff_Contacted_At)}</InfoItem>
+                <InfoItem icon={CheckCircle2} label="Reviewed At">{formatDateTime(selectedRow.Staff_Reviewed_At)}</InfoItem>
+                {selectedRow.Staff_Rejection_Reason && (
+                  <InfoItem icon={ShieldAlert} label="Staff Rejection Reason" span={2}>{selectedRow.Staff_Rejection_Reason}</InfoItem>
+                )}
+                {selectedRow.Cancellation_Reason && (
+                  <InfoItem icon={Clock3} label="Cancellation Note" span={2}>{selectedRow.Cancellation_Reason}</InfoItem>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <h4 className="mb-5 flex items-center gap-2 text-sm font-bold text-slate-800">
+                <User size={16} className="text-slate-500" />
+                Administrator review
+              </h4>
+              <div className="grid grid-cols-1 gap-x-8 gap-y-6 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                <InfoItem icon={Send} label="Review Status">{isLinkedToAdmin ? statusLabel(selectedLinkedRequest?.Status || 'Pending Admin Approval') : 'Not submitted yet'}</InfoItem>
+                <InfoItem icon={Clock3} label="Reviewed At">{formatDateTime(selectedLinkedRequest?.Admin_Reviewed_At)}</InfoItem>
+                <InfoItem icon={ShieldAlert} label="Decision Reason" span={2}>
+                  {selectedLinkedRequest?.Cancellation_Reason || selectedLinkedRequest?.Admin_Decision_Reason || 'No additional reason provided'}
+                </InfoItem>
+              </div>
+            </div>
+          </div>
+
+          <div
+            className="mt-8 flex flex-wrap items-center justify-between gap-4 rounded-xl border px-5 py-4"
+            style={{ borderColor: `${primaryColor}30`, backgroundColor: `${primaryColor}08` }}
+          >
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Final Decision</p>
+              <p className="mt-1 text-sm text-slate-600">The latest recorded result for this program application.</p>
+            </div>
+            <span className={`rounded-full px-3 py-1.5 text-sm font-bold ${statusPillClass(isLinkedToAdmin ? selectedLinkedRequest?.Status : selectedRow.Status)}`}>
+              {isLinkedToAdmin ? statusLabel(selectedLinkedRequest?.Status || 'Pending Admin Approval') : statusLabel(selectedRow.Status)}
+            </span>
+          </div>
+        </DetailSection>
       </div>
     );
   };
@@ -1477,7 +1568,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
         }
         .intake-fade-in { animation: intake-fade-in 180ms ease-out both; }
       `}</style>
-      <div className="space-y-5">
+      <div ref={pageRootRef} className="flex flex-col gap-5 lg:h-[calc(100vh-134px)] lg:min-h-0 lg:overflow-hidden">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
             <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Program Applications</h1>
@@ -1540,8 +1631,8 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
         document.body,
       )}
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[360px,1fr]">
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[360px,minmax(0,1fr)]">
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="space-y-3 border-b border-slate-200 px-4 py-3">
             <div className="flex items-center justify-between">
               <h2 className="flex items-center gap-2 text-sm font-bold text-slate-800">
@@ -1596,6 +1687,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                 { key: 'approved', label: 'Approved' },
                 { key: 'rejected', label: 'Rejected' },
                 { key: 'appealed', label: 'Appealed' },
+                { key: 'cancelled', label: 'Cancelled' },
               ].map((filter) => {
                 const isActive = statusFilter === filter.key;
                 const count = statusCounts[filter.key] || 0;
@@ -1639,7 +1731,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
               </div>
             )}
           </div>
-          <div className="max-h-[640px] overflow-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             {isLoading && visibleRows.length === 0 ? (
               <div className="flex items-center gap-2 px-4 py-5 text-sm text-slate-600"><Loader2 size={15} className="animate-spin" />Loading...</div>
             ) : visibleRows.length === 0 ? (
@@ -1720,7 +1812,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
           </div>
         </section>
 
-        <section className="space-y-4">
+        <section className="min-h-0 space-y-4 overflow-y-auto pr-1">
           {!selectedRow ? (
             <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white px-6 py-20 text-center shadow-sm">
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-400">
@@ -1745,8 +1837,31 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                       {applicantInitials(selectedRow)}
                     </div>
                     <div>
-                      <h2 className="mt-0.5 text-xl font-bold text-slate-900">{selectedRow.Event_Name || 'Untitled Program'}</h2>
-                      <p className="text-sm text-slate-600">by {applicantFullName(selectedRow)}</p>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.14em]" style={{ color: theme?.secondaryTextColor || '#64748b' }}>Program application</p>
+                      <h2 className="text-xl font-bold text-slate-900">{selectedRow.Event_Name || 'Untitled Program'}</h2>
+                      <p className="mt-0.5 text-sm font-medium text-slate-700">{applicantFullName(selectedRow)}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600">
+                        <span>{normalizeEventVisibility(selectedRow.Event_Visibility)}</span>
+                        <span aria-hidden="true">•</span>
+                        <span>{formatProgramDateLabel(toProgramDateKey(selectedRow.Proposed_Start_At), { short: true })}</span>
+                        <span aria-hidden="true">•</span>
+                        <span>
+                          {String(selectedRow.Expected_Attendees ?? '').trim()
+                            ? Number(selectedRow.Expected_Attendees).toLocaleString('en-PH')
+                            : 'No'} attendees
+                        </span>
+                      </div>
+                      <p className={`mt-1.5 text-xs font-semibold ${linkedRequestStatusKey === 'approved' ? 'text-emerald-700' : linkedRequestStatusKey === 'rejected' ? 'text-rose-700' : 'text-slate-600'}`}>
+                        {linkedRequestStatusKey === 'approved'
+                          ? `Reviewed by administrator • ${formatDateTime(selectedLinkedRequest?.Admin_Reviewed_At)}`
+                          : linkedRequestStatusKey === 'rejected'
+                            ? `Rejected by administrator • ${formatDateTime(selectedLinkedRequest?.Admin_Reviewed_At)}`
+                            : applicationStatusKey === 'cancelled'
+                              ? `Cancelled automatically • ${formatDateTime(selectedRow.Auto_Cancelled_At)}`
+                            : selectedRow.Staff_Reviewed_At
+                              ? `Reviewed by staff • ${formatDateTime(selectedRow.Staff_Reviewed_At)}`
+                              : `Submitted ${formatDateTime(selectedRow.Created_At)}`}
+                      </p>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1761,13 +1876,13 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
               </div>
 
               {/* Status banner */}
-              {isAutomaticallyRejectedApplication && (
-                <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-800">
+              {isAutomaticallyCancelledApplication && (
+                <div className="flex items-start gap-3 rounded-xl border border-slate-300 bg-slate-100 px-4 py-4 text-sm text-slate-700">
                   <Clock3 size={20} className="mt-0.5 flex-none" />
                   <div>
-                    <p className="font-bold">Application automatically rejected</p>
+                    <p className="font-bold">Application cancelled by our team</p>
                     <p className="mt-1">
-                      The proposed event start date passed before staff review was completed. This application is now permanently closed.
+                      {selectedRow.Cancellation_Reason || 'Staff and Admin review were not completed before the proposed program start time.'}
                     </p>
                   </div>
                 </div>
@@ -1784,7 +1899,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                   </div>
                 </div>
               )}
-              {isLockedFromActions && !isFinalRejectedApplication && (
+              {isLockedFromActions && !isFinalRejectedApplication && !isCancelledApplication && (
                 <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-800">
                   <CheckCircle2 size={20} className="mt-0.5 flex-none" />
                   <div>
@@ -1806,7 +1921,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
               {renderApplicationDetails()}
 
               {/* Staff Notes - editable when not locked, read-only otherwise */}
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mx-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm md:mx-8">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <FileText size={15} className="text-slate-500" />
@@ -1881,7 +1996,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
 
               {/* Action buttons - hidden when locked */}
               {!isLockedFromActions && (
-                <div className="flex flex-wrap items-center justify-end gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mx-6 flex flex-wrap items-center justify-end gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:mx-8">
                   <button
                     type="button"
                     onClick={handleSaveNotes}

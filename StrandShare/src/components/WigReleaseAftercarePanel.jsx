@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Clock3, FileImage, Loader2, Search, ShieldCheck, X } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 import { useToast } from '../context/ToastContext';
+import useRealtimeRefresh from '../hooks/useRealtimeRefresh';
 
 const TERMS_VERSION = '2026-09-02-v1';
 const PATIENT_ASSETS_BUCKET = 'patient_assets';
@@ -30,11 +31,17 @@ function statusClasses(status) {
   return 'bg-amber-100 text-amber-900';
 }
 
-function concernStatusLabel(status) {
-  if (status === 'Approved for Replacement') return 'Problem confirmed';
-  if (status === 'Rejected') return 'Problem not confirmed';
-  if (status === 'Pending Staff Review') return 'Awaiting Staff review';
-  return status;
+function formatConcernNumber(appealId) {
+  const numericId = Number(appealId || 0);
+  return numericId > 0 ? `CON-${String(numericId).padStart(6, '0')}` : 'Concern';
+}
+
+function concernStatusLabel(appeal) {
+  if (['Completed', 'Return Completed'].includes(appeal?.return_status)) return 'Problem Solved';
+  if (appeal?.status === 'Approved for Replacement') return 'Problem Confirmed';
+  if (appeal?.status === 'Rejected') return 'Problem Not Confirmed';
+  if (appeal?.status === 'Pending Staff Review') return 'Awaiting Staff Review';
+  return appeal?.return_status || appeal?.status || 'Concern Reported';
 }
 
 function formatDestination(snapshot) {
@@ -163,7 +170,7 @@ function SubmittedAppealCard({ mode, appeal, decisionForm, setDecisionForm, onRe
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-4">
       <div>
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Reported problem</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{formatConcernNumber(appeal.appeal_id)} · Reported problem</p>
         <h4 className="mt-0.5 font-bold text-slate-900">{appeal.reason}</h4>
         <p className="mt-1 text-xs text-slate-600"><strong>Requested outcome:</strong> {appeal.requested_resolution || 'Repair or Replace'}</p>
       </div>
@@ -201,7 +208,7 @@ function ReturnWorkflowPanel({ mode, appeal, busy, returnForm, setReturnForm, on
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{appeal.requested_resolution === 'Return and Close' ? 'Return and close' : 'Return, repair and re-release'}</p>
-          <h4 className="mt-0.5 font-bold text-slate-900">{appeal.return_status}</h4>
+          <h4 className="mt-0.5 font-bold text-slate-900">{['Completed', 'Return Completed'].includes(appeal.return_status) ? 'Problem Solved' : appeal.return_status}</h4>
         </div>
         {appeal.return_tracking_number ? <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{appeal.return_courier}: {appeal.return_tracking_number}</span> : null}
       </div>
@@ -242,7 +249,7 @@ function ReturnWorkflowPanel({ mode, appeal, busy, returnForm, setReturnForm, on
   );
 }
 
-export default function WigReleaseAftercarePanel({ mode = 'hospital', isActivePage = true }) {
+export default function WigReleaseAftercarePanel({ mode = 'hospital', isActivePage = true, refreshToken = 0 }) {
   const { showToast } = useToast();
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -325,7 +332,14 @@ export default function WigReleaseAftercarePanel({ mode = 'hospital', isActivePa
 
   useEffect(() => {
     if (isActivePage) void loadRecords();
-  }, [isActivePage, loadRecords]);
+  }, [isActivePage, loadRecords, refreshToken]);
+
+  useRealtimeRefresh({
+    channelName: `${mode}-wig-aftercare-live`,
+    tables: ['wig_release_receipts', 'wig_release_appeals', 'Wig_Requests', 'Patients', 'user_details'],
+    enabled: isActivePage,
+    onChange: () => loadRecords(selectedId),
+  });
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -497,10 +511,10 @@ export default function WigReleaseAftercarePanel({ mode = 'hospital', isActivePa
       {loading ? <div className="flex items-center gap-2 p-6 text-sm text-slate-600"><Loader2 size={16} className="animate-spin" /> Loading release records...</div> : filtered.length === 0 ? <div className="p-6 text-sm text-slate-600">{mode === 'staff' ? 'No after-release concerns have been submitted.' : 'No released wigs are available for receipt confirmation.'}</div> : (
         <div className="grid min-h-[360px] lg:grid-cols-[300px_minmax(0,1fr)]">
           <div className="border-r border-slate-200 bg-slate-50 p-3">
-            <div className="space-y-2">{filtered.map((row) => <button key={row.receipt_id} type="button" onClick={() => { setSelectedId(row.receipt_id); setTermsChecked(false); }} className={`w-full rounded-lg border p-3 text-left ${selectedId === row.receipt_id ? 'border-slate-900 bg-white shadow-sm' : 'border-slate-200 bg-white hover:border-slate-400'}`}><div className="flex items-start justify-between gap-2"><div><p className="text-sm font-bold text-slate-900">{row.requestCode}</p><p className="text-xs text-slate-600">{row.patientName}</p></div>{row.appeal ? <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${statusClasses(row.appeal.status)}`}>{concernStatusLabel(row.appeal.status)}</span> : row.terms_accepted_at ? <CheckCircle2 size={17} className="text-emerald-600" /> : <Clock3 size={17} className="text-amber-600" />}</div><p className="mt-2 text-[11px] text-slate-500">Released {formatDateTime(row.released_at)}</p></button>)}</div>
+            <div className="space-y-2">{filtered.map((row) => <button key={row.receipt_id} type="button" onClick={() => { setSelectedId(row.receipt_id); setTermsChecked(false); }} className={`w-full rounded-lg border p-3 text-left ${selectedId === row.receipt_id ? 'border-slate-900 bg-white shadow-sm' : 'border-slate-200 bg-white hover:border-slate-400'}`}><div className="flex items-start justify-between gap-2"><div><p className="text-sm font-bold text-slate-900">{row.requestCode}</p><p className="text-xs text-slate-600">{row.patientName}</p>{row.appeal ? <p className="mt-1 text-[10px] font-bold text-indigo-700">{formatConcernNumber(row.appeal.appeal_id)}</p> : null}</div>{row.appeal ? <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${statusClasses(row.appeal.status)}`}>{concernStatusLabel(row.appeal)}</span> : row.terms_accepted_at ? <CheckCircle2 size={17} className="text-emerald-600" /> : <Clock3 size={17} className="text-amber-600" />}</div><p className="mt-2 text-[11px] text-slate-500">Released {formatDateTime(row.released_at)}</p></button>)}</div>
           </div>
           {selected && <div className="space-y-3 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{selected.requestCode}</p>{selected.appeal ? <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${statusClasses(selected.appeal.status)}`}>{concernStatusLabel(selected.appeal.status)}</span> : null}</div><h3 className="mt-0.5 text-xl font-bold text-slate-900">{selected.patientName}</h3><p className="text-xs text-slate-500">{selected.patientCode}</p></div>{!selected.appeal ? <div className={`rounded-lg px-3 py-2 text-right ${appealOpen ? 'bg-emerald-50 text-emerald-900' : 'bg-slate-100 text-slate-700'}`}><p className="text-xs font-bold">{appealOpen ? `${daysRemaining} day${daysRemaining === 1 ? '' : 's'} remaining` : 'Concern period ended'}</p><p className="text-[11px]">{formatDateTime(selected.appeal_deadline)}</p></div> : null}</div>
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{selected.requestCode}</p>{selected.appeal ? <><span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-700">{formatConcernNumber(selected.appeal.appeal_id)}</span><span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${statusClasses(selected.appeal.status)}`}>{concernStatusLabel(selected.appeal)}</span></> : null}</div><h3 className="mt-0.5 text-xl font-bold text-slate-900">{selected.patientName}</h3><p className="text-xs text-slate-500">{selected.patientCode}</p></div>{!selected.appeal ? <div className={`rounded-lg px-3 py-2 text-right ${appealOpen ? 'bg-emerald-50 text-emerald-900' : 'bg-slate-100 text-slate-700'}`}><p className="text-xs font-bold">{appealOpen ? `${daysRemaining} day${daysRemaining === 1 ? '' : 's'} remaining` : 'Concern period ended'}</p><p className="text-[11px]">{formatDateTime(selected.appeal_deadline)}</p></div> : null}</div>
             {mode === 'hospital' && !selected.terms_accepted_at && <div className="rounded-xl border border-amber-300 bg-amber-50 p-4"><div className="flex gap-2"><ShieldCheck size={20} className="shrink-0 text-amber-700" /><div><h4 className="font-bold text-amber-950">Confirm receipt and accept terms</h4><p className="mt-1 text-sm leading-6 text-amber-950">{selected.terms_snapshot}</p><p className="mt-2 text-xs font-semibold text-amber-800">Terms version {selected.terms_version} · The seven-day concern period is based on Staff's release time.</p></div></div><label className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-white p-3 text-sm text-slate-800"><input type="checkbox" checked={termsChecked} onChange={(event) => setTermsChecked(event.target.checked)} className="mt-0.5" /><span>I confirm the wig was received for this patient, I reviewed these terms, and I accept the seven-day concern policy.</span></label><div className="mt-4 flex justify-end"><button type="button" onClick={confirmReceipt} disabled={!termsChecked || busyId === selected.receipt_id} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{busyId === selected.receipt_id ? 'Saving...' : 'Confirm receipt & accept'}</button></div></div>}
             {selected.terms_accepted_at && <p className="flex items-center gap-2 text-xs text-emerald-800"><CheckCircle2 size={15} /> Receipt confirmed {formatDateTime(selected.terms_accepted_at)}</p>}
             {selected.appeal ? <SubmittedAppealCard mode={mode} appeal={selected.appeal} decisionForm={decisionForm} setDecisionForm={setDecisionForm} onReview={reviewAppeal} busy={busyId === selected.receipt_id} /> : mode === 'hospital' && selected.terms_accepted_at && appealOpen ? <AppealSubmissionForm form={appealForm} setForm={setAppealForm} onSubmit={submitAppeal} busy={busyId === selected.receipt_id} /> : mode === 'hospital' && !appealOpen ? <div className="flex gap-2 rounded-lg border border-slate-200 bg-slate-100 p-3 text-sm text-slate-700"><AlertTriangle size={18} className="shrink-0" /> The seven-day concern period has ended. Contact Staff for exceptional assistance.</div> : null}

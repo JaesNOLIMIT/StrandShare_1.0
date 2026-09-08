@@ -254,19 +254,17 @@ function formatPercentage(value) {
   return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1);
 }
 
-// Every chart / KPI color pulls from UI_Settings (theme) so the palette stays
-// in lock-step with the admin's chosen brand colors. We use the 9 brand
-// variants (primary / secondary / tertiary, each in base/dark/light) to give
-// distinct hues to the semantic states.
+// Brand accents come from UI_Settings. Status colors stay semantic across
+// every theme: green = good, red = bad, and yellow = pending / warning.
 function buildStatusPalette(theme) {
   return {
-    pendingStaff: theme?.primaryColorLight || '#0a8ef5',     // light primary  - in progress
-    pendingAdmin: theme?.secondaryColor || '#6B7280',         // secondary      - awaiting decision
-    approved: theme?.tertiaryColor || '#10b981',              // tertiary       - success
-    rejected: theme?.primaryColorDark || '#025aa3',           // dark primary   - halted / rejected
-    appealed: theme?.tertiaryColorLight || '#34d399',         // light tertiary - appeal
-    neutral: theme?.secondaryColorLight || '#9CA3AF',         // light secondary - neutral / withdrawn
-    primary: theme?.primaryColor || '#0275d8',                // primary brand  - total / main
+    pendingStaff: '#d97706',
+    pendingAdmin: '#d97706',
+    approved: '#059669',
+    rejected: '#dc2626',
+    appealed: '#d97706',
+    neutral: theme?.secondaryColorLight || '#9CA3AF',
+    primary: theme?.primaryColor || '#0275d8',
   };
 }
 
@@ -286,10 +284,10 @@ function colorForStatus(statusKey, palette) {
 function statusBadgeClass(statusKey) {
   if (!statusKey) return 'border-slate-200 bg-slate-50 text-slate-700';
   if (statusKey === 'pendingstaffreview') return 'border-amber-200 bg-amber-50 text-amber-700';
-  if (statusKey === 'pendingadmindecision' || statusKey === 'pendingadminapproval') return 'border-sky-200 bg-sky-50 text-sky-700';
-  if (statusKey.includes('appealed')) return 'border-violet-200 bg-violet-50 text-violet-700';
+  if (statusKey === 'pendingadmindecision' || statusKey === 'pendingadminapproval') return 'border-amber-200 bg-amber-50 text-amber-700';
+  if (statusKey.includes('appealed')) return 'border-amber-200 bg-amber-50 text-amber-700';
   if (approvedLikeStatus(statusKey)) return 'border-emerald-200 bg-emerald-50 text-emerald-700';
-  if (rejectedLikeStatus(statusKey)) return 'border-rose-200 bg-rose-50 text-rose-700';
+  if (rejectedLikeStatus(statusKey)) return 'border-red-200 bg-red-50 text-red-700';
   if (pendingLikeStatus(statusKey)) return 'border-amber-200 bg-amber-50 text-amber-700';
   if (statusKey === 'active') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
   if (statusKey === 'inactive') return 'border-slate-200 bg-slate-50 text-slate-700';
@@ -492,6 +490,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
   const [dateTo, setDateTo] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
+  const [rejectedRecordsFilter, setRejectedRecordsFilter] = useState('include');
   const [searchTerm, setSearchTerm] = useState('');
   const [staffUserId, setStaffUserId] = useState(Number(userProfile?.user_id || 0) || null);
 
@@ -734,11 +733,19 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           const recordedChangedFields = Array.isArray(row.changed_fields)
             ? row.changed_fields.filter(Boolean)
             : comparison.changed;
-          const comparableFieldCount = Number(row.comparable_field_count ?? comparison.comparable);
-          const matchedFieldCount = Number(row.matched_field_count ?? comparison.matched);
+          const storedComparableFieldCount = Number(row.comparable_field_count);
+          const hasStoredComparison = Number.isFinite(storedComparableFieldCount)
+            && storedComparableFieldCount > 0;
+          const comparableFieldCount = hasStoredComparison
+            ? storedComparableFieldCount
+            : comparison.comparable;
+          const storedMatchedFieldCount = Number(row.matched_field_count);
+          const matchedFieldCount = hasStoredComparison && Number.isFinite(storedMatchedFieldCount)
+            ? Math.min(Math.max(storedMatchedFieldCount, 0), comparableFieldCount)
+            : comparison.matched;
           const aiPercent = comparableFieldCount > 0
             ? (matchedFieldCount / comparableFieldCount) * 100
-            : 0;
+            : null;
           const aiComments = String(
             screening.Summary
             || screening.Visible_Damage_Notes
@@ -753,8 +760,8 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
             sourceLabel: normalizeKey(row.source_type) === 'event' ? 'Event' : 'Non-event',
             statusKey,
             statusLabel: labelFromKey(statusKey),
-            accuracyLabel: `${formatPercentage(aiPercent)}%`,
-            humanChangeLabel: `${formatPercentage(comparableFieldCount > 0 ? 100 - aiPercent : 0)}%`,
+            accuracyLabel: aiPercent == null ? 'N/A' : `${formatPercentage(aiPercent)}%`,
+            humanChangeLabel: aiPercent == null ? 'N/A' : `${formatPercentage(100 - aiPercent)}%`,
             aiComments,
             comparableFieldCount,
             matchedFieldCount,
@@ -815,6 +822,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
   useEffect(() => {
     setStatusFilter('all');
     setSourceFilter('all');
+    setRejectedRecordsFilter('include');
     setSearchTerm('');
     void loadTemplateRows();
   }, [loadTemplateRows, selectedTemplateId]);
@@ -828,6 +836,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     return rawRows.filter((row) => {
       if (statusFilter !== 'all' && row.statusLabel !== statusFilter) return false;
       if (isAiAccuracyReport && sourceFilter !== 'all' && row.sourceType !== sourceFilter) return false;
+      if (isAiAccuracyReport && rejectedRecordsFilter === 'exclude' && rejectedLikeStatus(row.statusKey)) return false;
       if ((dateFrom || dateTo) && !withinDateRange(row.createdAt, dateFrom, dateTo)) return false;
       if (searchTerm.trim()) {
         const query = searchTerm.trim().toLowerCase();
@@ -835,7 +844,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       }
       return true;
     });
-  }, [rawRows, statusFilter, sourceFilter, dateFrom, dateTo, searchTerm, isAiAccuracyReport]);
+  }, [rawRows, statusFilter, sourceFilter, rejectedRecordsFilter, dateFrom, dateTo, searchTerm, isAiAccuracyReport]);
 
   const summary = useMemo(() => {
     const total = filteredRows.length;
@@ -847,13 +856,16 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
   }, [filteredRows]);
 
   const aiAccuracySummary = useMemo(() => {
-    const totals = filteredRows.reduce((accumulator, row) => ({
+    const comparableRows = filteredRows.filter((row) => Number(row.comparableFieldCount || 0) > 0);
+    const totals = comparableRows.reduce((accumulator, row) => ({
       comparable: accumulator.comparable + Number(row.comparableFieldCount || 0),
       matched: accumulator.matched + Number(row.matchedFieldCount || 0),
     }), { comparable: 0, matched: 0 });
     const aiPercent = totals.comparable > 0 ? (totals.matched / totals.comparable) * 100 : 0;
     return {
       totalRecords: filteredRows.length,
+      scoredRecords: comparableRows.length,
+      unscoredRecords: filteredRows.length - comparableRows.length,
       comparableFields: totals.comparable,
       aiPercent,
       humanPercent: totals.comparable > 0 ? 100 - aiPercent : 0,
@@ -864,14 +876,14 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     {
       name: 'AI correct',
       value: Number(aiAccuracySummary.aiPercent.toFixed(2)),
-      color: theme?.tertiaryColor || '#10b981',
+      color: '#059669',
     },
     {
       name: 'Human changes',
       value: Number(aiAccuracySummary.humanPercent.toFixed(2)),
-      color: theme?.primaryColor || '#0f766e',
+      color: '#d97706',
     },
-  ], [aiAccuracySummary.aiPercent, aiAccuracySummary.humanPercent, theme]);
+  ], [aiAccuracySummary.aiPercent, aiAccuracySummary.humanPercent]);
 
   const pct = (value, total) => (total > 0 ? Math.round((value / total) * 100) : 0);
 
@@ -1040,7 +1052,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       value: summary.cancelled,
       pctValue: pct(summary.cancelled, summary.total),
       icon: XCircle,
-      accent: palette.neutral,
+      accent: palette.rejected,
     },
   ];
 
@@ -1053,25 +1065,32 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       accent: palette.primary,
     },
     {
+      key: 'comparable-reviews',
+      label: 'Comparable Reviews',
+      value: `${aiAccuracySummary.scoredRecords} of ${aiAccuracySummary.totalRecords}`,
+      icon: ClipboardList,
+      accent: palette.neutral,
+    },
+    {
       key: 'ai-correct',
       label: 'AI Correct',
       value: `${formatPercentage(aiAccuracySummary.aiPercent)}%`,
       icon: CheckCircle2,
-      accent: theme?.tertiaryColor || palette.approved,
+      accent: palette.approved,
     },
     {
       key: 'human-change',
       label: 'Human Changes',
       value: `${formatPercentage(aiAccuracySummary.humanPercent)}%`,
       icon: Users,
-      accent: primaryColor,
+      accent: palette.pendingStaff,
     },
   ] : standardKpiTiles;
 
   return (
     <div
       className="space-y-4"
-      style={{ fontFamily: `${fontFamily}, sans-serif`, color: primaryTextColor }}
+      style={{ fontFamily: `${fontFamily}, sans-serif`, color: primaryTextColor, '--report-accent': primaryColor }}
     >
       {/* Plain title row */}
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1120,7 +1139,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       </div>
 
       {notice.text && (
-        <div className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${notice.kind === 'error' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+        <div className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${notice.kind === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
           {notice.kind === 'error' ? <AlertTriangle size={14} className="mt-0.5 flex-none" /> : <CheckCircle2 size={14} className="mt-0.5 flex-none" />}
           <span>{notice.text}</span>
         </div>
@@ -1153,14 +1172,14 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
 
       {/* Filters bar */}
       <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_2fr]">
+        <div className={`grid grid-cols-1 gap-3 md:grid-cols-2 ${isAiAccuracyReport ? 'xl:grid-cols-[1fr_1fr_1fr_1fr_2fr]' : 'xl:grid-cols-[1fr_1fr_1fr_2fr]'}`}>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">From Date</span>
             <input
               type="date"
               value={dateFrom}
               onChange={(event) => setDateFrom(event.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[var(--report-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--report-accent)]/20"
             />
           </label>
           <label className="flex flex-col gap-1">
@@ -1169,7 +1188,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               type="date"
               value={dateTo}
               onChange={(event) => setDateTo(event.target.value)}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[var(--report-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--report-accent)]/20"
             />
           </label>
           {!isAiAccuracyReport ? (
@@ -1178,7 +1197,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               <select
                 value={statusFilter}
                 onChange={(event) => setStatusFilter(event.target.value)}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[var(--report-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--report-accent)]/20"
               >
                 {statusOptions.map((option) => (
                   <option key={option} value={option}>
@@ -1190,10 +1209,23 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           ) : (
             <label className="flex flex-col gap-1">
               <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Donation Source</span>
-              <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100">
+              <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[var(--report-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--report-accent)]/20">
                 <option value="all">Events and non-events</option>
                 <option value="event">Events only</option>
                 <option value="non-event">Non-events only</option>
+              </select>
+            </label>
+          )}
+          {isAiAccuracyReport && (
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Rejected Records</span>
+              <select
+                value={rejectedRecordsFilter}
+                onChange={(event) => setRejectedRecordsFilter(event.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[var(--report-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--report-accent)]/20"
+              >
+                <option value="include">Include rejected</option>
+                <option value="exclude">Exclude rejected</option>
               </select>
             </label>
           )}
@@ -1205,7 +1237,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
                 placeholder="Search by id, name, status..."
-                className="w-full rounded-lg border border-slate-300 py-2 pl-8 pr-3 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                className="w-full rounded-lg border border-slate-300 py-2 pl-8 pr-3 text-sm focus:border-[var(--report-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--report-accent)]/20"
               />
             </div>
           </label>
@@ -1213,7 +1245,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       </div>
 
       {/* KPI tiles */}
-      <section className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${isAiAccuracyReport ? 'lg:grid-cols-3' : 'lg:grid-cols-5'}`}>
+      <section className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${isAiAccuracyReport ? 'lg:grid-cols-4' : 'lg:grid-cols-5'}`}>
         {kpiTiles.map((tile) => {
           const Icon = tile.icon;
           return (
@@ -1250,7 +1282,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div>
               <h3 className="text-sm font-bold text-slate-900">AI Accuracy vs Human Changes</h3>
-              <p className="mt-0.5 text-xs text-slate-500">Five comparable fields contribute equally: length, color, texture, density, and condition.</p>
+              <p className="mt-0.5 text-xs text-slate-500">Five comparable fields contribute equally. Reviews without both AI and staff field data are marked N/A and are not used in the percentage.</p>
             </div>
             <div className="mt-3 h-64 min-h-64">
               {aiAccuracySummary.comparableFields === 0 ? (
@@ -1465,10 +1497,17 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                       }
                       if (column.key === 'accuracyLabel' || column.key === 'humanChangeLabel') {
                         const isAiCorrect = column.key === 'accuracyLabel';
-                        const accent = isAiCorrect ? (theme?.tertiaryColor || palette.approved) : primaryColor;
+                        const isUnavailable = Number(row.comparableFieldCount || 0) === 0;
+                        const accent = isUnavailable
+                          ? palette.neutral
+                          : (isAiCorrect ? palette.approved : palette.pendingStaff);
                         return (
                           <td key={`${row.recordId}-${column.key}`} className="px-5 py-2.5">
-                            <span className="inline-flex rounded-full border px-2.5 py-1 text-xs font-bold" style={{ borderColor: `${accent}35`, color: accent, backgroundColor: `${accent}0D` }}>
+                            <span
+                              className="inline-flex rounded-full border px-2.5 py-1 text-xs font-bold"
+                              style={{ borderColor: `${accent}35`, color: accent, backgroundColor: `${accent}0D` }}
+                              title={isUnavailable ? 'No comparable AI and staff fields were recorded for this review.' : undefined}
+                            >
                               {cellValue}
                             </span>
                           </td>

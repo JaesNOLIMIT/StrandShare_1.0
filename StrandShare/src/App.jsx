@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { ToastProvider } from './context/ToastContext';
 import LandingPage from './pages/public/LandingPage';
@@ -27,6 +27,7 @@ import { ensurePasswordRecoveryRoute } from './lib/passwordRecovery';
 
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
+const AUTH_NOTICE_SESSION_KEY = 'Donivra_auth_notice';
 const AUTH_FLOW_PATHS = new Set(['/complete-account', '/reset-password', '/confirmation-complete']);
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 22000;
 let initialSessionRequest = null;
@@ -82,9 +83,18 @@ export default function App() {
   const [userProfile, setUserProfile] = useState(null);
   const [isLoadingAuth, setIsLoadingAuth] = useState(true);
   const [isHydratingProfile, setIsHydratingProfile] = useState(false);
-  const [authNotice, setAuthNotice] = useState('');
+  const [authNotice, setAuthNotice] = useState(() => {
+    try {
+      const notice = sessionStorage.getItem(AUTH_NOTICE_SESSION_KEY) || '';
+      sessionStorage.removeItem(AUTH_NOTICE_SESSION_KEY);
+      return notice;
+    } catch {
+      return '';
+    }
+  });
   const [authRecoveryRequired, setAuthRecoveryRequired] = useState(false);
   const [isDashboardPreparing, setIsDashboardPreparing] = useState(false);
+  const endingInactiveSessionRef = useRef(false);
   const handleInitialDashboardReady = useCallback(() => {
     setIsDashboardPreparing(false);
   }, []);
@@ -386,6 +396,82 @@ export default function App() {
       window.clearInterval(persistenceCheckInterval);
     };
   }, []);
+
+  useEffect(() => {
+    const authUserId = session?.user?.id;
+    if (!authUserId || !isSupabaseConfigured || !supabase) return undefined;
+
+    let disposed = false;
+    let checking = false;
+
+    const terminateInactiveSession = async () => {
+      if (disposed || endingInactiveSessionRef.current) return;
+      endingInactiveSessionRef.current = true;
+      const notice = 'Your account was deactivated. Contact an administrator if you need access restored.';
+      try {
+        sessionStorage.setItem(AUTH_NOTICE_SESSION_KEY, notice);
+      } catch {
+        // The redirect still ends access if sessionStorage is unavailable.
+      }
+      try {
+        await supabase.auth.signOut({ scope: 'local' });
+      } catch {
+        // Clear application state and persisted credentials below regardless.
+      }
+      clearLoginSessionPersistence();
+      localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+      setSession(null);
+      setUserProfile(null);
+      setIsHydratingProfile(false);
+      setIsDashboardPreparing(false);
+      window.location.replace('/login');
+    };
+
+    const checkAccountAccess = async () => {
+      if (checking || disposed || endingInactiveSessionRef.current) return;
+      checking = true;
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('is_active')
+          .eq('auth_user_id', authUserId)
+          .maybeSingle();
+        const errorText = `${error?.message || ''} ${error?.details || ''}`.toUpperCase();
+        if (data?.is_active === false || errorText.includes('ACCOUNT_INACTIVE')) {
+          await terminateInactiveSession();
+        }
+      } finally {
+        checking = false;
+      }
+    };
+
+    const channel = supabase
+      .channel(`account-access:${authUserId}`)
+      .on('broadcast', { event: 'status_changed' }, ({ payload }) => {
+        if (payload?.isActive === false) void terminateInactiveSession();
+      })
+      .subscribe();
+
+    const checkWhenVisible = () => {
+      if (document.visibilityState === 'visible') void checkAccountAccess();
+    };
+    const intervalId = window.setInterval(() => void checkAccountAccess(), 5000);
+    window.addEventListener('focus', checkAccountAccess);
+    window.addEventListener('online', checkAccountAccess);
+    window.addEventListener('pageshow', checkAccountAccess);
+    document.addEventListener('visibilitychange', checkWhenVisible);
+    void checkAccountAccess();
+
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', checkAccountAccess);
+      window.removeEventListener('online', checkAccountAccess);
+      window.removeEventListener('pageshow', checkAccountAccess);
+      document.removeEventListener('visibilitychange', checkWhenVisible);
+      void supabase.removeChannel(channel);
+    };
+  }, [session?.user?.id]);
 
   useEffect(() => {
     if (!isDashboardPreparing || !session) {

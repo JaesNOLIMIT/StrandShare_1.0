@@ -1,15 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  BarChart3,
   CalendarClock,
   CheckCircle2,
+  ClipboardList,
   Download,
   FileText,
+  History,
   Loader2,
   PauseCircle,
+  PieChart as PieChartIcon,
   PlayCircle,
   Plus,
-  RefreshCw,
+  ShieldCheck,
   Trash2,
+  Users,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import {
@@ -24,6 +29,8 @@ import {
   CartesianGrid,
   Tooltip,
 } from 'recharts';
+import { useTheme } from '../../../context/ThemeContext';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
@@ -37,9 +44,9 @@ const SCHEDULES_STORAGE_KEY = 'Donivra.hrep.report.schedules';
 const HISTORY_STORAGE_KEY = 'Donivra.hrep.report.history';
 
 const tabs = [
-  { id: 'quick', label: 'Quick Generate' },
-  { id: 'scheduled', label: 'Scheduled' },
-  { id: 'history', label: 'History' },
+  { id: 'quick', label: 'Quick Generate', icon: BarChart3 },
+  { id: 'scheduled', label: 'Scheduled', icon: CalendarClock },
+  { id: 'history', label: 'History', icon: History },
 ];
 
 const STATUS_OPTIONS = [
@@ -59,6 +66,7 @@ const REPORT_TEMPLATES = [
   {
     id: 'patient_registry',
     name: 'Patient Registry',
+    icon: Users,
     description: 'Export the hospital patient directory and medical intake summary.',
     defaultFormat: 'csv',
     availableFormats: ['csv', 'pdf'],
@@ -67,6 +75,7 @@ const REPORT_TEMPLATES = [
   {
     id: 'request_intake',
     name: 'Request Intake Summary',
+    icon: ClipboardList,
     description: 'Track request volume and per-case status movement.',
     defaultFormat: 'csv',
     availableFormats: ['csv', 'pdf'],
@@ -75,6 +84,7 @@ const REPORT_TEMPLATES = [
   {
     id: 'status_distribution',
     name: 'Patient Status Distribution',
+    icon: PieChartIcon,
     description: 'See current status mix and concentration of active cases.',
     defaultFormat: 'csv',
     availableFormats: ['csv', 'pdf'],
@@ -83,6 +93,7 @@ const REPORT_TEMPLATES = [
   {
     id: 'release_pipeline',
     name: 'Release Pipeline Report',
+    icon: CalendarClock,
     description: 'Monitor approval queue, release readiness, and decision notes.',
     defaultFormat: 'pdf',
     availableFormats: ['csv', 'pdf'],
@@ -91,6 +102,7 @@ const REPORT_TEMPLATES = [
   {
     id: 'turnaround_sla',
     name: 'Turnaround & SLA Report',
+    icon: BarChart3,
     description: 'Measure completion speed, overdue items, and aging requests.',
     defaultFormat: 'pdf',
     availableFormats: ['csv', 'pdf'],
@@ -323,6 +335,30 @@ function isMissingRelationError(rawMessage) {
   return message.includes('relation') && message.includes('does not exist');
 }
 
+function isMissingReportRpcError(rawError) {
+  const message = String(rawError?.message || '').toLowerCase();
+  return rawError?.code === 'PGRST202'
+    || (message.includes('get_h_representative_report_data')
+      && (message.includes('not find') || message.includes('does not exist')));
+}
+
+function reportStatusColor(statusKey, theme, index = 0) {
+  const normalized = normalizeText(statusKey).replace(/[^a-z0-9]/g, '');
+  if (normalized.includes('rejected') || normalized.includes('cancelled')) return '#dc2626';
+  if (normalized.includes('completed') || normalized.includes('accepted')) return '#059669';
+  if (normalized.includes('pending') || normalized.includes('paused')) return '#d97706';
+
+  const brandColors = [
+    theme?.primaryColor,
+    theme?.secondaryColor,
+    theme?.tertiaryColor,
+    theme?.primaryColorDark,
+    theme?.secondaryColorDark,
+    theme?.tertiaryColorDark,
+  ].filter(Boolean);
+  return brandColors[index % brandColors.length] || '#6B7280';
+}
+
 function toWeekStart(dateValue) {
   const date = new Date(dateValue);
   const day = date.getDay();
@@ -440,8 +476,8 @@ function cadenceLabel(cadence) {
 
 function tabClass(isActive) {
   return isActive
-    ? 'rounded-lg border border-slate-900 bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white'
-    : 'rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-semibold text-gray-700 hover:bg-gray-50';
+    ? '-mb-px border-b-2 px-1 pb-3 pt-2 text-sm font-semibold'
+    : '-mb-px border-b-2 border-transparent px-1 pb-3 pt-2 text-sm font-semibold text-gray-500 hover:text-gray-700';
 }
 
 function scheduleStatusClass(status) {
@@ -451,6 +487,13 @@ function scheduleStatusClass(status) {
 }
 
 export default function GenerateReportsPage({ userProfile }) {
+  const { theme } = useTheme();
+  const primaryColor = theme?.primaryColor || '#0275d8';
+  const primaryColorDark = theme?.primaryColorDark || primaryColor;
+  const primaryTextColor = theme?.primaryTextColor || '#0f172a';
+  const secondaryTextColor = theme?.secondaryTextColor || '#64748b';
+  const bodyFont = theme?.fontFamily || 'Poppins';
+  const headingFont = theme?.secondaryFontFamily || bodyFont;
   const [activeTab, setActiveTab] = useState('quick');
 
   const [hospitalId, setHospitalId] = useState(null);
@@ -519,6 +562,26 @@ export default function GenerateReportsPage({ userProfile }) {
     try {
       setIsResolvingHospital(true);
 
+      const reportScopeResult = await supabase.rpc('get_h_representative_report_data');
+      if (!reportScopeResult.error) {
+        const assignedHospitalId = Number(reportScopeResult.data?.hospital_id || 0) || null;
+        setHospitalId(assignedHospitalId);
+        setHospitalName(String(reportScopeResult.data?.hospital_name || '').trim());
+
+        if (!assignedHospitalId) {
+          setNotice({
+            kind: 'error',
+            text: 'No H-Representative assignment found for your account. Ask Admin to assign your account first.',
+          });
+        }
+        return;
+      }
+
+      // Keep compatibility while the new scoped report RPC is being deployed.
+      if (!isMissingReportRpcError(reportScopeResult.error)) {
+        throw reportScopeResult.error;
+      }
+
       const { data: staffRow, error: staffError } = await supabase
         .from(HOSPITAL_STAFF_TABLE)
         .select('Hospital_ID')
@@ -567,6 +630,35 @@ export default function GenerateReportsPage({ userProfile }) {
     try {
       setIsLoading(true);
       setNotice({ kind: '', text: '' });
+
+      const reportResult = await supabase.rpc('get_h_representative_report_data');
+      if (!reportResult.error) {
+        const payload = reportResult.data || {};
+        const scopedHospitalId = Number(payload.hospital_id || 0) || null;
+        if (!scopedHospitalId || scopedHospitalId !== Number(hospitalId)) {
+          throw new Error('Your assigned hospital could not be verified for this report.');
+        }
+
+        const patientUsers = Array.isArray(payload.patient_users) ? payload.patient_users : [];
+        const nextPatientUsersById = patientUsers.reduce((accumulator, row) => {
+          const userId = Number(row?.user_id || 0);
+          if (userId > 0) accumulator[userId] = row;
+          return accumulator;
+        }, {});
+
+        setHospitalName(String(payload.hospital_name || '').trim());
+        setRequests(Array.isArray(payload.requests) ? payload.requests : []);
+        setPatients(Array.isArray(payload.patients) ? payload.patients : []);
+        setPatientUsersById(nextPatientUsersById);
+        setSchedules(Array.isArray(payload.release_schedules) ? payload.release_schedules : []);
+        setIsReleaseWorkflowAvailable(payload.release_workflow_available !== false);
+        setLastRefreshedAt(new Date().toISOString());
+        return;
+      }
+
+      if (!isMissingReportRpcError(reportResult.error)) {
+        throw reportResult.error;
+      }
 
       const [requestsRes, patientsRes] = await Promise.all([
         supabase
@@ -887,10 +979,10 @@ export default function GenerateReportsPage({ userProfile }) {
     const pendingReview = filteredRows.filter((row) => row.statusKey === 'pending').length;
 
     return [
-      { label: 'Hospital Patients', value: String(patients.length) },
-      { label: 'Wig Requests', value: String(reportRows.length) },
-      { label: 'Pending Review', value: String(pendingReview) },
-      { label: 'Exports', value: String(generatedHistory.length) },
+      { label: 'Hospital Patients', value: String(patients.length), icon: Users },
+      { label: 'Wig Requests', value: String(reportRows.length), icon: ClipboardList },
+      { label: 'Pending Review', value: String(pendingReview), icon: CalendarClock },
+      { label: 'Exports', value: String(generatedHistory.length), icon: Download },
     ];
   }, [generatedHistory, filteredRows, patients.length, reportRows.length]);
 
@@ -1101,7 +1193,10 @@ export default function GenerateReportsPage({ userProfile }) {
     return buildReportPayload(activeTemplate.id, activeSourceRows);
   }, [activeTemplate.id, activeSourceRows, buildReportPayload]);
 
-  const pieColors = ['#0f766e', '#0ea5e9', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6', '#6366f1', '#64748b', '#22c55e'];
+  const statusColors = useMemo(
+    () => statusDistribution.map((item, index) => reportStatusColor(item.key, theme, index)),
+    [statusDistribution, theme],
+  );
 
   const addHistoryEntry = useCallback((entry) => {
     setGeneratedHistory((previous) => {
@@ -1313,16 +1408,79 @@ export default function GenerateReportsPage({ userProfile }) {
   };
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="role-page-title mb-2 text-3xl font-bold text-gray-900">Reports</h1>
-        <p className="text-gray-600">
-          Build operational, approval, and turnaround reports with live H-Representative data and export-ready outputs.
-        </p>
-        <p className="mt-1 text-xs text-gray-500">
-          Scope: {hospitalName || (hospitalId ? `H-Representative #${hospitalId}` : 'Not assigned')} | Updated: {formatDateTime(lastRefreshedAt)}
-        </p>
-      </div>
+    <div
+      className="space-y-4"
+      style={{ color: primaryTextColor, fontFamily: `${bodyFont}, sans-serif`, '--report-accent': primaryColor }}
+    >
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="role-page-title text-2xl font-bold" style={{ color: primaryTextColor, fontFamily: `${headingFont}, sans-serif` }}>H-Representative Reports</h1>
+          <p className="text-sm" style={{ color: secondaryTextColor }}>
+            Filter, visualize, and export hospital patient, wig-request, approval, and turnaround data.
+          </p>
+          <p className="mt-1 text-xs text-gray-500">
+            Scope: {hospitalName || (hospitalId ? `H-Representative #${hospitalId}` : 'Not assigned')} · Last refreshed: <strong>{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : 'Not refreshed yet'}</strong>
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <PageHeaderActions
+            onRefresh={loadReportData}
+            refreshLoading={isResolvingHospital || isLoading}
+            refreshLabel="Refresh"
+            autoRefreshOnChanges={false}
+            helpTitle="About H-Representative Reports"
+            helpContent={<p>Select a report, apply filters, review the visual summary, and export the current result to CSV or PDF.</p>}
+          />
+          <button
+            type="button"
+            onClick={() => handleQuickGenerate('csv')}
+            disabled={isGenerating || isLoading || isResolvingHospital || activeSourceRows.length === 0}
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg border bg-white px-4 text-sm font-semibold shadow-sm disabled:opacity-60"
+            style={{ borderColor: primaryColor, color: primaryColor }}
+          >
+            {isGenerating ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+            CSV
+          </button>
+          <button
+            type="button"
+            onClick={() => handleQuickGenerate('pdf')}
+            disabled={isGenerating || isLoading || isResolvingHospital || activeSourceRows.length === 0}
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg px-4 text-sm font-semibold text-white shadow-sm disabled:opacity-60"
+            style={{ backgroundColor: primaryColor }}
+          >
+            <FileText size={15} />
+            PDF
+          </button>
+        </div>
+      </header>
+
+      <section
+        className="flex flex-wrap items-center gap-3 rounded-xl border bg-white px-4 py-3 shadow-sm"
+        style={{ borderColor: theme?.secondaryColorLight || '#d1d5db' }}
+        aria-label="H-Representative report access"
+      >
+        <div className="flex min-w-[220px] items-center gap-3">
+          <span className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ backgroundColor: `${primaryColor}14`, color: primaryColor }}>
+            <ShieldCheck size={18} />
+          </span>
+          <div>
+            <p className="text-sm font-semibold" style={{ color: primaryTextColor }}>H-Representative report access</p>
+            <p className="text-xs" style={{ color: secondaryTextColor }}>Only records belonging to {hospitalName || 'your assigned hospital'}.</p>
+          </div>
+        </div>
+        <div className="flex flex-1 flex-wrap gap-2 md:justify-end">
+          {[
+            { label: 'Hospital Patients', icon: Users },
+            { label: 'Wig Requests', icon: ClipboardList },
+            { label: 'Release Schedules', icon: CalendarClock },
+            { label: 'Turnaround & SLA', icon: BarChart3 },
+          ].map(({ label, icon: AccessIcon }) => (
+            <span key={label} className="inline-flex items-center gap-1.5 rounded-lg border bg-gray-50 px-2.5 py-1.5 text-xs font-semibold" style={{ borderColor: theme?.secondaryColorLight || '#d1d5db', color: secondaryTextColor }}>
+              <AccessIcon size={13} style={{ color: primaryColor }} /> {label}
+            </span>
+          ))}
+        </div>
+      </section>
 
       {notice.text && (
         <div
@@ -1338,45 +1496,27 @@ export default function GenerateReportsPage({ userProfile }) {
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          {reportSummary.map((item) => (
-            <article key={item.label} className="rounded-xl border border-gray-200 bg-white p-4">
-              <p className="text-xs text-gray-500">{item.label}</p>
-              <p className="mt-1 text-2xl font-bold text-gray-900">{item.value}</p>
-            </article>
-          ))}
-        </div>
-
-        <button
-          type="button"
-          onClick={loadReportData}
-          disabled={isResolvingHospital || isLoading || !hospitalId}
-          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-        >
-          {(isResolvingHospital || isLoading) ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          Refresh Data
-        </button>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-            className={tabClass(activeTab === tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="flex flex-wrap gap-x-5 gap-y-1 border-b border-gray-200">
+        {tabs.map((tab) => {
+          const TabIcon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={`${tabClass(activeTab === tab.id)} inline-flex items-center gap-2`}
+              style={activeTab === tab.id ? { borderColor: primaryColor, color: primaryColor } : undefined}
+            >
+              <TabIcon size={14} /> {tab.label}
+            </button>
+          );
+        })}
       </div>
 
       {activeTab === 'quick' && (
-        <div className="space-y-4">
-          <section className="rounded-xl border border-gray-200 bg-white p-4">
-            <h2 className="text-lg font-semibold text-gray-900">Filter Builder</h2>
-            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
+        <div className="flex flex-col gap-4">
+          <section className="order-2 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
               <div>
                 <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Date From</label>
                 <input
@@ -1437,7 +1577,8 @@ export default function GenerateReportsPage({ userProfile }) {
                     setStatusFilter('all');
                     setSearchTerm('');
                   }}
-                  className="text-xs font-semibold text-blue-700 hover:text-blue-800"
+                  className="text-xs font-semibold"
+                  style={{ color: primaryColor }}
                 >
                   Clear all filters
                 </button>
@@ -1445,64 +1586,74 @@ export default function GenerateReportsPage({ userProfile }) {
             </div>
           </section>
 
-          <section className="rounded-xl border border-gray-200 bg-white p-4">
-            <h2 className="text-lg font-semibold text-gray-900">Quick Report Templates</h2>
-            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <section className="order-1 border-b border-gray-200">
+            <nav className="-mb-px flex flex-wrap gap-x-5 gap-y-1" aria-label="H-Representative report templates">
               {REPORT_TEMPLATES.map((template) => {
                 const isActive = selectedTemplateId === template.id;
+                const TemplateIcon = template.icon;
                 return (
-                  <article
+                  <button
                     key={template.id}
-                    className={`rounded-lg border p-3 transition ${
-                      isActive
-                        ? 'border-slate-900 bg-slate-900 text-white'
-                        : 'border-gray-200 bg-gray-50 text-gray-900'
-                    }`}
+                    type="button"
+                    onClick={() => {
+                      setSelectedTemplateId(template.id);
+                      if (template.id === 'patient_registry') setStatusFilter('all');
+                    }}
+                    aria-current={isActive ? 'page' : undefined}
+                    className={`-mb-px inline-flex items-center gap-2 border-b-2 px-1 pb-3 pt-2 text-sm font-semibold transition-colors ${isActive ? '' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+                    style={isActive ? { borderColor: primaryColor, color: primaryColor } : undefined}
+                    title={template.description}
                   >
-                    <p className="text-sm font-semibold">{template.name}</p>
-                    <p className={`mt-1 text-xs ${isActive ? 'text-slate-200' : 'text-gray-500'}`}>{template.description}</p>
-                    <p className={`mt-1 text-[11px] font-medium ${isActive ? 'text-slate-300' : 'text-gray-500'}`}>
-                      Suggested cadence: {template.cadenceHint}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedTemplateId(template.id);
-                        if (template.id === 'patient_registry') setStatusFilter('all');
-                      }}
-                      className={`mt-3 rounded-md px-3 py-1.5 text-xs font-semibold ${
-                        isActive
-                          ? 'bg-white text-slate-900'
-                          : 'border border-gray-300 bg-white text-gray-700'
-                      }`}
-                    >
-                      {isActive ? 'Selected' : 'Use Template'}
-                    </button>
-                  </article>
+                    <TemplateIcon size={14} /> {template.name}
+                  </button>
                 );
               })}
-            </div>
+            </nav>
           </section>
 
-          <section className="grid grid-cols-1 gap-3 xl:grid-cols-12">
+          <section className="order-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {reportSummary.map((item, index) => {
+              const SummaryIcon = item.icon;
+              const normalizedLabel = normalizeText(item.label);
+              const accent = normalizedLabel.includes('completed') || normalizedLabel.includes('approved')
+                ? '#059669'
+                : normalizedLabel.includes('rejected') || normalizedLabel.includes('cancelled')
+                  ? '#dc2626'
+                  : normalizedLabel.includes('pending')
+                    ? '#d97706'
+                    : index === 0 ? primaryColor : (theme?.secondaryColor || '#6B7280');
+              return (
+                <article key={item.label} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <div className="mb-3 h-1 rounded-full" style={{ backgroundColor: accent }} />
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">{item.label}</p>
+                    <SummaryIcon size={17} style={{ color: accent }} />
+                  </div>
+                  <p className="mt-1 text-2xl font-bold leading-none text-gray-900">{item.value}</p>
+                </article>
+              );
+            })}
+          </section>
+
+          <section className="order-4 grid grid-cols-1 gap-3 xl:grid-cols-12">
             <article className="rounded-xl border border-gray-200 bg-white p-3 xl:col-span-7">
-              <h3 className="text-sm font-semibold text-gray-900">6-Week Request vs Completed Trend</h3>
+              <h3 className="inline-flex items-center gap-2 text-sm font-semibold text-gray-900"><BarChart3 size={16} style={{ color: primaryColor }} /> 6-Week Request vs Completed Trend</h3>
               <div className="mt-2 h-64 w-full">
                 <ResponsiveContainer>
                   <LineChart data={trendSeries}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
-                    <XAxis dataKey="week" stroke="#64748b" fontSize={11} />
-                    <YAxis stroke="#64748b" fontSize={11} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={theme?.secondaryColorLight || '#9CA3AF'} />
+                    <XAxis dataKey="week" stroke={secondaryTextColor} fontSize={11} />
+                    <YAxis stroke={secondaryTextColor} fontSize={11} />
                     <Tooltip />
-                    <Line type="monotone" dataKey="requested" name="Requested" stroke="#0f172a" strokeWidth={2.5} dot={false} />
-                    <Line type="monotone" dataKey="completed" name="Completed" stroke="#0ea5e9" strokeWidth={2.5} dot={false} />
+                    <Line type="monotone" dataKey="requested" name="Requested" stroke={primaryColorDark} strokeWidth={2.5} dot={false} />
+                    <Line type="monotone" dataKey="completed" name="Completed" stroke="#059669" strokeWidth={2.5} dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
             </article>
 
             <article className="rounded-xl border border-gray-200 bg-white p-3 xl:col-span-5">
-              <h3 className="text-sm font-semibold text-gray-900">Status Distribution</h3>
+              <h3 className="inline-flex items-center gap-2 text-sm font-semibold text-gray-900"><PieChartIcon size={16} style={{ color: primaryColor }} /> Status Distribution</h3>
               {statusDistribution.length === 0 ? (
                 <div className="mt-8 rounded-lg border border-dashed border-gray-300 px-4 py-6 text-center text-sm text-gray-500">
                   No data for current filters.
@@ -1521,7 +1672,7 @@ export default function GenerateReportsPage({ userProfile }) {
                           paddingAngle={2}
                         >
                           {statusDistribution.map((item, index) => (
-                            <Cell key={item.key} fill={pieColors[index % pieColors.length]} />
+                            <Cell key={item.key} fill={statusColors[index]} />
                           ))}
                         </Pie>
                         <Tooltip />
@@ -1533,7 +1684,7 @@ export default function GenerateReportsPage({ userProfile }) {
                     {statusDistribution.map((item, index) => (
                       <li key={item.key} className="flex items-center justify-between text-gray-600">
                         <span className="flex items-center gap-1.5">
-                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: pieColors[index % pieColors.length] }} />
+                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: statusColors[index] }} />
                           {item.name}
                         </span>
                         <span className="font-semibold text-gray-900">{item.value}</span>
@@ -1545,33 +1696,11 @@ export default function GenerateReportsPage({ userProfile }) {
             </article>
           </section>
 
-          <section className="rounded-xl border border-gray-200 bg-white p-4">
-            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <section className="order-5 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+            <div>
               <div>
-                <h3 className="text-lg font-semibold text-gray-900">Preview: {activePayload.title}</h3>
+                <h3 className="inline-flex items-center gap-2 text-lg font-semibold text-gray-900">{React.createElement(activeTemplate.icon, { size: 18, style: { color: primaryColor } })} Preview: {activePayload.title}</h3>
                 <p className="text-xs text-gray-500">{activePayload.subtitle}</p>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleQuickGenerate('csv')}
-                  disabled={isGenerating || isLoading || isResolvingHospital}
-                  className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
-                >
-                  {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                  Export CSV
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleQuickGenerate('pdf')}
-                  disabled={isGenerating || isLoading || isResolvingHospital}
-                  className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-                >
-                  {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
-                  Export PDF
-                </button>
               </div>
             </div>
 
@@ -1705,7 +1834,8 @@ export default function GenerateReportsPage({ userProfile }) {
                 <button
                   type="button"
                   onClick={handleAddSchedule}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white"
+                  style={{ backgroundColor: primaryColor }}
                 >
                   <Plus size={14} />
                   Add Schedule

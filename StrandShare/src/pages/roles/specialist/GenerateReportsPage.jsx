@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   Download,
   FileText,
-  Filter,
   Loader2,
   Package,
   ShieldCheck,
@@ -239,7 +238,8 @@ function isWithinRange(value, fromDate, toDate) {
 export default function GenerateReportsPage({ userProfile }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0275d8';
-  const tertiaryColor = theme?.tertiaryColor || '#10b981';
+  const secondaryColor = theme?.secondaryColor || '#6B7280';
+  const secondaryColorLight = theme?.secondaryColorLight || '#9CA3AF';
   const primaryTextColor = theme?.primaryTextColor || '#0f172a';
   const secondaryTextColor = theme?.secondaryTextColor || '#64748b';
   const tertiaryTextColor = theme?.tertiaryTextColor || '#94a3b8';
@@ -723,8 +723,8 @@ export default function GenerateReportsPage({ userProfile }) {
   const previewChartData = useMemo(() => {
     if (selectedTemplateId === 'qa_decisions') {
       const buckets = [
-        { name: 'Pending', color: primaryColor },
-        { name: 'Approved', color: tertiaryColor },
+        { name: 'Pending', color: '#d97706' },
+        { name: 'Approved', color: '#059669' },
         { name: 'Rejected', color: '#dc2626' },
         { name: 'Rejected Cut', color: '#d97706' },
       ].map((b) => ({
@@ -739,7 +739,7 @@ export default function GenerateReportsPage({ userProfile }) {
         data: [
           { name: HAIR_BUNDLE_STATUS.DRAFT, color: '#b45309' },
           { name: HAIR_BUNDLE_STATUS.IN_PRODUCTION, color: primaryColor },
-          { name: HAIR_BUNDLE_STATUS.WIG_COMPLETED, color: tertiaryColor },
+          { name: HAIR_BUNDLE_STATUS.WIG_COMPLETED, color: '#059669' },
         ].map((b) => ({
           ...b,
           value: filteredRows.filter((r) => statusKey(r.status) === b.name.toLowerCase()).length,
@@ -752,7 +752,7 @@ export default function GenerateReportsPage({ userProfile }) {
         const key = row.status || 'Unknown';
         map.set(key, (map.get(key) || 0) + 1);
       });
-      const palette = [primaryColor, tertiaryColor, '#b45309', '#dc2626', '#7c3aed', '#0891b2'];
+      const palette = [primaryColor, secondaryColor, secondaryColorLight, '#d97706', '#059669', '#dc2626'];
       const data = Array.from(map.entries()).map(([name, value], idx) => ({ name, value, color: palette[idx % palette.length] }));
       return { type: 'pie', data };
     }
@@ -764,8 +764,8 @@ export default function GenerateReportsPage({ userProfile }) {
       return {
         type: 'pie',
         data: [
-          { name: 'AI correct fields', value: totals.matched, color: tertiaryColor },
-          { name: 'Human-changed fields', value: totals.comparable - totals.matched, color: primaryColor },
+          { name: 'AI correct fields', value: totals.matched, color: '#059669' },
+          { name: 'Human-changed fields', value: totals.comparable - totals.matched, color: '#d97706' },
         ].filter((entry) => entry.value > 0),
       };
     }
@@ -775,7 +775,7 @@ export default function GenerateReportsPage({ userProfile }) {
         const key = row.status || 'Pending';
         map.set(key, (map.get(key) || 0) + 1);
       });
-      const colors = [tertiaryColor, primaryColor, '#7c3aed', '#dc2626', '#b45309'];
+      const colors = [primaryColor, secondaryColor, secondaryColorLight, '#059669', '#dc2626', '#d97706'];
       return {
         type: 'pie',
         data: Array.from(map.entries()).map(([name, value], index) => ({ name, value, color: colors[index % colors.length] })),
@@ -789,7 +789,7 @@ export default function GenerateReportsPage({ userProfile }) {
         Rejected: Number(row.rejected || 0),
       })),
     };
-  }, [selectedTemplateId, filteredRows, primaryColor, tertiaryColor]);
+  }, [selectedTemplateId, filteredRows, primaryColor, secondaryColor, secondaryColorLight]);
 
   const recordHistoryEntry = (entry) => {
     const next = [
@@ -1008,23 +1008,77 @@ export default function GenerateReportsPage({ userProfile }) {
   }, [selectedTemplateId]);
 
   return (
-    <div className="space-y-6" style={rootStyle}>
+    <div className="space-y-4" style={{ ...rootStyle, '--report-accent': primaryColor }}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="role-page-title text-2xl font-bold" style={headingStyle}>Reports</h1>
+          <h1 className="role-page-title text-2xl font-bold" style={headingStyle}>Specialist Reports</h1>
           <p className="text-sm" style={{ color: secondaryTextColor }}>
-            Generate QA, bundling, and wig inventory reports. Filter by date, status, or event, then export to CSV or PDF.
+            Filter, visualize, and export quality, bundling, wig, and AI review data.
+          </p>
+          <p className="mt-1 text-xs" style={{ color: tertiaryTextColor }}>
+            Last refreshed: <strong>{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : 'Not refreshed yet'}</strong>
           </p>
         </div>
-        <PageHeaderActions
-          onRefresh={() => loadAll()}
-          refreshLoading={isLoading}
-          refreshLabel="Refresh"
-          autoRefreshOnChanges={false}
-          helpTitle="About Specialist Reports"
-          helpContent={<p>Filter quality checks, bundles, and wig inventory records, then export the selected report to CSV or PDF.</p>}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          <PageHeaderActions
+            onRefresh={() => loadAll()}
+            refreshLoading={isLoading}
+            refreshLabel="Refresh"
+            autoRefreshOnChanges={false}
+            helpTitle="About Specialist Reports"
+            helpContent={<p>Select a report, apply filters, review the visual summary, and export the current result to CSV or PDF.</p>}
+          />
+          <button
+            type="button"
+            onClick={handleGenerateCsv}
+            disabled={isGenerating || !filteredRows.length}
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg border bg-white px-4 text-sm font-semibold shadow-sm disabled:opacity-60"
+            style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
+          >
+            {isGenerating ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+            CSV
+          </button>
+          <button
+            type="button"
+            onClick={handleGeneratePdf}
+            disabled={isGenerating || !filteredRows.length}
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg px-4 text-sm font-semibold text-white shadow-sm disabled:opacity-60"
+            style={{ backgroundColor: primaryColor }}
+          >
+            <FileText size={15} />
+            PDF
+          </button>
+        </div>
       </header>
+
+      <section
+        className="flex flex-wrap items-center gap-3 rounded-xl border bg-white px-4 py-3 shadow-sm"
+        style={{ borderColor: withColorAlpha(secondaryColor, 0.24) }}
+        aria-label="Specialist report access"
+      >
+        <div className="flex min-w-[220px] items-center gap-3">
+          <span className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ backgroundColor: withColorAlpha(primaryColor, 0.08), color: primaryColor }}>
+            <ShieldCheck size={18} />
+          </span>
+          <div>
+            <p className="text-sm font-semibold" style={headingStyle}>Specialist report access</p>
+            <p className="text-xs" style={{ color: secondaryTextColor }}>Only hair-quality, production, inventory, wig, and AI-review records.</p>
+          </div>
+        </div>
+        <div className="flex flex-1 flex-wrap gap-2 md:justify-end">
+          {[
+            { label: 'QA Decisions', icon: ShieldCheck },
+            { label: 'Hair Bundles', icon: Package },
+            { label: 'Cut Hair Inventory', icon: Boxes },
+            { label: 'Wig Production', icon: Boxes },
+            { label: 'AI Comparisons', icon: AlertCircle },
+          ].map(({ label, icon: AccessIcon }) => (
+            <span key={label} className="inline-flex items-center gap-1.5 rounded-lg border bg-slate-50 px-2.5 py-1.5 text-xs font-semibold" style={{ borderColor: withColorAlpha(secondaryColor, 0.24), color: secondaryTextColor }}>
+              <AccessIcon size={13} style={{ color: primaryColor }} /> {label}
+            </span>
+          ))}
+        </div>
+      </section>
 
       {notice.text ? (
         <div
@@ -1040,18 +1094,8 @@ export default function GenerateReportsPage({ userProfile }) {
         </div>
       ) : null}
 
-      {lastRefreshedAt ? (
-        <p className="text-xs" style={{ color: tertiaryTextColor }}>
-          Data last synced {formatDateTime(lastRefreshedAt)} - {submissions.length} submissions, {bundles.length} bundles, {wigs.length} wigs loaded.
-        </p>
-      ) : null}
-
-      <section className="rounded-2xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
-        <div className="mb-3 flex items-center gap-2">
-          <FileText size={16} style={{ color: primaryColor }} />
-          <h2 className="text-base font-semibold" style={headingStyle}>1. Pick a report template</h2>
-        </div>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+      <section className="border-b" style={{ borderColor: withColorAlpha(theme?.secondaryColor, 0.24, '#6B7280') }}>
+        <nav className="-mb-px flex flex-wrap gap-x-5 gap-y-1" aria-label="Specialist report templates">
           {REPORT_TEMPLATES.map((tpl) => {
             const Icon = tpl.icon;
             const isActive = tpl.id === selectedTemplateId;
@@ -1063,34 +1107,20 @@ export default function GenerateReportsPage({ userProfile }) {
                   setSelectedTemplateId(tpl.id);
                   setStatusFilter('all');
                 }}
-                className="rounded-xl border p-3 text-left transition"
-                style={
-                  isActive
-                    ? { borderColor: primaryColor, backgroundColor: withColorAlpha(primaryColor, 0.06) }
-                    : { borderColor: '#e2e8f0', backgroundColor: '#fff' }
-                }
+                aria-current={isActive ? 'page' : undefined}
+                className={`-mb-px inline-flex items-center gap-2 border-b-2 px-1 pb-3 pt-2 text-sm font-semibold transition-colors ${isActive ? '' : 'border-transparent'}`}
+                style={isActive ? { borderColor: primaryColor, color: primaryColor } : { color: secondaryTextColor }}
+                title={tpl.description}
               >
-                <div className="flex items-center gap-2">
-                  <span
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg"
-                    style={{ backgroundColor: withColorAlpha(primaryColor, 0.12), color: primaryColor }}
-                  >
-                    <Icon size={16} />
-                  </span>
-                  <p className="text-sm font-semibold" style={{ color: primaryTextColor }}>{tpl.name}</p>
-                </div>
-                <p className="mt-2 text-xs" style={{ color: secondaryTextColor }}>{tpl.description}</p>
+                <Icon size={14} />
+                {tpl.name}
               </button>
             );
           })}
-        </div>
+        </nav>
       </section>
 
-      <section className="rounded-2xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
-        <div className="mb-3 flex items-center gap-2">
-          <Filter size={16} style={{ color: primaryColor }} />
-          <h2 className="text-base font-semibold" style={headingStyle}>2. Apply filters</h2>
-        </div>
+      <section className="rounded-xl border bg-white p-3 shadow-sm" style={{ borderColor: withColorAlpha(theme?.secondaryColor, 0.24, '#6B7280') }}>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
           <div>
             <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>
@@ -1147,46 +1177,43 @@ export default function GenerateReportsPage({ userProfile }) {
         </div>
       </section>
 
+      <section className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${summary.length >= 5 ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
+        {summary.map((item, index) => {
+          const normalizedLabel = statusKey(item.label);
+          const SummaryIcon = normalizedLabel.includes('approved') || normalizedLabel.includes('completed') || normalizedLabel.includes('correct')
+            ? CheckCircle2
+            : normalizedLabel.includes('rejected') || normalizedLabel.includes('change') || normalizedLabel.includes('correction')
+              ? AlertCircle
+              : index === 0 ? BarChart3 : Package;
+          const accent = normalizedLabel.includes('approved') || normalizedLabel.includes('completed') || normalizedLabel.includes('correct')
+            ? '#059669'
+            : normalizedLabel.includes('rejected')
+              ? '#dc2626'
+              : normalizedLabel.includes('pending') || normalizedLabel.includes('change') || normalizedLabel.includes('correction')
+                ? '#d97706'
+                : index === 0 ? primaryColor : secondaryColor;
+          return (
+            <article key={item.label} className="rounded-xl border bg-white p-4 shadow-sm" style={{ borderColor: withColorAlpha(secondaryColor, 0.24) }}>
+              <div className="mb-3 h-1 rounded-full" style={{ backgroundColor: accent }} />
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-bold uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{item.label}</p>
+                <SummaryIcon size={17} style={{ color: accent }} />
+              </div>
+              <p className="mt-1 text-2xl font-bold leading-none" style={{ color: primaryTextColor }}>{item.value}</p>
+            </article>
+          );
+        })}
+      </section>
+
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="xl:col-span-2 rounded-2xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
+        <div className="order-2 rounded-xl border bg-white p-4 shadow-sm xl:col-span-3" style={{ borderColor: withColorAlpha(secondaryColor, 0.24) }}>
           <div className="mb-3 flex items-center justify-between">
             <div>
-              <h2 className="text-base font-semibold" style={headingStyle}>3. Preview</h2>
+              <h2 className="inline-flex items-center gap-2 text-base font-semibold" style={headingStyle}>{React.createElement(selectedTemplate.icon, { size: 17, style: { color: primaryColor } })} {selectedTemplate.name} Preview</h2>
               <p className="text-xs" style={{ color: tertiaryTextColor }}>
                 {filteredRows.length} row{filteredRows.length === 1 ? '' : 's'} ready to export.
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleGenerateCsv}
-                disabled={isGenerating || !filteredRows.length}
-                className="inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
-                style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-              >
-                {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                Export CSV
-              </button>
-              <button
-                type="button"
-                onClick={handleGeneratePdf}
-                disabled={isGenerating || !filteredRows.length}
-                className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                style={{ backgroundColor: primaryColor }}
-              >
-                {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
-                Export PDF
-              </button>
-            </div>
-          </div>
-
-          <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-5">
-            {summary.map((item) => (
-              <div key={item.label} className="rounded-lg border p-2" style={{ borderColor: '#e2e8f0' }}>
-                <p className="text-[10px] uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{item.label}</p>
-                <p className="text-lg font-bold" style={{ color: primaryTextColor }}>{item.value}</p>
-              </div>
-            ))}
           </div>
 
           <div className="overflow-hidden rounded-lg border" style={{ borderColor: '#e2e8f0' }}>
@@ -1230,8 +1257,8 @@ export default function GenerateReportsPage({ userProfile }) {
           </div>
         </div>
 
-        <div className="rounded-2xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
-          <h2 className="text-base font-semibold mb-3" style={headingStyle}>At a glance</h2>
+        <div className="order-1 rounded-xl border bg-white p-4 shadow-sm xl:col-span-3" style={{ borderColor: withColorAlpha(secondaryColor, 0.24) }}>
+          <h2 className="mb-3 inline-flex items-center gap-2 text-base font-semibold" style={headingStyle}><BarChart3 size={17} style={{ color: primaryColor }} /> At a glance</h2>
           {previewChartData.type === 'pie' && previewChartData.data.length ? (
             <div style={{ width: '100%', height: 240 }}>
               <ResponsiveContainer>
@@ -1255,7 +1282,7 @@ export default function GenerateReportsPage({ userProfile }) {
                   <YAxis allowDecimals={false} stroke={tertiaryTextColor} fontSize={11} />
                   <Tooltip />
                   <Legend wrapperStyle={{ fontSize: '11px' }} />
-                  <Bar dataKey="Approved" fill={tertiaryColor} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="Approved" fill="#059669" radius={[4, 4, 0, 0]} />
                   <Bar dataKey="Rejected" fill="#dc2626" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -1275,10 +1302,10 @@ export default function GenerateReportsPage({ userProfile }) {
         </div>
       </section>
 
-      <section className="rounded-2xl border bg-white" style={{ borderColor: '#e2e8f0' }}>
+      <section className="rounded-xl border bg-white shadow-sm" style={{ borderColor: withColorAlpha(secondaryColor, 0.24) }}>
         <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3" style={{ borderColor: '#e2e8f0' }}>
           <div className="flex items-center gap-2">
-            <CheckCircle2 size={16} style={{ color: tertiaryColor }} />
+            <CheckCircle2 size={16} style={{ color: '#059669' }} />
             <h2 className="text-base font-semibold" style={headingStyle}>Generated Reports History</h2>
             <span className="text-xs" style={{ color: tertiaryTextColor }}>(stored locally on this device)</span>
           </div>
@@ -1300,7 +1327,7 @@ export default function GenerateReportsPage({ userProfile }) {
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead style={{ backgroundColor: withColorAlpha(tertiaryColor, 0.08) }}>
+              <thead style={{ backgroundColor: withColorAlpha(primaryColor, 0.08) }}>
                 <tr>
                   <th className="px-4 py-2 text-left font-semibold" style={{ color: primaryTextColor }}>Generated</th>
                   <th className="px-4 py-2 text-left font-semibold" style={{ color: primaryTextColor }}>Report</th>

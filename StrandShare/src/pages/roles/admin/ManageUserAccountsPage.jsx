@@ -217,6 +217,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
   const [users, setUsers] = useState([]);
   const [allRoles, setAllRoles] = useState([]);
   const [roleFilter, setRoleFilter] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -232,6 +233,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
   const [isEditingDetails, setIsEditingDetails] = useState(false);
   const [isSavingDetails, setIsSavingDetails] = useState(false);
   const [togglingUserId, setTogglingUserId] = useState(null);
+  const [statusConfirmationUser, setStatusConfirmationUser] = useState(null);
   const [detailsNotice, setDetailsNotice] = useState({ kind: '', text: '' });
   const [detailsForm, setDetailsForm] = useState(getInitialFormData());
 
@@ -269,7 +271,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
       const { data, error } = await supabase
         .from('users')
         .select(`
-          user_id, email, role, access_start, access_end, is_active, created_at, updated_at,
+          user_id, auth_user_id, email, role, access_start, access_end, is_active, created_at, updated_at,
           user_details:user_details (
             photo_path, first_name, middle_name, last_name, suffix, birthdate, gender,
             street, region, barangay, city, province, country, contact_number, joined_date
@@ -284,6 +286,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
         const canonicalRole = toCanonicalRole(user.role);
         return {
           id: user.user_id,
+          authUserId: user.auth_user_id || '',
           email: user.email,
           role: canonicalRole || 'N/A',
           accessStart: formatDateTime(user.access_start),
@@ -316,7 +319,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
       const uniqueRoles = Array.from(
         new Set(
           data
-            .map((u) => toCanonicalRole(u.role))
+            .map((user) => toCanonicalRole(user.role))
             .filter((role) => DEFAULT_ROLES.includes(role)),
         ),
       );
@@ -584,13 +587,26 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
   const filteredUsers = useMemo(
     () =>
       users.filter((user) => {
-        const roleMatch = roleFilter.length === 0 || roleFilter.some((r) => r.value === user.role);
-        const statusMatch =
-          statusFilter.length === 0 || statusFilter.some((s) => s.value === user.status);
-        return roleMatch && statusMatch;
+        const query = String(searchTerm || '').trim().toLowerCase();
+        const searchMatch = !query || [
+          user.firstName,
+          user.lastName,
+          `${user.firstName} ${user.lastName}`,
+          user.email,
+          toRoleLabel(user.role),
+        ].some((value) => String(value || '').toLowerCase().includes(query));
+        const roleMatch = roleFilter.length === 0 || roleFilter.some((role) => role.value === user.role);
+        const statusMatch = statusFilter.length === 0 || statusFilter.some((status) => status.value === user.status);
+        return searchMatch && roleMatch && statusMatch;
       }),
-    [users, roleFilter, statusFilter],
+    [users, searchTerm, roleFilter, statusFilter],
   );
+
+  const accountSummary = useMemo(() => ({
+    total: users.length,
+    active: users.filter((user) => user.status === 'Active').length,
+    inactive: users.filter((user) => user.status !== 'Active').length,
+  }), [users]);
 
   const detailsUser = useMemo(
     () => (detailsUserId ? users.find((user) => Number(user.id) === Number(detailsUserId)) || null : null),
@@ -735,11 +751,43 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
     const nextActive = user.status !== 'Active';
     setTogglingUserId(user.id);
     try {
-      const result = await supabase
-        .from('users')
-        .update({ is_active: nextActive, updated_at: getPhilippineSqlTimestamp() })
-        .eq('user_id', user.id);
-      if (result.error) throw result.error;
+      try {
+        await invokeAdminAccountManagement({
+          action: 'set-account-active',
+          publicUserId: Number(user.id),
+          isActive: nextActive,
+        });
+      } catch (managementError) {
+        const managementMessage = String(managementError?.message || '').toLowerCase();
+        if (!managementMessage.includes('unsupported account management action')) {
+          throw managementError;
+        }
+
+        // Backward-compatible path while an older Edge Function deployment is
+        // still active. The RPC performs the same Admin authorization and the
+        // global inactive-account request guard ends existing access.
+        const rpcResult = await supabase.rpc('admin_set_user_account_active', {
+          p_user_id: Number(user.id),
+          p_is_active: nextActive,
+        });
+
+        if (rpcResult.error) {
+          const rpcMessage = String(rpcResult.error.message || '').toLowerCase();
+          const rpcMissing = rpcMessage.includes('could not find the function')
+            || rpcMessage.includes('schema cache')
+            || rpcResult.error.code === 'PGRST202';
+          if (!rpcMissing) throw rpcResult.error;
+
+          // Last-resort compatibility with databases that have not applied the
+          // RPC migration yet. Existing Admin RLS still governs this update.
+          const legacyResult = await supabase
+            .from('users')
+            .update({ is_active: nextActive, updated_at: getPhilippineSqlTimestamp() })
+            .eq('user_id', user.id);
+          if (legacyResult.error) throw legacyResult.error;
+        }
+      }
+      setStatusConfirmationUser(null);
       await fetchUsers();
       if (Number(detailsUserId) === Number(user.id)) {
         setDetailsNotice({ kind: 'success', text: `Account ${nextActive ? 'activated' : 'deactivated'} successfully.` });
@@ -821,10 +869,51 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
         </button>
       </div>
 
-      <section className="rounded-xl border border-gray-200 bg-white p-4 md:p-5">
-        <div className="mb-4 flex flex-wrap gap-4">
-          <div className="w-64">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Filter by Role</label>
+      <section>
+        <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div
+            className="rounded-xl border px-4 py-3"
+            style={{ backgroundColor: `${theme.primaryColor}0D`, borderColor: `${theme.primaryColor}33` }}
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: theme.secondaryTextColor }}>Total Accounts</p>
+            <p className="mt-1 text-2xl font-bold" style={{ color: theme.primaryColor }}>{accountSummary.total}</p>
+          </div>
+          <div
+            className="rounded-xl border px-4 py-3"
+            style={{ backgroundColor: `${theme.tertiaryColor}12`, borderColor: `${theme.tertiaryColor}40` }}
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: theme.secondaryTextColor }}>Active</p>
+            <p className="mt-1 text-2xl font-bold" style={{ color: theme.tertiaryColor }}>{accountSummary.active}</p>
+          </div>
+          <div
+            className="rounded-xl border px-4 py-3"
+            style={{ backgroundColor: `${theme.secondaryColor}12`, borderColor: `${theme.secondaryColor}40` }}
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: theme.secondaryTextColor }}>Inactive</p>
+            <p className="mt-1 text-2xl font-bold" style={{ color: theme.secondaryColor }}>{accountSummary.inactive}</p>
+          </div>
+        </div>
+
+        <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(280px,1fr)_16rem_16rem] lg:items-end">
+          <label className="block min-w-0 flex-1">
+            <span className="mb-1 block text-sm font-medium text-gray-700">Search accounts</span>
+            <span className="relative block">
+              <Search
+                size={18}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+              />
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search users by name, email, or role..."
+                className="h-[38px] w-full rounded-md border border-gray-300 bg-white py-2 pl-10 pr-3 text-sm text-gray-800 outline-none transition placeholder:text-gray-400 focus:border-transparent focus:ring-2"
+                style={{ '--tw-ring-color': theme.primaryColor }}
+              />
+            </span>
+          </label>
+          <div className="w-full">
+            <label className="mb-1 block text-sm font-medium text-gray-700">Filter by Role</label>
             <Select
               isMulti
               options={roleOptions}
@@ -835,8 +924,8 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
               styles={selectStyles}
             />
           </div>
-          <div className="w-64">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Filter by Status</label>
+          <div className="w-full">
+            <label className="mb-1 block text-sm font-medium text-gray-700">Filter by Status</label>
             <Select
               isMulti
               options={statusOptions}
@@ -872,7 +961,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
                   <td colSpan="6" className="p-10 text-center text-gray-500">
                     <div className="flex flex-col items-center gap-2">
                       <Search size={40} className="text-gray-300" />
-                      <p>No users found for selected filters.</p>
+                      <p>No users found for your search or selected filters.</p>
                     </div>
                   </td>
                 </tr>
@@ -935,7 +1024,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
 
                         <button
                           type="button"
-                          onClick={() => void toggleUserStatus(user)}
+                          onClick={() => setStatusConfirmationUser(user)}
                           disabled={togglingUserId === user.id}
                           className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-semibold disabled:cursor-wait disabled:opacity-60 ${
                             user.status === 'Active'
@@ -971,8 +1060,58 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
         onCancelEdit={() => setIsEditingDetails(false)}
         onChange={handleDetailsInputChange}
         onSave={() => void saveUserDetails()}
-        onToggleStatus={() => void toggleUserStatus(detailsUser)}
+        onToggleStatus={() => setStatusConfirmationUser(detailsUser)}
       />
+
+      {statusConfirmationUser && typeof document !== 'undefined' ? createPortal(
+        <div className="fixed inset-0 z-[10100] flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm" role="alertdialog" aria-modal="true" aria-labelledby="account-status-confirmation-title">
+          <button
+            type="button"
+            aria-label="Cancel account status change"
+            className="absolute inset-0 border-0 bg-transparent"
+            onClick={() => { if (!togglingUserId) setStatusConfirmationUser(null); }}
+          />
+          <section className="relative z-10 w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="p-6">
+              <div className={`mb-4 grid h-12 w-12 place-items-center rounded-full ${statusConfirmationUser.status === 'Active' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                <Power size={24} />
+              </div>
+              <h2 id="account-status-confirmation-title" className="text-xl font-bold text-slate-900">
+                {statusConfirmationUser.status === 'Active' ? 'Deactivate this account?' : 'Activate this account?'}
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                <span className="font-semibold text-slate-900">{statusConfirmationUser.firstName} {statusConfirmationUser.lastName}</span>
+                {' '}({statusConfirmationUser.email})
+              </p>
+              <p className={`mt-4 rounded-xl border px-4 py-3 text-sm leading-6 ${statusConfirmationUser.status === 'Active' ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>
+                {statusConfirmationUser.status === 'Active'
+                  ? 'Their current website access will end immediately. They will be signed out and cannot sign in again until the account is activated.'
+                  : 'This restores website access. The user can sign in again using their existing credentials.'}
+              </p>
+            </div>
+            <footer className="flex justify-end gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
+              <button
+                type="button"
+                disabled={Boolean(togglingUserId)}
+                onClick={() => setStatusConfirmationUser(null)}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(togglingUserId)}
+                onClick={() => void toggleUserStatus(statusConfirmationUser)}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white disabled:cursor-wait disabled:opacity-60 ${statusConfirmationUser.status === 'Active' ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+              >
+                {togglingUserId ? <Loader2 size={16} className="animate-spin" /> : <Power size={16} />}
+                {statusConfirmationUser.status === 'Active' ? 'Yes, deactivate' : 'Yes, activate'}
+              </button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      ) : null}
 
       {showErrorModal && typeof document !== 'undefined' ? createPortal(
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="alertdialog" aria-modal="true" aria-labelledby="user-create-error-title">

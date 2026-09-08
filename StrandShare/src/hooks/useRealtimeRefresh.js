@@ -63,12 +63,24 @@ export default function useRealtimeRefresh({
     });
     channel.subscribe();
 
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') scheduleRefresh();
+    };
+    window.addEventListener('focus', scheduleRefresh);
+    window.addEventListener('online', scheduleRefresh);
+    window.addEventListener('pageshow', scheduleRefresh);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+
     return () => {
       disposed = true;
       refreshQueued = false;
       if (refreshTimer) {
         window.clearTimeout(refreshTimer);
       }
+      window.removeEventListener('focus', scheduleRefresh);
+      window.removeEventListener('online', scheduleRefresh);
+      window.removeEventListener('pageshow', scheduleRefresh);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
       void supabase.removeChannel(channel);
     };
   }, [channelName, debounceMs, enabled, isPageActive, tableKey]);

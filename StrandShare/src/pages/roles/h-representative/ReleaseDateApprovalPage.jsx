@@ -321,7 +321,7 @@ function matchesSearch(row, query) {
   return blob.includes(query);
 }
 
-export default function ReleaseDateApprovalPage({ userProfile, embedded = false }) {
+export default function ReleaseDateApprovalPage({ userProfile, embedded = false, refreshToken = 0 }) {
   const [activeTab, setActiveTab] = useState('approvals');
   const [hospitalId, setHospitalId] = useState(null);
   const [hospitalName, setHospitalName] = useState('');
@@ -830,7 +830,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false 
     }
 
     loadReleaseRows();
-  }, [hospitalId, loadReleaseRows]);
+  }, [hospitalId, loadReleaseRows, refreshToken]);
 
   useRealtimeRefresh({
     channelName: `hrep-release-approval-live-${hospitalId || 'pending'}`,

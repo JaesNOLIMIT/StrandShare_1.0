@@ -22,6 +22,7 @@ The file basename **must** match the `Template_Key` value passed to
 | `event_staff_rejected`                | Staff rejects the application at intake.                                          | `076_remove_admin_fields_from_event_applications_and_use_utc8_timestamps.sql` |
 | `event_admin_approved`                | Admin approves the linked Event_Request.                                          | `076_remove_admin_fields_from_event_applications_and_use_utc8_timestamps.sql` |
 | `event_admin_rejected`                | Admin rejects the linked Event_Request.                                           | `076_remove_admin_fields_from_event_applications_and_use_utc8_timestamps.sql` |
+| `event_auto_cancelled`                | Staff/Admin review is unfinished when the proposed start time arrives.             | `20260908130000_cancel_unfinished_event_applications_at_start.sql` |
 
 ## Variable interpolation
 

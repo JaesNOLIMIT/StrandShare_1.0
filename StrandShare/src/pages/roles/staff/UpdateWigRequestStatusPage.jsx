@@ -6,6 +6,7 @@ import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import PageHeaderActions from '../../../components/PageHeaderActions';
 import WigReleaseAftercarePanel from '../../../components/WigReleaseAftercarePanel';
 import { useToast } from '../../../context/ToastContext';
+import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 
 const WIG_REQUESTS_TABLE = 'Wig_Requests';
 const WIGS_TABLE = 'Wigs';
@@ -119,6 +120,11 @@ function getReleaseWorkflowLabel(value) {
   if (key === 'hospital_approved') return 'H-Representative Approved';
   if (key === 'hospital_reschedule_requested') return 'H-Representative Reschedule Requested';
   return 'N/A';
+}
+
+function formatConcernNumber(appealId) {
+  const numericId = Number(appealId || 0);
+  return numericId > 0 ? `CON-${String(numericId).padStart(6, '0')}` : 'Concern';
 }
 
 function releaseWorkflowClass(value) {
@@ -599,6 +605,8 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
   const [requestDateTo, setRequestDateTo] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isApplyingAction, setIsApplyingAction] = useState(false);
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
+  const [childRefreshToken, setChildRefreshToken] = useState(0);
   const [isReleaseWorkflowAvailable, setIsReleaseWorkflowAvailable] = useState(true);
   const [isAppealWorkflowAvailable, setIsAppealWorkflowAvailable] = useState(true);
 
@@ -660,7 +668,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
         .from('wig_release_appeals')
         .select('appeal_id, receipt_id, req_id, reason, requested_resolution, status, return_status, submitted_at, reviewed_at')
         .order('submitted_at', { ascending: false });
-      if (appealsRes.error && String(appealsRes.error.message || '').toLowerCase().includes('return_status')) {
+      if (appealsRes.error && ['return_status', 'requested_resolution'].some((column) => String(appealsRes.error.message || '').toLowerCase().includes(column))) {
         appealsRes = await supabase
           .from('wig_release_appeals')
           .select('appeal_id, receipt_id, req_id, reason, status, submitted_at, reviewed_at')
@@ -1166,30 +1174,13 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     loadReviewRows();
   }, [loadReviewRows]);
 
-  useEffect(() => {
-    if (!isActivePage || !isSupabaseConfigured || !supabase) {
-      return undefined;
-    }
-
-    const refreshRequests = () => void loadReviewRows();
-    const channel = supabase
-      .channel('staff-wig-requests-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIGS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_SPECS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_FILTERS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: PATIENTS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: RELEASE_SCHEDULES_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: SAFETY_ASSESSMENTS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'wig_release_appeals' }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshRequests)
-      .subscribe();
-
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [isActivePage, loadReviewRows]);
+  useRealtimeRefresh({
+    channelName: 'staff-wig-requests-live',
+    tables: [WIG_REQUESTS_TABLE, WIGS_TABLE, WIG_SPECS_TABLE, WIG_FILTERS_TABLE, PATIENTS_TABLE,
+      RELEASE_SCHEDULES_TABLE, SAFETY_ASSESSMENTS_TABLE, 'wig_release_appeals', HOSPITALS_TABLE, USERS_TABLE],
+    enabled: isActivePage,
+    onChange: () => loadReviewRows(selectedRow?.reqId || null),
+  });
 
   const filteredRows = useMemo(() => {
     const activeStatusSet = new Set(ACTIVE_REQUEST_STATUS_KEYS);
@@ -1506,6 +1497,17 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     }
   };
 
+  const handleRefreshPage = async () => {
+    if (isManualRefreshing) return;
+    setIsManualRefreshing(true);
+    try {
+      await loadReviewRows(selectedRow?.reqId || null);
+      setChildRefreshToken((current) => current + 1);
+    } finally {
+      setIsManualRefreshing(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1514,8 +1516,8 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           <p className="text-sm text-slate-600">Review incoming requests, inspect specifications, and process each request through release scheduling.</p>
         </div>
         <PageHeaderActions
-          onRefresh={() => loadReviewRows(selectedRow?.reqId || null)}
-          refreshLoading={isLoading}
+          onRefresh={handleRefreshPage}
+          refreshLoading={isLoading || isManualRefreshing}
           refreshDisabled={isApplyingAction}
           helpTitle="About Manage Wig Request"
           helpContent={(
@@ -1543,7 +1545,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
       </div>
 
       {workspaceTab === 'appeals' ? (
-        <WigReleaseAftercarePanel mode="staff" isActivePage={isActivePage} />
+        <WigReleaseAftercarePanel mode="staff" isActivePage={isActivePage} refreshToken={childRefreshToken} />
       ) : (
         <>
 
@@ -1707,7 +1709,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                           onClick={(event) => { event.stopPropagation(); setWorkspaceTab('appeals'); setSelectedRow(null); }}
                           className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-bold ${row.appealStatus === 'Pending Staff Review' ? 'bg-red-100 text-red-800' : 'bg-violet-100 text-violet-800'}`}
                         >
-                          Concern: {row.appealReturnStatus || row.appealStatus}
+                          {formatConcernNumber(row.appeal?.appeal_id)}: {['Completed', 'Return Completed'].includes(row.appealReturnStatus) ? 'Problem Solved' : (row.appealReturnStatus || row.appealStatus)}
                         </button>
                       ) : null}
                     </td>

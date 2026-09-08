@@ -79,6 +79,128 @@ Deno.serve(async (request) => {
     const payload = await request.json();
     const action = String(payload?.action || '').trim().toLowerCase();
 
+    if (action === 'update-hospital-manager-account') {
+      const hospitalId = Number(payload?.hospitalId || 0);
+      const publicUserId = Number(payload?.publicUserId || 0);
+      const authUserId = String(payload?.authUserId || '').trim();
+      const email = String(payload?.email || '').trim().toLowerCase();
+      const accessStart = String(payload?.accessStart || '').trim() || null;
+      const accessEnd = String(payload?.accessEnd || '').trim() || null;
+      const profile = payload?.profile && typeof payload.profile === 'object' ? payload.profile : {};
+
+      if (!hospitalId || !publicUserId || !authUserId) {
+        return jsonResponse({ error: 'Hospital manager account identifiers are incomplete.' }, 400, allowedOrigin || null);
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return jsonResponse({ error: 'A valid H-Representative email address is required.' }, 400, allowedOrigin || null);
+      }
+      if (!String(profile.firstName || '').trim() || !String(profile.lastName || '').trim()) {
+        return jsonResponse({ error: 'Manager first name and last name are required.' }, 400, allowedOrigin || null);
+      }
+      if (accessStart && accessEnd && new Date(accessEnd).getTime() <= new Date(accessStart).getTime()) {
+        return jsonResponse({ error: 'Access End must be later than Access Start.' }, 400, allowedOrigin || null);
+      }
+
+      const [{ data: hospital, error: hospitalError }, { data: target, error: targetError }] = await Promise.all([
+        admin.from('Hospitals').select('Hospital_ID, Created_By').eq('Hospital_ID', hospitalId).maybeSingle(),
+        admin.from('users').select('user_id, auth_user_id, role, email').eq('user_id', publicUserId).maybeSingle(),
+      ]);
+      if (hospitalError) throw hospitalError;
+      if (targetError) throw targetError;
+      if (!hospital || Number(hospital.Created_By) !== publicUserId) {
+        return jsonResponse({ error: 'The selected manager does not own this hospital account.' }, 409, allowedOrigin || null);
+      }
+      if (!target || String(target.auth_user_id || '') !== authUserId || normalizeRole(target.role) !== 'hrepresentative') {
+        return jsonResponse({ error: 'The linked H-Representative account could not be verified.' }, 409, allowedOrigin || null);
+      }
+
+      if (String(target.email || '').trim().toLowerCase() !== email) {
+        const authUpdate = await admin.auth.admin.updateUserById(authUserId, { email, email_confirm: true });
+        if (authUpdate.error) throw authUpdate.error;
+      }
+
+      const accountUpdate = await admin
+        .from('users')
+        .update({ email, access_start: accessStart, access_end: accessEnd, updated_at: new Date().toISOString() })
+        .eq('user_id', publicUserId);
+      if (accountUpdate.error) throw accountUpdate.error;
+
+      const detailsUpdate = await admin
+        .from('user_details')
+        .update({
+          first_name: String(profile.firstName || '').trim(),
+          middle_name: String(profile.middleName || '').trim() || null,
+          last_name: String(profile.lastName || '').trim(),
+          suffix: String(profile.suffix || '').trim() || null,
+          contact_number: String(profile.contactNumber || '').trim() || null,
+          birthdate: String(profile.birthdate || '').trim() || null,
+          gender: String(profile.gender || '').trim() || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', publicUserId);
+      if (detailsUpdate.error) throw detailsUpdate.error;
+
+      return jsonResponse({ ok: true, userId: publicUserId, hospitalId }, 200, allowedOrigin || null);
+    }
+
+    if (action === 'set-account-active') {
+      const publicUserId = Number(payload?.publicUserId || 0);
+      const isActive = payload?.isActive;
+      if (!publicUserId || typeof isActive !== 'boolean') {
+        return jsonResponse({ error: 'User account and active status are required.' }, 400, allowedOrigin || null);
+      }
+
+      const { data: target, error: targetError } = await admin
+        .from('users')
+        .select('user_id, auth_user_id, email, role, is_active')
+        .eq('user_id', publicUserId)
+        .maybeSingle();
+      if (targetError) throw targetError;
+      if (!target) return jsonResponse({ error: 'User account was not found.' }, 404, allowedOrigin || null);
+      if (target.user_id === actor.user_id && !isActive) {
+        return jsonResponse({ error: 'You cannot deactivate your own signed-in Admin account.' }, 409, allowedOrigin || null);
+      }
+
+      const authUserId = String(target.auth_user_id || '').trim();
+      if (!authUserId) {
+        return jsonResponse({ error: 'This account is not linked to an Auth user.' }, 409, allowedOrigin || null);
+      }
+
+      // Banning prevents new sign-ins and token refreshes. The database
+      // pre-request guard independently rejects an already-issued access token.
+      const authUpdate = await admin.auth.admin.updateUserById(authUserId, {
+        ban_duration: isActive ? 'none' : '876000h',
+      });
+      if (authUpdate.error) throw authUpdate.error;
+
+      const { data: updated, error: updateError } = await admin
+        .from('users')
+        .update({ is_active: isActive, updated_at: new Date().toISOString() })
+        .eq('user_id', publicUserId)
+        .select('user_id, is_active')
+        .maybeSingle();
+      if (updateError || !updated) {
+        // Keep Auth and public account state aligned if the database write fails.
+        await admin.auth.admin.updateUserById(authUserId, {
+          ban_duration: isActive ? '876000h' : 'none',
+        }).catch(() => undefined);
+        throw updateError || new Error('The account status could not be updated.');
+      }
+
+      // Account-specific Realtime broadcast logs an open browser out promptly.
+      // App.jsx also performs periodic/focus checks in case this signal is lost.
+      await admin
+        .channel(`account-access:${authUserId}`)
+        .send({
+          type: 'broadcast',
+          event: 'status_changed',
+          payload: { isActive, changedAt: new Date().toISOString() },
+        })
+        .catch(() => undefined);
+
+      return jsonResponse({ ok: true, userId: publicUserId, isActive }, 200, allowedOrigin || null);
+    }
+
     if (action === 'invite-internal') {
       const email = String(payload?.email || '').trim().toLowerCase();
       const temporaryPassword = buildTemporaryPassword();

@@ -56,7 +56,7 @@ export default function RoleDashboardShell({
   );
 
   const hasSettingsPage = Boolean(pageComponents.settings) || navItems.some((item) => item.id === 'settings');
-  const pageWrapperClass = 'relative flex-1 overflow-auto bg-slate-50 p-6 md:p-8';
+  const pageWrapperClass = 'relative min-h-0 flex-1 overflow-hidden bg-slate-50 p-6 md:p-8';
 
   useEffect(() => {
     try {
@@ -93,8 +93,8 @@ export default function RoleDashboardShell({
                 <div
                   key={pageId}
                   className={isActive
-                    ? 'min-h-full min-w-0'
-                    : 'pointer-events-none absolute inset-x-0 top-0 min-h-full min-w-0 select-none opacity-0'}
+                    ? 'h-full min-h-0 min-w-0 overflow-y-auto overscroll-y-contain'
+                    : 'pointer-events-none absolute inset-0 min-h-0 min-w-0 overflow-hidden select-none opacity-0'}
                   aria-hidden={!isActive}
                   inert={isActive ? undefined : ''}
                 >
