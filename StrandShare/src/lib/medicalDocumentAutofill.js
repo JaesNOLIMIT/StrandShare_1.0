@@ -111,8 +111,6 @@ function normalizeGender(value) {
   const normalized = String(value || '').toLowerCase();
   if (/\bfemale\b|^f$/.test(normalized)) return 'Female';
   if (/\bmale\b|^m$/.test(normalized)) return 'Male';
-  if (/\b(?:non[ -]?binary|other)\b/.test(normalized)) return 'Other';
-  if (/prefer\s+not\s+to\s+say/.test(normalized)) return 'Prefer not to say';
   return '';
 }
 
@@ -135,7 +133,7 @@ function splitFullName(value) {
   const cleaned = normalizeNamePart(value);
   if (!cleaned) return {};
 
-  const knownSuffixPattern = /\b(Jr|Sr|II|III|IV|V)\.?(?=\s|$)/i;
+  const knownSuffixPattern = /\b(Jr|Sr|VIII|VII|III|VI|IV|II|IX|V|X)\.?(?=\s|$)/i;
   const suffixMatch = cleaned.match(knownSuffixPattern);
   const suffix = suffixMatch?.[1]?.replace(/\.$/, '') || '';
   const withoutSuffix = cleaned.replace(knownSuffixPattern, '').replace(/\s+/g, ' ').trim();

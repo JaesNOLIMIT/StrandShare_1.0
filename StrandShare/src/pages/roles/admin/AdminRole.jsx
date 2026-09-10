@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy } from 'react';
 import {
   BarChart3,
   LayoutDashboard,
@@ -11,15 +11,16 @@ import {
   Settings,
 } from 'lucide-react';
 import RoleDashboardShell from '../../shared/RoleDashboardShell';
-import DashboardPage from './DashboardPage';
-import ManageUserAccountsPage from './ManageUserAccountsPage';
-import ManageHospitalAccountsPage from './ManageHospitalAccountsPage';
-import ManageEventApplicationsPage from './ManageEventApplicationsPage';
-import AuditTrailsPage from './AuditTrailsPage';
-import BackupPage from './BackupPage';
-import SettingsPage from './SettingsPage';
-import ManageRequirementsPage from '../../shared/features/ManageRequirementsPage';
-import RoleReportsPage from '../../shared/features/RoleReportsPage';
+
+const DashboardPage = lazy(() => import('./DashboardPage'));
+const ManageUserAccountsPage = lazy(() => import('./ManageUserAccountsPage'));
+const ManageHospitalAccountsPage = lazy(() => import('./ManageHospitalAccountsPage'));
+const ManageEventApplicationsPage = lazy(() => import('./ManageEventApplicationsPage'));
+const AuditTrailsPage = lazy(() => import('./AuditTrailsPage'));
+const BackupPage = lazy(() => import('./BackupPage'));
+const SettingsPage = lazy(() => import('./SettingsPage'));
+const ManageRequirementsPage = lazy(() => import('../../shared/features/ManageRequirementsPage'));
+const RoleReportsPage = lazy(() => import('../../shared/features/RoleReportsPage'));
 
 const adminNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -45,7 +46,7 @@ const adminPageComponents = {
   settings: SettingsPage,
 };
 
-export default function AdminRole({ onSignOut, userProfile }) {
+export default function AdminRole({ onSignOut, userProfile, onInitialDashboardReady }) {
   return (
     <RoleDashboardShell
       onSignOut={onSignOut}
@@ -53,6 +54,7 @@ export default function AdminRole({ onSignOut, userProfile }) {
       navItems={adminNavItems}
       pageComponents={adminPageComponents}
       defaultPage="dashboard"
+      onInitialDashboardReady={onInitialDashboardReady}
     />
   );
 }

@@ -118,7 +118,7 @@ function isCountedAsAvailableStock(wigStatusValue) {
 
 const initialPhotoState = { file: null, previewUrl: '' };
 
-export default function UploadWigStocksPage({ userProfile }) {
+export default function UploadWigStocksPage({ userProfile, isActivePage = true }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0275d8';
   const tertiaryColor = theme?.tertiaryColor || '#10b981';
@@ -266,7 +266,7 @@ export default function UploadWigStocksPage({ userProfile }) {
   }, [loadInventory, loadPendingBundles, stopCamera]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
+    if (!isActivePage || !isSupabaseConfigured || !supabase) return undefined;
     const channel = supabase
       .channel('qa-wig-stocks-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: WIGS_TABLE }, () => {
@@ -280,7 +280,7 @@ export default function UploadWigStocksPage({ userProfile }) {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [loadInventory]);
+  }, [isActivePage, loadInventory]);
 
   // ----- Scanner -----
   const loadBundleMembers = useCallback(async (bundleId) => {

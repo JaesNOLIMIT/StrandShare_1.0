@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { createClient } from '@supabase/supabase-js';
 import {
   AlertTriangle,
   Building2,
@@ -8,7 +7,7 @@ import {
   Loader2,
   MapPin,
   Pencil,
-  RefreshCw,
+  Power,
   Save,
   Search,
   Trash2,
@@ -18,6 +17,8 @@ import {
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { triggerSmtpNow } from '../../../lib/smtpTriggerClient';
+import { invokeAdminAccountManagement } from '../../../lib/adminAccountManagement';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const HOSPITALS_TABLE = 'Hospitals';
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
@@ -25,7 +26,6 @@ const USERS_TABLE = 'users';
 const HOSPITAL_LOGOS_BUCKET = 'hospital_logos';
 const PSGC_BASE_URL = 'https://psgc.gitlab.io/api';
 const PHILIPPINE_TIME_ZONE = 'Asia/Manila';
-let hospitalActionAdminClient = null;
 
 const PAGE_TABS = [
   { id: 'manage', label: 'Manage H-Representatives' },
@@ -35,12 +35,27 @@ const PAGE_TABS = [
 const EMPTY_FORM = {
   hospitalName: '',
   hospitalLogoPath: '',
+  hospitalHeadName: '',
+  hospitalHeadTitle: '',
+  hospitalHeadEmail: '',
+  hospitalHeadContactNumber: '',
   country: 'Philippines',
   region: '',
+  province: '',
   city: '',
   barangay: '',
   street: '',
   contactNumber: '',
+  managerFirstName: '',
+  managerMiddleName: '',
+  managerLastName: '',
+  managerSuffix: '',
+  managerEmail: '',
+  managerContactNumber: '',
+  managerBirthdate: '',
+  managerGender: '',
+  accessStart: '',
+  accessEnd: '',
 };
 
 function normalizeText(value) {
@@ -156,47 +171,9 @@ function getHospitalApprovalStatusLabel(statusKey) {
   return 'Pending';
 }
 
-function mapHospitalEmailError(rawMessage) {
-  const message = String(rawMessage || 'Unable to prepare hospital account email.');
-  const lowerMessage = message.toLowerCase();
-
-  if (!message || lowerMessage.includes('missing-service-role')) {
-    return 'Hospital email service is not configured. Add REACT_APP_SUPABASE_SERVICE_ROLE_KEY in .env.local and restart the app.';
-  }
-
-  if (lowerMessage.includes('user not found')) {
-    return 'The manager Auth account was not found. Ask the applicant to verify email again or resubmit the application.';
-  }
-
-  return message;
-}
-
 function buildTemporaryPassword() {
   const numeric = Math.floor(100000 + (Math.random() * 900000));
   return `Strand-${numeric}!Aa`;
-}
-
-function createHospitalActionAdminClient() {
-  if (hospitalActionAdminClient) {
-    return hospitalActionAdminClient;
-  }
-
-  const url = process.env.REACT_APP_SUPABASE_URL;
-  const serviceRoleKey = process.env.REACT_APP_SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) {
-    return null;
-  }
-
-  hospitalActionAdminClient = createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-      storageKey: 'Donivra-hospital-action-admin-client',
-    },
-  });
-
-  return hospitalActionAdminClient;
 }
 
 function formatHospitalAddress(hospital) {
@@ -241,22 +218,11 @@ function getHospitalManagerRoleLabel() {
   return 'H-Representative';
 }
 
-function matchesRegion(regionItem, regionValue) {
-  const target = normalizeText(regionValue);
-  if (!target) return false;
-
-  const names = [regionItem?.name, regionItem?.regionName]
-    .filter(Boolean)
-    .map((item) => normalizeText(item));
-
-  return names.includes(target);
-}
-
 function cardClass() {
   return 'rounded-xl border border-gray-200 bg-white p-4 md:p-5';
 }
 
-export default function ManageHospitalAccountsPage() {
+export default function ManageHospitalAccountsPage({ isActivePage = true }) {
   const { theme } = useTheme();
   const tableHeaderTextColor = theme?.primaryTextColor || '#111827';
 
@@ -272,6 +238,7 @@ export default function ManageHospitalAccountsPage() {
 
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingHospitalId, setEditingHospitalId] = useState(null);
+  const [detailsEditInitialForm, setDetailsEditInitialForm] = useState(null);
   const [logoFile, setLogoFile] = useState(null);
   const [logoPreviewUrl, setLogoPreviewUrl] = useState('');
   const [logoInputKey, setLogoInputKey] = useState(0);
@@ -294,6 +261,7 @@ export default function ManageHospitalAccountsPage() {
   const [applicationActionHospitalId, setApplicationActionHospitalId] = useState(null);
   const [applicationActionType, setApplicationActionType] = useState('');
   const [accessActionHospitalId, setAccessActionHospitalId] = useState(null);
+  const [accessConfirmation, setAccessConfirmation] = useState(null);
   const [deletingHospitalId, setDeletingHospitalId] = useState(null);
 
   // Modal state for approve/reject decision flow
@@ -444,6 +412,11 @@ export default function ManageHospitalAccountsPage() {
     applicantUsersById[getHospitalApplicantUserId(hospital)] || null
   ), [applicantUsersById]);
 
+  const isHospitalAccessOn = useCallback((hospital) => {
+    const manager = applicantUsersById[getHospitalApplicantUserId(hospital)] || null;
+    return manager ? manager.is_active !== false : Boolean(hospital?.Is_Approved);
+  }, [applicantUsersById]);
+
   const visibleCities = useMemo(() => {
     if (!provinceCode) {
       return cities;
@@ -507,6 +480,7 @@ export default function ManageHospitalAccountsPage() {
   const resetForm = (keepSuccess = false) => {
     setForm(EMPTY_FORM);
     setEditingHospitalId(null);
+    setDetailsEditInitialForm(null);
     resetLogoInput();
     setNextLogoPreview('');
     setRegionCode('');
@@ -559,6 +533,8 @@ export default function ManageHospitalAccountsPage() {
           auth_user_id,
           role,
           is_active,
+          access_start,
+          access_end,
           user_details:user_details (
             first_name,
             middle_name,
@@ -613,7 +589,7 @@ export default function ManageHospitalAccountsPage() {
   }, [fetchHospitals, loadRegions]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
+    if (!isActivePage || !isSupabaseConfigured || !supabase) {
       return undefined;
     }
 
@@ -624,19 +600,20 @@ export default function ManageHospitalAccountsPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITAL_STAFF_TABLE }, refreshHospitals)
       .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshHospitals)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'user_details' }, refreshHospitals)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, refreshHospitals)
       .subscribe();
 
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [fetchHospitals]);
+  }, [fetchHospitals, isActivePage]);
 
   const openHospitalDetails = (hospital) => {
     setDetailsHospitalId(Number(hospital.Hospital_ID));
   };
 
   const closeHospitalDetails = () => {
+    if (isSaving) return;
+    if (editingHospitalId) resetForm();
     setDetailsHospitalId(null);
   };
 
@@ -710,25 +687,12 @@ export default function ManageHospitalAccountsPage() {
       throw new Error('The manager Auth account is missing. The applicant must verify email before approval can send login credentials.');
     }
 
-    const adminClient = createHospitalActionAdminClient();
-    if (!adminClient) {
-      throw new Error(mapHospitalEmailError('missing-service-role'));
-    }
-
-    const updateResult = await adminClient.auth.admin.updateUserById(authUserId, {
-      email_confirm: true,
-      password: tempPassword,
-      user_metadata: {
-        account_type: 'partner_hospital',
-        role: 'h_representative',
-        hospital_id: Number(hospital?.Hospital_ID || 0),
-        updated_at: getPhilippineTimestamp(),
-      },
+    await invokeAdminAccountManagement({
+      action: 'set-hospital-manager-credentials',
+      authUserId,
+      temporaryPassword: tempPassword,
+      hospitalId: Number(hospital?.Hospital_ID || 0),
     });
-
-    if (updateResult.error) {
-      throw new Error(mapHospitalEmailError(updateResult.error.message));
-    }
   };
 
   const handleHospitalApplicationDecision = (hospital, nextStatus) => {
@@ -822,6 +786,7 @@ export default function ManageHospitalAccountsPage() {
     }
 
     try {
+      setAccessConfirmation(null);
       setAccessActionHospitalId(hospitalId);
 
       const hospitalUpdateResult = await supabase.rpc('admin_update_hospital_application', {
@@ -1068,6 +1033,16 @@ export default function ManageHospitalAccountsPage() {
   const handleSubmit = async (event) => {
     event.preventDefault();
 
+    if (
+      editingHospitalId
+      && detailsHospitalId
+      && Number(editingHospitalId) === Number(detailsHospitalId)
+      && detailsEditInitialForm
+      && JSON.stringify(form) === JSON.stringify(detailsEditInitialForm)
+    ) {
+      return;
+    }
+
     if (!isSupabaseConfigured || !supabase) {
       setErrorMessage('Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.');
       return;
@@ -1109,6 +1084,21 @@ export default function ManageHospitalAccountsPage() {
       return;
     }
 
+    if (isEditing) {
+      if (!String(form.managerFirstName || '').trim() || !String(form.managerLastName || '').trim()) {
+        setErrorMessage('Manager first name and last name are required.');
+        return;
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(form.managerEmail || '').trim())) {
+        setErrorMessage('Enter a valid managing account email address.');
+        return;
+      }
+      if (form.accessStart && form.accessEnd && new Date(form.accessEnd) <= new Date(form.accessStart)) {
+        setErrorMessage('Access End must be later than Access Start.');
+        return;
+      }
+    }
+
     const previousLogoPath = String(form.hospitalLogoPath || '').trim();
     let nextLogoPath = previousLogoPath || null;
     let uploadedLogoPath = '';
@@ -1134,6 +1124,10 @@ export default function ManageHospitalAccountsPage() {
       const payload = {
         Hospital_Name: form.hospitalName.trim(),
         Hospital_Logo: nextLogoPath,
+        Hospital_Head_Name: String(form.hospitalHeadName || '').trim() || null,
+        Hospital_Head_Title: String(form.hospitalHeadTitle || '').trim() || null,
+        Hospital_Head_Email: String(form.hospitalHeadEmail || '').trim() || null,
+        Hospital_Head_Contact_Number: toStoredPhoneNumber(form.hospitalHeadContactNumber) || null,
         Country: form.country.trim() || 'Philippines',
         Region: form.region,
         City: form.city,
@@ -1143,6 +1137,81 @@ export default function ManageHospitalAccountsPage() {
       };
 
       if (editingHospitalId) {
+        const hospitalBeingEdited = hospitalsById.get(Number(editingHospitalId));
+        const managerUser = getApplicantUserForHospital(hospitalBeingEdited);
+        if (managerUser?.user_id && managerUser?.auth_user_id) {
+          const normalizedManagerEmail = String(form.managerEmail || '').trim().toLowerCase();
+          const managerProfile = {
+            firstName: String(form.managerFirstName || '').trim(),
+            middleName: String(form.managerMiddleName || '').trim() || null,
+            lastName: String(form.managerLastName || '').trim(),
+            suffix: String(form.managerSuffix || '').trim() || null,
+            contactNumber: toStoredPhoneNumber(form.managerContactNumber) || null,
+            birthdate: form.managerBirthdate || null,
+            gender: String(form.managerGender || '').trim() || null,
+          };
+
+          try {
+            await invokeAdminAccountManagement({
+              action: 'update-hospital-manager-account',
+              hospitalId: Number(editingHospitalId),
+              publicUserId: Number(managerUser.user_id),
+              authUserId: String(managerUser.auth_user_id),
+              email: normalizedManagerEmail,
+              accessStart: form.accessStart || null,
+              accessEnd: form.accessEnd || null,
+              profile: managerProfile,
+            });
+          } catch (managementError) {
+            const managementMessage = String(managementError?.message || '').toLowerCase();
+            if (!managementMessage.includes('unsupported account management action')) throw managementError;
+            if (normalizedManagerEmail !== String(managerUser.email || '').trim().toLowerCase()) {
+              throw new Error('Updating the login email requires the latest account-management service. Deploy the updated Edge Function, then try again.');
+            }
+
+            const fallbackResult = await supabase.rpc('admin_update_hospital_manager_profile', {
+              p_hospital_id: Number(editingHospitalId),
+              p_user_id: Number(managerUser.user_id),
+              p_access_start: form.accessStart || null,
+              p_access_end: form.accessEnd || null,
+              p_first_name: managerProfile.firstName,
+              p_middle_name: managerProfile.middleName,
+              p_last_name: managerProfile.lastName,
+              p_suffix: managerProfile.suffix,
+              p_contact_number: managerProfile.contactNumber,
+              p_birthdate: managerProfile.birthdate,
+              p_gender: managerProfile.gender,
+            });
+            if (fallbackResult.error) {
+              const fallbackMessage = String(fallbackResult.error.message || '').toLowerCase();
+              const fallbackMissing = fallbackResult.error.code === 'PGRST202'
+                || fallbackMessage.includes('could not find the function')
+                || fallbackMessage.includes('schema cache');
+              if (!fallbackMissing) throw fallbackResult.error;
+
+              const [accountResult, detailsResult] = await Promise.all([
+                supabase.from(USERS_TABLE).update({
+                  access_start: form.accessStart || null,
+                  access_end: form.accessEnd || null,
+                  updated_at: getPhilippineTimestamp(),
+                }).eq('user_id', managerUser.user_id),
+                supabase.from('user_details').update({
+                  first_name: managerProfile.firstName,
+                  middle_name: managerProfile.middleName,
+                  last_name: managerProfile.lastName,
+                  suffix: managerProfile.suffix,
+                  contact_number: managerProfile.contactNumber,
+                  birthdate: managerProfile.birthdate,
+                  gender: managerProfile.gender,
+                  updated_at: getPhilippineTimestamp(),
+                }).eq('user_id', managerUser.user_id),
+              ]);
+              if (accountResult.error) throw accountResult.error;
+              if (detailsResult.error) throw detailsResult.error;
+            }
+          }
+        }
+
         const { error } = await supabase
           .from(HOSPITALS_TABLE)
           .update({
@@ -1197,93 +1266,42 @@ export default function ManageHospitalAccountsPage() {
     }
   };
 
-  const handleEditHospital = async (hospital) => {
-    setIsModalOpen(true);
+  const handleEditHospital = (hospital) => {
+    setIsModalOpen(false);
     setSuccessMessage('');
     setErrorMessage('');
 
     const nextForm = {
       hospitalName: hospital.Hospital_Name || '',
       hospitalLogoPath: hospital.Hospital_Logo || '',
+      hospitalHeadName: hospital.Hospital_Head_Name || '',
+      hospitalHeadTitle: hospital.Hospital_Head_Title || '',
+      hospitalHeadEmail: hospital.Hospital_Head_Email || '',
+      hospitalHeadContactNumber: hospital.Hospital_Head_Contact_Number || '',
       country: hospital.Country || 'Philippines',
       region: hospital.Region || '',
+      province: hospital.Province || '',
       city: hospital.City || '',
       barangay: hospital.Barangay || '',
       street: hospital.Street || '',
       contactNumber: hospital.Contact_Number || '',
+      managerFirstName: getUserDetails(getApplicantUserForHospital(hospital))?.first_name || '',
+      managerMiddleName: getUserDetails(getApplicantUserForHospital(hospital))?.middle_name || '',
+      managerLastName: getUserDetails(getApplicantUserForHospital(hospital))?.last_name || '',
+      managerSuffix: getUserDetails(getApplicantUserForHospital(hospital))?.suffix || '',
+      managerEmail: getApplicantUserForHospital(hospital)?.email || hospital.Hospital_Head_Email || '',
+      managerContactNumber: getUserDetails(getApplicantUserForHospital(hospital))?.contact_number || '',
+      managerBirthdate: getUserDetails(getApplicantUserForHospital(hospital))?.birthdate || '',
+      managerGender: getUserDetails(getApplicantUserForHospital(hospital))?.gender || '',
+      accessStart: toDateTimeLocalValue(getApplicantUserForHospital(hospital)?.access_start),
+      accessEnd: toDateTimeLocalValue(getApplicantUserForHospital(hospital)?.access_end),
     };
 
     setForm(nextForm);
+    setDetailsEditInitialForm(nextForm);
     setEditingHospitalId(hospital.Hospital_ID);
     resetLogoInput();
     setNextLogoPreview(resolveHospitalLogoUrl(hospital.Hospital_Logo));
-
-    try {
-      if (regions.length === 0) {
-        await loadRegions();
-      }
-
-      const availableRegions = regions.length > 0 ? regions : await fetchLocationData('/regions/');
-      if (regions.length === 0) {
-        setRegions(availableRegions);
-      }
-
-      const matchedRegion = availableRegions.find((region) => matchesRegion(region, hospital.Region));
-
-      if (!matchedRegion) {
-        setRegionCode('');
-        setProvinceCode('');
-        setCityCode('');
-        setProvinces([]);
-        setCities([]);
-        setBarangays([]);
-        return;
-      }
-
-      await handleRegionChange(matchedRegion.code, {
-        preserveMessages: true,
-        keepCityName: hospital.City || '',
-        keepBarangayName: hospital.Barangay || '',
-        regionList: availableRegions,
-      });
-
-      const regionCities = await fetchLocationData(`/regions/${matchedRegion.code}/cities-municipalities/`);
-      const orderedCities = [...(regionCities || [])].sort((a, b) =>
-        String(a.name || '').localeCompare(String(b.name || ''), 'en', { sensitivity: 'base' }),
-      );
-      setCities(orderedCities);
-
-      const normalizedHospitalCity = normalizeText(hospital.City);
-      const matchedCity = orderedCities.find((city) => {
-        const possibleNames = [city?.name, city?.oldName, city?.description]
-          .filter(Boolean)
-          .map((value) => normalizeText(value));
-
-        return possibleNames.some(
-          (name) => name === normalizedHospitalCity || name.includes(normalizedHospitalCity) || normalizedHospitalCity.includes(name),
-        );
-      });
-
-      if (!matchedCity) {
-        setProvinceCode('');
-        setCityCode('');
-        setBarangays([]);
-        return;
-      }
-
-      if (matchedCity.provinceCode) {
-        setProvinceCode(matchedCity.provinceCode);
-      }
-
-      await handleCityChange(matchedCity.code, {
-        preserveMessages: true,
-        keepBarangayName: hospital.Barangay || '',
-        cityList: orderedCities,
-        selectedCity: matchedCity,
-      });
-    } catch {
-      setErrorMessage('Unable to fully preload address options for this hospital. You can still update details manually.');
-    }
   };
 
   const handleDeleteHospital = (hospital) => {
@@ -1338,6 +1356,7 @@ export default function ManageHospitalAccountsPage() {
       }
 
       setDeleteTarget(null);
+      setDetailsHospitalId(null);
     } catch (error) {
       setErrorMessage(error.message || 'Unable to delete hospital.');
     } finally {
@@ -1347,13 +1366,24 @@ export default function ManageHospitalAccountsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="role-page-title text-3xl font-bold text-gray-900">Manage H-Representative Accounts</h1>
           <p className="text-sm text-gray-600 mt-1">
             Review and maintain hospital records used by H-Representatives, patients, and wig request routing.
           </p>
         </div>
+        <PageHeaderActions
+          onRefresh={fetchHospitals}
+          refreshLoading={isLoadingHospitals}
+          helpTitle="About Manage H-Representative Accounts"
+          helpContent={(
+            <div className="space-y-2">
+              <p>Use <strong>Manage H-Representatives</strong> to review and maintain approved hospital records and their account access.</p>
+              <p>Use <strong>Hospital Applications</strong> to review pending partnership applications and approve or reject them.</p>
+            </div>
+          )}
+        />
       </div>
 
       <div className="border-b border-gray-200">
@@ -1384,7 +1414,7 @@ export default function ManageHospitalAccountsPage() {
 
       {activeTab === 'manage' && (
         <section className={cardClass()}>
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
+          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center">
             <div className="relative w-full md:max-w-sm">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
@@ -1395,19 +1425,6 @@ export default function ManageHospitalAccountsPage() {
                 style={{ '--tw-ring-color': theme.primaryColor }}
               />
             </div>
-
-            <button
-              type="button"
-              onClick={fetchHospitals}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold"
-              style={{
-                borderColor: `${theme.primaryColor}33`,
-                backgroundColor: `${theme.primaryColor}12`,
-                color: theme.primaryColor,
-              }}
-            >
-              <RefreshCw size={14} /> Refresh
-            </button>
           </div>
 
           {isLoadingHospitals ? (
@@ -1461,10 +1478,11 @@ export default function ManageHospitalAccountsPage() {
                           .join(', ') || 'N/A'}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
-                          hospital.Is_Approved ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
+                        <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                          isHospitalAccessOn(hospital) ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'
                         }`}>
-                          {hospital.Is_Approved ? 'On' : 'Off'}
+                          <Power size={12} />
+                          {isHospitalAccessOn(hospital) ? 'Access On' : 'Access Off'}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-gray-700 text-center">{formatDateTime(hospital.Updated_At || hospital.Created_At)}</td>
@@ -1476,34 +1494,7 @@ export default function ManageHospitalAccountsPage() {
                             className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-gray-50 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100"
                             title="View hospital details"
                           >
-                            <Info size={13} /> View Information
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleEditHospital(hospital)}
-                            className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-semibold"
-                            style={{
-                              borderColor: `${theme.primaryColor}33`,
-                              backgroundColor: `${theme.primaryColor}12`,
-                              color: theme.primaryColor,
-                            }}
-                          >
-                            <Pencil size={13} /> Edit
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteHospital(hospital)}
-                            disabled={deletingHospitalId === hospital.Hospital_ID}
-                            className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
-                          >
-                            {deletingHospitalId === hospital.Hospital_ID ? (
-                              <Loader2 className="animate-spin" size={13} />
-                            ) : (
-                              <Trash2 size={13} />
-                            )}
-                            Delete
+                            <Info size={13} /> Info
                           </button>
                         </div>
                       </td>
@@ -1518,26 +1509,13 @@ export default function ManageHospitalAccountsPage() {
 
       {activeTab === 'applications' && (
         <section className={cardClass()}>
-          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="mb-4">
             <div>
               <h3 className="text-lg font-semibold text-gray-900">Hospital Applications</h3>
               <p className="mt-1 text-xs text-gray-500">
                 Review hospital partnership submissions and decide whether to approve or reject.
               </p>
             </div>
-
-            <button
-              type="button"
-              onClick={fetchHospitals}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold"
-              style={{
-                borderColor: `${theme.primaryColor}33`,
-                backgroundColor: `${theme.primaryColor}12`,
-                color: theme.primaryColor,
-              }}
-            >
-              <RefreshCw size={14} /> Refresh
-            </button>
           </div>
 
           <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr,220px]">
@@ -1641,7 +1619,7 @@ export default function ManageHospitalAccountsPage() {
                               className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                             >
                               <Info size={13} />
-                              View Information
+                              Info
                             </button>
 
                             <button
@@ -1695,12 +1673,6 @@ export default function ManageHospitalAccountsPage() {
             applicantDetails?.region,
             applicantDetails?.country,
           ].filter(Boolean).join(', ');
-          const coordinates = applicationInfoHospital.Latitude && applicationInfoHospital.Longitude
-            ? `${applicationInfoHospital.Latitude}, ${applicationInfoHospital.Longitude}`
-            : 'No coordinates provided';
-          const mapUrl = applicationInfoHospital.Latitude && applicationInfoHospital.Longitude
-            ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${applicationInfoHospital.Latitude},${applicationInfoHospital.Longitude}`)}`
-            : '';
           const InfoField = ({ label, value, full = false }) => (
             <div className={full ? 'md:col-span-2' : ''}>
               <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
@@ -1784,22 +1756,6 @@ export default function ManageHospitalAccountsPage() {
                           <InfoField label="Hospital Name" value={applicationInfoHospital.Hospital_Name} />
                           <InfoField label="Hospital Contact" value={applicationInfoHospital.Contact_Number} />
                           <InfoField label="Full Address" value={formatHospitalAddress(applicationInfoHospital)} full />
-                          <InfoField label="Coordinates" value={coordinates} />
-                          <div>
-                            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Map</p>
-                            {mapUrl ? (
-                              <a
-                                href={mapUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="mt-1 inline-flex text-sm font-semibold text-blue-700 underline"
-                              >
-                                Open pinned location
-                              </a>
-                            ) : (
-                              <p className="mt-1 text-sm font-medium text-slate-900">N/A</p>
-                            )}
-                          </div>
                         </div>
                       </section>
 
@@ -1822,6 +1778,8 @@ export default function ManageHospitalAccountsPage() {
                           <InfoField label="Contact Number" value={applicantDetails?.contact_number || applicationInfoHospital.Hospital_Head_Contact_Number} />
                           <InfoField label="Birthdate" value={applicantDetails?.birthdate} />
                           <InfoField label="Gender" value={applicantDetails?.gender} />
+                          <InfoField label="Access Start" value={formatDateTime(applicantUser?.access_start)} />
+                          <InfoField label="Access End" value={formatDateTime(applicantUser?.access_end)} />
                           <InfoField label="Address" value={applicantAddress || 'N/A'} full />
                         </div>
                       </section>
@@ -2033,18 +1991,34 @@ export default function ManageHospitalAccountsPage() {
           const managerUser = getApplicantUserForHospital(detailsHospital);
           const managerDetails = getUserDetails(managerUser);
           const logoUrl = resolveHospitalLogoUrl(detailsHospital.Hospital_Logo);
-          const coordinates = detailsHospital.Latitude && detailsHospital.Longitude
-            ? `${detailsHospital.Latitude}, ${detailsHospital.Longitude}`
-            : 'N/A';
-          const mapUrl = detailsHospital.Latitude && detailsHospital.Longitude
-            ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${detailsHospital.Latitude},${detailsHospital.Longitude}`)}`
-            : '';
           const isAccessUpdating = Number(accessActionHospitalId) === Number(detailsHospital.Hospital_ID);
+          const accessIsOn = isHospitalAccessOn(detailsHospital);
+          const isDetailsEditing = Number(editingHospitalId) === Number(detailsHospital.Hospital_ID);
+          const isDetailsDirty = Boolean(
+            isDetailsEditing
+            && detailsEditInitialForm
+            && JSON.stringify(form) !== JSON.stringify(detailsEditInitialForm),
+          );
           const InfoField = ({ label, value, full = false }) => (
             <div className={full ? 'md:col-span-2' : ''}>
               <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
               <p className="mt-1 break-words text-sm font-medium leading-relaxed text-slate-900">{value || 'N/A'}</p>
             </div>
+          );
+          const DetailInput = ({ label, name, value, type = 'text', required = false, full = false, readOnly = false }) => (
+            <label className={`block text-xs font-bold uppercase tracking-wide text-slate-500 ${full ? 'md:col-span-2' : ''}`}>
+              {label}
+              <input
+                type={type}
+                name={name}
+                value={value || ''}
+                onChange={handleInputChange}
+                required={required}
+                readOnly={readOnly}
+                className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm font-medium normal-case tracking-normal outline-none focus:ring-2 ${readOnly ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-500' : 'border-slate-300 bg-white text-slate-900'}`}
+                style={{ '--tw-ring-color': theme.primaryColor }}
+              />
+            </label>
           );
 
           return (
@@ -2064,6 +2038,9 @@ export default function ManageHospitalAccountsPage() {
                       {detailsHospital.Hospital_Name || `Hospital #${detailsHospital.Hospital_ID}`}
                     </h3>
                     <p className="mt-1 text-sm text-slate-600">Hospital ID: {detailsHospital.Hospital_ID}</p>
+                    <span className={`mt-2 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${accessIsOn ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700'}`}>
+                      <Power size={12} /> {accessIsOn ? 'Access On' : 'Access Off'}
+                    </span>
                   </div>
 
                   <button
@@ -2102,6 +2079,51 @@ export default function ManageHospitalAccountsPage() {
                       </div>
                     </aside>
 
+                    {isDetailsEditing ? (
+                    <form id="hospital-details-edit-form" onSubmit={handleSubmit} className="space-y-4">
+                      <section className="rounded-xl border border-slate-200 p-4">
+                        <h4 className="text-sm font-bold text-slate-900">Hospital Information</h4>
+                        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <DetailInput required label="Hospital Name" name="hospitalName" value={form.hospitalName} />
+                          <DetailInput label="Hospital Contact" name="contactNumber" value={form.contactNumber} />
+                          <DetailInput label="Head / Owner" name="hospitalHeadName" value={form.hospitalHeadName} />
+                          <DetailInput label="Head Position" name="hospitalHeadTitle" value={form.hospitalHeadTitle} />
+                          <DetailInput type="email" label="Head Email" name="hospitalHeadEmail" value={form.hospitalHeadEmail} />
+                          <DetailInput label="Head Contact" name="hospitalHeadContactNumber" value={form.hospitalHeadContactNumber} />
+                          <DetailInput required label="Street" name="street" value={form.street} />
+                          <DetailInput required label="Barangay" name="barangay" value={form.barangay} />
+                          <DetailInput required label="City / Municipality" name="city" value={form.city} />
+                          <DetailInput label="Province" name="province" value={form.province} />
+                          <DetailInput required label="Region" name="region" value={form.region} />
+                          <DetailInput required label="Country" name="country" value={form.country} />
+                        </div>
+                      </section>
+
+                      <section className="rounded-xl border border-slate-200 p-4">
+                        <h4 className="text-sm font-bold text-slate-900">Managing Account</h4>
+                        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <DetailInput required label="First Name" name="managerFirstName" value={form.managerFirstName} />
+                          <DetailInput label="Middle Name" name="managerMiddleName" value={form.managerMiddleName} />
+                          <DetailInput required label="Last Name" name="managerLastName" value={form.managerLastName} />
+                          <DetailInput label="Suffix" name="managerSuffix" value={form.managerSuffix} />
+                          <DetailInput required type="email" label="Account Email" name="managerEmail" value={form.managerEmail} />
+                          <DetailInput label="Contact Number" name="managerContactNumber" value={form.managerContactNumber} />
+                          <DetailInput type="date" label="Birthdate" name="managerBirthdate" value={form.managerBirthdate} />
+                          <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                            Gender
+                            <select name="managerGender" value={form.managerGender || ''} onChange={handleInputChange} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium normal-case tracking-normal text-slate-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }}>
+                              <option value="">Not specified</option>
+                              <option value="Male">Male</option>
+                              <option value="Female">Female</option>
+                            </select>
+                          </label>
+                          <DetailInput label="Role" value={getHospitalManagerRoleLabel(managerUser)} readOnly />
+                          <DetailInput type="datetime-local" label="Access Start" name="accessStart" value={form.accessStart} />
+                          <DetailInput type="datetime-local" label="Access End" name="accessEnd" value={form.accessEnd} />
+                        </div>
+                      </section>
+                    </form>
+                    ) : (
                     <div className="space-y-4">
                       <section className="rounded-xl border border-slate-200 p-4">
                         <h4 className="text-sm font-bold text-slate-900">Hospital Information</h4>
@@ -2113,25 +2135,8 @@ export default function ManageHospitalAccountsPage() {
                           <InfoField label="Head Email" value={detailsHospital.Hospital_Head_Email} />
                           <InfoField label="Head Contact" value={detailsHospital.Hospital_Head_Contact_Number} />
                           <InfoField label="Full Address" value={formatHospitalAddress(detailsHospital)} full />
-                          <InfoField label="Coordinates" value={coordinates} />
-                          <div>
-                            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Map</p>
-                            {mapUrl ? (
-                              <a
-                                href={mapUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="mt-1 inline-flex text-sm font-semibold text-blue-700 underline"
-                              >
-                                Open pinned location
-                              </a>
-                            ) : (
-                              <p className="mt-1 text-sm font-medium text-slate-900">N/A</p>
-                            )}
-                          </div>
                         </div>
                       </section>
-
                       <section className="rounded-xl border border-slate-200 p-4">
                         <h4 className="text-sm font-bold text-slate-900">Managing Account</h4>
                         <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -2141,33 +2146,90 @@ export default function ManageHospitalAccountsPage() {
                           <InfoField label="Contact Number" value={managerDetails?.contact_number || detailsHospital.Hospital_Head_Contact_Number} />
                           <InfoField label="Birthdate" value={managerDetails?.birthdate} />
                           <InfoField label="Gender" value={managerDetails?.gender} />
+                          <InfoField label="Access Start" value={formatDateTime(managerUser?.access_start)} />
+                          <InfoField label="Access End" value={formatDateTime(managerUser?.access_end)} />
                         </div>
                       </section>
                     </div>
+                    )}
                   </div>
                 </div>
 
                 <div className="border-t border-slate-200 bg-slate-50 px-5 py-4">
                   <div className="flex flex-wrap items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => toggleHospitalAccess(detailsHospital, !detailsHospital.Is_Approved)}
-                      disabled={isAccessUpdating}
-                      className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60 ${
-                        detailsHospital.Is_Approved
-                          ? 'border border-red-200 bg-red-50 text-red-700 hover:bg-red-100'
-                          : 'border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                      }`}
-                    >
-                      {isAccessUpdating
-                        ? 'Updating access...'
-                        : detailsHospital.Is_Approved
-                          ? 'Turn Off Access'
-                          : 'Turn On Access'}
-                    </button>
+                    {isDetailsEditing ? (
+                      <>
+                        <button type="button" onClick={() => resetForm()} disabled={isSaving} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60">Cancel</button>
+                        <button type="submit" form="hospital-details-edit-form" disabled={isSaving || !isDetailsDirty} className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50" style={{ backgroundColor: theme.primaryColor }}>
+                          {isSaving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+                          {isSaving ? 'Saving...' : isDetailsDirty ? 'Save Changes' : 'No Changes'}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setAccessConfirmation({ hospital: detailsHospital, nextAccess: !accessIsOn })}
+                          disabled={isAccessUpdating}
+                          className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-60 ${accessIsOn ? 'border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' : 'border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
+                        >
+                          {isAccessUpdating ? <Loader2 size={15} className="animate-spin" /> : <Power size={15} />}
+                          {isAccessUpdating ? 'Updating access...' : accessIsOn ? 'Turn Off Access' : 'Turn On Access'}
+                        </button>
+                        <button type="button" onClick={() => void handleEditHospital(detailsHospital)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100">
+                          <Pencil size={15} /> Edit
+                        </button>
+                        <button type="button" onClick={() => handleDeleteHospital(detailsHospital)} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100">
+                          <Trash2 size={15} /> Delete
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
+            </div>
+          );
+        })(),
+        document.body,
+      )}
+
+      {accessConfirmation && typeof document !== 'undefined' && createPortal(
+        (() => {
+          const { hospital, nextAccess } = accessConfirmation;
+          const manager = getApplicantUserForHospital(hospital);
+          const managerName = getUserFullName(manager) || hospital?.Hospital_Head_Name || 'this H-Representative';
+          return (
+            <div className="fixed inset-0 z-[230] flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm" role="alertdialog" aria-modal="true" aria-labelledby="hospital-access-confirmation-title">
+              <button type="button" aria-label="Cancel access change" className="absolute inset-0 border-0 bg-transparent" onClick={() => setAccessConfirmation(null)} />
+              <section className="relative z-10 w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                <div className="p-6">
+                  <div className={`mb-4 grid h-12 w-12 place-items-center rounded-full ${nextAccess ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                    <Power size={24} />
+                  </div>
+                  <h2 id="hospital-access-confirmation-title" className="text-xl font-bold text-slate-900">
+                    {nextAccess ? 'Turn on account access?' : 'Turn off account access?'}
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    <span className="font-semibold text-slate-900">{managerName}</span><br />
+                    {hospital?.Hospital_Name || 'Hospital account'}
+                  </p>
+                  <p className={`mt-4 rounded-xl border px-4 py-3 text-sm leading-6 ${nextAccess ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
+                    {nextAccess
+                      ? 'The H-Representative will be able to sign in and access the hospital workspace again.'
+                      : 'The H-Representative will lose website access and an open session will be terminated.'}
+                  </p>
+                </div>
+                <footer className="flex justify-end gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
+                  <button type="button" onClick={() => setAccessConfirmation(null)} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100">Cancel</button>
+                  <button
+                    type="button"
+                    onClick={() => void toggleHospitalAccess(hospital, nextAccess)}
+                    className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white ${nextAccess ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-amber-600 hover:bg-amber-700'}`}
+                  >
+                    <Power size={16} /> {nextAccess ? 'Yes, turn on' : 'Yes, turn off'}
+                  </button>
+                </footer>
+              </section>
             </div>
           );
         })(),
@@ -2444,7 +2506,7 @@ export default function ManageHospitalAccountsPage() {
 
       {toastMessage && (
         <div
-          className={`fixed right-6 bottom-6 z-[60] rounded-lg border px-4 py-2.5 text-sm font-semibold shadow-lg flex items-center gap-2 ${
+          className={`fixed right-6 bottom-6 z-[200] max-w-md rounded-lg border px-4 py-2.5 text-sm font-semibold shadow-2xl flex items-start gap-2 ${
             toastKind === 'error'
               ? 'border-red-300 bg-red-50 text-red-800'
               : 'border-emerald-300 bg-emerald-50 text-emerald-900'
@@ -2456,4 +2518,10 @@ export default function ManageHospitalAccountsPage() {
       )}
     </div>
   );
+}
+
+function toDateTimeLocalValue(value) {
+  if (!value) return '';
+  const normalized = String(value).trim().replace(' ', 'T');
+  return normalized.length >= 16 ? normalized.slice(0, 16) : '';
 }

@@ -49,6 +49,8 @@ function cleanDocument(report: Record<string, unknown>) {
     'first_name',
     'last_name',
     'full_name',
+    'date_of_birth',
+    'birth_date',
     'gender',
     'address',
     'formatted_address',
@@ -69,6 +71,17 @@ function cleanDocument(report: Record<string, unknown>) {
     cleaned.middle_name = String(extraFields[middleNameKey]);
   }
   return cleaned;
+}
+
+function getIdFrontImageUrl(report: Record<string, unknown> | null) {
+  if (!report) return '';
+  const candidates = [
+    report.front_image,
+    report.full_front_image,
+    report.front_document_image,
+    report.front_image_url,
+  ];
+  return String(candidates.find((value) => typeof value === 'string' && value.trim()) || '').trim();
 }
 
 async function saveVerifiedIdFrontImage(
@@ -242,13 +255,19 @@ Deno.serve(async (request) => {
       const warnings = Array.isArray(selectedReport?.warnings) ? selectedReport.warnings : [];
       const manilaTimestamp = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Manila' }).replace(' ', 'T');
       let frontImagePath = String(storedSession.ID_Front_Image_Path || '').trim();
+      const providerFrontImageUrl = getIdFrontImageUrl(selectedReport);
+      let idImageNotice = '';
 
       if (verified && !frontImagePath) {
-        const frontImageUrl = String(selectedReport?.front_image || '').trim();
-        if (!frontImageUrl) {
-          throw new Error('The verification completed, but its front ID image was unavailable. Please retry the ID scan.');
+        if (providerFrontImageUrl) {
+          try {
+            frontImagePath = await saveVerifiedIdFrontImage(admin, sessionId, providerFrontImageUrl);
+          } catch (imageError) {
+            idImageNotice = String(imageError instanceof Error ? imageError.message : imageError);
+          }
+        } else {
+          idImageNotice = 'The verification provider did not return a front ID image.';
         }
-        frontImagePath = await saveVerifiedIdFrontImage(admin, sessionId, frontImageUrl);
       }
 
       const { error: updateError } = await admin
@@ -267,7 +286,30 @@ Deno.serve(async (request) => {
         throw new Error(`Unable to save the verification decision: ${updateError.message}`);
       }
 
-      return jsonResponse({ status, featureStatus, verified, document, warnings }, 200, allowedOrigin || null);
+      let idFrontImageUrl = '';
+      if (verified && frontImagePath) {
+        const { data: signedImage, error: signedImageError } = await admin.storage
+          .from(PRIVATE_ID_BUCKET)
+          .createSignedUrl(frontImagePath, 15 * 60);
+        idFrontImageUrl = String(signedImage?.signedUrl || '');
+        if (signedImageError) idImageNotice = signedImageError.message;
+      }
+
+      // Didit image URLs are short-lived signed URLs. Use one only as a
+      // temporary fallback if copying the image into private storage failed.
+      if (verified && !idFrontImageUrl && providerFrontImageUrl) {
+        idFrontImageUrl = providerFrontImageUrl;
+      }
+
+      return jsonResponse({
+        status,
+        featureStatus,
+        verified,
+        document,
+        warnings,
+        idFrontImageUrl,
+        idImageNotice: idFrontImageUrl ? '' : idImageNotice,
+      }, 200, allowedOrigin || null);
     }
 
     return jsonResponse({ error: 'Unknown action.' }, 400, allowedOrigin || null);

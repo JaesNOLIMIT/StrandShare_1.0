@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { createClient } from '@supabase/supabase-js';
 import {
   Plus,
   Search,
@@ -22,19 +21,32 @@ import {
   isSupabaseConfigured,
 } from '../../../lib/supabaseClient';
 import { toCanonicalRole, toRoleLabel } from '../../../lib/roleUtils';
+import {
+  PERSON_SUFFIX_OPTIONS,
+  formatPhilippineMobile,
+  getAdultBirthdateMax,
+  isAtLeastAge,
+  isValidPhilippineMobile,
+  normalizePersonSuffix,
+} from '../../../lib/personIdentity';
 import UserAccountDetailsModal from './UserAccountDetailsModal';
+import { invokeAdminAccountManagement } from '../../../lib/adminAccountManagement';
 
 const DEFAULT_ROLES = ['admin', 'staff', 'specialist', 'h_representative'];
 const ADMIN_CREATABLE_ROLES = ['staff', 'specialist'];
 const PHILIPPINE_TIME_ZONE = 'Asia/Manila';
-let manageUsersInviteAdminClient = null;
 
 function mapInviteErrorMessage(rawMessage) {
   const message = String(rawMessage || 'Unexpected error while sending invitation email.');
   const lower = message.toLowerCase();
 
-  if (!message || lower.includes('missing-service-role')) {
-    return 'Invite email service is not configured. Add REACT_APP_SUPABASE_SERVICE_ROLE_KEY in .env.local and restart the app.';
+  if (
+    !message
+    || lower.includes('failed to send a request')
+    || lower.includes('function not found')
+    || lower.includes('non-2xx status')
+  ) {
+    return 'The secure account invitation service is unavailable. Deploy the admin-account-management Edge Function, then try again.';
   }
 
   if (
@@ -47,6 +59,14 @@ function mapInviteErrorMessage(rawMessage) {
 
   if (message.includes('User already registered')) {
     return 'This email already exists in Auth. Use a different email address.';
+  }
+
+  if (lower.includes('email address is already in use') || lower.includes('email already exists')) {
+    return 'This email is already assigned to another account. Use a different email address.';
+  }
+
+  if (lower.includes('contact number is already in use')) {
+    return 'This mobile number is already assigned to another account or patient contact.';
   }
 
   if (message.includes('Invalid email')) {
@@ -86,34 +106,12 @@ function normalizeRoleSlug(roleValue) {
     .replace(/[^a-z0-9]/g, '');
 }
 
-function buildTemporaryPassword() {
-  const numeric = Math.floor(100000 + (Math.random() * 900000));
-  return `Strand-${numeric}!Aa`;
-}
-
 function formatPhilippineContactNumber(value) {
-  const digits = String(value || '').replace(/\D/g, '');
-  if (!digits) return '';
-
-  let local = digits;
-
-  if (local.startsWith('63')) local = local.slice(2);
-  if (local.startsWith('0')) local = local.slice(1);
-  local = local.slice(0, 10);
-
-  const part1 = local.slice(0, 3);
-  const part2 = local.slice(3, 6);
-  const part3 = local.slice(6, 10);
-
-  let formatted = '+63';
-  if (part1) formatted += ` ${part1}`;
-  if (part2) formatted += ` ${part2}`;
-  if (part3) formatted += ` ${part3}`;
-  return formatted.trim();
+  return formatPhilippineMobile(value);
 }
 
 function isValidPhilippineContactNumber(value) {
-  return /^\+63 9\d{2} \d{3} \d{4}$/.test(String(value || '').trim());
+  return isValidPhilippineMobile(value);
 }
 
 function getPhilippineSqlTimestamp(date = new Date()) {
@@ -139,6 +137,13 @@ function getPhilippineSqlTimestamp(date = new Date()) {
 
 function getPhilippineDateString(date = new Date()) {
   return getPhilippineSqlTimestamp(date).slice(0, 10);
+}
+
+function normalizeGender(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'male') return 'Male';
+  if (normalized === 'female') return 'Female';
+  return '';
 }
 
 function toPhilippineSqlTimestampOrNull(value) {
@@ -184,29 +189,6 @@ function buildDisplayName({ firstName, middleName, lastName, suffix }) {
     .trim();
 }
 
-function createManageUsersInviteAdminClient() {
-  if (manageUsersInviteAdminClient) {
-    return manageUsersInviteAdminClient;
-  }
-
-  const url = process.env.REACT_APP_SUPABASE_URL;
-  const serviceRoleKey = process.env.REACT_APP_SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) {
-    return null;
-  }
-
-  manageUsersInviteAdminClient = createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-      storageKey: 'Donivra-manage-users-invite-admin-client',
-    },
-  });
-
-  return manageUsersInviteAdminClient;
-}
-
 function getInitialFormData() {
   return {
     firstName: '',
@@ -229,12 +211,13 @@ function getInitialFormData() {
   };
 }
 
-export default function ManageUserAccountsPage() {
+export default function ManageUserAccountsPage({ isActivePage = true }) {
   const { theme } = useTheme();
   const tableHeaderTextColor = theme?.primaryTextColor || '#000000';
   const [users, setUsers] = useState([]);
   const [allRoles, setAllRoles] = useState([]);
   const [roleFilter, setRoleFilter] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -244,13 +227,13 @@ export default function ManageUserAccountsPage() {
   const [invitedEmail, setInvitedEmail] = useState('');
   const [invitedRoleLabel, setInvitedRoleLabel] = useState('');
   const [invitedDisplayName, setInvitedDisplayName] = useState('');
-  const [temporaryPasswordIssued, setTemporaryPasswordIssued] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const [detailsUserId, setDetailsUserId] = useState(null);
   const [isEditingDetails, setIsEditingDetails] = useState(false);
   const [isSavingDetails, setIsSavingDetails] = useState(false);
   const [togglingUserId, setTogglingUserId] = useState(null);
+  const [statusConfirmationUser, setStatusConfirmationUser] = useState(null);
   const [detailsNotice, setDetailsNotice] = useState({ kind: '', text: '' });
   const [detailsForm, setDetailsForm] = useState(getInitialFormData());
 
@@ -266,20 +249,21 @@ export default function ManageUserAccountsPage() {
 
     fetchUsers();
     fetchAllRoles();
+  }, []);
+
+  useEffect(() => {
+    if (!isActivePage || !isSupabaseConfigured || !supabase) return undefined;
 
     const subscription = supabase
       .channel('public:users-hospital')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
         fetchUsers();
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => {
-        fetchUsers();
-      })
       .subscribe();
     return () => {
       void supabase.removeChannel(subscription);
     };
-  }, []);
+  }, [isActivePage]);
 
   const fetchUsers = async () => {
     try {
@@ -287,7 +271,7 @@ export default function ManageUserAccountsPage() {
       const { data, error } = await supabase
         .from('users')
         .select(`
-          user_id, email, role, access_start, access_end, is_active, created_at, updated_at,
+          user_id, auth_user_id, email, role, access_start, access_end, is_active, created_at, updated_at,
           user_details:user_details (
             photo_path, first_name, middle_name, last_name, suffix, birthdate, gender,
             street, region, barangay, city, province, country, contact_number, joined_date
@@ -302,6 +286,7 @@ export default function ManageUserAccountsPage() {
         const canonicalRole = toCanonicalRole(user.role);
         return {
           id: user.user_id,
+          authUserId: user.auth_user_id || '',
           email: user.email,
           role: canonicalRole || 'N/A',
           accessStart: formatDateTime(user.access_start),
@@ -334,7 +319,7 @@ export default function ManageUserAccountsPage() {
       const uniqueRoles = Array.from(
         new Set(
           data
-            .map((u) => toCanonicalRole(u.role))
+            .map((user) => toCanonicalRole(user.role))
             .filter((role) => DEFAULT_ROLES.includes(role)),
         ),
       );
@@ -365,7 +350,7 @@ export default function ManageUserAccountsPage() {
         firstName: formData.firstName,
         middleName: formData.middleName,
         lastName: formData.lastName,
-        suffix: formData.suffix,
+        suffix: normalizePersonSuffix(formData.suffix),
       });
 
       if (!normalizedEmail) {
@@ -382,6 +367,9 @@ export default function ManageUserAccountsPage() {
 
       if (!birthdate) {
         throw new Error('Birthdate is required.');
+      }
+      if (!isAtLeastAge(birthdate, 18)) {
+        throw new Error('The account holder must be at least 18 years old.');
       }
 
       if (!String(formData.gender || '').trim()) {
@@ -432,11 +420,6 @@ export default function ManageUserAccountsPage() {
         }
       }
 
-      const adminInviteClient = createManageUsersInviteAdminClient();
-      if (!adminInviteClient) {
-        throw new Error('missing-service-role');
-      }
-
       const { data: existingUser, error: checkError } = await supabase
         .from('users')
         .select('user_id')
@@ -461,9 +444,9 @@ export default function ManageUserAccountsPage() {
         p_first_name: String(formData.firstName || '').trim() || null,
         p_middle_name: String(formData.middleName || '').trim() || null,
         p_last_name: String(formData.lastName || '').trim() || null,
-        p_suffix: String(formData.suffix || '').trim() || null,
+        p_suffix: normalizePersonSuffix(formData.suffix) || null,
         p_birthdate: birthdate,
-        p_gender: String(formData.gender || '').trim() || null,
+        p_gender: normalizeGender(formData.gender) || null,
         p_street: String(formData.street || '').trim() || null,
         p_region: String(formData.region || '').trim() || null,
         p_barangay: String(formData.barangay || '').trim() || null,
@@ -483,7 +466,6 @@ export default function ManageUserAccountsPage() {
         throw new Error('Unable to create users/user_details records.');
       }
 
-      const tempPassword = buildTemporaryPassword();
       const roleLabel = toRoleLabel(normalizedRole);
       const metadata = {
         account_type: 'internal_web_user',
@@ -496,56 +478,24 @@ export default function ManageUserAccountsPage() {
         review_notes: '',
         has_access_window: Boolean(accessStart && accessEnd),
         access_window: accessStart && accessEnd ? `${formatDateTime(accessStart)} to ${formatDateTime(accessEnd)}` : '',
-        temporary_password: tempPassword,
         display_name: displayName || '',
         full_name: displayName || '',
         name: displayName || '',
         staff_or_specialist_role: normalizedRole,
       };
 
-      const inviteResult = await adminInviteClient.auth.admin.inviteUserByEmail(normalizedEmail, {
-        redirectTo: `${window.location.origin}/login`,
-        data: metadata,
+      const inviteResult = await invokeAdminAccountManagement({
+        action: 'invite-internal',
+        email: normalizedEmail,
+        role: normalizedRole,
+        publicUserId: createdPublicUserId,
+        redirectTo: window.location.origin,
+        metadata,
       });
 
-      if (inviteResult.error) {
-        throw new Error(mapInviteErrorMessage(inviteResult.error.message));
-      }
-
-      createdAuthUserId = String(inviteResult.data?.user?.id || '').trim() || null;
+      createdAuthUserId = String(inviteResult?.authUserId || '').trim() || null;
       if (!createdAuthUserId) {
         throw new Error('Invite email was sent but auth user id could not be resolved.');
-      }
-
-      const updateAuthResult = await adminInviteClient.auth.admin.updateUserById(createdAuthUserId, {
-        email_confirm: true,
-        password: tempPassword,
-        user_metadata: {
-          account_type: 'internal_web_user',
-          role: normalizedRole,
-          full_name: displayName || null,
-          updated_at: nowSql,
-        },
-      });
-
-      if (updateAuthResult.error) {
-        throw new Error(mapInviteErrorMessage(updateAuthResult.error.message));
-      }
-
-      const linkResult = await supabase
-        .from('users')
-        .update({
-          auth_user_id: createdAuthUserId,
-          role: normalizedRole,
-          is_active: true,
-          updated_at: nowSql,
-          access_start: accessStart,
-          access_end: accessEnd,
-        })
-        .eq('user_id', createdPublicUserId);
-
-      if (linkResult.error) {
-        throw linkResult.error;
       }
 
       const detailsResult = await supabase
@@ -560,11 +510,9 @@ export default function ManageUserAccountsPage() {
         throw detailsResult.error;
       }
 
-      setIsModalOpen(false);
       setInvitedEmail(normalizedEmail);
       setInvitedRoleLabel(roleLabel);
       setInvitedDisplayName(displayName);
-      setTemporaryPasswordIssued(tempPassword);
       setShowSuccessModal(true);
       setFormData(getInitialFormData());
 
@@ -572,10 +520,10 @@ export default function ManageUserAccountsPage() {
     } catch (error) {
       if (createdAuthUserId) {
         try {
-          const adminInviteClient = createManageUsersInviteAdminClient();
-          if (adminInviteClient) {
-            await adminInviteClient.auth.admin.deleteUser(createdAuthUserId);
-          }
+          await invokeAdminAccountManagement({
+            action: 'delete-auth-user',
+            authUserId: createdAuthUserId,
+          });
         } catch {
           // Keep original error.
         }
@@ -639,13 +587,26 @@ export default function ManageUserAccountsPage() {
   const filteredUsers = useMemo(
     () =>
       users.filter((user) => {
-        const roleMatch = roleFilter.length === 0 || roleFilter.some((r) => r.value === user.role);
-        const statusMatch =
-          statusFilter.length === 0 || statusFilter.some((s) => s.value === user.status);
-        return roleMatch && statusMatch;
+        const query = String(searchTerm || '').trim().toLowerCase();
+        const searchMatch = !query || [
+          user.firstName,
+          user.lastName,
+          `${user.firstName} ${user.lastName}`,
+          user.email,
+          toRoleLabel(user.role),
+        ].some((value) => String(value || '').toLowerCase().includes(query));
+        const roleMatch = roleFilter.length === 0 || roleFilter.some((role) => role.value === user.role);
+        const statusMatch = statusFilter.length === 0 || statusFilter.some((status) => status.value === user.status);
+        return searchMatch && roleMatch && statusMatch;
       }),
-    [users, roleFilter, statusFilter],
+    [users, searchTerm, roleFilter, statusFilter],
   );
+
+  const accountSummary = useMemo(() => ({
+    total: users.length,
+    active: users.filter((user) => user.status === 'Active').length,
+    inactive: users.filter((user) => user.status !== 'Active').length,
+  }), [users]);
 
   const detailsUser = useMemo(
     () => (detailsUserId ? users.find((user) => Number(user.id) === Number(detailsUserId)) || null : null),
@@ -672,9 +633,9 @@ export default function ManageUserAccountsPage() {
       firstName: profile.first_name || '',
       middleName: profile.middle_name || '',
       lastName: profile.last_name || '',
-      suffix: profile.suffix || '',
+      suffix: normalizePersonSuffix(profile.suffix),
       birthdate: profile.birthdate || '',
-      gender: profile.gender || '',
+      gender: normalizeGender(profile.gender),
       contactNumber: profile.contact_number || '',
       street: profile.street || '',
       region: profile.region || '',
@@ -708,6 +669,18 @@ export default function ManageUserAccountsPage() {
 
     if (!String(detailsForm.firstName || '').trim() || !String(detailsForm.lastName || '').trim()) {
       setDetailsNotice({ kind: 'error', text: 'First name and last name are required.' });
+      return;
+    }
+    if (!toPhilippineDateOrNull(detailsForm.birthdate)) {
+      setDetailsNotice({ kind: 'error', text: 'Birthdate is required.' });
+      return;
+    }
+    if (!isAtLeastAge(detailsForm.birthdate, 18)) {
+      setDetailsNotice({ kind: 'error', text: 'The account holder must be at least 18 years old.' });
+      return;
+    }
+    if (!String(detailsForm.gender || '').trim()) {
+      setDetailsNotice({ kind: 'error', text: 'Gender is required.' });
       return;
     }
     if (canChangeRole && !ADMIN_CREATABLE_ROLES.includes(nextRole)) {
@@ -747,9 +720,9 @@ export default function ManageUserAccountsPage() {
           first_name: String(detailsForm.firstName || '').trim(),
           middle_name: String(detailsForm.middleName || '').trim() || null,
           last_name: String(detailsForm.lastName || '').trim(),
-          suffix: String(detailsForm.suffix || '').trim() || null,
+          suffix: normalizePersonSuffix(detailsForm.suffix) || null,
           birthdate: toPhilippineDateOrNull(detailsForm.birthdate),
-          gender: String(detailsForm.gender || '').trim() || null,
+          gender: normalizeGender(detailsForm.gender) || null,
           contact_number: detailsForm.contactNumber || null,
           street: String(detailsForm.street || '').trim() || null,
           barangay: String(detailsForm.barangay || '').trim() || null,
@@ -767,7 +740,7 @@ export default function ManageUserAccountsPage() {
       setIsEditingDetails(false);
       setDetailsNotice({ kind: 'success', text: 'User account details saved successfully.' });
     } catch (error) {
-      setDetailsNotice({ kind: 'error', text: error.message || 'Unable to save user details.' });
+      setDetailsNotice({ kind: 'error', text: mapInviteErrorMessage(error.message || 'Unable to save user details.') });
     } finally {
       setIsSavingDetails(false);
     }
@@ -778,11 +751,43 @@ export default function ManageUserAccountsPage() {
     const nextActive = user.status !== 'Active';
     setTogglingUserId(user.id);
     try {
-      const result = await supabase
-        .from('users')
-        .update({ is_active: nextActive, updated_at: getPhilippineSqlTimestamp() })
-        .eq('user_id', user.id);
-      if (result.error) throw result.error;
+      try {
+        await invokeAdminAccountManagement({
+          action: 'set-account-active',
+          publicUserId: Number(user.id),
+          isActive: nextActive,
+        });
+      } catch (managementError) {
+        const managementMessage = String(managementError?.message || '').toLowerCase();
+        if (!managementMessage.includes('unsupported account management action')) {
+          throw managementError;
+        }
+
+        // Backward-compatible path while an older Edge Function deployment is
+        // still active. The RPC performs the same Admin authorization and the
+        // global inactive-account request guard ends existing access.
+        const rpcResult = await supabase.rpc('admin_set_user_account_active', {
+          p_user_id: Number(user.id),
+          p_is_active: nextActive,
+        });
+
+        if (rpcResult.error) {
+          const rpcMessage = String(rpcResult.error.message || '').toLowerCase();
+          const rpcMissing = rpcMessage.includes('could not find the function')
+            || rpcMessage.includes('schema cache')
+            || rpcResult.error.code === 'PGRST202';
+          if (!rpcMissing) throw rpcResult.error;
+
+          // Last-resort compatibility with databases that have not applied the
+          // RPC migration yet. Existing Admin RLS still governs this update.
+          const legacyResult = await supabase
+            .from('users')
+            .update({ is_active: nextActive, updated_at: getPhilippineSqlTimestamp() })
+            .eq('user_id', user.id);
+          if (legacyResult.error) throw legacyResult.error;
+        }
+      }
+      setStatusConfirmationUser(null);
       await fetchUsers();
       if (Number(detailsUserId) === Number(user.id)) {
         setDetailsNotice({ kind: 'success', text: `Account ${nextActive ? 'activated' : 'deactivated'} successfully.` });
@@ -855,7 +860,7 @@ export default function ManageUserAccountsPage() {
           <p className="mt-1 text-sm text-gray-600">Add and manage staff/specialist web accounts and monitor account access windows.</p>
         </div>
         <button
-          onClick={() => setIsModalOpen(true)}
+          onClick={() => { setShowSuccessModal(false); setIsModalOpen(true); }}
           className="text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm"
           style={{ backgroundColor: theme.primaryColor }}
         >
@@ -864,10 +869,51 @@ export default function ManageUserAccountsPage() {
         </button>
       </div>
 
-      <section className="rounded-xl border border-gray-200 bg-white p-4 md:p-5">
-        <div className="mb-4 flex flex-wrap gap-4">
-          <div className="w-64">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Filter by Role</label>
+      <section>
+        <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div
+            className="rounded-xl border px-4 py-3"
+            style={{ backgroundColor: `${theme.primaryColor}0D`, borderColor: `${theme.primaryColor}33` }}
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: theme.secondaryTextColor }}>Total Accounts</p>
+            <p className="mt-1 text-2xl font-bold" style={{ color: theme.primaryColor }}>{accountSummary.total}</p>
+          </div>
+          <div
+            className="rounded-xl border px-4 py-3"
+            style={{ backgroundColor: `${theme.tertiaryColor}12`, borderColor: `${theme.tertiaryColor}40` }}
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: theme.secondaryTextColor }}>Active</p>
+            <p className="mt-1 text-2xl font-bold" style={{ color: theme.tertiaryColor }}>{accountSummary.active}</p>
+          </div>
+          <div
+            className="rounded-xl border px-4 py-3"
+            style={{ backgroundColor: `${theme.secondaryColor}12`, borderColor: `${theme.secondaryColor}40` }}
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: theme.secondaryTextColor }}>Inactive</p>
+            <p className="mt-1 text-2xl font-bold" style={{ color: theme.secondaryColor }}>{accountSummary.inactive}</p>
+          </div>
+        </div>
+
+        <div className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(280px,1fr)_16rem_16rem] lg:items-end">
+          <label className="block min-w-0 flex-1">
+            <span className="mb-1 block text-sm font-medium text-gray-700">Search accounts</span>
+            <span className="relative block">
+              <Search
+                size={18}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+              />
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search users by name, email, or role..."
+                className="h-[38px] w-full rounded-md border border-gray-300 bg-white py-2 pl-10 pr-3 text-sm text-gray-800 outline-none transition placeholder:text-gray-400 focus:border-transparent focus:ring-2"
+                style={{ '--tw-ring-color': theme.primaryColor }}
+              />
+            </span>
+          </label>
+          <div className="w-full">
+            <label className="mb-1 block text-sm font-medium text-gray-700">Filter by Role</label>
             <Select
               isMulti
               options={roleOptions}
@@ -878,8 +924,8 @@ export default function ManageUserAccountsPage() {
               styles={selectStyles}
             />
           </div>
-          <div className="w-64">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Filter by Status</label>
+          <div className="w-full">
+            <label className="mb-1 block text-sm font-medium text-gray-700">Filter by Status</label>
             <Select
               isMulti
               options={statusOptions}
@@ -915,7 +961,7 @@ export default function ManageUserAccountsPage() {
                   <td colSpan="6" className="p-10 text-center text-gray-500">
                     <div className="flex flex-col items-center gap-2">
                       <Search size={40} className="text-gray-300" />
-                      <p>No users found for selected filters.</p>
+                      <p>No users found for your search or selected filters.</p>
                     </div>
                   </td>
                 </tr>
@@ -950,7 +996,7 @@ export default function ManageUserAccountsPage() {
                             day: 'numeric',
                             year: 'numeric',
                           })
-                        : 'â€”'}
+                        : '-'}
                     </td>
                     <td className="p-4 text-gray-600 text-sm">
                       <div className="flex items-center gap-2">
@@ -978,7 +1024,7 @@ export default function ManageUserAccountsPage() {
 
                         <button
                           type="button"
-                          onClick={() => void toggleUserStatus(user)}
+                          onClick={() => setStatusConfirmationUser(user)}
                           disabled={togglingUserId === user.id}
                           className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-semibold disabled:cursor-wait disabled:opacity-60 ${
                             user.status === 'Active'
@@ -1014,57 +1060,66 @@ export default function ManageUserAccountsPage() {
         onCancelEdit={() => setIsEditingDetails(false)}
         onChange={handleDetailsInputChange}
         onSave={() => void saveUserDetails()}
-        onToggleStatus={() => void toggleUserStatus(detailsUser)}
+        onToggleStatus={() => setStatusConfirmationUser(detailsUser)}
       />
 
-      {showSuccessModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-sm w-full text-center">
-            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4 text-green-600">
-              <CheckCircle size={40} />
-            </div>
-            <h3 className="text-2xl font-bold text-gray-800 mb-2">
-              User Account Created
-            </h3>
-            <div>
-              <p className="text-gray-600 text-sm mb-4">Credentials email was sent to:</p>
-              <p className="font-bold text-lg mb-1" style={{ color: theme.primaryColor }}>{invitedEmail}</p>
-              {invitedDisplayName ? (
-                <p className="text-xs text-gray-500 mb-1">{invitedDisplayName}</p>
-              ) : null}
-              {invitedRoleLabel ? (
-                <p className="text-xs text-gray-500 mb-4">Role: {invitedRoleLabel}</p>
-              ) : null}
-              {temporaryPasswordIssued ? (
-                <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 mb-4 text-left">
-                  <p className="text-[11px] uppercase tracking-wide text-blue-700 font-semibold mb-1">Temporary Login Credentials</p>
-                  <p className="text-xs text-blue-900"><strong>Email:</strong> {invitedEmail}</p>
-                  <p className="text-xs text-blue-900"><strong>Password:</strong> {temporaryPasswordIssued}</p>
-                </div>
-              ) : null}
-              <p className="text-gray-500 text-xs mb-6">
-                This account can login immediately using the temporary credentials.
+      {statusConfirmationUser && typeof document !== 'undefined' ? createPortal(
+        <div className="fixed inset-0 z-[10100] flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm" role="alertdialog" aria-modal="true" aria-labelledby="account-status-confirmation-title">
+          <button
+            type="button"
+            aria-label="Cancel account status change"
+            className="absolute inset-0 border-0 bg-transparent"
+            onClick={() => { if (!togglingUserId) setStatusConfirmationUser(null); }}
+          />
+          <section className="relative z-10 w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="p-6">
+              <div className={`mb-4 grid h-12 w-12 place-items-center rounded-full ${statusConfirmationUser.status === 'Active' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                <Power size={24} />
+              </div>
+              <h2 id="account-status-confirmation-title" className="text-xl font-bold text-slate-900">
+                {statusConfirmationUser.status === 'Active' ? 'Deactivate this account?' : 'Activate this account?'}
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                <span className="font-semibold text-slate-900">{statusConfirmationUser.firstName} {statusConfirmationUser.lastName}</span>
+                {' '}({statusConfirmationUser.email})
+              </p>
+              <p className={`mt-4 rounded-xl border px-4 py-3 text-sm leading-6 ${statusConfirmationUser.status === 'Active' ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>
+                {statusConfirmationUser.status === 'Active'
+                  ? 'Their current website access will end immediately. They will be signed out and cannot sign in again until the account is activated.'
+                  : 'This restores website access. The user can sign in again using their existing credentials.'}
               </p>
             </div>
+            <footer className="flex justify-end gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
+              <button
+                type="button"
+                disabled={Boolean(togglingUserId)}
+                onClick={() => setStatusConfirmationUser(null)}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(togglingUserId)}
+                onClick={() => void toggleUserStatus(statusConfirmationUser)}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white disabled:cursor-wait disabled:opacity-60 ${statusConfirmationUser.status === 'Active' ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+              >
+                {togglingUserId ? <Loader2 size={16} className="animate-spin" /> : <Power size={16} />}
+                {statusConfirmationUser.status === 'Active' ? 'Yes, deactivate' : 'Yes, activate'}
+              </button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      ) : null}
 
-            <button
-              onClick={() => setShowSuccessModal(false)}
-              className="w-full py-3 text-white rounded-xl font-bold"
-              style={{ backgroundColor: theme.primaryColor }}
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
-
-      {showErrorModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-sm w-full text-center">
+      {showErrorModal && typeof document !== 'undefined' ? createPortal(
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="alertdialog" aria-modal="true" aria-labelledby="user-create-error-title">
+          <div className="w-full max-w-sm rounded-2xl border border-red-100 bg-white p-8 text-center shadow-2xl">
             <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4 text-red-600">
               <AlertTriangle size={40} />
             </div>
-            <h3 className="text-2xl font-bold text-gray-800 mb-2">Error</h3>
+            <h3 id="user-create-error-title" className="text-2xl font-bold text-gray-800 mb-2">Error</h3>
             <p className="text-gray-600 mb-6 text-sm">{errorMessage}</p>
             <button
               onClick={() => setShowErrorModal(false)}
@@ -1073,16 +1128,40 @@ export default function ManageUserAccountsPage() {
               Try Again
             </button>
           </div>
-        </div>
-      )}
+        </div>,
+        document.body,
+      ) : null}
 
       {isModalOpen && typeof document !== 'undefined'
         ? createPortal(
             <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
-              <div className="w-full max-w-3xl overflow-hidden rounded-xl bg-white shadow-2xl">
+              <div className={`w-full overflow-hidden rounded-xl bg-white shadow-2xl ${showSuccessModal ? 'max-w-md' : 'max-w-3xl'}`} role="dialog" aria-modal="true" aria-labelledby={showSuccessModal ? 'user-create-success-title' : 'add-user-title'}>
+                {showSuccessModal ? (
+                  <div className="p-8 text-center">
+                    <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-green-100 text-green-600">
+                      <CheckCircle size={40} />
+                    </div>
+                    <h3 id="user-create-success-title" className="mb-2 text-2xl font-bold text-gray-800">User Account Created</h3>
+                    <p className="mb-4 text-sm text-gray-600">The private login instructions were sent only to:</p>
+                    <p className="mb-1 break-all text-lg font-bold" style={{ color: theme.primaryColor }}>{invitedEmail}</p>
+                    {invitedDisplayName ? <p className="mb-1 text-xs text-gray-500">{invitedDisplayName}</p> : null}
+                    {invitedRoleLabel ? <p className="mb-5 text-xs text-gray-500">Role: {invitedRoleLabel}</p> : null}
+                    <div className="mb-6 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-left text-xs leading-5 text-emerald-900">
+                      For confidentiality, the temporary password is not displayed here. Only the entered recipient should open the account email.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { setShowSuccessModal(false); setIsModalOpen(false); }}
+                      className="w-full rounded-xl py-3 font-bold text-white"
+                      style={{ backgroundColor: theme.primaryColor }}
+                    >
+                      Close
+                    </button>
+                  </div>
+                ) : (
                 <div className="max-h-[90vh] overflow-y-auto p-6">
                   <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
-                    <h3 className="text-xl font-bold text-gray-800">Add New User</h3>
+                    <h3 id="add-user-title" className="text-xl font-bold text-gray-800">Add New User</h3>
                     <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-red-500">
                       <X size={24} />
                     </button>
@@ -1096,7 +1175,7 @@ export default function ManageUserAccountsPage() {
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Email Address *</label>
-                        <input required name="email" value={formData.email} onChange={handleInputChange} type="email" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input required autoComplete="email" name="email" value={formData.email} onChange={handleInputChange} type="email" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Role *</label>
@@ -1125,38 +1204,38 @@ export default function ManageUserAccountsPage() {
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">First Name *</label>
-                        <input required name="firstName" value={formData.firstName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input required autoComplete="given-name" name="firstName" value={formData.firstName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Middle Name (optional)</label>
-                        <input name="middleName" value={formData.middleName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input autoComplete="additional-name" name="middleName" value={formData.middleName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Last Name *</label>
-                        <input required name="lastName" value={formData.lastName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input required autoComplete="family-name" name="lastName" value={formData.lastName} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Suffix (optional)</label>
-                        <input name="suffix" value={formData.suffix} onChange={handleInputChange} type="text" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <select name="suffix" value={formData.suffix} onChange={handleInputChange} autoComplete="honorific-suffix" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }}>
+                          {PERSON_SUFFIX_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}
+                        </select>
                       </div>
                     </div>
 
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Birthdate *</label>
-                        <input required name="birthdate" value={formData.birthdate} onChange={handleInputChange} type="date" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
+                        <input required autoComplete="bday" max={getAdultBirthdateMax()} name="birthdate" value={formData.birthdate} onChange={handleInputChange} type="date" className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }} />
                       </div>
                       <div>
                         <label className="mb-1 block text-sm font-medium text-gray-700">Gender *</label>
-                        <select required name="gender" value={formData.gender} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }}>
+                        <select required autoComplete="sex" name="gender" value={formData.gender} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white p-2 text-gray-900 outline-none focus:ring-2" style={{ '--tw-ring-color': theme.primaryColor }}>
                           <option value="">Select gender</option>
                           <option value="Male">Male</option>
                           <option value="Female">Female</option>
-                          <option value="Other">Other</option>
-                          <option value="Prefer not to say">Prefer not to say</option>
                         </select>
                       </div>
                     </div>
@@ -1170,6 +1249,7 @@ export default function ManageUserAccountsPage() {
                         onChange={handleInputChange}
                         type="text"
                         inputMode="numeric"
+                        autoComplete="tel"
                         placeholder="+63 912 345 6789"
                         maxLength={16}
                         title="Use +63 912 345 6789 format."
@@ -1244,6 +1324,7 @@ export default function ManageUserAccountsPage() {
                     </div>
                   </form>
                 </div>
+                )}
               </div>
             </div>,
             document.body,

@@ -1,12 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
   CalendarClock,
   CheckCircle2,
-  HelpCircle,
   Package,
-  RefreshCw,
   Settings2,
   Users,
 } from 'lucide-react';
@@ -23,6 +21,7 @@ import {
   YAxis,
 } from 'recharts';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabaseClient';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 import { useTheme } from '../../../context/ThemeContext';
 
 const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
@@ -89,6 +88,8 @@ function canonicalWigStatus(statusValue) {
   if (['toberelease', 'readyforrelease', 'readyforevent'].includes(key)) return 'to_be_release';
   if (['releasing', 'forrelease'].includes(key)) return 'releasing';
   if (['released', 'completed', 'done'].includes(key)) return 'released';
+  if (['appealed', 'appeal', 'underappeal'].includes(key)) return 'appealed';
+  if (['returnedcompleted', 'returnedclosed'].includes(key)) return 'returned_completed';
   if (['rejected', 'declined', 'denied'].includes(key)) return 'rejected';
   if (['cancelled', 'canceled', 'cancel'].includes(key)) return 'cancelled';
   return 'pending';
@@ -103,6 +104,8 @@ function wigStatusLabel(statusKey) {
   if (statusKey === 'to_be_release') return 'Ready';
   if (statusKey === 'releasing') return 'Releasing';
   if (statusKey === 'released') return 'Released';
+  if (statusKey === 'appealed') return 'Concern Reported';
+  if (statusKey === 'returned_completed') return 'Returned - Completed';
   if (statusKey === 'rejected') return 'Rejected';
   if (statusKey === 'cancelled') return 'Cancelled';
   return 'Pending';
@@ -157,7 +160,7 @@ function ProgressRow({ label, value, total, accentColor }) {
     <div>
       <div className="mb-1 flex items-center justify-between text-xs">
         <span className="font-semibold text-slate-700">{label}</span>
-        <span className="font-bold text-slate-900">{value}<span className="ml-1 font-normal text-slate-400">Â· {pct}%</span></span>
+        <span className="font-bold text-slate-900">{value}<span className="ml-1 font-normal text-slate-400">| {pct}%</span></span>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
         <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(pct, value > 0 ? 2 : 0)}%`, backgroundColor: accentColor }} />
@@ -166,7 +169,7 @@ function ProgressRow({ label, value, total, accentColor }) {
   );
 }
 
-export default function DashboardPage({ onNavigate, userProfile }) {
+export default function DashboardPage({ onNavigate, userProfile, onInitialDataReady }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0f766e';
   const tertiaryColor = theme?.tertiaryColor || '#10b981';
@@ -176,10 +179,14 @@ export default function DashboardPage({ onNavigate, userProfile }) {
   const headingFontFamily = theme?.secondaryFontFamily || theme?.fontFamily || 'Poppins';
 
   const [isLoading, setIsLoading] = useState(false);
+  const initialDataReportedRef = useRef(false);
+  const reportInitialDataReady = useCallback(() => {
+    if (initialDataReportedRef.current) return;
+    initialDataReportedRef.current = true;
+    onInitialDataReady?.();
+  }, [onInitialDataReady]);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [warnings, setWarnings] = useState([]);
-  const [isInfoOpen, setIsInfoOpen] = useState(false);
-  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
   const [staffUserId, setStaffUserId] = useState(userProfile?.user_id || null);
   const [dashboard, setDashboard] = useState({
     kpis: {
@@ -363,6 +370,7 @@ export default function DashboardPage({ onNavigate, userProfile }) {
         ready_for_pickup: 0,
         to_be_release: 0,
         releasing: 0,
+        appealed: 0,
       };
       wigRows.forEach((row) => {
         const key = canonicalWigStatus(row.Status);
@@ -481,37 +489,12 @@ export default function DashboardPage({ onNavigate, userProfile }) {
       setNotice({ kind: 'error', text: error.message || 'Unable to load staff dashboard data.' });
     } finally {
       setIsLoading(false);
+      reportInitialDataReady();
     }
-  }, [resolveStaffUserId]);
+  }, [reportInitialDataReady, resolveStaffUserId]);
 
   useEffect(() => {
     loadDashboard();
-  }, [loadDashboard]);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
-
-    let refreshTimer = null;
-    const scheduleRefresh = () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => void loadDashboard(), 250);
-    };
-    const channel = supabase
-      .channel('public:staff-dashboard-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_APPLICATIONS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_REQUESTS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: EVENT_ATTENDEES_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUIREMENTS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: LOGISTICS_SETTINGS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: LEGAL_DOCUMENTS_TABLE }, scheduleRefresh)
-      .subscribe((status) => setIsRealtimeActive(status === 'SUBSCRIBED'));
-
-    return () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      setIsRealtimeActive(false);
-      supabase.removeChannel(channel);
-    };
   }, [loadDashboard]);
 
   const topMetrics = useMemo(() => ([
@@ -560,7 +543,7 @@ export default function DashboardPage({ onNavigate, userProfile }) {
       style={{ fontFamily: `${fontFamily}, sans-serif`, color: primaryTextColor }}
     >
       {/* Plain title row */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1
             className="role-page-title text-2xl font-bold"
@@ -572,39 +555,14 @@ export default function DashboardPage({ onNavigate, userProfile }) {
             Intake workload, assigned operations, and wig workflow at a glance.
           </p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          <span className="hidden items-center gap-1.5 rounded-full border border-emerald-200 px-2.5 py-1 text-[10px] font-semibold text-emerald-700 sm:inline-flex">
-            <span className={`h-2 w-2 rounded-full ${isRealtimeActive ? 'bg-emerald-600' : 'bg-slate-400'}`} />
-            {isRealtimeActive ? 'Live' : 'Connecting'}
-          </span>
-          <div className="relative">
-            <button
-              type="button"
-              aria-label="About the staff dashboard"
-              aria-expanded={isInfoOpen}
-              onClick={() => setIsInfoOpen((open) => !open)}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-700 transition hover:bg-slate-100"
-            >
-              <HelpCircle size={14} />
-            </button>
-            {isInfoOpen && (
-              <div className="absolute right-0 top-10 z-30 w-72 rounded-xl border border-slate-200 bg-white p-3 text-left shadow-xl">
-                <p className="text-xs font-bold text-slate-800">About this dashboard</p>
-                <p className="mt-1 text-[10px] leading-relaxed text-slate-600">
-                  Live staff-only workload: event intake, assigned operations, attendee waybills, and wig-request stages.
-                </p>
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={loadDashboard}
-            disabled={isLoading}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
-          >
-            <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
+        <div className="flex items-center gap-2">
+          <PageHeaderActions
+            onRefresh={loadDashboard}
+            refreshLoading={isLoading}
+            autoRefreshOnChanges={false}
+            helpTitle="About the Staff Dashboard"
+            helpContent={<p>Review event intake, assigned operations, attendee waybills, and wig-request stages from this overview.</p>}
+          />
         </div>
       </div>
 
@@ -657,8 +615,8 @@ export default function DashboardPage({ onNavigate, userProfile }) {
                   paddingAngle={2}
                   stroke="none"
                 >
-                  {dashboard.applicationStatusData.map((entry) => (
-                    <Cell key={entry.name} fill={entry.color} />
+                  {dashboard.applicationStatusData.map((entry, index) => (
+                    <Cell key={`${entry.name}-${index}`} fill={entry.color} />
                   ))}
                 </Pie>
                 <Tooltip />
@@ -790,7 +748,7 @@ export default function DashboardPage({ onNavigate, userProfile }) {
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-semibold text-slate-900">{row.Event_Name || 'Untitled Event'}</p>
                       <p className="truncate text-[11px] text-slate-500">
-                        EA-{row.Event_Application_ID} Â· {applicantName(row)}
+                        EA-{row.Event_Application_ID} | {applicantName(row)}
                       </p>
                     </div>
                     <span className="flex-none rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
@@ -834,7 +792,7 @@ export default function DashboardPage({ onNavigate, userProfile }) {
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-semibold text-slate-900">{row.Event_Name || 'Untitled Event'}</p>
                         <p className="truncate text-[11px] text-slate-500">
-                          ER-{row.Event_Request_ID} Â· {formatShortDate(row.Start_Date)}
+                          ER-{row.Event_Request_ID} | {formatShortDate(row.Start_Date)}
                         </p>
                       </div>
                     </div>

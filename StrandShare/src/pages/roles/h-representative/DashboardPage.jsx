@@ -1,11 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CalendarClock,
   ClipboardList,
-  HelpCircle,
-  Loader2,
-  RefreshCw,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -21,6 +18,7 @@ import {
 } from 'recharts';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const HOSPITAL_STAFF_TABLE = 'Hospital_Representative';
 const HOSPITALS_TABLE = 'Hospitals';
@@ -37,6 +35,8 @@ const STATUS_LABELS = {
   to_be_release: 'To Be Release',
   releasing: 'Releasing',
   completed: 'Completed',
+  appealed: 'Concern Reported',
+  returned_completed: 'Returned - Completed',
   rejected: 'Rejected',
   cancelled: 'Cancelled',
 };
@@ -96,6 +96,14 @@ function getCanonicalStatusKey(statusValue) {
 
   if (['completed', 'complete', 'released', 'releasecompleted', 'done'].includes(key)) {
     return 'completed';
+  }
+
+  if (['appealed', 'appeal', 'underappeal'].includes(key)) {
+    return 'appealed';
+  }
+
+  if (['returnedcompleted', 'returnedclosed'].includes(key)) {
+    return 'returned_completed';
   }
 
   if (['rejected', 'declined', 'denied'].includes(key)) {
@@ -220,6 +228,7 @@ function hexToRgba(hexValue, alpha = 1) {
 
 function statusBadgeClass(statusKey) {
   if (statusKey === 'completed') return 'bg-emerald-100 text-emerald-700';
+  if (statusKey === 'appealed') return 'bg-violet-100 text-violet-800';
   if (statusKey === 'releasing') return 'bg-teal-100 text-teal-700';
   if (statusKey === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (statusKey === 'in_production') return 'bg-sky-100 text-sky-700';
@@ -230,7 +239,7 @@ function statusBadgeClass(statusKey) {
   return 'bg-amber-100 text-amber-700';
 }
 
-export default function DashboardPage({ userProfile }) {
+export default function DashboardPage({ userProfile, onInitialDataReady }) {
   const { theme } = useTheme();
 
   const [hospitalId, setHospitalId] = useState(null);
@@ -241,11 +250,15 @@ export default function DashboardPage({ userProfile }) {
   const [schedules, setSchedules] = useState([]);
   const [isResolvingHospital, setIsResolvingHospital] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const initialDataReportedRef = useRef(false);
+  const reportInitialDataReady = useCallback(() => {
+    if (initialDataReportedRef.current) return;
+    initialDataReportedRef.current = true;
+    onInitialDataReady?.();
+  }, [onInitialDataReady]);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [isReleaseWorkflowAvailable, setIsReleaseWorkflowAvailable] = useState(true);
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null);
-  const [isInfoOpen, setIsInfoOpen] = useState(false);
-  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
 
   const panelBorder = hexToRgba(theme.secondaryColor, 0.24);
 
@@ -255,6 +268,7 @@ export default function DashboardPage({ userProfile }) {
         kind: 'error',
         text: 'Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.',
       });
+      reportInitialDataReady();
       return;
     }
 
@@ -263,6 +277,7 @@ export default function DashboardPage({ userProfile }) {
       setHospitalId(null);
       setHospitalName('');
       setNotice({ kind: 'error', text: 'Unable to resolve your account ID. Please sign in again.' });
+      reportInitialDataReady();
       return;
     }
 
@@ -287,6 +302,7 @@ export default function DashboardPage({ userProfile }) {
           kind: 'error',
           text: 'No H-Representative assignment found for your account. Ask Admin to assign your account first.',
         });
+        reportInitialDataReady();
         return;
       }
 
@@ -301,10 +317,11 @@ export default function DashboardPage({ userProfile }) {
       setHospitalId(null);
       setHospitalName('');
       setNotice({ kind: 'error', text: error.message || 'Unable to resolve your H-Representative assignment.' });
+      reportInitialDataReady();
     } finally {
       setIsResolvingHospital(false);
     }
-  }, [userProfile?.user_id]);
+  }, [reportInitialDataReady, userProfile?.user_id]);
 
   const loadDashboard = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase || !hospitalId) {
@@ -413,8 +430,9 @@ export default function DashboardPage({ userProfile }) {
       setNotice({ kind: 'error', text: error.message || 'Unable to load dashboard data.' });
     } finally {
       setIsLoading(false);
+      reportInitialDataReady();
     }
-  }, [hospitalId]);
+  }, [hospitalId, reportInitialDataReady]);
 
   useEffect(() => {
     resolveAssignedHospital();
@@ -430,29 +448,6 @@ export default function DashboardPage({ userProfile }) {
     }
 
     loadDashboard();
-  }, [hospitalId, loadDashboard]);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !hospitalId) return undefined;
-
-    let refreshTimer = null;
-    const scheduleRefresh = () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => void loadDashboard(), 250);
-    };
-    const channel = supabase
-      .channel(`public:h-representative-dashboard-live:${hospitalId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: PATIENTS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: RELEASE_SCHEDULES_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITAL_STAFF_TABLE }, scheduleRefresh)
-      .subscribe((status) => setIsRealtimeActive(status === 'SUBSCRIBED'));
-
-    return () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      setIsRealtimeActive(false);
-      supabase.removeChannel(channel);
-    };
   }, [hospitalId, loadDashboard]);
 
   const patientById = useMemo(() => {
@@ -586,6 +581,7 @@ export default function DashboardPage({ userProfile }) {
       'to_be_release',
       'releasing',
       'completed',
+      'appealed',
       'rejected',
       'cancelled',
     ];
@@ -627,7 +623,7 @@ export default function DashboardPage({ userProfile }) {
   const recentUpdates = useMemo(() => {
     const requestEvents = requestRows.map((row) => ({
       time: row.updatedAt || row.requestDate,
-      title: `${row.requestId} Â· ${row.statusLabel}`,
+      title: `${row.requestId} | ${row.statusLabel}`,
       subtitle: row.patientName,
       source: 'Request Status',
     }));
@@ -641,7 +637,7 @@ export default function DashboardPage({ userProfile }) {
 
         return {
           time: row.Updated_At || row.Created_At,
-          title: `${formatRequestCode(reqId)} Â· ${decisionKey ? decisionKey.replace(/_/g, ' ') : 'decision updated'}`,
+          title: `${formatRequestCode(reqId)} | ${decisionKey ? decisionKey.replace(/_/g, ' ') : 'decision updated'}`,
           subtitle: requestRow?.patientName || 'Release workflow activity',
           source: 'Release Approval',
         };
@@ -682,39 +678,14 @@ export default function DashboardPage({ userProfile }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <span className="hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold sm:inline-flex" style={{ borderColor: hexToRgba(isRealtimeActive ? '#15803d' : theme.secondaryColor, 0.3), color: isRealtimeActive ? '#15803d' : theme.secondaryTextColor }}>
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: isRealtimeActive ? '#15803d' : theme.secondaryColor }} />
-              {isRealtimeActive ? 'Live' : 'Connecting'}
-            </span>
-            <div className="relative">
-              <button
-                type="button"
-                aria-label="About the H-Representative dashboard"
-                aria-expanded={isInfoOpen}
-                onClick={() => setIsInfoOpen((open) => !open)}
-                className="flex h-9 w-9 items-center justify-center rounded-lg border bg-white transition hover:shadow-sm"
-                style={{ borderColor: panelBorder, color: theme.primaryColor }}
-              >
-                <HelpCircle size={16} />
-              </button>
-              {isInfoOpen && (
-                <div className="absolute right-0 top-11 z-30 w-72 rounded-xl border bg-white p-3 text-left shadow-xl" style={{ borderColor: panelBorder }}>
-                  <p className="text-xs font-bold" style={{ color: theme.primaryTextColor }}>About this dashboard</p>
-                  <p className="mt-1 text-[10px] leading-relaxed" style={{ color: theme.secondaryTextColor }}>
-                    Live data for your assigned hospital only: patients, wig requests, release approvals, and schedules.
-                  </p>
-                </div>
-              )}
-            </div>
-            <button
-              type="button"
-              onClick={loadDashboard}
-              disabled={isResolvingHospital || isLoading || !hospitalId}
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-            >
-              {(isResolvingHospital || isLoading) ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-              Refresh
-            </button>
+            <PageHeaderActions
+              onRefresh={loadDashboard}
+              refreshLoading={isResolvingHospital || isLoading}
+              refreshDisabled={!hospitalId}
+              autoRefreshOnChanges={false}
+              helpTitle="About the H-Representative Dashboard"
+              helpContent={<p>Review patients, wig requests, release approvals, and schedules for your assigned hospital.</p>}
+            />
           </div>
         </div>
 
@@ -818,7 +789,7 @@ export default function DashboardPage({ userProfile }) {
             ) : (
               pendingApprovals.map((row) => (
                 <li key={`pending-${row.reqId}`} className="rounded-lg border px-3 py-2" style={{ borderColor: hexToRgba(theme.secondaryColor, 0.25), backgroundColor: hexToRgba(theme.secondaryColor, 0.06) }}>
-                  <p className="text-xs font-semibold" style={{ color: theme.primaryTextColor }}>{row.requestId} Â· {row.patientName}</p>
+                  <p className="text-xs font-semibold" style={{ color: theme.primaryTextColor }}>{row.requestId} | {row.patientName}</p>
                   <p className="mt-0.5 text-[11px]" style={{ color: theme.secondaryTextColor }}>
                     Proposed release: {formatDateTime(row.releaseDate)}
                   </p>
@@ -853,7 +824,7 @@ export default function DashboardPage({ userProfile }) {
                     </span>
                   </div>
                   <p className="mt-0.5 text-[11px]" style={{ color: theme.secondaryTextColor }}>
-                    {row.patientName} Â· {formatShortDate(row.releaseDate)}
+                    {row.patientName} | {formatShortDate(row.releaseDate)}
                   </p>
                 </li>
               ))
@@ -874,7 +845,7 @@ export default function DashboardPage({ userProfile }) {
               recentUpdates.map((item) => (
                 <li key={`${item.time}-${item.title}`} className="rounded-lg border px-3 py-2" style={{ borderColor: hexToRgba(theme.tertiaryColor, 0.25), backgroundColor: hexToRgba(theme.tertiaryColor, 0.07) }}>
                   <p className="text-[10px] font-semibold uppercase" style={{ color: theme.secondaryTextColor }}>
-                    {formatDateTime(item.time)} Â· {item.source}
+                    {formatDateTime(item.time)} | {item.source}
                   </p>
                   <p className="mt-0.5 text-[11px] font-semibold" style={{ color: theme.primaryTextColor }}>{item.title}</p>
                   <p className="text-[11px]" style={{ color: theme.tertiaryTextColor }}>{item.subtitle}</p>

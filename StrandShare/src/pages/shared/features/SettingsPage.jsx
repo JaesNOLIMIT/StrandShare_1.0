@@ -1,16 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
-import { Check, Eye, EyeOff, Plus, Save, ShieldCheck, Trash2, Upload, X } from 'lucide-react';
+import { Camera, Check, Eye, EyeOff, Mail, MapPin, Phone, Plus, Save, ShieldCheck, Trash2, User, X } from 'lucide-react';
 import { HexColorPicker } from 'react-colorful';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
-import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
+import {
+  PERSON_SUFFIX_OPTIONS,
+  formatPhilippineMobile,
+  getAdultBirthdateMax,
+  isAtLeastAge,
+  isValidPhilippineMobile,
+  normalizePersonSuffix,
+} from '../../../lib/personIdentity';
 
 const TAB_ITEMS = [
   { id: 'profile', label: 'Profile' },
   { id: 'security', label: 'Security' },
-  { id: 'system', label: 'System Preferences' },
-  { id: 'notifications', label: 'Notifications' },
   { id: 'branding', label: 'Branding' },
 ];
 
@@ -26,8 +31,6 @@ const DEFAULT_AVATAR = `data:image/svg+xml;utf8,${encodeURIComponent(
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
 const SETTINGS_PROFILE_CACHE_KEY = 'Donivra_settings_profile_cache';
-const SYSTEM_PREFS_CACHE_KEY = 'Donivra_system_prefs_cache';
-const NOTIFICATION_PREFS_CACHE_KEY = 'Donivra_notification_prefs_cache';
 const BRANDING_BUCKET = 'branding_assests';
 
 function normalizeGenderOption(value) {
@@ -35,19 +38,18 @@ function normalizeGenderOption(value) {
     .toLowerCase()
     .replace(/[_\s]+/g, '-');
 
-  if (['male', 'female', 'non-binary', 'prefer-not-to-say'].includes(normalized)) {
+  if (['male', 'female'].includes(normalized)) {
     return normalized;
   }
 
-  return 'male';
+  return '';
 }
 
 function mapGenderForStorage(value) {
   const option = normalizeGenderOption(value);
-  if (option === 'prefer-not-to-say') return 'Prefer not to say';
-  if (option === 'non-binary') return 'Non-binary';
   if (option === 'female') return 'Female';
-  return 'Male';
+  if (option === 'male') return 'Male';
+  return '';
 }
 
 function formatRoleLabel(value) {
@@ -67,6 +69,47 @@ function lowerCaseRoleKey(value) {
   return String(value || '')
     .toLowerCase()
     .replace(/[_\s-]+/g, '');
+}
+
+function isAal2RequiredError(error) {
+  const value = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  return value.includes('aal2') || value.includes('mfa verification');
+}
+
+function isMfaFactorNameConflict(error) {
+  const value = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  return value.includes('mfa_factor_name_conflict') || value.includes('friendly name');
+}
+
+function isPasswordReauthenticationRequired(error) {
+  const value = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  return value.includes('reauthentication')
+    || value.includes('reauthenticate')
+    || (value.includes('nonce') && (value.includes('required') || value.includes('invalid')));
+}
+
+function getPasswordUpdateErrorMessage(error) {
+  const value = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+  if (value.includes('current password')) return 'The current password is incorrect.';
+  if (value.includes('different from the old') || value.includes('same password') || value.includes('same as old')) {
+    return 'Choose a new password that is different from your current password.';
+  }
+  if (value.includes('weak password')) return 'The new password does not meet the project password requirements.';
+  return error?.message || 'Unable to update the password.';
+}
+
+function getNextMfaFriendlyName(factors = []) {
+  const usedNames = new Set(
+    factors
+      .map((factor) => String(factor?.friendly_name || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  if (!usedNames.has('google authenticator')) return 'Google Authenticator';
+
+  let index = 2;
+  while (usedNames.has(`google authenticator ${index}`)) index += 1;
+  return `Google Authenticator ${index}`;
 }
 
 function isAbsoluteUrl(value) {
@@ -207,24 +250,6 @@ function colorValueToRgb(value) {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-function Toggle({ checked, onChange, activeColor }) {
-  return (
-    <button
-      type="button"
-      onClick={onChange}
-      className="relative h-6 w-11 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-slate-300"
-      style={{ backgroundColor: checked ? activeColor : '#cbd5e1' }}
-      aria-pressed={checked}
-    >
-      <span
-        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
-          checked ? 'translate-x-5' : 'translate-x-0'
-        }`}
-      />
-    </button>
-  );
-}
-
 function ColorPickerPanel({ color, onColorChange, onEnter }) {
   return (
     <div className="brand-picker-dropdown relative w-[272px] rounded-2xl border border-slate-300 bg-white p-3 shadow-[0_20px_40px_rgba(15,23,42,0.20)]">
@@ -316,8 +341,14 @@ export default function SettingsPage() {
     secret: '',
     code: '',
   });
+  const [mfaFactors, setMfaFactors] = useState([]);
+  const [isManagingMfa, setIsManagingMfa] = useState(false);
+  const [mfaStepUp, setMfaStepUp] = useState({ required: false, factorId: '', code: '' });
+  const [showMfaRecoveryHelp, setShowMfaRecoveryHelp] = useState(false);
+  const [isVerifyingMfaStepUp, setIsVerifyingMfaStepUp] = useState(false);
   const [isVerifyingMfaCode, setIsVerifyingMfaCode] = useState(false);
   const [isLoadingMfaStatus, setIsLoadingMfaStatus] = useState(true);
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
 
   const [profile, setProfile] = useState(() => {
     const storedProfile = readCachedProfile();
@@ -330,7 +361,16 @@ export default function SettingsPage() {
       middleName: storedProfile?.middle_name || storedProfile?.middleName || '',
       lastName: storedProfile?.last_name || storedProfile?.lastName || '',
       suffix: storedProfile?.suffix || '',
-      gender: normalizeGenderOption(storedProfile?.gender || 'male'),
+      gender: normalizeGenderOption(storedProfile?.gender || ''),
+      birthdate: storedProfile?.birthdate || '',
+      contactNumber: storedProfile?.contact_number || storedProfile?.contactNumber || '',
+      street: storedProfile?.street || '',
+      barangay: storedProfile?.barangay || '',
+      city: storedProfile?.city || '',
+      province: storedProfile?.province || '',
+      region: storedProfile?.region || '',
+      country: storedProfile?.country || 'Philippines',
+      joinedDate: storedProfile?.joined_date || storedProfile?.joinedDate || '',
       email: storedProfile?.email || '',
       role: storedProfile?.role || '',
       avatar: resolvedAvatar || '',
@@ -424,35 +464,6 @@ export default function SettingsPage() {
     passwordRuleChecks.number &&
     passwordRuleChecks.special;
 
-  const [systemPreferences, setSystemPreferences] = useState(() => {
-    try {
-      const raw = localStorage.getItem(SYSTEM_PREFS_CACHE_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch {
-      // ignore cache parse errors
-    }
-
-    return {
-      language: 'en',
-      timezone: 'Asia/Manila',
-      maintenanceMode: false,
-    };
-  });
-
-  const [notifications, setNotifications] = useState(() => {
-    try {
-      const raw = localStorage.getItem(NOTIFICATION_PREFS_CACHE_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch {
-      // ignore cache parse errors
-    }
-
-    return {
-      email: true,
-      push: false,
-    };
-  });
-
   useEffect(() => {
     try {
       localStorage.setItem(SETTINGS_PROFILE_CACHE_KEY, JSON.stringify(profile));
@@ -460,22 +471,6 @@ export default function SettingsPage() {
       // ignore cache write errors
     }
   }, [profile]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(SYSTEM_PREFS_CACHE_KEY, JSON.stringify(systemPreferences));
-    } catch {
-      // ignore cache write errors
-    }
-  }, [systemPreferences]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(NOTIFICATION_PREFS_CACHE_KEY, JSON.stringify(notifications));
-    } catch {
-      // ignore cache write errors
-    }
-  }, [notifications]);
 
   const [tempColors, setTempColors] = useState({
     primary: theme.primaryColor,
@@ -690,6 +685,7 @@ export default function SettingsPage() {
             detail: {
               authUserId: merged.auth_user_id,
               profile: merged,
+              source: 'profile-update',
             },
           }),
         );
@@ -702,7 +698,7 @@ export default function SettingsPage() {
   const hydrateProfileFromDb = async (nextAuthUserId, nextEmail) => {
     const { data: userRow, error: userError } = await supabase
       .from('users')
-      .select('user_id, role, email')
+      .select('user_id, role, email, access_start, access_end, is_active, created_at, updated_at')
       .eq('auth_user_id', nextAuthUserId)
       .maybeSingle();
 
@@ -727,7 +723,7 @@ export default function SettingsPage() {
     if (resolvedUserId) {
       const { data: detailsRow, error: detailsError } = await supabase
         .from('user_details')
-        .select('first_name, middle_name, last_name, suffix, gender, photo_path')
+        .select('first_name, middle_name, last_name, suffix, birthdate, gender, contact_number, street, barangay, city, province, region, country, joined_date, photo_path')
         .eq('user_id', resolvedUserId)
         .maybeSingle();
 
@@ -748,8 +744,17 @@ export default function SettingsPage() {
           firstName: detailsRow.first_name || prev.firstName,
           middleName: detailsRow.middle_name || '',
           lastName: detailsRow.last_name || prev.lastName,
-          suffix: detailsRow.suffix || '',
+          suffix: normalizePersonSuffix(detailsRow.suffix),
+          birthdate: detailsRow.birthdate || '',
           gender: normalizeGenderOption(detailsRow.gender || prev.gender),
+          contactNumber: detailsRow.contact_number || '',
+          street: detailsRow.street || '',
+          barangay: detailsRow.barangay || '',
+          city: detailsRow.city || '',
+          province: detailsRow.province || '',
+          region: detailsRow.region || '',
+          country: detailsRow.country || 'Philippines',
+          joinedDate: detailsRow.joined_date || '',
           avatar: resolveAvatarUrl(resolvedPhotoPath) || prev.avatar,
           role: nextRole,
           email: nextResolvedEmail,
@@ -762,7 +767,16 @@ export default function SettingsPage() {
       middle_name: resolvedDetails?.middle_name || profile.middleName,
       last_name: resolvedDetails?.last_name || profile.lastName,
       suffix: resolvedDetails?.suffix || profile.suffix,
+      birthdate: resolvedDetails?.birthdate || profile.birthdate,
       gender: resolvedDetails?.gender || mapGenderForStorage(profile.gender),
+      contact_number: resolvedDetails?.contact_number || profile.contactNumber,
+      street: resolvedDetails?.street || profile.street,
+      barangay: resolvedDetails?.barangay || profile.barangay,
+      city: resolvedDetails?.city || profile.city,
+      province: resolvedDetails?.province || profile.province,
+      region: resolvedDetails?.region || profile.region,
+      country: resolvedDetails?.country || profile.country,
+      joined_date: resolvedDetails?.joined_date || profile.joinedDate,
       photo_path: resolvedDetails?.photo_path || avatarStoragePath || null,
       role: nextRole,
       email: nextResolvedEmail,
@@ -800,6 +814,7 @@ export default function SettingsPage() {
       }
 
       const hasVerifiedTotp = (factorsData?.totp || []).some((factor) => factor.status === 'verified');
+      setMfaFactors((factorsData?.totp || []).filter((factor) => factor.status === 'verified'));
       setSecurity((prev) => ({ ...prev, twoFactorEnabled: hasVerifiedTotp }));
       setIsLoadingMfaStatus(false);
 
@@ -837,24 +852,6 @@ export default function SettingsPage() {
     // Bootstrap should run once on mount for this page lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useRealtimeRefresh({
-    channelName: `account-settings-live-${authUserId || 'pending'}`,
-    // Account/profile tables intentionally stay outside the Realtime publication;
-    // their audited mutations trigger this safe refresh channel instead.
-    tables: ['audit_logs'],
-    enabled: Boolean(authUserId),
-    onChange: async () => {
-      try {
-        await hydrateProfileFromDb(authUserId, authEmail);
-      } catch {
-        // Keep the last usable cached profile when a background sync fails.
-      }
-      if (userId) {
-        void loadSecurityActivity(userId);
-      }
-    },
-  });
 
   const handleProfileImage = async (event) => {
     const file = event.target.files?.[0];
@@ -896,7 +893,15 @@ export default function SettingsPage() {
         middle_name: profile.middleName,
         last_name: profile.lastName,
         suffix: profile.suffix,
+        birthdate: profile.birthdate,
         gender: mapGenderForStorage(profile.gender),
+        contact_number: profile.contactNumber,
+        street: profile.street,
+        barangay: profile.barangay,
+        city: profile.city,
+        province: profile.province,
+        region: profile.region,
+        country: profile.country,
         photo_path: filePath,
         email: authEmail || profile.email,
         role: profile.role,
@@ -1013,11 +1018,37 @@ export default function SettingsPage() {
     }
 
     try {
+      const normalizedEmail = String(profile.email || authEmail || '').trim().toLowerCase();
+      const normalizedContactNumber = formatPhilippineMobile(profile.contactNumber);
+      if (!String(profile.firstName || '').trim() || !String(profile.lastName || '').trim()) {
+        throw new Error('First name and last name are required.');
+      }
+      if (!profile.birthdate) {
+        throw new Error('Birthdate is required.');
+      }
+      if (!isAtLeastAge(profile.birthdate, 18)) {
+        throw new Error('You must be at least 18 years old.');
+      }
+      if (!profile.gender) {
+        throw new Error('Gender is required.');
+      }
+      if (profile.contactNumber && !isValidPhilippineMobile(normalizedContactNumber)) {
+        throw new Error('Contact number must use +63 912 345 6789 format.');
+      }
+      if (!normalizedEmail) {
+        throw new Error('Email address is required.');
+      }
+
       const ensuredUserId = await ensureUserRow();
+
+      if (normalizedEmail !== String(authEmail || '').trim().toLowerCase()) {
+        const { error: authEmailError } = await supabase.auth.updateUser({ email: normalizedEmail });
+        if (authEmailError) throw authEmailError;
+      }
 
       const { error: userUpdateError } = await supabase
         .from('users')
-        .update({ email: profile.email || authEmail })
+        .update({ email: normalizedEmail })
         .eq('user_id', ensuredUserId);
 
       if (userUpdateError) {
@@ -1039,12 +1070,21 @@ export default function SettingsPage() {
 
       const detailsPayload = {
         user_id: ensuredUserId,
-        first_name: profile.firstName || null,
-        middle_name: profile.middleName || null,
-        last_name: profile.lastName || null,
-        suffix: profile.suffix || null,
+        first_name: String(profile.firstName || '').trim(),
+        middle_name: String(profile.middleName || '').trim() || null,
+        last_name: String(profile.lastName || '').trim(),
+        suffix: normalizePersonSuffix(profile.suffix) || null,
+        birthdate: profile.birthdate,
         gender: mapGenderForStorage(profile.gender),
+        contact_number: normalizedContactNumber || null,
+        street: String(profile.street || '').trim() || null,
+        barangay: String(profile.barangay || '').trim() || null,
+        city: String(profile.city || '').trim() || null,
+        province: String(profile.province || '').trim() || null,
+        region: String(profile.region || '').trim() || null,
+        country: String(profile.country || '').trim() || 'Philippines',
         photo_path: safePhotoPath,
+        updated_at: new Date().toISOString(),
       };
 
       if (existingDetails?.user_details_id) {
@@ -1066,80 +1106,123 @@ export default function SettingsPage() {
 
       setProfile((prev) => ({
         ...prev,
+        email: normalizedEmail,
+        contactNumber: normalizedContactNumber,
+        suffix: normalizePersonSuffix(prev.suffix),
         gender: normalizeGenderOption(prev.gender),
       }));
 
       pushUserProfileToShell({
-        email: authEmail || profile.email,
+        email: normalizedEmail,
         role: profile.role,
-        first_name: profile.firstName,
-        last_name: profile.lastName,
+        first_name: String(profile.firstName || '').trim(),
+        middle_name: String(profile.middleName || '').trim(),
+        last_name: String(profile.lastName || '').trim(),
+        suffix: normalizePersonSuffix(profile.suffix),
+        birthdate: profile.birthdate,
+        gender: mapGenderForStorage(profile.gender),
+        contact_number: normalizedContactNumber,
+        street: String(profile.street || '').trim(),
+        barangay: String(profile.barangay || '').trim(),
+        city: String(profile.city || '').trim(),
+        province: String(profile.province || '').trim(),
+        region: String(profile.region || '').trim(),
+        country: String(profile.country || '').trim() || 'Philippines',
+        joined_date: profile.joinedDate,
         photo_path: safePhotoPath,
       });
 
-      showToast('Profile settings updated in real time.');
+      showToast(normalizedEmail !== String(authEmail || '').trim().toLowerCase()
+        ? 'Profile saved. Check your new email address to confirm the change.'
+        : 'Profile saved successfully.');
     } catch (saveError) {
       showToast(saveError?.message || 'Failed to save profile settings.');
     }
   };
 
-  const validateCurrentPassword = async () => {
-    const loginEmail = authEmail || profile.email;
-    if (!loginEmail || !security.currentPassword) {
-      throw new Error('Current password is required.');
-    }
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email: loginEmail,
-      password: security.currentPassword,
-    });
-
-    if (error) {
-      throw new Error('Current password is incorrect.');
-    }
-  };
-
-  const handleRequestPasswordOtp = async () => {
+  const validatePasswordForm = () => {
     if (!isSupabaseConfigured || !supabase) {
       showToast('Supabase is not configured.');
-      return;
+      return false;
     }
 
     if (!security.currentPassword) {
       showToast('Current password is required.');
-      return;
+      return false;
     }
 
     if (!security.newPassword || !security.confirmPassword) {
       showToast('New password and confirmation are required.');
-      return;
+      return false;
     }
 
     if (!isPasswordChecklistComplete) {
       showToast('New password does not meet all requirements.');
-      return;
+      return false;
     }
 
     if (security.newPassword !== security.confirmPassword) {
       showToast('New password and confirmation do not match.');
-      return;
+      return false;
     }
 
-    try {
-      await validateCurrentPassword();
-      const { error } = await supabase.auth.reauthenticate();
-      if (error) {
-        throw error;
-      }
+    if (security.currentPassword === security.newPassword) {
+      showToast('Choose a new password that is different from your current password.');
+      return false;
+    }
 
-      setIsOtpSent(true);
-      setPasswordMfaRequired(false);
-      setPasswordMfaCode('');
-      setPasswordMfaFactorId('');
-      setSecurity((prev) => ({ ...prev, passwordOtp: '' }));
-      showToast('Reauthentication OTP sent to your email.');
-    } catch (otpError) {
-      showToast(otpError?.message || 'Unable to send OTP for password change.');
+    return true;
+  };
+
+  const beginPasswordEmailReauthentication = async () => {
+    const { error } = await supabase.auth.reauthenticate();
+    if (error) throw error;
+
+    setIsOtpSent(true);
+    setSecurity((prev) => ({ ...prev, passwordOtp: '' }));
+    showToast('A password-change verification code was sent to your registered email.');
+  };
+
+  const completePasswordUpdate = async (nonceValue = '') => {
+    const attributes = {
+      password: security.newPassword,
+      current_password: security.currentPassword,
+    };
+    if (nonceValue) attributes.nonce = nonceValue;
+
+    const { error } = await supabase.auth.updateUser(attributes);
+    if (error) throw error;
+  };
+
+  const handleRequestPasswordOtp = async () => {
+    if (!validatePasswordForm() || isUpdatingPassword) return;
+
+    setIsUpdatingPassword(true);
+    try {
+      await completePasswordUpdate();
+      finalizePasswordUpdateSuccess();
+    } catch (passwordError) {
+      if (isAal2RequiredError(passwordError)) {
+        try {
+          const factorId = await resolvePasswordMfaFactor();
+          setPasswordMfaFactorId(factorId);
+          setPasswordMfaRequired(true);
+          setPasswordMfaCode('');
+          showToast('Enter your authenticator code to authorize this password change.');
+        } catch (mfaError) {
+          showToast(mfaError?.message || 'Authenticator verification could not be started.');
+        }
+      } else if (isPasswordReauthenticationRequired(passwordError)) {
+        try {
+          await beginPasswordEmailReauthentication();
+        } catch (reauthError) {
+          showToast(reauthError?.message || 'Unable to send the password-change verification code.');
+        }
+      } else {
+        showToast(getPasswordUpdateErrorMessage(passwordError));
+      }
+    } finally {
+      setIsUpdatingPassword(false);
     }
   };
 
@@ -1155,17 +1238,6 @@ export default function SettingsPage() {
     }
 
     return verifiedTotp.id;
-  };
-
-  const completePasswordUpdateWithNonce = async (otpValue) => {
-    const { error } = await supabase.auth.updateUser({
-      password: security.newPassword,
-      nonce: otpValue,
-    });
-
-    if (error) {
-      throw error;
-    }
   };
 
   const finalizePasswordUpdateSuccess = () => {
@@ -1211,10 +1283,18 @@ export default function SettingsPage() {
         throw verifyError;
       }
 
-      await completePasswordUpdateWithNonce(security.passwordOtp.trim());
-      finalizePasswordUpdateSuccess();
+      try {
+        await completePasswordUpdate(security.passwordOtp.trim());
+        finalizePasswordUpdateSuccess();
+      } catch (passwordError) {
+        if (isPasswordReauthenticationRequired(passwordError) && !security.passwordOtp.trim()) {
+          await beginPasswordEmailReauthentication();
+        } else {
+          throw passwordError;
+        }
+      }
     } catch (error) {
-      showToast(error?.message || 'Authenticator verification failed.');
+      showToast(getPasswordUpdateErrorMessage(error) || 'Authenticator verification failed.');
     } finally {
       setIsVerifyingPasswordMfa(false);
     }
@@ -1227,11 +1307,10 @@ export default function SettingsPage() {
 
     setIsVerifyingPasswordOtp(true);
     try {
-      await completePasswordUpdateWithNonce(otpValue);
+      await completePasswordUpdate(otpValue);
       finalizePasswordUpdateSuccess();
     } catch (verifyError) {
-      const message = String(verifyError?.message || '');
-      if (message.toLowerCase().includes('aal2 session is required')) {
+      if (isAal2RequiredError(verifyError)) {
         try {
           const factorId = await resolvePasswordMfaFactor();
           setPasswordMfaFactorId(factorId);
@@ -1242,7 +1321,9 @@ export default function SettingsPage() {
           showToast(mfaError?.message || 'MFA is required but could not be started.');
         }
       } else {
-        showToast(verifyError?.message || 'Invalid OTP. Please try again.');
+        showToast(isPasswordReauthenticationRequired(verifyError)
+          ? 'The email verification code is invalid or expired. Request a new code and try again.'
+          : getPasswordUpdateErrorMessage(verifyError));
       }
     } finally {
       setIsVerifyingPasswordOtp(false);
@@ -1269,22 +1350,59 @@ export default function SettingsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [passwordMfaCode, passwordMfaRequired]);
 
+  const refreshMfaFactors = async () => {
+    const { data, error } = await supabase.auth.mfa.listFactors();
+    if (error) throw error;
+    const verified = (data?.totp || []).filter((factor) => factor.status === 'verified');
+    setMfaFactors(verified);
+    setSecurity((prev) => ({ ...prev, twoFactorEnabled: verified.length > 0 }));
+    return verified;
+  };
+
   const startMfaEnrollment = async () => {
     const { data: factorsData, error: factorsError } = await supabase.auth.mfa.listFactors();
     if (factorsError) {
       throw factorsError;
     }
 
-    const unverifiedFactors = (factorsData?.totp || []).filter((factor) => factor.status !== 'verified');
-    for (const factor of unverifiedFactors) {
-      await supabase.auth.mfa.unenroll({ factorId: factor.id });
+    const verifiedFactors = (factorsData?.totp || []).filter((factor) => factor.status === 'verified');
+    if (verifiedFactors.length > 0) {
+      const { data: assurance, error: assuranceError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (assuranceError) throw assuranceError;
+      if (assurance?.currentLevel !== 'aal2') {
+        setMfaFactors(verifiedFactors);
+        setMfaStepUp({ required: true, factorId: verifiedFactors[0].id, code: '' });
+        showToast('Verify one of your existing authenticators before adding a backup.');
+        return;
+      }
     }
 
-    const { data: enrollData, error: enrollError } = await supabase.auth.mfa.enroll({
+    const allTotpFactors = factorsData?.totp || [];
+    const friendlyName = getNextMfaFriendlyName(allTotpFactors);
+    const unverifiedFactors = allTotpFactors.filter((factor) => factor.status !== 'verified');
+    for (const factor of unverifiedFactors) {
+      const { error: cleanupError } = await supabase.auth.mfa.unenroll({ factorId: factor.id });
+      if (cleanupError && cleanupError.code !== 'mfa_factor_not_found') {
+        // Continue with a new unique name. A stale unverified factor must not block recovery setup.
+      }
+    }
+
+    let { data: enrollData, error: enrollError } = await supabase.auth.mfa.enroll({
       factorType: 'totp',
-      friendlyName: 'Google Authenticator',
+      friendlyName,
       issuer: 'Donivra',
     });
+
+    if (enrollError && isMfaFactorNameConflict(enrollError)) {
+      const uniqueSuffix = `${Date.now()}`.slice(-6);
+      const retryResult = await supabase.auth.mfa.enroll({
+        factorType: 'totp',
+        friendlyName: `Google Authenticator ${uniqueSuffix}`,
+        issuer: 'Donivra',
+      });
+      enrollData = retryResult.data;
+      enrollError = retryResult.error;
+    }
 
     if (enrollError || !enrollData?.id) {
       throw enrollError || new Error('Unable to start Google Authenticator enrollment.');
@@ -1327,6 +1445,7 @@ export default function SettingsPage() {
 
       setSecurity((prev) => ({ ...prev, twoFactorEnabled: true }));
       setMfaSetup({ enrolling: false, factorId: '', qrSvg: '', secret: '', code: '' });
+      await refreshMfaFactors();
       void appendSecurityLog('security.2fa_enable', 'Enabled two-factor authentication.', 'security/2fa');
       showToast('Google Authenticator is now enabled.');
     } catch (error) {
@@ -1360,14 +1479,91 @@ export default function SettingsPage() {
 
       const verifiedFactor = (factorsData?.totp || []).find((factor) => factor.status === 'verified');
       if (verifiedFactor) {
+        setMfaFactors((factorsData?.totp || []).filter((factor) => factor.status === 'verified'));
         setSecurity((prev) => ({ ...prev, twoFactorEnabled: true }));
-        showToast('Google Authenticator is already active and required.');
+        showToast('Google Authenticator is already active. Use Add backup authenticator to register another device.');
         return;
       }
 
       await startMfaEnrollment();
     } catch (mfaError) {
       showToast(mfaError?.message || 'Unable to start Google Authenticator setup.');
+    }
+  };
+
+  const handleStartMfaEnrollment = async () => {
+    if (mfaSetup.enrolling || isManagingMfa) return;
+    setIsManagingMfa(true);
+    try {
+      await startMfaEnrollment();
+    } catch (error) {
+      showToast(error?.message || 'Unable to start Google Authenticator setup.');
+    } finally {
+      setIsManagingMfa(false);
+    }
+  };
+
+  const verifyMfaStepUpAndEnroll = async () => {
+    if (!mfaStepUp.factorId || mfaStepUp.code.length !== 6 || isVerifyingMfaStepUp) return;
+    setIsVerifyingMfaStepUp(true);
+    try {
+      const { data: challenge, error: challengeError } = await supabase.auth.mfa.challenge({
+        factorId: mfaStepUp.factorId,
+      });
+      if (challengeError) throw challengeError;
+
+      const { error: verifyError } = await supabase.auth.mfa.verify({
+        factorId: mfaStepUp.factorId,
+        challengeId: challenge.id,
+        code: mfaStepUp.code,
+      });
+      if (verifyError) throw verifyError;
+
+      setMfaStepUp({ required: false, factorId: '', code: '' });
+      await startMfaEnrollment();
+    } catch (error) {
+      showToast(error?.message || 'Authenticator verification failed. Wait for a new code and try again.');
+    } finally {
+      setIsVerifyingMfaStepUp(false);
+    }
+  };
+
+  const cancelMfaEnrollment = async () => {
+    const factorId = mfaSetup.factorId;
+    setMfaSetup({ enrolling: false, factorId: '', qrSvg: '', secret: '', code: '' });
+    if (!factorId) return;
+    try {
+      await supabase.auth.mfa.unenroll({ factorId });
+    } catch {
+      // The unverified factor will be cleaned up before the next enrollment attempt.
+    }
+  };
+
+  const handleRemoveMfaFactor = async (factor) => {
+    if (!factor?.id || isManagingMfa) return;
+    if (mfaFactors.length <= 1) {
+      showToast('Add and verify a backup authenticator before removing your only active factor.');
+      return;
+    }
+    if (!window.confirm(`Remove ${factor.friendly_name || 'this authenticator'}? You will no longer be able to use its codes.`)) return;
+
+    setIsManagingMfa(true);
+    try {
+      const { data: assurance, error: assuranceError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (assuranceError) throw assuranceError;
+      if (assurance?.currentLevel !== 'aal2') {
+        throw new Error('Verify an active authenticator during sign-in before removing a factor.');
+      }
+
+      const { error } = await supabase.auth.mfa.unenroll({ factorId: factor.id });
+      if (error) throw error;
+      await refreshMfaFactors();
+      void appendSecurityLog('security.2fa_remove', 'Removed an authenticator factor.', 'security/2fa');
+      showToast('Authenticator removed successfully.');
+    } catch (error) {
+      showToast(error?.message || 'Unable to remove the authenticator.');
+    } finally {
+      setIsManagingMfa(false);
     }
   };
 
@@ -1482,16 +1678,6 @@ export default function SettingsPage() {
       return;
     }
 
-    if (activeTab === 'system') {
-      showToast('System preferences saved.');
-      return;
-    }
-
-    if (activeTab === 'notifications') {
-      showToast('Notification preferences saved.');
-      return;
-    }
-
     showToast('Changes saved.');
   };
 
@@ -1551,21 +1737,6 @@ export default function SettingsPage() {
       setBrandingAssetPaths({
         logoImagePath: theme.logoImagePath || '',
         loginBackgroundImagePath: theme.loginBackgroundImagePath || '',
-      });
-    }
-
-    if (activeTab === 'system') {
-      setSystemPreferences({
-        language: 'en',
-        timezone: 'Asia/Manila',
-        maintenanceMode: false,
-      });
-    }
-
-    if (activeTab === 'notifications') {
-      setNotifications({
-        email: true,
-        push: false,
       });
     }
 
@@ -1666,15 +1837,13 @@ export default function SettingsPage() {
 
   return (
     <div className="w-full">
-      <div className="w-full rounded-xl border border-slate-200 bg-white p-6 md:p-8">
-        <div className="mb-8">
-          <div>
-            <h1 className="role-page-title text-slate-900">System Settings</h1>
-            <p className="text-slate-500 mt-1">Configure global platform parameters and visual identity.</p>
-          </div>
+      <div className="w-full">
+        <div className="mb-5">
+          <h1 className="role-page-title text-slate-900">Settings</h1>
+          <p className="mt-1 text-sm text-slate-500">Manage your profile and account security{canManageBranding ? ', or update the platform branding.' : '.'}</p>
         </div>
 
-        <div className="mb-6 border-b border-slate-200 overflow-x-auto tab-strip-scroll">
+        <div className="mb-5 overflow-x-auto border-b border-slate-200 tab-strip-scroll">
           <nav className="flex gap-8 min-w-max pr-6">
             {visibleTabs.map((tab) => (
               <button
@@ -1691,107 +1860,73 @@ export default function SettingsPage() {
         </div>
 
         {activeTab === 'profile' && (
-          <section className="rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200">
-              <h3 className="text-xl font-bold text-slate-900">Profile Settings</h3>
-            </div>
-
-            <div className="p-5 grid grid-cols-12 gap-4">
-              <div className="col-span-12 md:col-span-3 flex items-center justify-center py-2">
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+            <aside className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-4 2xl:col-span-3">
+              <div className="flex flex-col items-center text-center">
                 <div className="relative">
                   <img
                     src={profile.avatar || (isProfileHydrated ? DEFAULT_AVATAR : 'data:image/gif;base64,R0lGODlhAQABAAAAACw=')}
                     alt="Profile"
-                    className="w-28 h-28 rounded-full border-2 border-slate-200 object-cover shadow-sm"
+                    className="h-32 w-32 rounded-2xl border border-slate-200 object-cover shadow-sm"
                   />
                   <label
-                    className="absolute bottom-1 right-1 w-8 h-8 rounded-full text-white flex items-center justify-center cursor-pointer shadow"
+                    className="absolute -bottom-2 -right-2 flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border-4 border-white text-white shadow-lg"
                     style={{ backgroundColor: theme.primaryColor }}
+                    title="Upload profile picture"
                   >
-                    <Upload size={14} />
+                    <Camera size={16} />
                     <input type="file" accept="image/*" className="hidden" onChange={handleProfileImage} />
                   </label>
                 </div>
+                <h2 className="mt-5 text-xl font-bold text-slate-900">
+                  {[profile.firstName, profile.middleName, profile.lastName, profile.suffix].filter(Boolean).join(' ') || 'Your profile'}
+                </h2>
+                <p className="mt-1 text-sm font-semibold" style={{ color: theme.primaryColor }}>{formatRoleLabel(profile.role)}</p>
+                <p className="mt-1 break-all text-sm text-slate-500">{profile.email || 'No email address'}</p>
               </div>
+              <div className="mt-6 space-y-3 border-t border-slate-200 pt-5 text-sm">
+                <div className="flex items-center gap-3 text-slate-600"><User size={16} /><span>{formatRoleLabel(profile.role)}</span></div>
+                <div className="flex items-center gap-3 text-slate-600"><Mail size={16} /><span className="min-w-0 truncate">{profile.email || 'Not provided'}</span></div>
+                <div className="flex items-center gap-3 text-slate-600"><Phone size={16} /><span>{profile.contactNumber || 'Not provided'}</span></div>
+                <div className="flex items-start gap-3 text-slate-600"><MapPin size={16} className="mt-0.5 flex-none" /><span>{[profile.barangay, profile.city, profile.province].filter(Boolean).join(', ') || 'Address not provided'}</span></div>
+              </div>
+              <p className="mt-5 rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500">Your role and joined date are managed by the system and cannot be changed here.</p>
+            </aside>
 
-              <div className="col-span-12 md:col-span-9 grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">First Name</label>
-                  <input
-                    value={profile.firstName}
-                    onChange={(e) => setProfile({ ...profile, firstName: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  />
+            <div className="space-y-5 xl:col-span-8 2xl:col-span-9">
+              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+                <div className="mb-5"><h3 className="text-lg font-bold text-slate-900">Personal information</h3><p className="mt-1 text-sm text-slate-500">Keep your identity details accurate and complete.</p></div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <label className="text-sm font-semibold text-slate-700">First name *<input autoComplete="given-name" value={profile.firstName} onChange={(e) => setProfile({ ...profile, firstName: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Middle name<input autoComplete="additional-name" value={profile.middleName} onChange={(e) => setProfile({ ...profile, middleName: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Last name *<input autoComplete="family-name" value={profile.lastName} onChange={(e) => setProfile({ ...profile, lastName: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Suffix<select autoComplete="honorific-suffix" value={profile.suffix} onChange={(e) => setProfile({ ...profile, suffix: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900">{PERSON_SUFFIX_OPTIONS.map((option) => <option key={option.label} value={option.value}>{option.label}</option>)}</select></label>
+                  <label className="text-sm font-semibold text-slate-700">Birthdate *<input type="date" autoComplete="bday" max={getAdultBirthdateMax()} value={profile.birthdate} onChange={(e) => setProfile({ ...profile, birthdate: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Gender *<select autoComplete="sex" value={profile.gender} onChange={(e) => setProfile({ ...profile, gender: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900"><option value="">Select gender</option><option value="male">Male</option><option value="female">Female</option></select></label>
+                  <label className="text-sm font-semibold text-slate-700 md:col-span-2">Mobile number<input type="tel" inputMode="numeric" autoComplete="tel" maxLength={16} placeholder="+63 912 345 6789" value={profile.contactNumber} onChange={(e) => setProfile({ ...profile, contactNumber: formatPhilippineMobile(e.target.value) })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
                 </div>
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Middle Name</label>
-                  <input
-                    value={profile.middleName}
-                    onChange={(e) => setProfile({ ...profile, middleName: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  />
+              </section>
+
+              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+                <div className="mb-5"><h3 className="text-lg font-bold text-slate-900">Account and address</h3><p className="mt-1 text-sm text-slate-500">Email changes may require confirmation from your inbox.</p></div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  <label className="text-sm font-semibold text-slate-700 md:col-span-2">Email address *<input type="email" autoComplete="email" value={profile.email} onChange={(e) => setProfile({ ...profile, email: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Joined date<input type="date" value={profile.joinedDate} readOnly className="mt-1.5 w-full cursor-not-allowed rounded-lg border border-slate-200 bg-slate-100 px-3 py-2.5 font-normal text-slate-500" /></label>
+                  <label className="text-sm font-semibold text-slate-700 xl:col-span-2">Street<input autoComplete="street-address" value={profile.street} onChange={(e) => setProfile({ ...profile, street: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Barangay<input value={profile.barangay} onChange={(e) => setProfile({ ...profile, barangay: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">City / municipality<input autoComplete="address-level2" value={profile.city} onChange={(e) => setProfile({ ...profile, city: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Province<input autoComplete="address-level1" value={profile.province} onChange={(e) => setProfile({ ...profile, province: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Region<input value={profile.region} onChange={(e) => setProfile({ ...profile, region: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
+                  <label className="text-sm font-semibold text-slate-700">Country<input autoComplete="country-name" value={profile.country} onChange={(e) => setProfile({ ...profile, country: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 font-normal text-slate-900" /></label>
                 </div>
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Last Name</label>
-                  <input
-                    value={profile.lastName}
-                    onChange={(e) => setProfile({ ...profile, lastName: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Suffix</label>
-                  <input
-                    value={profile.suffix}
-                    onChange={(e) => setProfile({ ...profile, suffix: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Gender</label>
-                  <select
-                    value={profile.gender}
-                    onChange={(e) => setProfile({ ...profile, gender: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  >
-                    <option value="male">Male</option>
-                    <option value="female">Female</option>
-                    <option value="non-binary">Non-binary</option>
-                    <option value="prefer-not-to-say">Prefer not to say</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Role</label>
-                  <div className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold text-slate-700">
-                    {formatRoleLabel(profile.role)}
-                  </div>
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Email Address</label>
-                  <input
-                    value={profile.email}
-                    onChange={(e) => setProfile({ ...profile, email: e.target.value })}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  />
-                </div>
+              </section>
+
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <button type="button" onClick={handleDiscard} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Discard changes</button>
+                <button type="button" onClick={handleSave} className="inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold text-white" style={{ backgroundColor: theme.primaryColor }}><Save size={15} />Save profile</button>
               </div>
             </div>
-
-            <div className="px-5 py-4 border-t border-slate-200 flex items-center justify-end gap-4">
-              <button type="button" onClick={handleDiscard} className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-500">
-                Discard Changes
-              </button>
-              <button
-                type="button"
-                onClick={handleSave}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider text-white"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                <Save size={14} />
-                Save All Changes
-              </button>
-            </div>
-          </section>
+          </div>
         )}
 
         {activeTab === 'security' && (
@@ -1890,10 +2025,11 @@ export default function SettingsPage() {
                   <button
                     type="button"
                     onClick={handleRequestPasswordOtp}
-                    className="px-4 py-2 rounded-lg text-white text-sm font-semibold"
+                    disabled={isUpdatingPassword || isVerifyingPasswordOtp || isVerifyingPasswordMfa}
+                    className="px-4 py-2 rounded-lg text-white text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
                     style={{ backgroundColor: theme.primaryColor }}
                   >
-                    Change Password
+                    {isUpdatingPassword ? 'Updating...' : 'Change Password'}
                   </button>
                   {isOtpSent && <span className="text-xs text-slate-500">OTP sent to your email. Enter it below to finish.</span>}
                 </div>
@@ -1941,26 +2077,106 @@ export default function SettingsPage() {
                     </p>
                   </div>
                 </div>
-                {isLoadingMfaStatus ? (
-                  <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
-                    Checking...
-                  </span>
-                ) : security.twoFactorEnabled ? (
-                  <span className="shrink-0 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
-                    Required · Active
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleEnsureMfaEnabled}
-                    className="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
-                    style={{ backgroundColor: theme.primaryColor }}
-                    disabled={mfaSetup.enrolling}
-                  >
-                    Set up now
-                  </button>
-                )}
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                  {isLoadingMfaStatus ? (
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">Checking...</span>
+                  ) : security.twoFactorEnabled ? (
+                    <>
+                      <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">Required · Active</span>
+                      <button
+                        type="button"
+                        onClick={handleStartMfaEnrollment}
+                        disabled={mfaSetup.enrolling || isManagingMfa}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                      >
+                        Add backup authenticator
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleEnsureMfaEnabled}
+                      className="rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                      style={{ backgroundColor: theme.primaryColor }}
+                      disabled={mfaSetup.enrolling}
+                    >
+                      Set up now
+                    </button>
+                  )}
+                </div>
               </div>
+
+              {mfaStepUp.required && (
+                <div className="mt-4 space-y-3 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                  <div>
+                    <p className="text-sm font-semibold text-blue-950">Verify an existing authenticator</p>
+                    <p className="mt-1 text-xs leading-5 text-blue-800">Supabase requires an AAL2 session before another authenticator can be enrolled.</p>
+                  </div>
+                  {mfaFactors.length > 1 && (
+                    <select
+                      value={mfaStepUp.factorId}
+                      onChange={(event) => setMfaStepUp((prev) => ({ ...prev, factorId: event.target.value, code: '' }))}
+                      className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2.5 text-sm text-slate-800"
+                    >
+                      {mfaFactors.map((factor, index) => (
+                        <option key={factor.id} value={factor.id}>{factor.friendly_name || `Google Authenticator ${index + 1}`}</option>
+                      ))}
+                    </select>
+                  )}
+                  <input
+                    value={mfaStepUp.code}
+                    onChange={(event) => setMfaStepUp((prev) => ({ ...prev, code: event.target.value.replace(/\D/g, '').slice(0, 6) }))}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    placeholder="Enter current 6-digit code"
+                    className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2.5 text-sm tracking-[0.3em]"
+                  />
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button type="button" onClick={() => setMfaStepUp({ required: false, factorId: '', code: '' })} disabled={isVerifyingMfaStepUp} className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60">Cancel</button>
+                    <button type="button" onClick={() => setShowMfaRecoveryHelp(true)} disabled={isVerifyingMfaStepUp} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-60">I no longer have access</button>
+                    <button type="button" onClick={verifyMfaStepUpAndEnroll} disabled={mfaStepUp.code.length !== 6 || isVerifyingMfaStepUp} className="rounded-lg px-3 py-2 text-xs font-semibold text-white disabled:opacity-60" style={{ backgroundColor: theme.primaryColor }}>
+                      {isVerifyingMfaStepUp ? 'Verifying...' : 'Verify and continue'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showMfaRecoveryHelp && (
+                <div className="mt-4 rounded-lg border border-amber-300 bg-amber-100 p-4 text-amber-950">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-bold">The lost authenticator must be reset</p>
+                      <p className="mt-1 text-xs leading-5">
+                        Email recovery creates an AAL1 session, but Supabase does not allow that session to replace an existing MFA factor. Ask a different authorized administrator to verify your identity and remove the lost factor. If this is the only administrator account, the Supabase project owner must remove it from Auth administration. You will then sign in again and enroll a new authenticator.
+                      </p>
+                    </div>
+                    <button type="button" onClick={() => setShowMfaRecoveryHelp(false)} className="shrink-0 rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-semibold text-amber-950">Close</button>
+                  </div>
+                </div>
+              )}
+
+              {mfaFactors.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Verified authenticators</p>
+                  {mfaFactors.map((factor, index) => (
+                    <div key={factor.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-800">{factor.friendly_name || `Google Authenticator ${index + 1}`}</p>
+                        <p className="text-xs text-slate-500">Verified and available during sign-in</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMfaFactor(factor)}
+                        disabled={mfaFactors.length <= 1 || isManagingMfa}
+                        title={mfaFactors.length <= 1 ? 'Add a backup authenticator before removing this factor.' : 'Remove authenticator'}
+                        className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {mfaSetup.enrolling && (
                 <div className="mt-4 rounded-lg border border-slate-200 p-4 space-y-3">
@@ -1985,8 +2201,23 @@ export default function SettingsPage() {
                     className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm tracking-[0.3em]"
                   />
                   {isVerifyingMfaCode && <p className="text-xs text-slate-500">Verifying authenticator code...</p>}
+                  <div className="flex justify-end">
+                    <button type="button" onClick={cancelMfaEnrollment} disabled={isVerifyingMfaCode} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60">
+                      Cancel setup
+                    </button>
+                  </div>
                 </div>
               )}
+
+              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <p className="font-semibold">If you lose access to Google Authenticator</p>
+                <ol className="mt-1 list-decimal space-y-1 pl-5 text-xs leading-5">
+                  <li>Use a verified backup authenticator during sign-in, if available.</li>
+                  <li>If every authenticator is unavailable, choose <strong>Recovery Email</strong> on the login verification screen to regain limited account access.</li>
+                  <li>Ask an authorized administrator to reset the lost MFA factor after verifying your identity, then enroll a new authenticator at your next sign-in.</li>
+                </ol>
+                <p className="mt-2 text-xs">Supabase does not provide recovery codes, so registering a backup authenticator in advance is recommended.</p>
+              </div>
             </section>
 
             <section className="rounded-xl border border-slate-200 p-5">
@@ -2045,121 +2276,6 @@ export default function SettingsPage() {
             </section>
 
           </div>
-        )}
-
-        {activeTab === 'system' && (
-          <section className="rounded-xl border border-slate-200 p-5">
-            <h3 className="text-xl font-bold text-slate-900 mb-4">System Preferences</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Language</label>
-                <select
-                  value={systemPreferences.language}
-                  onChange={(e) => setSystemPreferences({ ...systemPreferences, language: e.target.value })}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                >
-                  <option value="en">English</option>
-                  <option value="es">Spanish</option>
-                  <option value="fr">French</option>
-                  <option value="de">German</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-[11px] font-bold tracking-wider uppercase text-slate-500 mb-1.5">Timezone</label>
-                <select
-                  value={systemPreferences.timezone}
-                  onChange={(e) => setSystemPreferences({ ...systemPreferences, timezone: e.target.value })}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                >
-                  <option value="Asia/Manila">Asia/Manila</option>
-                  <option value="UTC">UTC</option>
-                  <option value="America/New_York">America/New_York</option>
-                  <option value="Europe/London">Europe/London</option>
-                </select>
-              </div>
-              <div className="md:col-span-2 mt-1">
-                <div className="flex items-center justify-between rounded-lg border border-slate-200 p-4">
-                  <div>
-                    <p className="font-semibold text-slate-900">Maintenance Mode</p>
-                    <p className="text-sm text-slate-500">
-                      Temporarily disable user access while admins perform updates.
-                    </p>
-                  </div>
-                  <Toggle
-                    checked={systemPreferences.maintenanceMode}
-                    onChange={() =>
-                      setSystemPreferences({
-                        ...systemPreferences,
-                        maintenanceMode: !systemPreferences.maintenanceMode,
-                      })
-                    }
-                    activeColor={theme.primaryColor}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-3 border-t border-slate-200 pt-4">
-              <button type="button" onClick={handleDiscard} className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-500">
-                Discard System Changes
-              </button>
-              <button
-                type="button"
-                onClick={handleSave}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider text-white"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                <Save size={14} />
-                Save System Changes
-              </button>
-            </div>
-          </section>
-        )}
-
-        {activeTab === 'notifications' && (
-          <section className="rounded-xl border border-slate-200 p-5">
-            <h3 className="text-xl font-bold text-slate-900 mb-4">Notifications</h3>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between rounded-lg border border-slate-200 p-3">
-                <div>
-                  <p className="font-semibold text-slate-900">Email Notifications</p>
-                  <p className="text-sm text-slate-500">Receive updates through email.</p>
-                </div>
-                <Toggle
-                  checked={notifications.email}
-                  onChange={() => setNotifications({ ...notifications, email: !notifications.email })}
-                  activeColor={theme.primaryColor}
-                />
-              </div>
-
-              <div className="flex items-center justify-between rounded-lg border border-slate-200 p-3">
-                <div>
-                  <p className="font-semibold text-slate-900">Push Notifications</p>
-                  <p className="text-sm text-slate-500">Receive browser and mobile push notifications.</p>
-                </div>
-                <Toggle
-                  checked={notifications.push}
-                  onChange={() => setNotifications({ ...notifications, push: !notifications.push })}
-                  activeColor={theme.primaryColor}
-                />
-              </div>
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-3 border-t border-slate-200 pt-4">
-              <button type="button" onClick={handleDiscard} className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-slate-500">
-                Discard Notification Changes
-              </button>
-              <button
-                type="button"
-                onClick={handleSave}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider text-white"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                <Save size={14} />
-                Save Notification Changes
-              </button>
-            </div>
-          </section>
         )}
 
         {activeTab === 'branding' && (

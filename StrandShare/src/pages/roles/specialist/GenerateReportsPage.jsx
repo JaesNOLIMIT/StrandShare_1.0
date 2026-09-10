@@ -7,10 +7,8 @@ import {
   CheckCircle2,
   Download,
   FileText,
-  Filter,
   Loader2,
   Package,
-  RefreshCw,
   ShieldCheck,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
@@ -30,10 +28,8 @@ import {
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
-import {
-  HAIR_BUNDLE_STATUS,
-  HAIR_SUBMISSION_STATUS,
-} from '../../../lib/hairSubmissionWorkflow';
+import { HAIR_BUNDLE_STATUS } from '../../../lib/hairSubmissionWorkflow';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
@@ -124,9 +120,11 @@ const REPORT_TEMPLATES = [
     columns: [
       { key: 'code', label: 'Comparison' },
       { key: 'submission', label: 'Submission' },
-      { key: 'drive', label: 'Event' },
+      { key: 'source', label: 'Source Type' },
+      { key: 'drive', label: 'Event / Source' },
       { key: 'status', label: 'Final Decision' },
-      { key: 'accuracy', label: 'AI Accuracy' },
+      { key: 'accuracy', label: 'AI Correct' },
+      { key: 'humanChange', label: 'Human Changes' },
       { key: 'critical', label: 'Critical Corrections' },
       { key: 'minor', label: 'Minor Corrections' },
       { key: 'reviewed', label: 'Reviewed At' },
@@ -240,7 +238,8 @@ function isWithinRange(value, fromDate, toDate) {
 export default function GenerateReportsPage({ userProfile }) {
   const { theme } = useTheme();
   const primaryColor = theme?.primaryColor || '#0275d8';
-  const tertiaryColor = theme?.tertiaryColor || '#10b981';
+  const secondaryColor = theme?.secondaryColor || '#6B7280';
+  const secondaryColorLight = theme?.secondaryColorLight || '#9CA3AF';
   const primaryTextColor = theme?.primaryTextColor || '#0f172a';
   const secondaryTextColor = theme?.secondaryTextColor || '#64748b';
   const tertiaryTextColor = theme?.tertiaryTextColor || '#94a3b8';
@@ -288,7 +287,7 @@ export default function GenerateReportsPage({ userProfile }) {
       const [submissionsRes, bundlesRes, wigsRes, inventoryRes, comparisonsRes, detailStatusesRes] = await Promise.all([
         supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Event_Attendee_ID, Event_Request_ID, Status, Created_At, Updated_At, Bundle_ID')
+          .select('Submission_ID, User_ID, Event_Attendee_ID, Event_Request_ID, Status, Created_At, Updated_At, Bundle_ID, From_Event')
           .order('Updated_At', { ascending: false })
           .limit(2000),
         supabase
@@ -308,7 +307,7 @@ export default function GenerateReportsPage({ userProfile }) {
           .limit(3000),
         supabase
           .from(HAIR_AI_REVIEW_COMPARISONS_TABLE)
-          .select('Comparison_ID, Submission_ID, Event_Request_ID, Is_AI_Source, Critical_Changed_Fields, Minor_Changed_Fields, AI_Accuracy_Percent, Final_Decision, Reviewed_At, Updated_At')
+          .select('Comparison_ID, Submission_ID, Event_Request_ID, Is_AI_Source, Changed_Fields, Critical_Changed_Fields, Minor_Changed_Fields, Comparable_Field_Count, Matched_Field_Count, AI_Accuracy_Percent, Final_Decision, Reviewed_At, Updated_At')
           .order('Reviewed_At', { ascending: false, nullsFirst: false })
           .limit(3000),
         supabase
@@ -435,39 +434,13 @@ export default function GenerateReportsPage({ userProfile }) {
     void loadAll();
   }, [loadAll]);
 
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
-    let isMounted = true;
-    let refreshTimer = null;
-    const scheduleRefresh = () => {
-      if (!isMounted) return;
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => {
-        if (isMounted) void loadAll();
-      }, 300);
-    };
-    const channel = supabase
-      .channel('public:qa-stylist-reports-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_SUBMISSIONS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_SUBMISSION_BUNDLES_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIGS_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: CUT_HAIR_INVENTORY_TABLE }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HAIR_AI_REVIEW_COMPARISONS_TABLE }, scheduleRefresh)
-      .subscribe();
-    return () => {
-      isMounted = false;
-      if (refreshTimer) clearTimeout(refreshTimer);
-      supabase.removeChannel(channel);
-    };
-  }, [loadAll]);
-
   const selectedTemplate = REPORT_TEMPLATES.find((t) => t.id === selectedTemplateId) || REPORT_TEMPLATES[0];
 
   const driveOptions = useMemo(() => {
     const options = Object.values(drivesById)
       .map((row) => ({ id: Number(row.Event_Request_ID), title: row.Event_Name || `Event #${row.Event_Request_ID}` }))
       .sort((a, b) => a.title.localeCompare(b.title));
-    return [{ id: 'all', title: 'All Events' }, ...options];
+    return [{ id: 'all', title: 'Events and non-events' }, { id: 'non-event', title: 'Non-events only' }, ...options];
   }, [drivesById]);
 
   const filteredRows = useMemo(() => {
@@ -560,22 +533,38 @@ export default function GenerateReportsPage({ userProfile }) {
     if (selectedTemplateId === 'ai_hair_accuracy') {
       return aiComparisons
         .filter((row) => {
+          const sourceSubmission = submissions.find((submission) => Number(submission.Submission_ID) === Number(row.Submission_ID));
+          const isNonEvent = sourceSubmission?.From_Event === false || !row.Event_Request_ID;
+          if (!row.Is_AI_Source || !row.Reviewed_At) return false;
           if (statusFilter !== 'all' && statusKey(row.Final_Decision || 'pending') !== statusFilter) return false;
-          if (driveFilter !== 'all' && Number(row.Event_Request_ID || 0) !== Number(driveFilter)) return false;
+          if (driveFilter === 'non-event' && !isNonEvent) return false;
+          if (!['all', 'non-event'].includes(String(driveFilter)) && Number(row.Event_Request_ID || 0) !== Number(driveFilter)) return false;
           if ((dateFrom || dateTo) && !isWithinRange(row.Reviewed_At, dateFrom, dateTo)) return false;
           return true;
         })
         .map((row) => {
+          const sourceSubmission = submissions.find((submission) => Number(submission.Submission_ID) === Number(row.Submission_ID));
+          const isNonEvent = sourceSubmission?.From_Event === false || !row.Event_Request_ID;
           const critical = Array.isArray(row.Critical_Changed_Fields) ? row.Critical_Changed_Fields : [];
           const minor = Array.isArray(row.Minor_Changed_Fields) ? row.Minor_Changed_Fields : [];
+          const changed = Array.isArray(row.Changed_Fields) ? row.Changed_Fields : [...critical, ...minor];
+          const comparableFieldCount = Number(row.Comparable_Field_Count || 0);
+          const matchedFieldCount = Number(row.Matched_Field_Count || 0);
+          const aiPercent = comparableFieldCount > 0
+            ? (matchedFieldCount / comparableFieldCount) * 100
+            : Number(row.AI_Accuracy_Percent || 0);
+          const humanPercent = comparableFieldCount > 0 ? 100 - aiPercent : 0;
           return {
             code: `AI-${String(row.Comparison_ID).padStart(6, '0')}`,
             submission: `#${row.Submission_ID}`,
-            drive: drivesById[Number(row.Event_Request_ID)]?.Event_Name || `Event #${row.Event_Request_ID || 'N/A'}`,
+            source: isNonEvent ? 'Non-event' : 'Event',
+            drive: isNonEvent ? 'Non-event donation' : (drivesById[Number(row.Event_Request_ID)]?.Event_Name || `Event #${row.Event_Request_ID || 'N/A'}`),
             status: row.Final_Decision || 'Pending',
-            accuracy: row.Is_AI_Source
-              ? (row.AI_Accuracy_Percent == null ? 'Pending' : `${row.AI_Accuracy_Percent}%`)
-              : 'Manual source',
+            accuracy: `${Number(aiPercent.toFixed(2))}%`,
+            humanChange: `${Number(humanPercent.toFixed(2))}%`,
+            comparableFieldCount,
+            matchedFieldCount,
+            changedFieldCount: changed.length,
             critical: critical.length ? critical.join(', ') : 'None',
             minor: minor.length ? minor.join(', ') : 'None',
             reviewed: formatDateTime(row.Reviewed_At),
@@ -603,8 +592,8 @@ export default function GenerateReportsPage({ userProfile }) {
         bucket.submitted += 1;
         if (row.User_ID) bucket.donors.add(Number(row.User_ID));
         const sk = statusKey(row._qualityStatus || row.Status);
-        if (sk === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()) bucket.approved += 1;
-        if (sk === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase() || sk === 'rejected cut') bucket.rejected += 1;
+        if (sk === 'approved') bucket.approved += 1;
+        if (sk === 'rejected' || sk === 'rejected cut') bucket.rejected += 1;
       });
       return Array.from(grouped.values())
         .sort((a, b) => b.submitted - a.submitted)
@@ -642,10 +631,10 @@ export default function GenerateReportsPage({ userProfile }) {
   const summary = useMemo(() => {
     if (selectedTemplateId === 'qa_decisions') {
       const total = filteredRows.length;
-      const approved = filteredRows.filter((r) => statusKey(r.status) === HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase()).length;
-      const rejected = filteredRows.filter((r) => statusKey(r.status) === HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase()).length;
+      const approved = filteredRows.filter((r) => statusKey(r.status) === 'approved').length;
+      const rejected = filteredRows.filter((r) => statusKey(r.status) === 'rejected').length;
       const rejectedCut = filteredRows.filter((r) => statusKey(r.status) === 'rejected cut').length;
-      const received = filteredRows.filter((r) => statusKey(r.status) === HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase()).length;
+      const pending = filteredRows.filter((r) => statusKey(r.status) === 'pending').length;
       const decided = approved + rejected + rejectedCut;
       const rate = decided > 0 ? Math.round((approved / decided) * 100) : 0;
       return [
@@ -654,7 +643,7 @@ export default function GenerateReportsPage({ userProfile }) {
         { label: 'Rejected', value: rejected },
         { label: 'Rejected Cut', value: rejectedCut },
         { label: 'Approval rate', value: `${rate}%` },
-        { label: 'Awaiting decision', value: received },
+        { label: 'Awaiting decision', value: pending },
       ];
     }
     if (selectedTemplateId === 'bundle_production') {
@@ -695,23 +684,25 @@ export default function GenerateReportsPage({ userProfile }) {
         { label: 'Approved hair items', value: filteredRows.length },
         { label: 'Cut / available', value: filteredRows.filter((row) => row.status === 'Cut').length },
         { label: 'Bundling', value: filteredRows.filter((row) => row.status === 'Bundling').length },
+        { label: 'Wig In Production', value: filteredRows.filter((row) => row.status === 'Wig In Production').length },
         { label: 'Completed wigs', value: completedBundleCount },
         { label: 'Rejected Cut excluded', value: 'Yes' },
       ];
     }
     if (selectedTemplateId === 'ai_hair_accuracy') {
-      const numericAccuracy = filteredRows
-        .map((row) => Number.parseFloat(row.accuracy))
-        .filter((value) => Number.isFinite(value));
-      const average = numericAccuracy.length
-        ? Math.round(numericAccuracy.reduce((sum, value) => sum + value, 0) / numericAccuracy.length)
-        : null;
+      const totals = filteredRows.reduce((accumulator, row) => ({
+        comparable: accumulator.comparable + Number(row.comparableFieldCount || 0),
+        matched: accumulator.matched + Number(row.matchedFieldCount || 0),
+      }), { comparable: 0, matched: 0 });
+      const reviewCount = filteredRows.length;
+      const aiPercent = totals.comparable > 0 ? Math.round((totals.matched / totals.comparable) * 100) : null;
+      const humanPercent = aiPercent == null ? null : 100 - aiPercent;
       return [
-        { label: 'Reviews', value: filteredRows.length },
-        { label: 'Average AI accuracy', value: average == null ? 'N/A' : `${average}%` },
+        { label: 'Reviews', value: reviewCount },
+        { label: 'AI correct', value: aiPercent == null ? 'N/A' : `${aiPercent}%` },
+        { label: 'Human changes', value: humanPercent == null ? 'N/A' : `${humanPercent}%` },
         { label: 'Critical corrections', value: filteredRows.filter((row) => row.critical !== 'None').length },
         { label: 'Rejected Cut', value: filteredRows.filter((row) => statusKey(row.status) === 'rejected cut').length },
-        { label: 'Length tolerance', value: '6 in' },
       ];
     }
     const drives = filteredRows.length;
@@ -732,10 +723,9 @@ export default function GenerateReportsPage({ userProfile }) {
   const previewChartData = useMemo(() => {
     if (selectedTemplateId === 'qa_decisions') {
       const buckets = [
-        { name: HAIR_SUBMISSION_STATUS.CUT_SHIPPED, color: '#b45309' },
-        { name: HAIR_SUBMISSION_STATUS.RECEIVED, color: primaryColor },
-        { name: HAIR_SUBMISSION_STATUS.APPROVED, color: tertiaryColor },
-        { name: HAIR_SUBMISSION_STATUS.REJECTED, color: '#dc2626' },
+        { name: 'Pending', color: '#d97706' },
+        { name: 'Approved', color: '#059669' },
+        { name: 'Rejected', color: '#dc2626' },
         { name: 'Rejected Cut', color: '#d97706' },
       ].map((b) => ({
         ...b,
@@ -749,7 +739,7 @@ export default function GenerateReportsPage({ userProfile }) {
         data: [
           { name: HAIR_BUNDLE_STATUS.DRAFT, color: '#b45309' },
           { name: HAIR_BUNDLE_STATUS.IN_PRODUCTION, color: primaryColor },
-          { name: HAIR_BUNDLE_STATUS.WIG_COMPLETED, color: tertiaryColor },
+          { name: HAIR_BUNDLE_STATUS.WIG_COMPLETED, color: '#059669' },
         ].map((b) => ({
           ...b,
           value: filteredRows.filter((r) => statusKey(r.status) === b.name.toLowerCase()).length,
@@ -762,17 +752,30 @@ export default function GenerateReportsPage({ userProfile }) {
         const key = row.status || 'Unknown';
         map.set(key, (map.get(key) || 0) + 1);
       });
-      const palette = [primaryColor, tertiaryColor, '#b45309', '#dc2626', '#7c3aed', '#0891b2'];
+      const palette = [primaryColor, secondaryColor, secondaryColorLight, '#d97706', '#059669', '#dc2626'];
       const data = Array.from(map.entries()).map(([name, value], idx) => ({ name, value, color: palette[idx % palette.length] }));
       return { type: 'pie', data };
     }
-    if (selectedTemplateId === 'cut_hair_inventory' || selectedTemplateId === 'ai_hair_accuracy') {
+    if (selectedTemplateId === 'ai_hair_accuracy') {
+      const totals = filteredRows.reduce((accumulator, row) => ({
+        comparable: accumulator.comparable + Number(row.comparableFieldCount || 0),
+        matched: accumulator.matched + Number(row.matchedFieldCount || 0),
+      }), { comparable: 0, matched: 0 });
+      return {
+        type: 'pie',
+        data: [
+          { name: 'AI correct fields', value: totals.matched, color: '#059669' },
+          { name: 'Human-changed fields', value: totals.comparable - totals.matched, color: '#d97706' },
+        ].filter((entry) => entry.value > 0),
+      };
+    }
+    if (selectedTemplateId === 'cut_hair_inventory') {
       const map = new Map();
       filteredRows.forEach((row) => {
         const key = row.status || 'Pending';
         map.set(key, (map.get(key) || 0) + 1);
       });
-      const colors = [tertiaryColor, primaryColor, '#7c3aed', '#dc2626', '#b45309'];
+      const colors = [primaryColor, secondaryColor, secondaryColorLight, '#059669', '#dc2626', '#d97706'];
       return {
         type: 'pie',
         data: Array.from(map.entries()).map(([name, value], index) => ({ name, value, color: colors[index % colors.length] })),
@@ -786,7 +789,7 @@ export default function GenerateReportsPage({ userProfile }) {
         Rejected: Number(row.rejected || 0),
       })),
     };
-  }, [selectedTemplateId, filteredRows, primaryColor, tertiaryColor]);
+  }, [selectedTemplateId, filteredRows, primaryColor, secondaryColor, secondaryColorLight]);
 
   const recordHistoryEntry = (entry) => {
     const next = [
@@ -962,10 +965,9 @@ export default function GenerateReportsPage({ userProfile }) {
     if (selectedTemplateId === 'qa_decisions' || selectedTemplateId === 'donor_throughput') {
       return [
         { id: 'all', label: 'All statuses' },
-        { id: HAIR_SUBMISSION_STATUS.CUT_SHIPPED.toLowerCase(), label: 'Cut & Shipped' },
-        { id: HAIR_SUBMISSION_STATUS.RECEIVED.toLowerCase(), label: 'Received' },
-        { id: HAIR_SUBMISSION_STATUS.APPROVED.toLowerCase(), label: 'Approved' },
-        { id: HAIR_SUBMISSION_STATUS.REJECTED.toLowerCase(), label: 'Rejected' },
+        { id: 'pending', label: 'Pending' },
+        { id: 'approved', label: 'Approved' },
+        { id: 'rejected', label: 'Rejected' },
         { id: 'rejected cut', label: 'Rejected Cut' },
       ];
     }
@@ -982,6 +984,7 @@ export default function GenerateReportsPage({ userProfile }) {
         { id: 'all', label: 'All statuses' },
         { id: 'cut', label: 'Cut' },
         { id: 'bundling', label: 'Bundling' },
+        { id: 'wig in production', label: 'Wig In Production' },
         { id: 'wig created', label: 'Wig Created' },
       ];
     }
@@ -1005,24 +1008,45 @@ export default function GenerateReportsPage({ userProfile }) {
   }, [selectedTemplateId]);
 
   return (
-    <div className="space-y-6" style={rootStyle}>
+    <div className="space-y-4" style={{ ...rootStyle, '--report-accent': primaryColor }}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="role-page-title text-3xl font-bold mb-2" style={headingStyle}>Reports</h1>
-          <p style={{ color: secondaryTextColor }}>
-            Generate QA, bundling, and wig inventory reports. Filter by date, status, or event, then export to CSV or PDF.
+          <h1 className="role-page-title text-2xl font-bold" style={headingStyle}>Specialist Reports</h1>
+          <p className="text-sm" style={{ color: secondaryTextColor }}>
+            Filter, visualize, and export quality, bundling, wig, and AI review data.
+          </p>
+          <p className="mt-1 text-xs" style={{ color: tertiaryTextColor }}>
+            Last refreshed: <strong>{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : 'Not refreshed yet'}</strong>
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <PageHeaderActions
+            onRefresh={() => loadAll()}
+            refreshLoading={isLoading}
+            refreshLabel="Refresh"
+            autoRefreshOnChanges={false}
+            helpTitle="About Specialist Reports"
+            helpContent={<p>Select a report, apply filters, review the visual summary, and export the current result to CSV or PDF.</p>}
+          />
           <button
             type="button"
-            onClick={() => loadAll()}
-            disabled={isLoading}
-            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3.5 py-2 text-sm font-semibold disabled:opacity-60"
+            onClick={handleGenerateCsv}
+            disabled={isGenerating || !filteredRows.length}
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg border bg-white px-4 text-sm font-semibold shadow-sm disabled:opacity-60"
             style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
           >
-            {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            Refresh data
+            {isGenerating ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+            CSV
+          </button>
+          <button
+            type="button"
+            onClick={handleGeneratePdf}
+            disabled={isGenerating || !filteredRows.length}
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg px-4 text-sm font-semibold text-white shadow-sm disabled:opacity-60"
+            style={{ backgroundColor: primaryColor }}
+          >
+            <FileText size={15} />
+            PDF
           </button>
         </div>
       </header>
@@ -1041,18 +1065,8 @@ export default function GenerateReportsPage({ userProfile }) {
         </div>
       ) : null}
 
-      {lastRefreshedAt ? (
-        <p className="text-xs" style={{ color: tertiaryTextColor }}>
-          Data last synced {formatDateTime(lastRefreshedAt)} - {submissions.length} submissions, {bundles.length} bundles, {wigs.length} wigs loaded.
-        </p>
-      ) : null}
-
-      <section className="rounded-2xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
-        <div className="mb-3 flex items-center gap-2">
-          <FileText size={16} style={{ color: primaryColor }} />
-          <h2 className="text-base font-semibold" style={headingStyle}>1. Pick a report template</h2>
-        </div>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+      <section className="border-b" style={{ borderColor: withColorAlpha(theme?.secondaryColor, 0.24, '#6B7280') }}>
+        <nav className="-mb-px flex flex-wrap gap-x-5 gap-y-1" aria-label="Specialist report templates">
           {REPORT_TEMPLATES.map((tpl) => {
             const Icon = tpl.icon;
             const isActive = tpl.id === selectedTemplateId;
@@ -1064,34 +1078,20 @@ export default function GenerateReportsPage({ userProfile }) {
                   setSelectedTemplateId(tpl.id);
                   setStatusFilter('all');
                 }}
-                className="rounded-xl border p-3 text-left transition"
-                style={
-                  isActive
-                    ? { borderColor: primaryColor, backgroundColor: withColorAlpha(primaryColor, 0.06) }
-                    : { borderColor: '#e2e8f0', backgroundColor: '#fff' }
-                }
+                aria-current={isActive ? 'page' : undefined}
+                className={`-mb-px inline-flex items-center gap-2 border-b-2 px-1 pb-3 pt-2 text-sm font-semibold transition-colors ${isActive ? '' : 'border-transparent'}`}
+                style={isActive ? { borderColor: primaryColor, color: primaryColor } : { color: secondaryTextColor }}
+                title={tpl.description}
               >
-                <div className="flex items-center gap-2">
-                  <span
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg"
-                    style={{ backgroundColor: withColorAlpha(primaryColor, 0.12), color: primaryColor }}
-                  >
-                    <Icon size={16} />
-                  </span>
-                  <p className="text-sm font-semibold" style={{ color: primaryTextColor }}>{tpl.name}</p>
-                </div>
-                <p className="mt-2 text-xs" style={{ color: secondaryTextColor }}>{tpl.description}</p>
+                <Icon size={14} />
+                {tpl.name}
               </button>
             );
           })}
-        </div>
+        </nav>
       </section>
 
-      <section className="rounded-2xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
-        <div className="mb-3 flex items-center gap-2">
-          <Filter size={16} style={{ color: primaryColor }} />
-          <h2 className="text-base font-semibold" style={headingStyle}>2. Apply filters</h2>
-        </div>
+      <section className="rounded-xl border bg-white p-3 shadow-sm" style={{ borderColor: withColorAlpha(theme?.secondaryColor, 0.24, '#6B7280') }}>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
           <div>
             <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>
@@ -1130,9 +1130,9 @@ export default function GenerateReportsPage({ userProfile }) {
               ))}
             </select>
           </div>
-          {(selectedTemplateId === 'qa_decisions' || selectedTemplateId === 'donor_throughput') ? (
+          {(selectedTemplateId === 'qa_decisions' || selectedTemplateId === 'donor_throughput' || selectedTemplateId === 'ai_hair_accuracy') ? (
             <div>
-              <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>Event</label>
+              <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>{selectedTemplateId === 'ai_hair_accuracy' ? 'Donation source' : 'Event'}</label>
               <select
                 value={driveFilter}
                 onChange={(event) => setDriveFilter(event.target.value)}
@@ -1148,46 +1148,53 @@ export default function GenerateReportsPage({ userProfile }) {
         </div>
       </section>
 
+      <section className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${summary.length >= 5 ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
+        {summary.map((item, index) => {
+          const normalizedLabel = statusKey(item.label);
+          const SummaryIcon = normalizedLabel.includes('approved') || normalizedLabel.includes('completed') || normalizedLabel.includes('correct')
+            ? CheckCircle2
+            : normalizedLabel.includes('rejected') || normalizedLabel.includes('change') || normalizedLabel.includes('correction')
+              ? AlertCircle
+              : index === 0 ? BarChart3 : Package;
+          const accent = normalizedLabel.includes('approved') || normalizedLabel.includes('completed') || normalizedLabel.includes('correct')
+            ? '#059669'
+            : normalizedLabel.includes('rejected')
+              ? '#dc2626'
+              : normalizedLabel.includes('pending') || normalizedLabel.includes('change') || normalizedLabel.includes('correction')
+                ? '#d97706'
+                : index === 0 ? primaryColor : secondaryColor;
+          return (
+            <article
+              key={item.label}
+              className="overflow-hidden rounded-xl border p-4 shadow-sm"
+              style={{
+                borderColor: withColorAlpha(accent, 0.24),
+                background: `linear-gradient(135deg, ${withColorAlpha(accent, 0.11)} 0%, #ffffff 72%)`,
+              }}
+            >
+              <div className="flex items-center gap-3">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: withColorAlpha(accent, 0.14), color: accent }}>
+                  <SummaryIcon size={19} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-bold uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{item.label}</p>
+                  <p className="mt-1 text-2xl font-bold leading-none" style={{ color: primaryTextColor }}>{item.value}</p>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </section>
+
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="xl:col-span-2 rounded-2xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
+        <div className="order-2 rounded-xl border bg-white p-4 shadow-sm xl:col-span-3" style={{ borderColor: withColorAlpha(secondaryColor, 0.24) }}>
           <div className="mb-3 flex items-center justify-between">
             <div>
-              <h2 className="text-base font-semibold" style={headingStyle}>3. Preview</h2>
+              <h2 className="inline-flex items-center gap-2 text-base font-semibold" style={headingStyle}>{React.createElement(selectedTemplate.icon, { size: 17, style: { color: primaryColor } })} {selectedTemplate.name} Preview</h2>
               <p className="text-xs" style={{ color: tertiaryTextColor }}>
                 {filteredRows.length} row{filteredRows.length === 1 ? '' : 's'} ready to export.
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleGenerateCsv}
-                disabled={isGenerating || !filteredRows.length}
-                className="inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
-                style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-              >
-                {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                Export CSV
-              </button>
-              <button
-                type="button"
-                onClick={handleGeneratePdf}
-                disabled={isGenerating || !filteredRows.length}
-                className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                style={{ backgroundColor: primaryColor }}
-              >
-                {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
-                Export PDF
-              </button>
-            </div>
-          </div>
-
-          <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-5">
-            {summary.map((item) => (
-              <div key={item.label} className="rounded-lg border p-2" style={{ borderColor: '#e2e8f0' }}>
-                <p className="text-[10px] uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{item.label}</p>
-                <p className="text-lg font-bold" style={{ color: primaryTextColor }}>{item.value}</p>
-              </div>
-            ))}
           </div>
 
           <div className="overflow-hidden rounded-lg border" style={{ borderColor: '#e2e8f0' }}>
@@ -1231,15 +1238,15 @@ export default function GenerateReportsPage({ userProfile }) {
           </div>
         </div>
 
-        <div className="rounded-2xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
-          <h2 className="text-base font-semibold mb-3" style={headingStyle}>At a glance</h2>
+        <div className="order-1 rounded-xl border bg-white p-4 shadow-sm xl:col-span-3" style={{ borderColor: withColorAlpha(secondaryColor, 0.24) }}>
+          <h2 className="mb-3 inline-flex items-center gap-2 text-base font-semibold" style={headingStyle}><BarChart3 size={17} style={{ color: primaryColor }} /> At a glance</h2>
           {previewChartData.type === 'pie' && previewChartData.data.length ? (
             <div style={{ width: '100%', height: 240 }}>
               <ResponsiveContainer>
                 <PieChart>
                   <Pie data={previewChartData.data} dataKey="value" nameKey="name" innerRadius={48} outerRadius={80} paddingAngle={2}>
-                    {previewChartData.data.map((entry) => (
-                      <Cell key={entry.name} fill={entry.color} />
+                    {previewChartData.data.map((entry, index) => (
+                      <Cell key={`${entry.name}-${index}`} fill={entry.color} />
                     ))}
                   </Pie>
                   <Tooltip />
@@ -1256,7 +1263,7 @@ export default function GenerateReportsPage({ userProfile }) {
                   <YAxis allowDecimals={false} stroke={tertiaryTextColor} fontSize={11} />
                   <Tooltip />
                   <Legend wrapperStyle={{ fontSize: '11px' }} />
-                  <Bar dataKey="Approved" fill={tertiaryColor} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="Approved" fill="#059669" radius={[4, 4, 0, 0]} />
                   <Bar dataKey="Rejected" fill="#dc2626" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -1276,10 +1283,10 @@ export default function GenerateReportsPage({ userProfile }) {
         </div>
       </section>
 
-      <section className="rounded-2xl border bg-white" style={{ borderColor: '#e2e8f0' }}>
+      <section className="rounded-xl border bg-white shadow-sm" style={{ borderColor: withColorAlpha(secondaryColor, 0.24) }}>
         <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3" style={{ borderColor: '#e2e8f0' }}>
           <div className="flex items-center gap-2">
-            <CheckCircle2 size={16} style={{ color: tertiaryColor }} />
+            <CheckCircle2 size={16} style={{ color: '#059669' }} />
             <h2 className="text-base font-semibold" style={headingStyle}>Generated Reports History</h2>
             <span className="text-xs" style={{ color: tertiaryTextColor }}>(stored locally on this device)</span>
           </div>
@@ -1301,7 +1308,7 @@ export default function GenerateReportsPage({ userProfile }) {
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead style={{ backgroundColor: withColorAlpha(tertiaryColor, 0.08) }}>
+              <thead style={{ backgroundColor: withColorAlpha(primaryColor, 0.08) }}>
                 <tr>
                   <th className="px-4 py-2 text-left font-semibold" style={{ color: primaryTextColor }}>Generated</th>
                   <th className="px-4 py-2 text-left font-semibold" style={{ color: primaryTextColor }}>Report</th>

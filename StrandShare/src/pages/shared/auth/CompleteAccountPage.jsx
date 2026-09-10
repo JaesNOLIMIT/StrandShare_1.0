@@ -2,9 +2,17 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Loader2, Save } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import { getAdultBirthdateMax, isAtLeastAge } from '../../../lib/personIdentity';
 
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
+
+function normalizeGender(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'male') return 'Male';
+  if (normalized === 'female') return 'Female';
+  return '';
+}
 
 const EMPTY_FORM = {
   firstName: '',
@@ -30,6 +38,7 @@ export default function CompleteAccountPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
+  const [isPatientAccount, setIsPatientAccount] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [form, setForm] = useState(EMPTY_FORM);
@@ -72,6 +81,7 @@ export default function CompleteAccountPage() {
 
       const authUserId = currentSession.user.id;
       const metadata = currentSession.user.user_metadata || {};
+      setIsPatientAccount(String(metadata.account_type || '').trim().toLowerCase() === 'patient');
 
       setForm((prev) => ({
         ...prev,
@@ -99,7 +109,7 @@ export default function CompleteAccountPage() {
             lastName: detailsRow.last_name || '',
             suffix: detailsRow.suffix || '',
             birthdate: detailsRow.birthdate || '',
-            gender: detailsRow.gender || '',
+            gender: normalizeGender(detailsRow.gender),
             contactNumber: detailsRow.contact_number || '',
             street: detailsRow.street || '',
             region: detailsRow.region || '',
@@ -146,13 +156,19 @@ export default function CompleteAccountPage() {
       return;
     }
 
+    if (!isPatientAccount && !isAtLeastAge(form.birthdate, 18)) {
+      setErrorMessage('You must be at least 18 years old to create this account.');
+      return;
+    }
+
     setIsSaving(true);
 
     try {
       const authUserId = session.user.id;
       const metadata = session.user.user_metadata || {};
 
-      const normalizedRole = metadata.role || 'Staff';
+      const completingPatientAccount = String(metadata.account_type || '').trim().toLowerCase() === 'patient';
+      const normalizedRole = completingPatientAccount ? 'patient' : metadata.role || 'Staff';
       const accessStart = metadata.accessStart || null;
       const accessEnd = metadata.accessEnd || null;
 
@@ -203,7 +219,7 @@ export default function CompleteAccountPage() {
         last_name: form.lastName,
         suffix: form.suffix || null,
         birthdate: form.birthdate || null,
-        gender: form.gender || null,
+        gender: normalizeGender(form.gender) || null,
         contact_number: form.contactNumber || null,
         street: form.street || null,
         region: form.region || null,
@@ -233,19 +249,27 @@ export default function CompleteAccountPage() {
         }
       }
 
-      localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(upsertedUser));
-      window.dispatchEvent(
-        new CustomEvent(USER_PROFILE_READY_EVENT, {
-          detail: {
-            authUserId,
-            profile: upsertedUser,
-          },
-        }),
-      );
+      if (!completingPatientAccount) {
+        localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(upsertedUser));
+        window.dispatchEvent(
+          new CustomEvent(USER_PROFILE_READY_EVENT, {
+            detail: {
+              authUserId,
+              profile: upsertedUser,
+              source: 'account-completion',
+            },
+          }),
+        );
+      } else {
+        localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+      }
 
       await supabase.auth.signOut();
       setIsCompleted(true);
-      setStatusMessage('Your account is now available for use.');
+      setIsPatientAccount(completingPatientAccount);
+      setStatusMessage(completingPatientAccount
+        ? 'Your patient account is ready for the Donivra mobile app.'
+        : 'Your account is now available for use.');
     } catch (error) {
       setErrorMessage(error?.message || 'Unable to complete account. Please try again.');
     } finally {
@@ -262,14 +286,16 @@ export default function CompleteAccountPage() {
               <CheckCircle2 size={24} />
             </div>
             <h1 className="text-2xl font-bold text-gray-900">Account Completed</h1>
-            <p className="text-sm text-gray-600">Your account is now available for use.</p>
+            <p className="text-sm text-gray-600">{isPatientAccount
+              ? 'Your patient account is ready. Sign in using the Donivra mobile application; patient login is not available on this website.'
+              : 'Your management account is now available for use.'}</p>
             <button
               type="button"
               onClick={() => window.location.replace('/')}
               className="w-full py-2.5 rounded-lg text-white font-semibold"
               style={{ backgroundColor: theme.primaryColor }}
             >
-              Go To Login
+              {isPatientAccount ? 'Return to Donivra Website' : 'Go To Staff Login'}
             </button>
           </div>
         </div>
@@ -289,7 +315,7 @@ export default function CompleteAccountPage() {
     <div className="min-h-screen bg-white py-10 px-6">
       <div className="max-w-3xl mx-auto">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Complete Account</h1>
+          <h1 className="text-3xl font-bold text-gray-900">{isPatientAccount ? 'Complete Mobile Patient Account' : 'Complete Account'}</h1>
           <p className="text-sm text-gray-600 mt-2">{completionHint}</p>
         </div>
 
@@ -361,16 +387,15 @@ export default function CompleteAccountPage() {
               <input name="suffix" value={form.suffix} onChange={updateField} className="w-full p-2 border border-gray-300 rounded-lg bg-white" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Birthdate</label>
-              <input type="date" name="birthdate" value={form.birthdate} onChange={updateField} className="w-full p-2 border border-gray-300 rounded-lg bg-white" />
+              <label className="block text-sm font-medium text-gray-700 mb-1">Birthdate *</label>
+              <input required type="date" name="birthdate" max={getAdultBirthdateMax()} value={form.birthdate} onChange={updateField} className="w-full p-2 border border-gray-300 rounded-lg bg-white" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Gender</label>
-              <select name="gender" value={form.gender} onChange={updateField} className="w-full p-2 border border-gray-300 rounded-lg bg-white">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Gender *</label>
+              <select required name="gender" value={form.gender} onChange={updateField} className="w-full p-2 border border-gray-300 rounded-lg bg-white">
                 <option value="">Select</option>
                 <option value="Male">Male</option>
                 <option value="Female">Female</option>
-                <option value="Prefer not to say">Prefer not to say</option>
               </select>
             </div>
           </div>

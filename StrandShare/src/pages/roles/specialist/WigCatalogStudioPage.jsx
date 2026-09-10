@@ -6,13 +6,16 @@ import {
   History,
   Loader2,
   PackagePlus,
+  Power,
   PlusCircle,
+  Trash2,
   X,
 } from 'lucide-react';
 
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 import { logAuditAction } from '../../../lib/auditLogger';
+import PageHeaderActions from '../../../components/PageHeaderActions';
 import AddWigTab from './wigCatalog/AddWigTab';
 import BundleCompletionScanner from './wigCatalog/BundleCompletionScanner';
 import WigInventoryTab from './wigCatalog/WigInventoryTab';
@@ -57,6 +60,9 @@ function createBundleScannerState() {
   };
 }
 
+// Kept temporarily for reading historical deployments; manual stock controls
+// are intentionally not rendered because physical bundle scans own quantity.
+// eslint-disable-next-line no-unused-vars
 function StockAdjustmentModal({ state, setState, onClose, onSubmit }) {
   if (!state.open || !state.row) return null;
   const row = state.row;
@@ -65,7 +71,7 @@ function StockAdjustmentModal({ state, setState, onClose, onSubmit }) {
   const nextStock = Number(row.stockCount || 0) + signedChange;
   return (
     <ModalFrame
-      title={`Adjust stock Â· ${row.wigCode || row.wigName}`}
+      title={`Adjust stock | ${row.wigCode || row.wigName}`}
       icon={<PackagePlus size={17} className="text-slate-700" />}
       onClose={state.saving ? undefined : onClose}
     >
@@ -157,7 +163,7 @@ function StockHistoryModal({ state, onClose }) {
   if (!state.open || !state.row) return null;
   return (
     <ModalFrame
-      title={`Stock history Â· ${state.row.wigCode || state.row.wigName}`}
+      title={`Stock history | ${state.row.wigCode || state.row.wigName}`}
       icon={<History size={17} className="text-slate-700" />}
       onClose={onClose}
       width="max-w-2xl"
@@ -192,7 +198,7 @@ function StockHistoryModal({ state, onClose }) {
                       {Number(item.Quantity_Change) > 0 ? '+' : ''}{item.Quantity_Change}
                     </td>
                     <td className="px-4 py-3 text-slate-700">
-                      {item.Previous_Stock} â†’ {item.New_Stock}
+                      {item.Previous_Stock} -> {item.New_Stock}
                     </td>
                     <td className="px-4 py-3 text-slate-600">{item.Reason || 'Inventory adjustment'}</td>
                   </tr>
@@ -206,7 +212,7 @@ function StockHistoryModal({ state, onClose }) {
   );
 }
 
-export default function WigCatalogStudioPage({ userProfile }) {
+export default function WigCatalogStudioPage({ userProfile, isActivePage = true }) {
   const { primaryColor } = useTheme() || {};
   const accent = primaryColor || '#7f1d1d';
   const [tab, setTab] = useState(TAB_INVENTORY);
@@ -232,6 +238,13 @@ export default function WigCatalogStudioPage({ userProfile }) {
     error: '',
   });
   const [bundleScanner, setBundleScanner] = useState(createBundleScannerState);
+  const [catalogAction, setCatalogAction] = useState({
+    open: false,
+    row: null,
+    action: '',
+    saving: false,
+    error: '',
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -297,7 +310,7 @@ export default function WigCatalogStudioPage({ userProfile }) {
   }, [loadInventory]);
 
   useEffect(() => {
-    if (!supabase) {
+    if (!isActivePage || !supabase) {
       return undefined;
     }
 
@@ -313,8 +326,9 @@ export default function WigCatalogStudioPage({ userProfile }) {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [loadInventory]);
+  }, [isActivePage, loadInventory]);
 
+  // eslint-disable-next-line no-unused-vars
   const openStockModal = (row) => {
     setStockModal({
       open: true,
@@ -327,11 +341,13 @@ export default function WigCatalogStudioPage({ userProfile }) {
     });
   };
 
+  // eslint-disable-next-line no-unused-vars
   const closeStockModal = () => {
     if (stockModal.saving) return;
     setStockModal((previous) => ({ ...previous, open: false }));
   };
 
+  // eslint-disable-next-line no-unused-vars
   const submitStockAdjustment = async () => {
     if (!supabase || !stockModal.row) return;
     const quantity = Number.parseInt(stockModal.quantity, 10);
@@ -389,6 +405,44 @@ export default function WigCatalogStudioPage({ userProfile }) {
     }));
   };
 
+  const openCatalogAction = useCallback((row, action) => {
+    setCatalogAction({ open: true, row, action, saving: false, error: '' });
+  }, []);
+
+  const closeCatalogAction = useCallback(() => {
+    setCatalogAction((previous) => (
+      previous.saving
+        ? previous
+        : { open: false, row: null, action: '', saving: false, error: '' }
+    ));
+  }, []);
+
+  const submitCatalogAction = useCallback(async () => {
+    if (!supabase || !catalogAction.row || !catalogAction.action) return;
+    setCatalogAction((previous) => ({ ...previous, saving: true, error: '' }));
+    try {
+      const result = await supabase.rpc('manage_wig_catalog_item', {
+        p_wig_id: Number(catalogAction.row.wigId),
+        p_action: catalogAction.action,
+      });
+      if (result.error) throw result.error;
+
+      const label = catalogAction.row.wigCode || catalogAction.row.wigName;
+      const actionMessage = catalogAction.action === 'delete'
+        ? `${label} was deleted from the catalog.`
+        : `${label} is now ${catalogAction.action === 'activate' ? 'active and visible on the phone' : 'inactive and hidden from the phone'}.`;
+      setCatalogAction({ open: false, row: null, action: '', saving: false, error: '' });
+      setNotice({ kind: 'success', message: actionMessage });
+      await loadInventory();
+    } catch (error) {
+      setCatalogAction((previous) => ({
+        ...previous,
+        saving: false,
+        error: error?.message || 'Could not update this wig catalog item.',
+      }));
+    }
+  }, [catalogAction.action, catalogAction.row, loadInventory]);
+
   const openBundleScanner = useCallback(() => {
     setBundleScanner({
       open: true,
@@ -417,16 +471,9 @@ export default function WigCatalogStudioPage({ userProfile }) {
     }));
 
     try {
-      let result = await supabase.rpc('complete_wig_request_or_stock_from_bundle_scan', {
+      const result = await supabase.rpc('complete_wig_stock_from_bundle_scan', {
         p_waybill_payload: payload,
       });
-      const missingWorkflowFunction = result.error
-        && String(result.error.message || '').toLowerCase().includes('complete_wig_request_or_stock_from_bundle_scan');
-      if (missingWorkflowFunction) {
-        result = await supabase.rpc('complete_wig_stock_from_bundle_scan', {
-          p_waybill_payload: payload,
-        });
-      }
       if (result.error) throw result.error;
 
       const data = result.data || {};
@@ -440,12 +487,10 @@ export default function WigCatalogStudioPage({ userProfile }) {
       const previousStock = Number(data.previous_stock ?? 0);
       const nextStock = Number(data.next_stock ?? previousStock + 1);
       const memberCount = Number(data.member_count || 0);
-      const directToRequest = Boolean(data.direct_to_request);
-      const request = data.request || {};
 
       void logAuditAction({
         action: 'wig_catalog_bundle_scan_completed',
-        description: `bundle_id=${bundle.Bundle_ID} bundle_code=${bundleCode} wig_id=${wig.Wig_ID} stock:${previousStock}->${nextStock} members=${memberCount} direct_to_request=${directToRequest}`,
+        description: `bundle_id=${bundle.Bundle_ID} bundle_code=${bundleCode} wig_id=${wig.Wig_ID} stock:${previousStock}->${nextStock} members=${memberCount} stock_only=true`,
         resource: 'wig_catalog_studio',
         userProfile,
       });
@@ -455,9 +500,7 @@ export default function WigCatalogStudioPage({ userProfile }) {
         manualCode: '',
         saving: false,
         error: '',
-        success: directToRequest
-          ? `Bundle ${bundleCode} completed and was reserved directly for ${request.Request_Code || `request #${request.Req_ID}`}. It was not added to general stock; the request is now Accepted - Wig Allocated and ready for the next staff action.`
-          : `Bundle ${bundleCode} completed. ${wigLabel}${capLabel} stock increased from ${previousStock} to ${nextStock}; ${memberCount} linked submission${memberCount === 1 ? '' : 's'} now show Wig Created.`,
+        success: `Bundle ${bundleCode} completed. ${wigLabel}${capLabel} stock increased from ${previousStock} to ${nextStock}; ${memberCount} linked submission${memberCount === 1 ? '' : 's'} now show Wig Created. Staff were notified and must scan this physical wig before allocation.`,
       }));
       await loadInventory();
       return true;
@@ -484,24 +527,33 @@ export default function WigCatalogStudioPage({ userProfile }) {
   return (
     <div className="space-y-5">
       <header>
-        <div className="flex flex-col gap-5 pb-7 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-col gap-3 pb-5 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="role-page-title text-2xl font-semibold tracking-tight text-slate-700 sm:text-3xl">
+            <h1 className="role-page-title text-2xl font-bold text-slate-900">
               Wig Catalog Studio
             </h1>
-            <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-600">
+            <p className="max-w-3xl text-sm text-slate-600">
               Add catalog-ready wigs with private local AI, review similar styles,
               confirm photo try-on, and monitor inventory from one workspace.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setTab(TAB_ADD)}
-            className="inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-lg px-5 py-3 text-sm font-semibold text-white shadow-sm"
-            style={{ backgroundColor: accent }}
-          >
-            <PlusCircle size={17} /> Add New Wig
-          </button>
+          <div className="flex shrink-0 items-center gap-2 self-start">
+            <PageHeaderActions
+              onRefresh={() => loadInventory()}
+              refreshLoading={loading}
+              autoRefreshOnChanges={false}
+              helpTitle="About Wig Catalog Studio"
+              helpContent={<p>Create catalog specifications at zero stock. Physical stock is added only after a completed bundle QR is scanned.</p>}
+            />
+            <button
+              type="button"
+              onClick={() => setTab(TAB_ADD)}
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold text-white shadow-sm"
+              style={{ backgroundColor: accent }}
+            >
+              <PlusCircle size={16} /> Add New Wig
+            </button>
+          </div>
         </div>
 
         <nav className="flex gap-7 border-b border-slate-300" aria-label="Wig catalog sections">
@@ -546,10 +598,9 @@ export default function WigCatalogStudioPage({ userProfile }) {
         <WigInventoryTab
           rows={inventory}
           loading={loading}
-          onRefresh={loadInventory}
-          onAdjustStock={openStockModal}
           onOpenHistory={openHistory}
           onOpenBundleScanner={openBundleScanner}
+          onManageCatalog={openCatalogAction}
           primaryColor={accent}
         />
       </div>
@@ -566,22 +617,69 @@ export default function WigCatalogStudioPage({ userProfile }) {
             setTab(TAB_INVENTORY);
             setNotice({
               kind: 'success',
-              message: `${created.wigName} was added in Small, Medium, and Large. Starting stock was applied only to ${created.selectedCapSize} (${created.wigCode}).`,
+              message: `${created.wigName} was added in Small, Medium, and Large at zero stock. Scan a completed bundle to add one physical wig.`,
             });
           }}
         />
       </div>
 
-      <StockAdjustmentModal
-        state={stockModal}
-        setState={setStockModal}
-        onClose={closeStockModal}
-        onSubmit={submitStockAdjustment}
-      />
       <StockHistoryModal
         state={historyModal}
         onClose={() => setHistoryModal((previous) => ({ ...previous, open: false }))}
       />
+      {catalogAction.open && catalogAction.row ? (
+        <ModalFrame
+          title={`${catalogAction.action === 'delete' ? 'Delete' : catalogAction.action === 'activate' ? 'Activate' : 'Deactivate'} wig`}
+          icon={catalogAction.action === 'delete'
+            ? <Trash2 size={17} className="text-red-600" />
+            : <Power size={17} className="text-slate-700" />}
+          onClose={catalogAction.saving ? undefined : closeCatalogAction}
+        >
+          <div className="space-y-4 p-5">
+            <div className="rounded-xl bg-slate-50 p-4">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Selected wig variant</p>
+              <p className="mt-1 font-semibold text-slate-900">{catalogAction.row.wigName}</p>
+              <p className="mt-1 font-mono text-xs text-slate-600">{catalogAction.row.wigCode} · {catalogAction.row.capSize || 'No cap size'} cap</p>
+            </div>
+
+            <p className="text-sm leading-6 text-slate-600">
+              {catalogAction.action === 'delete'
+                ? 'Delete this catalog variant permanently? Deletion is allowed only when stock is zero and the wig has no request, bundle, allocation, or inventory history.'
+                : catalogAction.action === 'activate'
+                  ? 'Activate this wig filter and make this cap-size variant available on the phone catalog?'
+                  : 'Deactivate this wig filter and hide this cap-size variant from the phone catalog? Existing history will be preserved.'}
+            </p>
+
+            {catalogAction.error ? (
+              <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                <AlertCircle size={15} className="mt-0.5 shrink-0" />
+                <span>{catalogAction.error}</span>
+              </div>
+            ) : null}
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button
+                type="button"
+                onClick={closeCatalogAction}
+                disabled={catalogAction.saving}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitCatalogAction}
+                disabled={catalogAction.saving}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold text-white disabled:opacity-50 ${catalogAction.action === 'delete' ? 'bg-red-600' : ''}`}
+                style={catalogAction.action === 'delete' ? undefined : { backgroundColor: accent }}
+              >
+                {catalogAction.saving ? <Loader2 size={13} className="animate-spin" /> : catalogAction.action === 'delete' ? <Trash2 size={13} /> : <Power size={13} />}
+                Confirm {catalogAction.action}
+              </button>
+            </div>
+          </div>
+        </ModalFrame>
+      ) : null}
       <BundleCompletionScanner
         open={bundleScanner.open}
         manualCode={bundleScanner.manualCode}

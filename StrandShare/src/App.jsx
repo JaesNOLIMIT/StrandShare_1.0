@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
+import { ToastProvider } from './context/ToastContext';
 import LandingPage from './pages/public/LandingPage';
 import LoginPage from './pages/shared/auth/LoginPage';
 import CompleteAccountPage from './pages/shared/auth/CompleteAccountPage';
@@ -10,10 +11,11 @@ import HRepresentativeRole from './pages/roles/h-representative/HRepresentativeR
 import EventApplicationPage from './pages/public/EventApplicationPage';
 import EventApplicationSuccessPage from './pages/public/EventApplicationSuccessPage';
 import PartnershipApplicationPage from './pages/public/PartnershipApplicationPage';
+import PartnerHospitalsPage from './pages/public/PartnerHospitalsPage';
+import PatientApplicationPage from './pages/public/PatientApplicationPage';
 import StaffRole from './pages/roles/staff/StaffRole';
 import SpecialistRole from './pages/roles/specialist/SpecialistRole';
 import {
-  clearLocalSupabaseSession,
   isSupabaseConfigured,
   supabase,
 } from './lib/supabaseClient';
@@ -27,8 +29,19 @@ import { ensurePasswordRecoveryRoute } from './lib/passwordRecovery';
 
 const USER_PROFILE_STORAGE_KEY = 'Donivra_user_profile';
 const USER_PROFILE_READY_EVENT = 'Donivra-profile-ready';
+const AUTH_NOTICE_SESSION_KEY = 'Donivra_auth_notice';
 const AUTH_FLOW_PATHS = new Set(['/complete-account', '/reset-password', '/confirmation-complete']);
 const AUTH_BOOTSTRAP_TIMEOUT_MS = 22000;
+let initialSessionRequest = null;
+
+function getInitialSession() {
+  if (!initialSessionRequest) {
+    initialSessionRequest = supabase.auth.getSession().finally(() => {
+      initialSessionRequest = null;
+    });
+  }
+  return initialSessionRequest;
+}
 
 function withTimeout(promise, timeoutMs, message) {
   let timeoutId;
@@ -72,8 +85,21 @@ export default function App() {
   const [userProfile, setUserProfile] = useState(null);
   const [isLoadingAuth, setIsLoadingAuth] = useState(true);
   const [isHydratingProfile, setIsHydratingProfile] = useState(false);
-  const [authNotice, setAuthNotice] = useState('');
+  const [authNotice, setAuthNotice] = useState(() => {
+    try {
+      const notice = sessionStorage.getItem(AUTH_NOTICE_SESSION_KEY) || '';
+      sessionStorage.removeItem(AUTH_NOTICE_SESSION_KEY);
+      return notice;
+    } catch {
+      return '';
+    }
+  });
   const [authRecoveryRequired, setAuthRecoveryRequired] = useState(false);
+  const [isDashboardPreparing, setIsDashboardPreparing] = useState(false);
+  const endingInactiveSessionRef = useRef(false);
+  const handleInitialDashboardReady = useCallback(() => {
+    setIsDashboardPreparing(false);
+  }, []);
 
   const getStoredProfileForUser = (authUserId) => {
     try {
@@ -139,12 +165,17 @@ export default function App() {
       const payload = event?.detail;
       const authUserId = payload?.authUserId;
       const profile = payload?.profile;
+      const source = payload?.source;
 
       if (!authUserId || !profile) {
         return;
       }
 
-      if (isSupabaseConfigured && supabase) {
+      if (source === 'login') {
+        setIsDashboardPreparing(true);
+      }
+
+      if (source === 'login' && isSupabaseConfigured && supabase) {
         supabase.auth.getSession()
           .then(({ data, error }) => {
             if (error) {
@@ -194,7 +225,7 @@ export default function App() {
       try {
         setAuthRecoveryRequired(false);
         const { data, error } = await withTimeout(
-          supabase.auth.getSession(),
+          getInitialSession(),
           AUTH_BOOTSTRAP_TIMEOUT_MS,
           'Session initialization timed out.',
         );
@@ -258,7 +289,9 @@ export default function App() {
           return;
         }
 
-        console.error('Failed to initialize authentication:', error);
+        if (error?.message !== 'Session initialization timed out.') {
+          console.error('Failed to initialize authentication:', error);
+        }
         setSession(null);
         setUserProfile(null);
         setIsHydratingProfile(false);
@@ -288,12 +321,19 @@ export default function App() {
         setSession(null);
         setUserProfile(null);
         setIsHydratingProfile(false);
+        setIsDashboardPreparing(false);
         return;
       }
 
       if (!nextSession?.user?.id) {
         return;
       }
+
+      // A temporarily slow token refresh can complete after the bootstrap UI
+      // timeout. Recover in place instead of leaving the app locked on the
+      // service-unavailable screen.
+      setAuthRecoveryRequired(false);
+      setIsLoadingAuth(false);
 
       const storedProfile = getStoredProfileForUser(nextSession.user.id);
       if (storedProfile) {
@@ -359,6 +399,93 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const authUserId = session?.user?.id;
+    if (!authUserId || !isSupabaseConfigured || !supabase) return undefined;
+
+    let disposed = false;
+    let checking = false;
+
+    const terminateInactiveSession = async () => {
+      if (disposed || endingInactiveSessionRef.current) return;
+      endingInactiveSessionRef.current = true;
+      const notice = 'Your account was deactivated. Contact an administrator if you need access restored.';
+      try {
+        sessionStorage.setItem(AUTH_NOTICE_SESSION_KEY, notice);
+      } catch {
+        // The redirect still ends access if sessionStorage is unavailable.
+      }
+      try {
+        await supabase.auth.signOut({ scope: 'local' });
+      } catch {
+        // Clear application state and persisted credentials below regardless.
+      }
+      clearLoginSessionPersistence();
+      localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+      setSession(null);
+      setUserProfile(null);
+      setIsHydratingProfile(false);
+      setIsDashboardPreparing(false);
+      window.location.replace('/login');
+    };
+
+    const checkAccountAccess = async () => {
+      if (checking || disposed || endingInactiveSessionRef.current) return;
+      checking = true;
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('is_active')
+          .eq('auth_user_id', authUserId)
+          .maybeSingle();
+        const errorText = `${error?.message || ''} ${error?.details || ''}`.toUpperCase();
+        if (data?.is_active === false || errorText.includes('ACCOUNT_INACTIVE')) {
+          await terminateInactiveSession();
+        }
+      } finally {
+        checking = false;
+      }
+    };
+
+    const channel = supabase
+      .channel(`account-access:${authUserId}`)
+      .on('broadcast', { event: 'status_changed' }, ({ payload }) => {
+        if (payload?.isActive === false) void terminateInactiveSession();
+      })
+      .subscribe();
+
+    const checkWhenVisible = () => {
+      if (document.visibilityState === 'visible') void checkAccountAccess();
+    };
+    const intervalId = window.setInterval(() => void checkAccountAccess(), 5000);
+    window.addEventListener('focus', checkAccountAccess);
+    window.addEventListener('online', checkAccountAccess);
+    window.addEventListener('pageshow', checkAccountAccess);
+    document.addEventListener('visibilitychange', checkWhenVisible);
+    void checkAccountAccess();
+
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', checkAccountAccess);
+      window.removeEventListener('online', checkAccountAccess);
+      window.removeEventListener('pageshow', checkAccountAccess);
+      document.removeEventListener('visibilitychange', checkWhenVisible);
+      void supabase.removeChannel(channel);
+    };
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!isDashboardPreparing || !session) {
+      return undefined;
+    }
+
+    // Never hold the successful-login overlay indefinitely if a dashboard
+    // request is slow or a role has no data configured yet.
+    const fallbackTimer = window.setTimeout(() => setIsDashboardPreparing(false), 12000);
+    return () => window.clearTimeout(fallbackTimer);
+  }, [isDashboardPreparing, session]);
+
   const handleSignOut = async () => {
     const platform = navigator.platform || 'Unknown platform';
 
@@ -376,27 +503,15 @@ export default function App() {
           await supabase.auth.signOut();
         }
       } finally {
-        localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-        clearLoginSessionPersistence();
-        setSession(null);
-        setUserProfile(null);
-        setIsHydratingProfile(false);
-        window.location.replace('/login');
+          localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+          clearLoginSessionPersistence();
+          setSession(null);
+          setUserProfile(null);
+          setIsHydratingProfile(false);
+          setIsDashboardPreparing(false);
+          window.location.replace('/login');
       }
     }
-  };
-
-  const handleRetryAuth = () => {
-    setAuthRecoveryRequired(false);
-    setIsLoadingAuth(true);
-    window.location.reload();
-  };
-
-  const handleUseAnotherAccount = () => {
-    clearLocalSupabaseSession();
-    localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
-    clearLoginSessionPersistence();
-    window.location.replace('/login');
   };
 
   const activeRole = userProfile?.role || null;
@@ -408,6 +523,8 @@ export default function App() {
   const isPartnershipApplicationRoute = currentPath === '/apply-partnership';
   const isEventApplicationRoute = currentPath === '/apply-event';
   const isEventApplicationSuccessRoute = currentPath === '/apply-event/success';
+  const isPartnerHospitalsRoute = currentPath === '/partner-hospitals';
+  const isPatientApplicationRoute = currentPath === '/apply-patient';
   const isCompleteAccountRoute = currentPath === '/complete-account';
   const isResetPasswordRoute = currentPath === '/reset-password';
   const isConfirmationCompleteRoute = currentPath === '/confirmation-complete';
@@ -416,7 +533,15 @@ export default function App() {
   const showPartnershipApplicationPage = canRenderMainRoutes && !session && isPartnershipApplicationRoute;
   const showEventApplicationPage = canRenderMainRoutes && !session && isEventApplicationRoute;
   const showEventApplicationSuccessPage = canRenderMainRoutes && !session && isEventApplicationSuccessRoute;
-  const showLoginPage = canRenderMainRoutes && !session && !isLandingRoute && !isPartnershipApplicationRoute && !isEventApplicationRoute && !isEventApplicationSuccessRoute;
+  const showPartnerHospitalsPage = canRenderMainRoutes && !session && isPartnerHospitalsRoute;
+  const showPatientApplicationPage = canRenderMainRoutes && !session && isPatientApplicationRoute;
+  const showLoginPage = canRenderMainRoutes && !session
+    && !isLandingRoute
+    && !isPartnershipApplicationRoute
+    && !isEventApplicationRoute
+    && !isEventApplicationSuccessRoute
+    && !isPartnerHospitalsRoute
+    && !isPatientApplicationRoute;
   const showDashboard =
     canRenderMainRoutes &&
     !isLoadingAuth &&
@@ -432,32 +557,19 @@ export default function App() {
     Boolean(activeRole) &&
     !ActiveDashboard &&
     !isHydratingProfile;
+  const showLoginPreparationOverlay = showDashboard && isDashboardPreparing;
   return (
     <ThemeProvider>
-      <div className="min-h-screen">
+      <ToastProvider>
+        <div className="min-h-screen">
         {authRecoveryRequired && !isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && (
           <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
-            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
-              <h1 className="text-xl font-semibold text-slate-900">We could not restore this browser session</h1>
+            <div role="alert" className="w-full max-w-md rounded-2xl border border-red-200 bg-white p-6 text-center shadow-sm">
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-red-600">Service unavailable</p>
+              <h1 className="mt-2 text-xl font-semibold text-slate-900">Donivra is not responding</h1>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                The saved sign-in may be stale, or the authentication service did not respond in time. An account open on another device does not prevent you from signing in here.
+                Please try again later. If the problem continues, contact the Donivra support team for assistance.
               </p>
-              <div className="mt-5 flex flex-col justify-center gap-3 sm:flex-row">
-                <button
-                  type="button"
-                  onClick={handleRetryAuth}
-                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                >
-                  Try again
-                </button>
-                <button
-                  type="button"
-                  onClick={handleUseAnotherAccount}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-                >
-                  Sign in again
-                </button>
-              </div>
             </div>
           </div>
         )}
@@ -482,16 +594,26 @@ export default function App() {
           <EventApplicationSuccessPage />
         )}
 
-        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showLoginPage && (
-          <LoginPage
-            authNotice={
-              authNotice ||
-              (!isSupabaseConfigured
-                ? 'Supabase is not configured yet. Add REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.'
-                : '')
-            }
-            onClearNotice={() => setAuthNotice('')}
-          />
+        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showPartnerHospitalsPage && (
+          <PartnerHospitalsPage />
+        )}
+
+        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showPatientApplicationPage && (
+          <PatientApplicationPage />
+        )}
+
+        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && (showLoginPage || showLoginPreparationOverlay) && (
+          <div className={showLoginPreparationOverlay ? 'fixed inset-0 z-[100] overflow-auto bg-white' : ''}>
+            <LoginPage
+              authNotice={
+                authNotice ||
+                (!isSupabaseConfigured
+                  ? 'Supabase is not configured yet. Add REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.'
+                  : '')
+              }
+              onClearNotice={() => setAuthNotice('')}
+            />
+          </div>
         )}
 
         {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showDashboard && (
@@ -504,6 +626,7 @@ export default function App() {
               }
             }
             initialPage={canonicalActiveRole === 'specialist' && isWigAiStudioRoute ? 'wig-ai-studio' : undefined}
+            onInitialDashboardReady={handleInitialDashboardReady}
           />
         )}
 
@@ -516,9 +639,11 @@ export default function App() {
         {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showUnsupportedRole && (
           <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
             <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
-              <h1 className="text-xl font-semibold text-slate-900">Management access only</h1>
+              <h1 className="text-xl font-semibold text-slate-900">{canonicalActiveRole === 'patient' ? 'Continue in the Donivra mobile app' : 'Management access only'}</h1>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                This account is not assigned to an authorized management role.
+                {canonicalActiveRole === 'patient'
+                  ? 'Patient sign-in and wig-request features are available only in the mobile application.'
+                  : 'This account is not assigned to an authorized management role.'}
               </p>
               <button type="button" onClick={handleSignOut} className="mt-5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
                 Sign out
@@ -526,7 +651,8 @@ export default function App() {
             </div>
           </div>
         )}
-      </div>
+        </div>
+      </ToastProvider>
     </ThemeProvider>
   );
 }

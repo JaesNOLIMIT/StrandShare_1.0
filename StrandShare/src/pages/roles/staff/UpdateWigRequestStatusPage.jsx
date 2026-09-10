@@ -1,10 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CalendarDays, CheckCircle2, Info, Loader2, RefreshCw, Search, X } from 'lucide-react';
+import { AlertTriangle, CalendarDays, CheckCircle2, Info, Loader2, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import PageHeaderActions from '../../../components/PageHeaderActions';
+import WigReleaseAftercarePanel from '../../../components/WigReleaseAftercarePanel';
+import BundleCompletionScanner from '../specialist/wigCatalog/BundleCompletionScanner';
+import { useToast } from '../../../context/ToastContext';
+import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 
 const WIG_REQUESTS_TABLE = 'Wig_Requests';
+const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
 const WIGS_TABLE = 'Wigs';
 const WIG_SPECS_TABLE = 'Wig_Specifications';
 const WIG_FILTERS_TABLE = 'Wig_AI_Filters';
@@ -29,11 +35,14 @@ const REQUEST_STATUS = {
   toBeRelease: 'To Be Release',
   releasing: 'Releasing',
   released: 'Released',
+  appealed: 'Concern Reported',
+  returnedCompleted: 'Returned - Completed',
   rejected: 'Rejected',
   cancelled: 'Cancelled',
 };
 
 const STATUS_FILTERS = [
+  { id: 'all', label: 'All Requests' },
   { id: 'all_active', label: 'All Active Requests' },
   { id: 'pending', label: 'Pending' },
   { id: 'accepted_allocated', label: 'Accepted - Wig Allocated' },
@@ -42,9 +51,13 @@ const STATUS_FILTERS = [
   { id: 'to_be_release', label: 'To Be Release' },
   { id: 'releasing', label: 'Releasing' },
   { id: 'released', label: 'Released' },
+  { id: 'appealed', label: 'Concern Reported' },
+  { id: 'returned_completed', label: 'Returned - Completed' },
+  { id: 'rejected', label: 'Rejected' },
+  { id: 'cancelled', label: 'Cancelled' },
 ];
 
-const ACTIVE_REQUEST_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_in_production', 'ready_for_pickup', 'to_be_release', 'releasing'];
+const ACTIVE_REQUEST_STATUS_KEYS = ['pending', 'accepted_allocated', 'accepted_in_production', 'ready_for_pickup', 'to_be_release', 'releasing', 'appealed'];
 
 const ACTION_DEFINITIONS = {
   accept_allocated: {
@@ -111,6 +124,11 @@ function getReleaseWorkflowLabel(value) {
   return 'N/A';
 }
 
+function formatConcernNumber(appealId) {
+  const numericId = Number(appealId || 0);
+  return numericId > 0 ? `CON-${String(numericId).padStart(6, '0')}` : 'Concern';
+}
+
 function releaseWorkflowClass(value) {
   const key = normalizeReleaseWorkflowKey(value);
 
@@ -151,6 +169,14 @@ function getCanonicalStatusKey(statusValue) {
     return 'released';
   }
 
+  if (['appealed', 'appeal', 'underappeal'].includes(key)) {
+    return 'appealed';
+  }
+
+  if (['returnedcompleted', 'returnedclosed'].includes(key)) {
+    return 'returned_completed';
+  }
+
   if (['rejected', 'declined', 'denied'].includes(key)) {
     return 'rejected';
   }
@@ -175,6 +201,8 @@ function getStatusLabel(statusValue) {
   if (key === 'to_be_release') return REQUEST_STATUS.toBeRelease;
   if (key === 'releasing') return REQUEST_STATUS.releasing;
   if (key === 'released') return REQUEST_STATUS.released;
+  if (key === 'appealed') return REQUEST_STATUS.appealed;
+  if (key === 'returned_completed') return REQUEST_STATUS.returnedCompleted;
   if (key === 'rejected') return REQUEST_STATUS.rejected;
   if (key === 'cancelled') return REQUEST_STATUS.cancelled;
   return REQUEST_STATUS.pending;
@@ -189,6 +217,8 @@ function statusClass(statusValue) {
   if (key === 'to_be_release') return 'bg-indigo-100 text-indigo-700';
   if (key === 'releasing') return 'bg-teal-100 text-teal-700';
   if (key === 'released') return 'bg-green-100 text-green-700';
+  if (key === 'returned_completed') return 'bg-slate-200 text-slate-800';
+  if (key === 'appealed') return 'bg-violet-100 text-violet-800';
   if (key === 'rejected') return 'bg-red-100 text-red-700';
   if (key === 'cancelled') return 'bg-slate-200 text-slate-700';
   return 'bg-amber-100 text-amber-700';
@@ -274,13 +304,27 @@ function parseSpecialNotesPayload(specialNotesValue) {
   }
 }
 
+function parseManilaDate(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const normalized = raw.replace(' ', 'T');
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(normalized);
+  const parsed = new Date(hasTimezone
+    ? normalized
+    : dateOnly
+      ? `${normalized}T00:00:00${PST_OFFSET}`
+      : `${normalized}${PST_OFFSET}`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function formatDateTime(value) {
   if (!value) {
     return 'N/A';
   }
 
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
+  const parsed = parseManilaDate(value);
+  if (!parsed) {
     return 'N/A';
   }
 
@@ -294,9 +338,21 @@ function formatDateTime(value) {
   });
 }
 
+function formatDateOnly(value) {
+  if (!value) return 'N/A';
+  const parsed = parseManilaDate(value);
+  if (!parsed) return 'N/A';
+  return parsed.toLocaleDateString('en-PH', {
+    timeZone: PST_TIMEZONE,
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  });
+}
+
 function toDateTimeLocalValue(value) {
-  const parsed = new Date(value || Date.now());
-  if (Number.isNaN(parsed.getTime())) {
+  const parsed = value ? parseManilaDate(value) : new Date();
+  if (!parsed) {
     return '';
   }
 
@@ -442,6 +498,10 @@ function mapActionError(rawMessage) {
     return 'Release scheduling has a database schema mismatch. Apply the latest release-scheduling migration, then retry.';
   }
 
+  if (lowerMessage.includes('invalid input value for enum') && lowerMessage.includes('wig_cap_size')) {
+    return 'The wig cap-size comparison needs the latest database fix. Apply migration 20260908170000, refresh, and scan again.';
+  }
+
   if (
     lowerMessage.includes('release_schedules')
     && (lowerMessage.includes('could not find the table') || lowerMessage.includes('relation "release_schedules" does not exist'))
@@ -488,10 +548,6 @@ function actionRequiresReason(actionId) {
   return Boolean(ACTION_DEFINITIONS[actionId]?.requiresReason);
 }
 
-function actionRequiresWigSelection(actionId) {
-  return Boolean(ACTION_DEFINITIONS[actionId]?.requiresWigSelection);
-}
-
 function getCanonicalWigStatusLabel(statusValue) {
   const key = normalizeStatusKey(statusValue);
   if (['readyforrelease', 'readyforevent', 'available'].includes(key)) return 'Available';
@@ -514,7 +570,9 @@ function getAllowedActionsForRow(row) {
   }
 
   if (row.statusKey === 'accepted_in_production') {
-    return [];
+    // Staff may scan the request's completed bundle themselves. If Specialist
+    // scanned first, the same action verifies and allocates the stocked wig.
+    return ['accept_allocated'];
   }
 
   if (row.statusKey === 'accepted_allocated') {
@@ -553,8 +611,12 @@ function buildSearchBlob(row) {
     row.requestedWigSpecificationId,
     row.specSpecialNote,
     row.allocatedWigCode,
+    row.allocatedWigCatalogCode,
     row.allocatedWigName,
     row.allocatedWigStatus,
+    row.appealStatus,
+    row.appealReturnStatus,
+    row.appeal?.reason,
     formatDateTime(row.requestDate),
     formatDateTime(row.releaseDate),
   ]
@@ -563,16 +625,35 @@ function buildSearchBlob(row) {
     .join(' ');
 }
 
-export default function UpdateWigRequestStatusPage({ userProfile }) {
+export default function UpdateWigRequestStatusPage({ userProfile, isActivePage = true }) {
+  const { showToast } = useToast();
+  const [workspaceTab, setWorkspaceTab] = useState('requests');
   const [rows, setRows] = useState([]);
   const [notice, setNotice] = useState({ kind: '', text: '' });
   const [searchTerm, setSearchTerm] = useState('');
-  const [activeStatusFilter, setActiveStatusFilter] = useState('all_active');
+  const [activeStatusFilter, setActiveStatusFilter] = useState('all');
   const [requestDateFrom, setRequestDateFrom] = useState('');
   const [requestDateTo, setRequestDateTo] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isApplyingAction, setIsApplyingAction] = useState(false);
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
+  const [childRefreshToken, setChildRefreshToken] = useState(0);
   const [isReleaseWorkflowAvailable, setIsReleaseWorkflowAvailable] = useState(true);
+  const [isAppealWorkflowAvailable, setIsAppealWorkflowAvailable] = useState(true);
+
+  useEffect(() => {
+    if (!notice.text) return;
+    showToast({
+      type: notice.kind || 'info',
+      title: notice.kind === 'success'
+        ? 'Wig request updated'
+        : notice.kind === 'error'
+          ? 'Action not completed'
+          : 'Please review',
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
 
   const [selectedRow, setSelectedRow] = useState(null);
   const [selectedAction, setSelectedAction] = useState('');
@@ -581,9 +662,14 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
   const [isLoadingAvailableWigs, setIsLoadingAvailableWigs] = useState(false);
   const [actionReason, setActionReason] = useState('');
   const [actionReleaseDate, setActionReleaseDate] = useState('');
-  const [safetyReviewStatus, setSafetyReviewStatus] = useState('Pending');
-  const [safetyReviewNotes, setSafetyReviewNotes] = useState('');
+  const [actionConfirmationOpen, setActionConfirmationOpen] = useState(false);
   const [releaseConfirmationStep, setReleaseConfirmationStep] = useState('');
+  const [approvalConfirmation, setApprovalConfirmation] = useState(null);
+  const [allocationScanCode, setAllocationScanCode] = useState('');
+  const [allocationScanPreview, setAllocationScanPreview] = useState(null);
+  const [allocationScanner, setAllocationScanner] = useState({
+    open: false, manualCode: '', saving: false, error: '', success: '',
+  });
 
   const loadReviewRows = useCallback(async (keepSelectedReqId = null) => {
     if (!isSupabaseConfigured || !supabase) {
@@ -599,20 +685,63 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       setIsLoading(true);
       setNotice({ kind: '', text: '' });
 
-      const [requestsRes, patientsRes, hospitalsRes, safetyRes] = await Promise.all([
+      const [requestsRes, patientsRes, hospitalsRes, safetyRes, physicalBundlesRes, allocatedBundlesRes] = await Promise.all([
         supabase
           .from(WIG_REQUESTS_TABLE)
           .select('*')
           .order('Request_Date', { ascending: false }),
-        supabase.from(PATIENTS_TABLE).select('*'),
+        supabase.from(PATIENTS_TABLE).select([
+          'Patient_ID', 'User_ID', 'Hospital_ID', 'Patient_Code', 'Medical_Condition',
+          'Patient_Picture', 'Condition_Category', 'Condition_Stage_Severity',
+          'Doctor_Name', 'Attending_Physician_Contact', 'Treatment_Hospital_Clinic',
+          'Treatment_Plan', 'Current_Treatment_Status', 'Allergies_Current_Medications',
+          'Guardian', 'Guardian_Relationship', 'Guardian_Contact_Number',
+          'Secondary_Guardian', 'Secondary_Guardian_Relationship',
+          'Secondary_Guardian_Contact_Number',
+        ].join(',')),
         supabase.from(HOSPITALS_TABLE).select('Hospital_ID,Hospital_Name'),
         supabase.from(SAFETY_ASSESSMENTS_TABLE).select('*'),
+        supabase.rpc('get_available_physical_wig_counts'),
+        supabase
+          .from(HAIR_SUBMISSION_BUNDLES_TABLE)
+          .select('Bundle_ID, Bundle_Waybill_Code, Allocated_To_Wig_Request_ID'),
       ]);
 
       if (requestsRes.error) throw requestsRes.error;
       if (patientsRes.error) throw patientsRes.error;
       if (hospitalsRes.error) throw hospitalsRes.error;
       if (safetyRes.error) throw safetyRes.error;
+      if (physicalBundlesRes.error) throw physicalBundlesRes.error;
+      if (allocatedBundlesRes.error) throw allocatedBundlesRes.error;
+
+      const availablePhysicalSpecIds = new Set(
+        (physicalBundlesRes.data || [])
+          .filter((row) => Number(row.Available_Count || 0) > 0)
+          .map((row) => Number(row.Wig_Specification_ID || 0))
+          .filter((specificationId) => specificationId > 0),
+      );
+
+      let appealsRes = await supabase
+        .from('wig_release_appeals')
+        .select('appeal_id, receipt_id, req_id, reason, requested_resolution, status, return_status, submitted_at, reviewed_at')
+        .order('submitted_at', { ascending: false });
+      if (appealsRes.error && ['return_status', 'requested_resolution'].some((column) => String(appealsRes.error.message || '').toLowerCase().includes(column))) {
+        appealsRes = await supabase
+          .from('wig_release_appeals')
+          .select('appeal_id, receipt_id, req_id, reason, status, submitted_at, reviewed_at')
+          .order('submitted_at', { ascending: false });
+      }
+      let appealRows = [];
+      if (appealsRes.error) {
+        if (isMissingRelationError(appealsRes.error.message) || String(appealsRes.error.message || '').toLowerCase().includes('schema cache')) {
+          setIsAppealWorkflowAvailable(false);
+        } else {
+          throw appealsRes.error;
+        }
+      } else {
+        appealRows = appealsRes.data || [];
+        setIsAppealWorkflowAvailable(true);
+      }
 
       const linkedUserIds = Array.from(
         new Set(
@@ -720,6 +849,21 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       const patientById = new Map((patientsRes.data || []).map((row) => [Number(row.Patient_ID), row]));
       const safetyByReqId = new Map((safetyRes.data || []).map((row) => [Number(row.req_id), row]));
       const hospitalById = new Map((hospitalsRes.data || []).map((row) => [Number(row.Hospital_ID), row]));
+      const physicalBundleById = new Map(
+        (allocatedBundlesRes.data || [])
+          .map((row) => ({
+            bundleId: Number(row.Bundle_ID || 0),
+            bundleWaybillCode: String(row.Bundle_Waybill_Code || '').trim(),
+            requestId: Number(row.Allocated_To_Wig_Request_ID || 0),
+          }))
+          .filter((row) => row.bundleId > 0)
+          .map((row) => [row.bundleId, row]),
+      );
+      const physicalBundleByRequestId = new Map(
+        Array.from(physicalBundleById.values())
+          .filter((row) => row.requestId > 0)
+          .map((row) => [row.requestId, row]),
+      );
       const allocatedWigById = new Map(
         allocatedWigs
           .map((row) => ({
@@ -775,6 +919,11 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           .filter((row) => Number(row.Req_ID || 0) > 0)
           .map((row) => [Number(row.Req_ID), row]),
       );
+      const latestAppealByReqId = new Map();
+      appealRows.forEach((appeal) => {
+        const requestId = Number(appeal.req_id || 0);
+        if (requestId && !latestAppealByReqId.has(requestId)) latestAppealByReqId.set(requestId, appeal);
+      });
 
       const mappedRows = (requestsRes.data || []).map((requestRow) => {
         const reqId = Number(requestRow.Req_ID || 0);
@@ -789,17 +938,22 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           : {};
         const requestedWigId = Number(requestRow.Requested_Wig_ID || 0) || null;
         const allocatedWigId = Number(requestRow.Allocated_Wig_ID || 0) || null;
+        const fulfillmentBundleId = Number(requestRow.Fulfillment_Bundle_ID || 0) || null;
         const requestedSpec = requestedWigId ? (allocatedSpecByWigId.get(requestedWigId) || null) : null;
         const requestedWig = requestedWigId ? (allocatedWigById.get(requestedWigId) || null) : null;
         const requestedWigFilter = requestedWigId ? (allocatedFilterByWigId.get(requestedWigId) || null) : null;
         const requestedSpecId = toPositiveNumber(requestedSpec?.Wig_Specification_ID || 0);
         const allocatedWig = allocatedWigId ? (allocatedWigById.get(allocatedWigId) || null) : null;
+        const allocatedPhysicalBundle = (fulfillmentBundleId ? physicalBundleById.get(fulfillmentBundleId) : null)
+          || physicalBundleByRequestId.get(reqId)
+          || null;
         const allocatedWigSpec = allocatedWigId ? (allocatedSpecByWigId.get(allocatedWigId) || null) : null;
         const allocatedWigFilter = allocatedWigId ? (allocatedFilterByWigId.get(allocatedWigId) || null) : null;
         const schedule = currentScheduleByReqId.get(reqId) || null;
         const linkedPatientUser = patient ? patientUsersById[Number(patient.User_ID || 0)] : null;
         const linkedPatientDetails = Array.isArray(linkedPatientUser?.user_details) ? linkedPatientUser.user_details[0] : linkedPatientUser?.user_details;
         const safetyAssessment = safetyByReqId.get(reqId) || null;
+        const latestAppeal = latestAppealByReqId.get(reqId) || null;
 
         const statusRaw = requestRow.Status || REQUEST_STATUS.pending;
         const statusKey = getCanonicalStatusKey(statusRaw);
@@ -841,6 +995,9 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           clinicalAllergiesMedications: String(patient?.Allergies_Current_Medications || '').trim() || 'N/A',
           requestDate: requestRow.Request_Date,
           updatedAt: requestRow.Updated_At || requestRow.Request_Date,
+          expectedReleaseEarliestAt: requestRow.Expected_Release_Earliest_At || null,
+          expectedReleaseLatestAt: requestRow.Expected_Release_Latest_At || requestRow.Expected_Release_At || null,
+          expectedReleaseNote: String(requestRow.Expected_Release_Note || '').trim(),
           status: statusRaw,
           statusKey,
           statusLabel: getStatusLabel(statusRaw),
@@ -857,8 +1014,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           specCapSize: String(requestedSpec?.Cap_Size || '').trim() || 'N/A',
           specSpecialNote: String(specialNotesPayload?.specialNoteTemplate || '').trim() || 'N/A',
           requestedStockCount: requestedWig?.stockCount ?? 0,
-          requestedStockAvailable: Number(requestedWig?.stockCount || 0) > 0
-            && normalizeStatusKey(requestedWig?.wigStatus) === 'available',
+          requestedStockAvailable: availablePhysicalSpecIds.has(requestedSpecId),
           safetyAssessment,
           requestedWigFrontImageUrl: signedSourceUrlByPath.get(String(requestedWigFilter?.Source_Front_Path || '').trim())
             || resolveStoragePublicUrl(
@@ -897,7 +1053,9 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
               String(requestedWigFilter?.Layer_Back_Hair_Path || '').trim(),
             ),
           allocatedWigId,
-          allocatedWigCode: allocatedWig?.wigCode || '',
+          allocatedBundleId: allocatedPhysicalBundle?.bundleId || fulfillmentBundleId,
+          allocatedWigCode: allocatedPhysicalBundle?.bundleWaybillCode || '',
+          allocatedWigCatalogCode: allocatedWig?.wigCode || '',
           allocatedWigName: allocatedWig?.wigName || '',
           allocatedWigStatus: allocatedWig?.wigStatus || '',
           allocatedWigStockCount: allocatedWig?.stockCount ?? null,
@@ -945,6 +1103,10 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           releaseWorkflowKey: normalizeReleaseWorkflowKey(releaseWorkflowRaw),
           releaseWorkflowLabel,
           releaseDecisionReason: String(schedule?.Hospital_Decision_Reason || '').trim(),
+          appeal: latestAppeal,
+          hasAppeal: Boolean(latestAppeal),
+          appealStatus: String(latestAppeal?.status || '').trim(),
+          appealReturnStatus: String(latestAppeal?.return_status || '').trim(),
         };
       });
 
@@ -1092,34 +1254,19 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     loadReviewRows();
   }, [loadReviewRows]);
 
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
-      return undefined;
-    }
-
-    const refreshRequests = () => void loadReviewRows();
-    const channel = supabase
-      .channel('staff-wig-requests-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_REQUESTS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIGS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_SPECS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: WIG_FILTERS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: PATIENTS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: RELEASE_SCHEDULES_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: SAFETY_ASSESSMENTS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: HOSPITALS_TABLE }, refreshRequests)
-      .on('postgres_changes', { event: '*', schema: 'public', table: USERS_TABLE }, refreshRequests)
-      .subscribe();
-
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [loadReviewRows]);
+  useRealtimeRefresh({
+    channelName: 'staff-wig-requests-live',
+    tables: [WIG_REQUESTS_TABLE, WIGS_TABLE, WIG_SPECS_TABLE, WIG_FILTERS_TABLE, PATIENTS_TABLE,
+      RELEASE_SCHEDULES_TABLE, SAFETY_ASSESSMENTS_TABLE, 'wig_release_appeals', HOSPITALS_TABLE, USERS_TABLE],
+    enabled: isActivePage,
+    onChange: () => loadReviewRows(selectedRow?.reqId || null),
+  });
 
   const filteredRows = useMemo(() => {
     const activeStatusSet = new Set(ACTIVE_REQUEST_STATUS_KEYS);
 
     const statusFiltered = rows.filter((row) => {
+      if (activeStatusFilter === 'all') return true;
       if (activeStatusFilter === 'all_active') {
         return activeStatusSet.has(row.statusKey);
       }
@@ -1130,16 +1277,28 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     const query = normalizeText(searchTerm);
 
     return statusFiltered.filter((row) => {
-      const requestDate = new Date(row.requestDate);
-      if (requestDateFrom && !Number.isNaN(requestDate.getTime()) && requestDate < new Date(`${requestDateFrom}T00:00:00`)) {
+      const requestDate = parseManilaDate(row.requestDate);
+      if (requestDateFrom && requestDate && requestDate < new Date(`${requestDateFrom}T00:00:00${PST_OFFSET}`)) {
         return false;
       }
-      if (requestDateTo && !Number.isNaN(requestDate.getTime()) && requestDate > new Date(`${requestDateTo}T23:59:59`)) {
+      if (requestDateTo && requestDate && requestDate > new Date(`${requestDateTo}T23:59:59${PST_OFFSET}`)) {
         return false;
       }
       return !query || buildSearchBlob(row).includes(query);
     });
   }, [rows, activeStatusFilter, searchTerm, requestDateFrom, requestDateTo]);
+
+  const hasActiveRequestFilters = activeStatusFilter !== 'all'
+    || Boolean(requestDateFrom)
+    || Boolean(requestDateTo)
+    || Boolean(searchTerm.trim());
+
+  const clearRequestFilters = () => {
+    setActiveStatusFilter('all');
+    setRequestDateFrom('');
+    setRequestDateTo('');
+    setSearchTerm('');
+  };
 
   const quickStats = useMemo(() => {
     const pendingCount = rows.filter((row) => row.statusKey === 'pending').length;
@@ -1149,6 +1308,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     const toBeReleaseCount = rows.filter((row) => row.statusKey === 'to_be_release').length;
     const releasingCount = rows.filter((row) => row.statusKey === 'releasing').length;
     const releasedCount = rows.filter((row) => row.statusKey === 'released').length;
+    const appealedCount = rows.filter((row) => row.statusKey === 'appealed').length;
     const rescheduleRequestedCount = rows.filter((row) => row.releaseWorkflowKey === 'hospital_reschedule_requested').length;
 
     return [
@@ -1159,8 +1319,18 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       { label: 'To Be Release', value: String(toBeReleaseCount) },
       { label: 'Releasing', value: String(releasingCount) },
       { label: 'Released', value: String(releasedCount) },
+      { label: 'Concern Reported', value: String(appealedCount) },
       { label: 'Reschedule Requested', value: String(rescheduleRequestedCount) },
     ];
+  }, [rows]);
+
+  const appealSummary = useMemo(() => {
+    const withAppeals = rows.filter((row) => row.hasAppeal);
+    return {
+      total: withAppeals.length,
+      pending: withAppeals.filter((row) => row.appealStatus === 'Pending Staff Review').length,
+      activeReturns: withAppeals.filter((row) => row.appealReturnStatus && !['Completed', 'Return Completed'].includes(row.appealReturnStatus)).length,
+    };
   }, [rows]);
 
   const minimumReleaseDateTimeLocal = getMinimumReleaseDateTimeLocal();
@@ -1193,6 +1363,15 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
   }, [assignableWigs, selectedWigSpecificationId]);
 
   const selectedAllowedActions = useMemo(() => getAllowedActionsForRow(selectedRow), [selectedRow]);
+  const primaryFooterAction = useMemo(
+    () => selectedAllowedActions.find((actionId) => actionId !== 'reject') || '',
+    [selectedAllowedActions],
+  );
+  const allocatedApprovalTime = Date.now();
+  const allocatedApprovalWindow = {
+    earliest: new Date(allocatedApprovalTime + (3 * 24 * 60 * 60 * 1000)),
+    latest: new Date(allocatedApprovalTime + (9 * 24 * 60 * 60 * 1000)),
+  };
 
   useEffect(() => {
     setSelectedAction('');
@@ -1200,9 +1379,11 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     setAvailableWigs([]);
     setActionReason('');
     setActionReleaseDate('');
-    setSafetyReviewStatus(selectedRow?.safetyAssessment?.review_status || 'Pending');
-    setSafetyReviewNotes(selectedRow?.safetyAssessment?.review_notes || '');
-  }, [selectedRow?.reqId, selectedRow?.safetyAssessment?.review_notes, selectedRow?.safetyAssessment?.review_status]);
+    setActionConfirmationOpen(false);
+    setAllocationScanCode('');
+    setAllocationScanPreview(null);
+    setAllocationScanner({ open: false, manualCode: '', saving: false, error: '', success: '' });
+  }, [selectedRow?.reqId]);
 
   useEffect(() => {
     setSelectedWigSpecificationId('');
@@ -1252,16 +1433,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       return false;
     }
 
-    if (actionRequiresWigSelection(selectedAction) && !Number(selectedWigSpecificationId || 0)) {
-      return false;
-    }
-
-    if (
-      selectedAction === 'accept_allocated'
-      && requestedSpecIdForSelection
-      && Number(selectedWigSpecificationId || 0)
-      && Number(selectedWigSpecificationId || 0) !== requestedSpecIdForSelection
-    ) {
+    if (selectedAction === 'accept_allocated' && !allocationScanPreview?.can_allocate) {
       return false;
     }
 
@@ -1273,8 +1445,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     isReleaseWorkflowAvailable,
     actionReleaseDate,
     actionReason,
-    selectedWigSpecificationId,
-    requestedSpecIdForSelection,
+    allocationScanPreview,
     minimumReleaseDateTimeLocal,
   ]);
 
@@ -1287,6 +1458,37 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     if (result.error) throw result.error;
     return result.data;
   }, []);
+
+  const previewAllocationScan = useCallback(async (rawPayload) => {
+    const payload = String(rawPayload || '').trim();
+    if (!selectedRow?.reqId || !payload) return false;
+    setAllocationScanner((previous) => ({ ...previous, saving: true, error: '', success: '' }));
+    try {
+      const result = await supabase.rpc('preview_wig_request_bundle_scan', {
+        p_req_id: selectedRow.reqId,
+        p_waybill_payload: payload,
+      });
+      if (result.error) throw result.error;
+      const preview = result.data || null;
+      setAllocationScanCode(payload);
+      setAllocationScanPreview(preview);
+      setAllocationScanner((previous) => ({
+        ...previous,
+        saving: false,
+        success: preview?.can_allocate
+          ? 'Physical wig verified. Close this scanner, review every match, then approve the allocation.'
+          : '',
+        error: preview?.can_allocate
+          ? ''
+          : 'QR read successfully, but this wig is unavailable or has a specification mismatch.',
+      }));
+      return Boolean(preview?.can_allocate);
+    } catch (error) {
+      setAllocationScanPreview(null);
+      setAllocationScanner((previous) => ({ ...previous, saving: false, error: mapActionError(error?.message), success: '' }));
+      return false;
+    }
+  }, [selectedRow?.reqId]);
 
   const handleApplyAction = async () => {
     if (!selectedRow || !selectedAction) {
@@ -1318,17 +1520,28 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     try {
       setIsApplyingAction(true);
       setNotice({ kind: '', text: '' });
+      let approvedRequest = null;
 
-      if (['accept_allocated', 'accept_in_production', 'reject'].includes(selectedAction)) {
+      if (selectedAction === 'accept_allocated') {
+        const allocationResult = await supabase.rpc('allocate_scanned_wig_to_request', {
+          p_req_id: selectedRow.reqId,
+          p_waybill_payload: allocationScanCode,
+          p_safety_review_status: null,
+          p_safety_review_notes: null,
+        });
+        if (allocationResult.error) throw allocationResult.error;
+        approvedRequest = allocationResult.data?.request || null;
+      } else if (['accept_in_production', 'reject'].includes(selectedAction)) {
         const transactionalResult = await supabase.rpc('review_wig_request_transactional', {
           p_req_id: selectedRow.reqId,
           p_action: selectedAction === 'accept_in_production' ? 'accept_production_required' : selectedAction,
-          p_wig_specification_id: selectedAction === 'accept_allocated' ? Number(selectedWigSpecificationId || 0) : null,
+          p_wig_specification_id: null,
           p_reason: reasonText || null,
-          p_safety_review_status: safetyReviewStatus || null,
-          p_safety_review_notes: String(safetyReviewNotes || '').trim() || null,
+          p_safety_review_status: null,
+          p_safety_review_notes: null,
         });
         if (transactionalResult.error) throw transactionalResult.error;
+        approvedRequest = transactionalResult.data?.request || null;
       }
 
       if (selectedAction === 'mark_ready_for_pickup') {
@@ -1364,6 +1577,16 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       setSelectedWigSpecificationId('');
       setActionReason('');
       setActionReleaseDate('');
+      setActionConfirmationOpen(false);
+      if (['accept_allocated', 'accept_in_production'].includes(selectedAction) && approvedRequest) {
+        setApprovalConfirmation({
+          requestCode,
+          status: approvedRequest.Status,
+          earliest: approvedRequest.Expected_Release_Earliest_At,
+          latest: approvedRequest.Expected_Release_Latest_At || approvedRequest.Expected_Release_At,
+          note: approvedRequest.Expected_Release_Note,
+        });
+      }
       setNotice({ kind: 'success', text: `${requestCode} updated successfully using "${actionLabel}".` });
     } catch (error) {
       await logAuditAction({
@@ -1382,6 +1605,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
 
   const handleOpenReleaseConfirmation = () => {
     if (!selectedRow || !['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)) return;
+    setActionReason('');
     setReleaseConfirmationStep('confirm');
   };
 
@@ -1397,6 +1621,14 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
       });
       if (result.error) throw result.error;
 
+      await logAuditAction({
+        action: 'staff_complete_wig_release',
+        description: `${selectedRow.requestId}: final wig handover confirmed${String(actionReason || '').trim() ? ` | notes: ${String(actionReason).trim()}` : ''}`,
+        resource: 'Wig_Requests',
+        status: 'success',
+        userProfile,
+      });
+
       await loadReviewRows(selectedRow.reqId);
       setReleaseConfirmationStep('success');
     } catch (error) {
@@ -1407,17 +1639,80 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
     }
   };
 
+  const handleRefreshPage = async () => {
+    if (isManualRefreshing) return;
+    setIsManualRefreshing(true);
+    try {
+      await loadReviewRows(selectedRow?.reqId || null);
+      setChildRefreshToken((current) => current + 1);
+    } finally {
+      setIsManualRefreshing(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Staff Workflow</p>
-        <h1 className="role-page-title mt-1 text-2xl font-extrabold tracking-tight text-slate-900 md:text-3xl">Manage Wig Request</h1>
-        <p className="mt-1 text-sm text-slate-600">
-          Review all incoming wig requests, inspect full specifications, and process status transitions up to release scheduling.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Wig Request</h1>
+          <p className="text-sm text-slate-600">Review incoming requests, inspect specifications, and process each request through release scheduling.</p>
+        </div>
+        <PageHeaderActions
+          onRefresh={handleRefreshPage}
+          refreshLoading={isLoading || isManualRefreshing}
+          refreshDisabled={isApplyingAction}
+          helpTitle="About Manage Wig Request"
+          helpContent={(
+            <>
+              <p>Use the filters to find a request, then open it to review the patient, requested wig, safety assessment, allocation, and release workflow.</p>
+              <p>Status updates from other authorized users are applied automatically while this page is open.</p>
+            </>
+          )}
+        />
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-8">
+      <div className="border-b border-slate-200">
+        <nav className="-mb-px flex gap-6 px-1" aria-label="Manage wig request sections">
+          <button type="button" onClick={() => setWorkspaceTab('requests')} className={`border-b-2 px-1 py-3 text-sm font-semibold ${workspaceTab === 'requests' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>Requests</button>
+          <button type="button" onClick={() => { setWorkspaceTab('appeals'); setSelectedRow(null); }} className={`flex items-center gap-2 border-b-2 px-1 py-3 text-sm font-semibold ${workspaceTab === 'appeals' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+            After-release Concerns
+            {appealSummary.total > 0 ? (
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${appealSummary.pending > 0 ? 'bg-red-600 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                {appealSummary.total}{appealSummary.pending > 0 ? ` (${appealSummary.pending} new)` : ''}
+              </span>
+            ) : null}
+            {!isAppealWorkflowAvailable ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">Setup needed</span> : null}
+          </button>
+        </nav>
+      </div>
+
+      {workspaceTab === 'appeals' ? (
+        <WigReleaseAftercarePanel mode="staff" isActivePage={isActivePage} refreshToken={childRefreshToken} />
+      ) : (
+        <>
+
+      {appealSummary.pending > 0 ? (
+        <button
+          type="button"
+          onClick={() => { setWorkspaceTab('appeals'); setSelectedRow(null); }}
+          className="flex w-full items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-left text-amber-950 shadow-sm hover:bg-amber-100"
+        >
+          <span className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-200"><AlertTriangle size={18} /></span>
+            <span>
+              <strong className="block text-sm">{appealSummary.pending} after-release concern{appealSummary.pending === 1 ? '' : 's'} awaiting Staff review</strong>
+              <span className="text-xs text-amber-800">Open After-release Concerns to confirm the problem and requested outcome.</span>
+            </span>
+          </span>
+          <span className="shrink-0 text-xs font-bold">Review concerns →</span>
+        </button>
+      ) : appealSummary.activeReturns > 0 ? (
+        <button type="button" onClick={() => setWorkspaceTab('appeals')} className="w-full rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-left text-sm font-semibold text-indigo-900">
+          {appealSummary.activeReturns} confirmed wig return{appealSummary.activeReturns === 1 ? '' : 's'} currently in progress. Open After-release Concerns to continue.
+        </button>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-5 xl:grid-cols-9">
         {quickStats.map((item) => (
           <article key={item.label} className="rounded-xl border border-slate-200 bg-white p-3">
             <p className="text-[11px] uppercase tracking-wide text-slate-500">{item.label}</p>
@@ -1426,78 +1721,71 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
         ))}
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-6">
-          <div className="relative xl:col-span-2">
-            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-xs text-slate-800 focus:border-slate-500 focus:outline-none"
-              placeholder="Search requests, patients, hospitals, wigs..."
-            />
+      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-200 p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <SlidersHorizontal size={15} className="text-slate-500" />
+            <div>
+              <p className="text-sm font-semibold text-slate-800">Filter wig requests</p>
+              <p className="text-[11px] text-slate-500">Showing {filteredRows.length} of {rows.length} requests</p>
+            </div>
           </div>
-
-          <select
-            value={activeStatusFilter}
-            onChange={(event) => setActiveStatusFilter(event.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
-            aria-label="Wig request status filter"
-          >
-            {STATUS_FILTERS.map((filterItem) => (
-              <option key={filterItem.id} value={filterItem.id}>{filterItem.label}</option>
-            ))}
-          </select>
-
-          <input
-            type="date"
-            value={requestDateFrom}
-            onChange={(event) => setRequestDateFrom(event.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
-            aria-label="Request from date"
-            title="From date"
-          />
-
-          <input
-            type="date"
-            value={requestDateTo}
-            onChange={(event) => setRequestDateTo(event.target.value)}
-            min={requestDateFrom || undefined}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
-            aria-label="Request to date"
-            title="To date"
-          />
-
-          <button
-            type="button"
-            onClick={() => loadReviewRows(selectedRow?.reqId || null)}
-            disabled={isLoading || isApplyingAction}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-          >
-            {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            Refresh
-          </button>
+          {hasActiveRequestFilters && (
+            <button type="button" onClick={clearRequestFilters} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 hover:text-slate-900">
+              <X size={13} /> Clear filters
+            </button>
+          )}
         </div>
-      </div>
 
-      {notice.text && (
-        <div
-          className={`rounded-lg border px-3 py-2 text-sm font-medium ${
-            notice.kind === 'error'
-              ? 'border-red-200 bg-red-50 text-red-800'
-              : notice.kind === 'warning'
-                ? 'border-amber-200 bg-amber-50 text-amber-900'
-                : 'border-emerald-200 bg-emerald-50 text-emerald-900'
-          }`}
-        >
-          {notice.text}
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[170px_170px_minmax(220px,1fr)_minmax(360px,2.5fr)]">
+          <label className="space-y-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">From</span>
+            <input
+              type="date"
+              value={requestDateFrom}
+              onChange={(event) => setRequestDateFrom(event.target.value)}
+              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
+            />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">To</span>
+            <input
+              type="date"
+              value={requestDateTo}
+              onChange={(event) => setRequestDateTo(event.target.value)}
+              min={requestDateFrom || undefined}
+              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
+            />
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Status</span>
+            <select
+              value={activeStatusFilter}
+              onChange={(event) => setActiveStatusFilter(event.target.value)}
+              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 outline-none focus:border-slate-500"
+            >
+              {STATUS_FILTERS.map((filterItem) => (
+                <option key={filterItem.id} value={filterItem.id}>{filterItem.label}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="space-y-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Search</span>
+            <div className="relative">
+              <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                className="w-full rounded-md border border-slate-300 bg-white py-2 pl-8 pr-3 text-xs text-slate-800 focus:border-slate-500 focus:outline-none"
+                placeholder="Request, patient, hospital, wig, status, or condition"
+              />
+            </div>
+          </label>
         </div>
-      )}
-
-      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <div className="border-b border-slate-200 px-4 py-3">
-          <h2 className="text-lg font-semibold text-slate-900">Wig Request Management</h2>
-          <p className="mt-0.5 text-xs text-slate-500">Review request details and continue the role-appropriate status workflow.</p>
         </div>
 
         {isLoading ? (
@@ -1505,7 +1793,11 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
             <Loader2 size={16} className="animate-spin" /> Loading wig request records...
           </div>
         ) : filteredRows.length === 0 ? (
-          <div className="px-4 py-8 text-sm text-slate-600">No records matched your current filter/search.</div>
+          <div className="px-4 py-8 text-sm text-slate-600">
+            <p className="font-semibold text-slate-800">No requests match the current filters.</p>
+            <p className="mt-1 text-xs">Choose All Requests or clear the date and search filters to view the {rows.length} loaded request{rows.length === 1 ? '' : 's'}.</p>
+            {hasActiveRequestFilters ? <button type="button" onClick={clearRequestFilters} className="mt-3 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700">Show all requests</button> : null}
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -1545,14 +1837,24 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                         {row.requestedStockAvailable ? `${row.requestedStockCount} in stock` : 'No matching stock'}
                       </span>
                       {row.allocatedWigCode ? <p className="text-xs font-semibold text-emerald-700">Allocated Wig: {row.allocatedWigCode}</p> : null}
+                      {row.allocatedWigCatalogCode ? <p className="text-[11px] text-slate-500">Catalog variant: {row.allocatedWigCatalogCode}</p> : null}
                     </td>
                     <td className="px-4 py-3">
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(row.status)}`}>
                         {row.statusLabel}
                       </span>
-                      <span className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-semibold ${releaseWorkflowClass(row.releaseWorkflowStatus)}`}>
+                      {row.releaseWorkflowLabel !== 'N/A' ? <span className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-semibold ${releaseWorkflowClass(row.releaseWorkflowStatus)}`}>
                         {row.releaseWorkflowLabel}
-                      </span>
+                      </span> : null}
+                      {row.hasAppeal ? (
+                        <button
+                          type="button"
+                          onClick={(event) => { event.stopPropagation(); setWorkspaceTab('appeals'); setSelectedRow(null); }}
+                          className={`mt-1 block w-fit rounded-full px-2 py-0.5 text-[10px] font-bold ${row.appealStatus === 'Pending Staff Review' ? 'bg-red-100 text-red-800' : 'bg-violet-100 text-violet-800'}`}
+                        >
+                          {formatConcernNumber(row.appeal?.appeal_id)}: {['Completed', 'Return Completed'].includes(row.appealReturnStatus) ? 'Problem Solved' : (row.appealReturnStatus || row.appealStatus)}
+                        </button>
+                      ) : null}
                     </td>
                     <td className="px-4 py-3 text-slate-700">{formatDateTime(row.requestDate)}</td>
                     <td className="px-4 py-3 text-slate-700">{formatDateTime(row.releaseDate)}</td>
@@ -1576,6 +1878,8 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
           </div>
         )}
       </section>
+        </>
+      )}
 
       {selectedRow && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-3 sm:p-6">
@@ -1597,9 +1901,12 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                   {selectedRow.requestId} | {selectedRow.patientName}
                 </p>
               </div>
-              <button type="button" onClick={() => { setReleaseConfirmationStep(''); setSelectedRow(null); }} className="text-slate-400 hover:text-red-500">
-                <X size={22} />
-              </button>
+              <div className="flex items-center gap-3">
+                <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass(selectedRow.status)}`}>{selectedRow.statusLabel}</span>
+                <button type="button" onClick={() => { setReleaseConfirmationStep(''); setSelectedRow(null); }} className="text-slate-400 hover:text-red-500">
+                  <X size={22} />
+                </button>
+              </div>
             </div>
 
             <div className="flex flex-1 flex-col gap-4 overflow-y-auto bg-slate-100 p-5">
@@ -1647,12 +1954,12 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                     <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Emergency Contacts</p>
                     <div className="mt-2 space-y-1.5">
                       <p className="font-semibold text-slate-900">Primary</p>
-                      <p>{selectedRow.guardianName} Â· {selectedRow.guardianRelationship}</p>
+                      <p>{selectedRow.guardianName} | {selectedRow.guardianRelationship}</p>
                       <p>{selectedRow.guardianContact}</p>
                       {selectedRow.secondaryGuardianName || selectedRow.secondaryGuardianRelationship || selectedRow.secondaryGuardianContact ? (
                         <div className="border-t border-slate-100 pt-2">
                           <p className="font-semibold text-slate-900">Secondary</p>
-                          <p>{selectedRow.secondaryGuardianName || 'N/A'} Â· {selectedRow.secondaryGuardianRelationship || 'N/A'}</p>
+                          <p>{selectedRow.secondaryGuardianName || 'N/A'} | {selectedRow.secondaryGuardianRelationship || 'N/A'}</p>
                           <p>{selectedRow.secondaryGuardianContact || 'N/A'}</p>
                         </div>
                       ) : null}
@@ -1664,6 +1971,21 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                   <p><span className="font-semibold text-slate-900">Updated:</span> {formatDateTime(selectedRow.updatedAt)}</p>
                   <p><span className="font-semibold text-slate-900">Status:</span> {selectedRow.statusLabel}</p>
                 </div>
+                {selectedRow.hasAppeal ? (
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedRow(null); setWorkspaceTab('appeals'); }}
+                    className="mt-4 flex w-full items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-left text-rose-950"
+                  >
+                    <span>
+                      <strong className="block text-sm">This request has an after-release concern</strong>
+                      <span className="mt-0.5 block text-xs text-rose-800">
+                        {selectedRow.appeal?.reason || 'Issue reported'} · {selectedRow.appealReturnStatus || selectedRow.appealStatus}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-xs font-bold">Open concern →</span>
+                  </button>
+                ) : null}
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -1702,15 +2024,53 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                       <p><span className="font-semibold text-slate-900">Texture:</span> {selectedRow.specTexture}</p>
                       <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedRow.specCapSize}</p>
                     </div>
-                    <p className="mt-3 text-sm text-slate-700"><span className="font-semibold text-slate-900">Allocated Wig:</span> {selectedRow.allocatedWigCode || 'Not assigned yet'}</p>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <div className="text-sm text-slate-700">
+                        <p><span className="font-semibold text-slate-900">Physical wig serial:</span> {selectedRow.allocatedWigCode || 'Not assigned yet'}</p>
+                        {selectedRow.allocatedWigCatalogCode ? <p className="mt-0.5 text-xs text-slate-500">Catalog variant: {selectedRow.allocatedWigCatalogCode}</p> : null}
+                      </div>
+                      {!selectedRow.allocatedWigId && selectedAllowedActions.includes('accept_allocated') ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedAction('accept_allocated');
+                            setAllocationScanner({ open: true, manualCode: '', saving: false, error: '', success: '' });
+                          }}
+                          className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                        >
+                          Assign Wig
+                        </button>
+                      ) : null}
+                    </div>
                     <p className="mt-2 whitespace-pre-line text-sm text-slate-700"><span className="font-semibold text-slate-900">Special Note:</span> {selectedRow.specSpecialNote}</p>
                   </div>
                 </div>
+                {allocationScanPreview ? (
+                  <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className={`rounded-lg border px-3 py-2 text-xs font-semibold ${allocationScanPreview.can_allocate ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
+                      {allocationScanPreview.can_allocate
+                        ? `Physical wig matched: ${allocationScanPreview.bundle_code || `Bundle #${allocationScanPreview.bundle_id}`}`
+                        : 'The scanned physical wig is unavailable or does not match this request.'}
+                    </div>
+                    <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+                      {(allocationScanPreview.fields || []).map((field) => (
+                        <div key={field.key} className={`rounded-lg border px-2.5 py-2 text-[11px] ${field.match ? 'border-emerald-200 bg-white' : 'border-red-200 bg-red-50'}`}>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-slate-800">{field.label}</span>
+                            <span className={field.match ? 'text-emerald-700' : 'text-red-700'}>{field.match ? 'Match' : 'Mismatch'}</span>
+                          </div>
+                          <p className="mt-1 text-slate-600">Requested: {field.requested ?? 'N/A'} | Scanned: {field.actual ?? 'N/A'}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 {selectedRow.allocatedWigId ? (
                   <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
                     <p className="font-semibold text-slate-900">
-                      {selectedRow.allocatedWigCode || `Wig #${selectedRow.allocatedWigId}`} | {selectedRow.allocatedWigName || 'Unnamed Wig'}
+                      {selectedRow.allocatedWigCode || 'Physical serial unavailable'} | {selectedRow.allocatedWigName || 'Unnamed Wig'}
                     </p>
+                    {selectedRow.allocatedWigCatalogCode ? <p className="mt-1">Catalog variant: {selectedRow.allocatedWigCatalogCode}</p> : null}
                     <p className="mt-1">
                       Status: {selectedRow.allocatedWigStatus || 'N/A'} | Stock: {selectedRow.allocatedWigStockCount ?? 'N/A'}
                     </p>
@@ -1743,17 +2103,8 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                     {selectedRow.safetyAssessment.allergy_details ? <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Allergy details:</span> {selectedRow.safetyAssessment.allergy_details}</p> : null}
                     {selectedRow.safetyAssessment.medical_restriction_details ? <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Restriction details:</span> {selectedRow.safetyAssessment.medical_restriction_details}</p> : null}
                     <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Clinical allergies/current medications:</span> {selectedRow.clinicalAllergiesMedications}</p>
-                    <div className="grid grid-cols-1 gap-3 border-t border-slate-200 pt-3 sm:grid-cols-2">
-                      <div>
-                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-600">Safety Review</label>
-                        <select value={safetyReviewStatus} onChange={(event) => setSafetyReviewStatus(event.target.value)} disabled={isApplyingAction} className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm text-slate-800">
-                          {['Pending', 'Cleared', 'Needs Clarification', 'Requires Medical Clearance'].map((value) => <option key={value} value={value}>{value}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-600">Review Notes</label>
-                        <textarea value={safetyReviewNotes} onChange={(event) => setSafetyReviewNotes(event.target.value)} disabled={isApplyingAction} rows={2} className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm text-slate-800" />
-                      </div>
+                    <div className="flex items-center gap-2 border-t border-slate-200 pt-3 text-sm font-semibold text-emerald-700">
+                      <CheckCircle2 size={17} /> Confirmed by the hospital
                     </div>
                   </div>
                 ) : (
@@ -1769,6 +2120,10 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                     <span><span className="font-semibold text-slate-900">Release Date:</span> {formatDateTime(selectedRow.releaseDate)}</span>
                   </p>
                   <p><span className="font-semibold text-slate-900">Flow Status:</span> {selectedRow.releaseWorkflowLabel}</p>
+                  <p className="inline-flex items-center gap-1.5">
+                    <CalendarDays size={14} className="text-slate-500" />
+                    <span><span className="font-semibold text-slate-900">Required distribution window:</span> {formatDateOnly(selectedRow.expectedReleaseEarliestAt)} – {formatDateOnly(selectedRow.expectedReleaseLatestAt)}</span>
+                  </p>
                   {selectedRow.releaseDecisionReason && (
                     <p className="whitespace-pre-line"><span className="font-semibold text-slate-900">H-Representative Reason:</span> {selectedRow.releaseDecisionReason}</p>
                   )}
@@ -1778,7 +2133,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                 </div>
               </div>
 
-              <div className="order-last rounded-xl border border-slate-300 bg-white p-4 shadow-sm">
+              {false && <div className="rounded-xl border border-slate-300 bg-white p-4 shadow-sm">
                 <p className="text-sm font-semibold text-slate-900">Apply Review Action</p>
                 <p className="mt-1 text-xs text-slate-500">
                   {selectedRow.statusKey === 'pending'
@@ -1799,14 +2154,9 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                         ? 'This patient has no hospital. Confirm only after the patient or authorized recipient has picked up the wig.'
                         : 'The hospital approved the release schedule. Confirm only after the wig has been physically handed over to the patient or authorized recipient.'}
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleOpenReleaseConfirmation}
-                      disabled={isApplyingAction}
-                      className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
-                    >
-                      <CheckCircle2 size={16} /> {selectedRow.statusKey === 'ready_for_pickup' ? 'Confirm Pick-up' : 'Release Wig'}
-                    </button>
+                    <p className="text-xs font-medium text-slate-600">
+                      Use the fixed footer below to confirm this final handover.
+                    </p>
                   </div>
                 ) : selectedRow.statusKey === 'released' ? (
                   <div className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm font-semibold text-emerald-900">
@@ -1835,6 +2185,43 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
 
                     {selectedAction === 'accept_allocated' && (
                       <div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="text-xs font-semibold text-slate-900">Required physical wig scan</p>
+                              <p className="mt-0.5 text-[11px] text-slate-600">Scan the completed wig/bundle QR. Approval stays locked until every requested specification matches.</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setAllocationScanner({ open: true, manualCode: '', saving: false, error: '', success: '' })}
+                              disabled={isApplyingAction}
+                              className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                            >
+                              Scan Wig QR
+                            </button>
+                          </div>
+                          {allocationScanPreview ? (
+                            <div className="mt-3 space-y-2">
+                              <div className={`rounded-lg border px-3 py-2 text-xs font-semibold ${allocationScanPreview.can_allocate ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
+                                {allocationScanPreview.can_allocate
+                                  ? `Match confirmed: ${allocationScanPreview.bundle_code || `Bundle #${allocationScanPreview.bundle_id}`}`
+                                  : 'This scanned wig cannot be allocated to this request.'}
+                              </div>
+                              <div className="grid gap-1.5 sm:grid-cols-2">
+                                {(allocationScanPreview.fields || []).map((field) => (
+                                  <div key={field.key} className={`rounded-lg border px-2.5 py-2 text-[11px] ${field.match ? 'border-emerald-200 bg-white' : 'border-red-200 bg-red-50'}`}>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-semibold text-slate-800">{field.label}</span>
+                                      <span className={field.match ? 'text-emerald-700' : 'text-red-700'}>{field.match ? 'Match' : 'Mismatch'}</span>
+                                    </div>
+                                    <p className="mt-1 text-slate-600">Requested: {field.requested ?? 'N/A'} · Scanned: {field.actual ?? 'N/A'}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="hidden">
                         <div className="mb-1 flex items-center justify-between gap-2">
                           <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-600">Select Wig Specification (required)</label>
                           <button
@@ -1893,6 +2280,7 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                             No matching stock is available. Use "Accept - In Production" to send this request to the specialist priority queue.
                           </p>
                         )}
+                        </div>
                       </div>
                     )}
 
@@ -1940,16 +2328,24 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                       type="button"
                       onClick={handleApplyAction}
                       disabled={!canApplyAction}
-                      className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                      className="hidden rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-60"
                     >
-                      {isApplyingAction ? 'Applying...' : 'Apply Action'}
+                      {isApplyingAction
+                        ? 'Applying...'
+                        : selectedAction === 'accept_allocated'
+                          ? 'Approve - Wig Allocated'
+                          : 'Apply Action'}
                     </button>
                   </div>
                 )}
-              </div>
+              </div>}
 
               {selectedPreviewUrl ? (
                 <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="mb-3">
+                    <p className="text-sm font-semibold text-slate-900">Request History</p>
+                    <p className="mt-0.5 text-xs text-slate-500">Original request document and saved patient submission.</p>
+                  </div>
                   <iframe
                     title="Wig request PDF preview"
                     src={selectedPreviewUrl}
@@ -1966,9 +2362,200 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                 </div>
               ) : (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  No preview PDF URL is saved for this request yet.
+                  <p className="font-semibold">Request History</p>
+                  <p className="mt-1">No preview PDF URL is saved for this request yet.</p>
                 </div>
               )}
+            </div>
+
+            <footer className="z-20 flex shrink-0 flex-col gap-3 border-t border-slate-200 bg-white px-5 py-3 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-slate-500">Last updated <strong className="font-semibold text-slate-700">{formatDateTime(selectedRow.updatedAt)}</strong> <span className="font-medium">(Philippine time, UTC+8)</span></p>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {primaryFooterAction === 'accept_allocated' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAction('accept_allocated');
+                      setAllocationScanner({ open: true, manualCode: '', saving: false, error: '', success: '' });
+                    }}
+                    disabled={isApplyingAction}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    {allocationScanPreview?.can_allocate ? 'Rescan Wig QR' : 'Scan Wig QR'}
+                  </button>
+                ) : null}
+                {selectedAllowedActions.includes('reject') ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAction('reject');
+                      setActionReason('');
+                      setActionConfirmationOpen(true);
+                    }}
+                    disabled={isApplyingAction}
+                    className="rounded-lg border border-red-300 bg-white px-4 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    Reject
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)) {
+                      handleOpenReleaseConfirmation();
+                      return;
+                    }
+                    if (!primaryFooterAction) return;
+                    setSelectedAction(primaryFooterAction);
+                    setActionReason('');
+                    if (primaryFooterAction === 'accept_allocated' && !allocationScanPreview?.can_allocate) {
+                      setAllocationScanner({ open: true, manualCode: '', saving: false, error: '', success: '' });
+                      return;
+                    }
+                    setActionConfirmationOpen(true);
+                  }}
+                  disabled={['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)
+                    ? isApplyingAction
+                    : !primaryFooterAction || isApplyingAction}
+                  className="min-w-[112px] rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isApplyingAction
+                    ? 'Saving...'
+                    : ['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)
+                      ? selectedRow.statusKey === 'ready_for_pickup' ? 'Confirm Pick-up' : 'Release Wig'
+                      : primaryFooterAction === 'accept_allocated'
+                        ? allocationScanPreview?.can_allocate ? 'Approve - Wig Allocated' : 'Scan & Verify Wig'
+                        : ACTION_DEFINITIONS[primaryFooterAction]?.label || 'No Action Available'}
+                </button>
+              </div>
+            </footer>
+
+            <BundleCompletionScanner
+              open={allocationScanner.open}
+              manualCode={allocationScanner.manualCode}
+              saving={allocationScanner.saving}
+              error={allocationScanner.error}
+              success={allocationScanner.success}
+              onManualCodeChange={(value) => setAllocationScanner((previous) => ({
+                ...previous, manualCode: value, error: '', success: '',
+              }))}
+              onSubmit={previewAllocationScan}
+              onClose={() => setAllocationScanner((previous) => (
+                previous.saving ? previous : { ...previous, open: false }
+              ))}
+              primaryColor="#7f1d1d"
+              purpose="allocation"
+              contained
+            />
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {actionConfirmationOpen && selectedRow && selectedAction && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Close action confirmation"
+            className="absolute inset-0 border-0 bg-slate-950/65 backdrop-blur-sm"
+            onClick={() => { if (!isApplyingAction) setActionConfirmationOpen(false); }}
+          />
+          <section className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="wig-action-confirmation-title">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Final confirmation</p>
+                <h3 id="wig-action-confirmation-title" className="mt-1 text-lg font-bold text-slate-900">
+                  {ACTION_DEFINITIONS[selectedAction]?.label || 'Confirm Next Step'}
+                </h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  {actionRequiresReason(selectedAction)
+                    ? 'Review the request and provide the required reason before continuing.'
+                    : 'Review these details before confirming the next workflow step.'}
+                </p>
+              </div>
+              <button type="button" onClick={() => setActionConfirmationOpen(false)} disabled={isApplyingAction} className="text-slate-400 hover:text-red-600 disabled:opacity-50"><X size={20} /></button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 sm:grid-cols-2">
+                <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Request</span>{selectedRow.requestId}</p>
+                <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Patient</span>{selectedRow.patientName}</p>
+                <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Current status</span>{selectedRow.statusLabel}</p>
+                <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Next status</span>{ACTION_DEFINITIONS[selectedAction]?.label}</p>
+              </div>
+
+              {selectedAction === 'accept_allocated' && allocationScanPreview?.can_allocate ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                    <CheckCircle2 size={18} /> Physical wig {allocationScanPreview.bundle_code || `#${allocationScanPreview.bundle_id}`} matches every requested specification.
+                  </div>
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-blue-950">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-blue-700">Expected release after this approval</p>
+                    <p className="mt-1 text-base font-bold">3–9 days</p>
+                    <p className="mt-1 text-sm font-semibold">
+                      {formatDateOnly(allocatedApprovalWindow.earliest)} – {formatDateOnly(allocatedApprovalWindow.latest)}
+                    </p>
+                    <p className="mt-1 text-xs text-blue-800">These dates will be saved automatically from the actual Staff approval time.</p>
+                  </div>
+                </div>
+              ) : null}
+
+              {actionRequiresReleaseDate(selectedAction) ? (
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-blue-950">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-blue-700">Expected patient receipt</p>
+                    <p className="mt-1 text-sm font-semibold">
+                      {formatDateOnly(selectedRow.expectedReleaseEarliestAt)} – {formatDateOnly(selectedRow.expectedReleaseLatestAt)}
+                    </p>
+                    <p className="mt-1 text-xs text-blue-800">Choose the release schedule with this expected receipt window in mind.</p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-600">Release date and time (Philippines, UTC+8)</label>
+                    <input
+                      type="datetime-local"
+                      value={actionReleaseDate}
+                      min={minimumReleaseDateTimeLocal}
+                      onChange={(event) => setActionReleaseDate(event.target.value)}
+                      disabled={isApplyingAction || !isReleaseWorkflowAvailable}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
+                    />
+                    <p className="mt-1 text-xs text-slate-500">Earliest allowed date: {minimumReleaseDateTimeLocal.slice(0, 10)}.</p>
+                  </div>
+                </div>
+              ) : null}
+
+              {actionRequiresReason(selectedAction) ? (
+                <div>
+                  <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-600">Rejection reason (required)</label>
+                  <textarea
+                    value={actionReason}
+                    onChange={(event) => setActionReason(event.target.value)}
+                    disabled={isApplyingAction}
+                    rows={4}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
+                    placeholder="Explain clearly why this request is being rejected."
+                  />
+                </div>
+              ) : null}
+
+              {selectedAction === 'reject' ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                  Rejecting closes this request. Confirm that the reason is complete and appropriate for the patient record.
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => setActionConfirmationOpen(false)} disabled={isApplyingAction} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50">Cancel</button>
+              <button
+                type="button"
+                onClick={handleApplyAction}
+                disabled={!canApplyAction}
+                className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 ${selectedAction === 'reject' ? 'bg-red-700 hover:bg-red-800' : 'bg-slate-900 hover:bg-slate-800'}`}
+              >
+                {isApplyingAction ? <Loader2 size={16} className="animate-spin" /> : selectedAction === 'reject' ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
+                {isApplyingAction ? 'Saving...' : `Confirm ${ACTION_DEFINITIONS[selectedAction]?.label || 'Action'}`}
+              </button>
             </div>
           </section>
         </div>,
@@ -1992,12 +2579,23 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Current Status</span>{selectedRow.statusLabel}</p>
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Patient</span>{selectedRow.patientName}</p>
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Hospital</span>{selectedRow.hospitalName}</p>
-                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Allocated Wig</span>{selectedRow.allocatedWigCode || selectedRow.specWigName}</p>
+                      <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">Physical Wig Serial</span>{selectedRow.allocatedWigCode || 'Unavailable'}</p>
                       <p><span className="block text-[11px] font-bold uppercase tracking-wide text-slate-500">{selectedRow.statusKey === 'ready_for_pickup' ? 'Pickup Type' : 'Approved Release Date'}</span>{selectedRow.statusKey === 'ready_for_pickup' ? 'Direct patient pickup' : formatDateTime(selectedRow.releaseDate)}</p>
                     </div>
                   </div>
                   <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                     Continuing confirms the wig was handed over. The request will move permanently from <strong>{selectedRow.statusLabel}</strong> to <strong>Released</strong>.
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-600">Final handover notes (optional)</label>
+                    <textarea
+                      value={actionReason}
+                      onChange={(event) => setActionReason(event.target.value)}
+                      disabled={isApplyingAction}
+                      rows={3}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
+                      placeholder="Add the recipient, handover condition, or other final confirmation notes."
+                    />
                   </div>
                 </div>
                 <div className="flex flex-col-reverse gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:justify-end">
@@ -2038,6 +2636,26 @@ export default function UpdateWigRequestStatusPage({ userProfile }) {
                 </button>
               </div>
             )}
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {approvalConfirmation && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[2147483100] flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
+          <section className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <span className="rounded-full bg-emerald-100 p-2 text-emerald-700"><CheckCircle2 size={20} /></span>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-lg font-bold text-slate-900">Request Approved</h3>
+                <p className="mt-1 text-sm text-slate-600">{approvalConfirmation.requestCode} is now {approvalConfirmation.status}.</p>
+                <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-950">
+                  <p className="text-xs font-bold uppercase tracking-wide">Required distribution / receipt window</p>
+                  <p className="mt-1 text-sm font-semibold">{formatDateOnly(approvalConfirmation.earliest)} – {formatDateOnly(approvalConfirmation.latest)}</p>
+                </div>
+              </div>
+            </div>
+            <button type="button" onClick={() => setApprovalConfirmation(null)} className="mt-5 w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white">Close</button>
           </section>
         </div>,
         document.body,

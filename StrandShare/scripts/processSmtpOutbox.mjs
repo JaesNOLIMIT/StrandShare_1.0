@@ -35,8 +35,9 @@ function toBool(value, fallback = false) {
 
 function toUtc8SqlTimestamp(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
-  const utcMilliseconds = date.getTime() + (date.getTimezoneOffset() * 60 * 1000);
-  const utc8Date = new Date(utcMilliseconds + (8 * 60 * 60 * 1000));
+  // Date#getTime() is already UTC. Add eight hours directly so the SQL
+  // timestamp is the Philippine wall-clock time regardless of host timezone.
+  const utc8Date = new Date(date.getTime() + (8 * 60 * 60 * 1000));
   return utc8Date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
@@ -225,6 +226,7 @@ function buildTemplateContext(row, payload) {
     'staff_contacted_at',
     'admin_reviewed_at',
     'private_event_code_sent_at',
+    'reviewed_at',
   ];
   for (const key of dateKeys) {
     const raw = context[key];

@@ -2,18 +2,20 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
+  ArrowRight,
   Camera,
   CameraOff,
   Calendar,
   CheckCircle2,
-  HelpCircle,
   Inbox,
   Loader2,
+  Mail,
   MapPin,
+  Phone,
   Printer,
-  RefreshCw,
   ScanLine,
   Search,
+  Sparkles,
   Users,
   X,
 } from 'lucide-react';
@@ -21,22 +23,33 @@ import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabaseClient';
 import { useTheme } from '../../../context/ThemeContext';
+import { useToast } from '../../../context/ToastContext';
 import ProgramScheduleCalendarModal, {
   formatScheduleDateLabel,
   toScheduleDateKey,
 } from '../../../components/events/ProgramScheduleCalendarModal';
+import WaybillScanResult from '../../../components/scanning/WaybillScanResult';
+import PageHeaderActions from '../../../components/PageHeaderActions';
+import {
+  WAYBILL_CODE_LENGTH,
+  isValidWaybillCode,
+  normalizeWaybillCodeInput,
+} from '../../../lib/hairSubmissionWorkflow';
 
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
+const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
 const USERS_TABLE = 'users';
 const USER_DETAILS_TABLE = 'user_details';
+const PROFILE_PICTURES_BUCKET = 'profile_pictures';
 const SCAN_DEBOUNCE_MS = 2500;
 const EVENT_FILTERS = [
+  { id: 'all_active', label: 'All active events' },
   { id: 'today', label: 'Today' },
-  { id: 'this_week', label: 'This Week' },
-  { id: 'upcoming', label: 'Upcoming' },
-  { id: 'ended', label: 'Ended' },
+  { id: 'this_week', label: 'Next 7 days' },
+  { id: 'upcoming', label: 'Later events' },
+  { id: 'ended', label: 'Ended events' },
 ];
 const HAIR_COLOR_OPTIONS = ['Black', 'Dark Brown', 'Brown', 'Light Brown', 'Blonde', 'Gray', 'Red / Auburn', 'Other'];
 const HAIR_TEXTURE_OPTIONS = ['Straight', 'Wavy', 'Curly', 'Coily'];
@@ -44,6 +57,15 @@ const HAIR_DENSITY_OPTIONS = ['Thin', 'Medium', 'Thick'];
 const HAIR_CONDITION_OPTIONS = ['Healthy', 'Slightly Dry', 'Dry', 'Damaged'];
 const MANILA_OFFSET_MINUTES = 8 * 60;
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const EVENT_SCAN_OUTCOMES = [
+  'RSVP donor: attendance becomes Present; next step is Hair Intake & Review.',
+  'RSVP voluntary attendee: attendance becomes Present; their event process is complete.',
+  'Hair Intake donor: attendee and submitted hair details open for the final staff decision.',
+  'Hair Intake voluntary attendee: no hair review is required and no submission is created.',
+  'Approved hair: submission becomes Cut and appears in Cut Hair Inventory for bundling.',
+  'Rejected or Rejected Cut hair: submission becomes Cancelled and cannot enter bundling.',
+  'Cancelled, duplicate, wrong-event, or unknown waybill: no record changes; the reason is shown.',
+];
 
 function getManilaSqlTimestamp(dateValue = new Date()) {
   const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
@@ -126,6 +148,7 @@ function parseRsvpScanPayload(rawValue) {
     payloadType: '',
     waybillCode: '',
     userId: null,
+    attendeeId: null,
   };
 
   try {
@@ -150,6 +173,7 @@ function parseRsvpScanPayload(rawValue) {
         payloadType,
         waybillCode: match ? String(match).trim() : '',
         userId: Number.isFinite(userId) && userId > 0 ? userId : null,
+        attendeeId: Number(parsed.Event_Attendee_ID ?? parsed.event_attendee_id ?? parsed.data?.Event_Attendee_ID) || null,
       };
     }
   } catch {
@@ -161,6 +185,7 @@ function parseRsvpScanPayload(rawValue) {
     payloadType: '',
     waybillCode: raw,
     userId: null,
+    attendeeId: null,
   };
 }
 
@@ -190,6 +215,28 @@ function isFinalHairDetailStatus(status) {
   return key === 'approved' || key === 'rejected' || key === 'rejectedcut';
 }
 
+function getAttendeeHairIntakeMeta(attendee, submission, details = []) {
+  if (normalizeAttendeeType(attendee?.Attendee_Type) === 'Voluntary') {
+    return { state: 'not_required', label: 'Not required' };
+  }
+
+  const finalDetail = details.find((row) => isFinalHairDetailStatus(row?.Status));
+  if (finalDetail) {
+    return { state: 'done', label: `Done · ${finalDetail.Status}` };
+  }
+
+  const submissionStatus = String(submission?.Status || '').trim();
+  if (['cut', 'cancelled', 'wiginproduction', 'wigcreated'].includes(normalizeFlowStatusKey(submissionStatus))) {
+    return { state: 'done', label: `Done · ${submissionStatus}` };
+  }
+
+  if (submission?.Submission_ID) {
+    return { state: 'pending', label: 'Pending review' };
+  }
+
+  return { state: 'not_started', label: 'Not started' };
+}
+
 function createDetailDraft(detail) {
   return {
     submissionDetailId: Number(detail?.Submission_Detail_ID || 0) || null,
@@ -204,6 +251,60 @@ function createDetailDraft(detail) {
     isRebonded: Boolean(detail?.Is_Rebonded),
     detailNotes: String(detail?.Detail_Notes || ''),
   };
+}
+
+function formatAiConfidence(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 'N/A';
+  const percent = numeric <= 1 ? numeric * 100 : numeric;
+  return `${Math.max(0, Math.min(100, percent)).toFixed(0)}%`;
+}
+
+function displayAiValue(value, fallback = 'Not provided') {
+  if (value == null || String(value).trim() === '') return fallback;
+  return String(value);
+}
+
+function isAbsoluteUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function getInitials(value) {
+  const parts = String(value || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return 'D';
+  return parts.slice(0, 2).map((part) => part.charAt(0).toUpperCase()).join('');
+}
+
+function findChangedAiHairFields(screening, draft) {
+  if (!screening || !draft) return [];
+  const comparisons = [
+    ['length', screening.Estimated_Length, draft.declaredLength, (aiValue, staffValue) => (
+      String(staffValue ?? '').trim() !== '' && Number(aiValue) === Number(staffValue)
+    )],
+    ['color', screening.Detected_Color, draft.declaredColor],
+    ['texture', screening.Detected_Texture, draft.declaredTexture],
+    ['density', screening.Detected_Density, draft.declaredDensity],
+    ['condition', screening.Detected_Condition, draft.declaredCondition],
+  ];
+
+  return comparisons.reduce((changed, [field, aiValue, staffValue, matcher]) => {
+    if (aiValue == null || String(aiValue).trim() === '') return changed;
+    const matches = typeof matcher === 'function'
+      ? matcher(aiValue, staffValue)
+      : normalizeFlowStatusKey(aiValue) === normalizeFlowStatusKey(staffValue);
+    if (!matches) changed.push(field);
+    return changed;
+  }, []);
+}
+
+function countComparableAiHairFields(screening) {
+  return [
+    screening?.Estimated_Length,
+    screening?.Detected_Color,
+    screening?.Detected_Texture,
+    screening?.Detected_Density,
+    screening?.Detected_Condition,
+  ].filter((value) => value != null && String(value).trim() !== '').length;
 }
 
 function buildUserFullName(detailRow) {
@@ -233,11 +334,15 @@ function enrichAttendeeRowWithUserData(attendeeRow, userRow, detailRow, fallback
     Full_Name: fullName,
     Email: email || null,
     Contact_Number: contactNumber || null,
+    Photo_Path: detailRow?.photo_path || fallbackRow?.Photo_Path || null,
+    Birthdate: detailRow?.birthdate || fallbackRow?.Birthdate || null,
+    Gender: detailRow?.gender || fallbackRow?.Gender || null,
   };
 }
 
-export default function AssignedEventOperationsPage({ userProfile }) {
+export default function AssignedEventOperationsPage({ userProfile, isActivePage = true }) {
   const { theme } = useTheme();
+  const { showToast } = useToast();
   const primaryColor = theme?.primaryColor || '#0f766e';
   const tertiaryColor = theme?.tertiaryColor || '#10b981';
 
@@ -248,7 +353,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   const [notice, setNotice] = useState({ kind: '', text: '' });
 
   const [events, setEvents] = useState([]);
-  const [eventTimeFilter, setEventTimeFilter] = useState('this_week');
+  const [eventTimeFilter, setEventTimeFilter] = useState('all_active');
   const [selectedCalendarDate, setSelectedCalendarDate] = useState('');
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [selectedRequestId, setSelectedRequestId] = useState(null);
@@ -266,18 +371,39 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   const [activeReview, setActiveReview] = useState(null);
   const [qualityReason, setQualityReason] = useState('');
   const [detailDraft, setDetailDraft] = useState(() => createDetailDraft(null));
+  const [aiReviewTab, setAiReviewTab] = useState('screening');
   const [isSubmittingQuality, setIsSubmittingQuality] = useState(false);
   const [isSavingDetail, setIsSavingDetail] = useState(false);
   const [eventSummary, setEventSummary] = useState(null);
   const [isLoadingSummary, setIsLoadingSummary] = useState(false);
+  const [scanOutcome, setScanOutcome] = useState(null);
 
   const videoRef = useRef(null);
   const cameraStreamRef = useRef(null);
   const scannerCanvasRef = useRef(null);
   const isScanProcessingRef = useRef(false);
-  const lastScanRef = useRef({ raw: '', at: 0 });
+  const lastScanRef = useRef({ raw: '', at: 0, mode: '', locked: false });
   const attendeesCacheRef = useRef(new Map());
   const attendeeLoadSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (!notice.text) return;
+    showToast({
+      type: notice.kind || 'info',
+      title: notice.kind === 'error' ? 'Error' : undefined,
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
+
+  useEffect(() => {
+    if (cameraStatus.kind !== 'error' || !cameraStatus.message) return;
+    showToast({ type: 'error', title: 'Scanner error', message: cameraStatus.message });
+    setCameraStatus({
+      kind: 'info',
+      message: 'Scanner ready. Try again or enter the waybill manually.',
+    });
+  }, [cameraStatus, showToast]);
 
   const resolveStaffUserId = useCallback(async () => {
     if (staffUserId) return staffUserId;
@@ -373,36 +499,87 @@ export default function AssignedEventOperationsPage({ userProfile }) {
 
       const usersById = new Map();
       const detailsById = new Map();
-      if (userIds.length) {
-        const [usersResult, detailsResult] = await Promise.all([
+      const [accountResults, submissionsResult] = await Promise.all([
+        userIds.length ? Promise.all([
           supabase
             .from(USERS_TABLE)
             .select('user_id, email')
             .in('user_id', userIds),
           supabase
             .from(USER_DETAILS_TABLE)
-            .select('user_id, first_name, middle_name, last_name, suffix, contact_number')
+            .select('user_id, first_name, middle_name, last_name, suffix, contact_number, photo_path, birthdate, gender')
             .in('user_id', userIds),
-        ]);
+        ]) : Promise.resolve([{ data: [], error: null }, { data: [], error: null }]),
+        supabase
+          .from(HAIR_SUBMISSIONS_TABLE)
+          .select('Submission_ID, Event_Attendee_ID, User_ID, Status')
+          .eq('Event_Request_ID', targetEventRequestId)
+          .order('Submission_ID', { ascending: false })
+          .limit(1000),
+      ]);
 
-        if (usersResult.error) throw usersResult.error;
-        if (detailsResult.error) throw detailsResult.error;
+      const [usersResult, detailsResult] = accountResults;
+      if (usersResult.error) throw usersResult.error;
+      if (detailsResult.error) throw detailsResult.error;
+      if (submissionsResult.error) throw submissionsResult.error;
 
-        for (const userRow of usersResult.data || []) {
-          usersById.set(Number(userRow.user_id || 0), userRow);
-        }
-        for (const detailRow of detailsResult.data || []) {
-          detailsById.set(Number(detailRow.user_id || 0), detailRow);
-        }
+      for (const userRow of usersResult.data || []) {
+        usersById.set(Number(userRow.user_id || 0), userRow);
+      }
+      for (const detailRow of detailsResult.data || []) {
+        detailsById.set(Number(detailRow.user_id || 0), detailRow);
+      }
+
+      const submissions = submissionsResult.data || [];
+      const submissionIds = submissions
+        .map((row) => Number(row?.Submission_ID || 0))
+        .filter((id) => id > 0);
+      let hairDetails = [];
+      if (submissionIds.length) {
+        const hairDetailsResult = await supabase
+          .from(HAIR_SUBMISSION_DETAILS_TABLE)
+          .select('Submission_Detail_ID, Submission_ID, Status')
+          .in('Submission_ID', submissionIds)
+          .order('Submission_Detail_ID', { ascending: false });
+        if (hairDetailsResult.error) throw hairDetailsResult.error;
+        hairDetails = hairDetailsResult.data || [];
+      }
+
+      const submissionsByAttendee = new Map();
+      const submissionsByUser = new Map();
+      for (const submission of submissions) {
+        const attendeeId = Number(submission?.Event_Attendee_ID || 0);
+        const userId = Number(submission?.User_ID || 0);
+        if (attendeeId > 0 && !submissionsByAttendee.has(attendeeId)) submissionsByAttendee.set(attendeeId, submission);
+        if (userId > 0 && !submissionsByUser.has(userId)) submissionsByUser.set(userId, submission);
+      }
+
+      const hairDetailsBySubmission = new Map();
+      for (const detail of hairDetails) {
+        const submissionId = Number(detail?.Submission_ID || 0);
+        const current = hairDetailsBySubmission.get(submissionId) || [];
+        current.push(detail);
+        hairDetailsBySubmission.set(submissionId, current);
       }
 
       const rows = baseRows.map((row) => {
         const userId = Number(row?.User_ID || 0);
-        return enrichAttendeeRowWithUserData(
+        const attendeeId = Number(row?.Event_Attendee_ID || 0);
+        const submission = submissionsByAttendee.get(attendeeId) || submissionsByUser.get(userId) || null;
+        const intakeMeta = getAttendeeHairIntakeMeta(
+          row,
+          submission,
+          hairDetailsBySubmission.get(Number(submission?.Submission_ID || 0)) || [],
+        );
+        return {
+          ...enrichAttendeeRowWithUserData(
           row,
           usersById.get(userId) || null,
           detailsById.get(userId) || null,
-        );
+          ),
+          Hair_Intake_State: intakeMeta.state,
+          Hair_Intake_Label: intakeMeta.label,
+        };
       });
       attendeesCacheRef.current.set(targetEventRequestId, rows);
       setAttendees(rows);
@@ -436,6 +613,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       const ended = isEventEnded(row);
       if (eventTimeFilter === 'ended') return ended;
       if (ended) return false;
+      if (eventTimeFilter === 'all_active') return true;
       const eventDay = toManilaDayStartMs(row?.Start_Date || row?.Created_At || new Date());
       if (eventTimeFilter === 'today') {
         return eventDay === todayStart;
@@ -470,10 +648,12 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     }
   }, [filteredEvents, selectedRequestId]);
 
-  // Load attendees whenever the selected event changes
+  // Load attendees only when the selected event ID changes. Realtime updates
+  // replace the event object, but must not clear the latest scan message.
   useEffect(() => {
-    if (selectedEvent?.Event_Request_ID) {
-      loadAttendees(selectedEvent?.Event_Request_ID);
+    const eventRequestId = Number(selectedEvent?.Event_Request_ID || 0);
+    if (eventRequestId) {
+      loadAttendees(eventRequestId);
     } else {
       setAttendees([]);
     }
@@ -482,7 +662,9 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     setQualityReason('');
     setDetailDraft(createDetailDraft(null));
     setEventSummary(null);
-  }, [selectedEvent, loadAttendees]);
+    setScanOutcome(null);
+    lastScanRef.current = { raw: '', at: 0, mode: '', locked: false };
+  }, [selectedEvent?.Event_Request_ID, loadAttendees]);
 
   useEffect(() => {
     if (!supabase || !selectedEvent?.Event_Request_ID || !selectedEventEnded) {
@@ -506,19 +688,9 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     return () => { active = false; };
   }, [selectedEvent?.Event_Request_ID, selectedEventEnded]);
 
-  useEffect(() => {
-    if (selectedEventEnded && scanMode === 'rsvp') {
-      setScanMode('hair_review');
-      setCameraStatus({
-        kind: 'info',
-        message: 'This event has ended. RSVP is closed, but pending Hair Intake & Review scans remain available.',
-      });
-    }
-  }, [scanMode, selectedEventEnded]);
-
   // Realtime: keep assigned events + attendees in sync
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return undefined;
+    if (!isActivePage || !isSupabaseConfigured || !supabase) return undefined;
 
     const requestsChannel = supabase
       .channel('assigned-events-requests-realtime')
@@ -575,17 +747,12 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           if (!isForSelected) return;
 
           if (payload.eventType === 'INSERT') {
-            setAttendees((prev) => {
-              const exists = prev.some((row) => Number(row.Event_Attendee_ID) === Number(payload.new.Event_Attendee_ID));
-              const nextRows = exists ? prev : [...prev, payload.new];
-              attendeesCacheRef.current.set(targetEventRequestId, nextRows);
-              return nextRows;
-            });
+            void loadAttendees(targetEventRequestId, { silent: true, force: true });
           } else if (payload.eventType === 'UPDATE') {
             setAttendees((prev) => {
               const nextRows = prev.map((row) => (
                 Number(row.Event_Attendee_ID) === Number(payload.new.Event_Attendee_ID)
-                  ? payload.new
+                  ? { ...row, ...payload.new }
                   : row
               ));
               attendeesCacheRef.current.set(targetEventRequestId, nextRows);
@@ -608,7 +775,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       supabase.removeChannel(requestsChannel);
       supabase.removeChannel(attendeesChannel);
     };
-  }, [staffUserId, selectedEvent?.Event_Request_ID]);
+  }, [isActivePage, loadAttendees, staffUserId, selectedEvent?.Event_Request_ID]);
 
   const stopCamera = useCallback(() => {
     if (cameraStreamRef.current) {
@@ -619,6 +786,21 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       videoRef.current.srcObject = null;
     }
   }, []);
+
+  useEffect(() => {
+    if (!selectedEvent?.Event_Request_ID) return;
+
+    stopCamera();
+    setIsCameraOn(false);
+    setManualWaybillCode('');
+    setScanMode(selectedEventEnded ? 'hair_review' : 'rsvp');
+    setCameraStatus({
+      kind: 'info',
+      message: selectedEventEnded
+        ? 'This event has ended. RSVP is closed, but pending Hair Intake & Review scans remain available.'
+        : 'RSVP Check-in selected. Scan or enter an attendee waybill to mark attendance.',
+    });
+  }, [selectedEvent?.Event_Request_ID, selectedEventEnded, stopCamera]);
 
   const startCameraScanner = useCallback(async () => {
     if (isCameraOn || isStartingCamera) return;
@@ -674,6 +856,20 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     return detailsResult.data || [];
   }, []);
 
+  const loadAiScreeningBySubmissionId = useCallback(async (eventRequestId, submissionId) => {
+    const targetEventId = Number(eventRequestId || 0);
+    const targetSubmissionId = Number(submissionId || 0);
+    if (!targetEventId || !targetSubmissionId || !supabase) return null;
+
+    const result = await supabase.rpc('get_event_hair_ai_screening', {
+      p_event_request_id: targetEventId,
+      p_submission_id: targetSubmissionId,
+    });
+
+    if (result.error) throw result.error;
+    return result.data || null;
+  }, []);
+
   const reviewStatusMeta = useMemo(() => {
     const submission = activeReview?.submission || null;
     const details = Array.isArray(activeReview?.details) ? activeReview.details : [];
@@ -692,6 +888,60 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       finalStatusLabel: detailFinal ? String(detailStatus) : (submission?.Status ? String(submission.Status) : ''),
     };
   }, [activeReview]);
+
+  const activeAiScreening = activeReview?.aiScreening || null;
+  const changedAiHairFields = useMemo(
+    () => findChangedAiHairFields(activeAiScreening, detailDraft),
+    [activeAiScreening, detailDraft],
+  );
+  const liveAiAccuracy = useMemo(() => {
+    const comparable = countComparableAiHairFields(activeAiScreening);
+    const changed = changedAiHairFields.length;
+    const humanPercent = comparable > 0 ? (changed / comparable) * 100 : 0;
+    return {
+      comparable,
+      aiPercent: comparable > 0 ? 100 - humanPercent : 0,
+      humanPercent,
+    };
+  }, [activeAiScreening, changedAiHairFields]);
+
+  const donorPhotoUrl = useMemo(() => {
+    const path = String(activeReview?.attendee?.Photo_Path || '').trim();
+    if (!path) return '';
+    if (isAbsoluteUrl(path)) return path;
+    return supabase?.storage?.from(PROFILE_PICTURES_BUCKET).getPublicUrl(path)?.data?.publicUrl || '';
+  }, [activeReview?.attendee?.Photo_Path]);
+
+  const aiStaffComparisonRows = useMemo(() => {
+    if (!activeAiScreening) return [];
+    const definitions = [
+      { key: 'length', label: 'Length', ai: activeAiScreening.Estimated_Length, staff: detailDraft.declaredLength, suffix: ' in', numeric: true },
+      { key: 'color', label: 'Color', ai: activeAiScreening.Detected_Color, staff: detailDraft.declaredColor },
+      { key: 'texture', label: 'Texture', ai: activeAiScreening.Detected_Texture, staff: detailDraft.declaredTexture },
+      { key: 'density', label: 'Density', ai: activeAiScreening.Detected_Density, staff: detailDraft.declaredDensity },
+      { key: 'condition', label: 'Condition', ai: activeAiScreening.Detected_Condition, staff: detailDraft.declaredCondition },
+    ];
+
+    return definitions.map((row) => {
+      const comparable = row.ai != null && String(row.ai).trim() !== '';
+      const hasStaffValue = row.staff != null && String(row.staff).trim() !== '';
+      const matches = comparable && hasStaffValue && (row.numeric
+        ? Number(row.ai) === Number(row.staff)
+        : normalizeFlowStatusKey(row.ai) === normalizeFlowStatusKey(row.staff));
+      const formatValue = (value) => {
+        if (value == null || String(value).trim() === '') return 'Not provided';
+        return `${value}${row.suffix || ''}`;
+      };
+      return {
+        ...row,
+        comparable,
+        hasStaffValue,
+        matches,
+        aiDisplay: formatValue(row.ai),
+        staffDisplay: formatValue(row.staff),
+      };
+    });
+  }, [activeAiScreening, detailDraft]);
 
   const markAttendeePresentByWaybill = useCallback(async (rawValue) => {
     if (isScanProcessingRef.current || !selectedEvent || !supabase) return;
@@ -717,6 +967,40 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         throw new Error('Selected event has no Event_Request_ID.');
       }
 
+      const scannedAttendee = attendees.find((row) => (
+        (scan.attendeeId && Number(row.Event_Attendee_ID) === Number(scan.attendeeId))
+        || (scan.waybillCode && String(row.Waybill_Code || '').trim().toUpperCase() === String(scan.waybillCode).trim().toUpperCase())
+        || (scan.userId && Number(row.User_ID) === Number(scan.userId))
+      )) || null;
+      if (scanMode === 'hair_review' && normalizeAttendeeType(scannedAttendee?.Attendee_Type) === 'Voluntary') {
+        const waybillCode = String(scannedAttendee?.Waybill_Code || scan.waybillCode || '').trim();
+        setActiveReview({
+          attendee: scannedAttendee,
+          submission: null,
+          details: [],
+          waybillCode,
+          attendeeType: 'Voluntary',
+          voluntaryOnly: true,
+        });
+        setQualityReason('');
+        setDetailDraft(createDetailDraft(null));
+        setCameraStatus({
+          kind: 'info',
+          message: `${scannedAttendee?.Full_Name || waybillCode || 'This attendee'} is voluntary. RSVP check-in is their only required step.`,
+        });
+        setScanOutcome({
+          tone: 'info',
+          title: 'Voluntary attendee identified',
+          waybill: waybillCode,
+          subject: scannedAttendee?.Full_Name || 'Voluntary attendee',
+          action: 'Verified attendee type; no hair intake was opened',
+          status: 'RSVP only',
+          nextStep: scannedAttendee?.RSVP_Scanned_At ? 'No further event scan required' : 'Complete RSVP Check-in',
+          statusChanges: [],
+        });
+        return true;
+      }
+
       const scanResult = await supabase.rpc('scan_event_attendee_operation', {
         p_event_request_id: eventRequestId,
         p_qr_payload: String(rawValue || ''),
@@ -726,6 +1010,16 @@ export default function AssignedEventOperationsPage({ userProfile }) {
 
       const payload = scanResult.data || {};
       const updated = payload?.attendee || null;
+      const existingAttendee = attendees.find((row) => (
+        Number(row.Event_Attendee_ID) === Number(updated?.Event_Attendee_ID)
+      )) || scannedAttendee;
+      const updatedForDisplay = updated ? {
+        ...existingAttendee,
+        ...updated,
+        Full_Name: existingAttendee?.Full_Name || updated?.Full_Name || 'N/A',
+        Email: existingAttendee?.Email || updated?.Email || null,
+        Contact_Number: existingAttendee?.Contact_Number || updated?.Contact_Number || null,
+      } : null;
       const submission = payload?.submission || null;
       const submissionStatus = String(
         payload?.submission_status
@@ -746,13 +1040,13 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         || '',
       ).trim();
 
-      if (updated?.Event_Attendee_ID) {
+      if (updatedForDisplay?.Event_Attendee_ID) {
         setAttendees((current) => {
-          const exists = current.some((row) => Number(row.Event_Attendee_ID) === Number(updated.Event_Attendee_ID));
+          const exists = current.some((row) => Number(row.Event_Attendee_ID) === Number(updatedForDisplay.Event_Attendee_ID));
           const nextRows = !exists
-            ? [updated, ...current]
+            ? [updatedForDisplay, ...current]
             : current.map((row) => (
-            Number(row.Event_Attendee_ID) === Number(updated.Event_Attendee_ID) ? updated : row
+            Number(row.Event_Attendee_ID) === Number(updatedForDisplay.Event_Attendee_ID) ? updatedForDisplay : row
             ));
           if (selectedEvent?.Event_Request_ID) {
             attendeesCacheRef.current.set(Number(selectedEvent.Event_Request_ID), nextRows);
@@ -764,24 +1058,30 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       }
 
       let details = [];
+      let aiScreening = null;
       if (requiresHairReview) {
         details = Array.isArray(payload?.details) ? payload.details : [];
         const submissionId = Number(submission?.Submission_ID || 0);
         if (!details.length && submissionId > 0) {
           details = await loadSubmissionDetailsById(submissionId);
         }
+        if (submissionId > 0) {
+          aiScreening = await loadAiScreeningBySubmissionId(eventRequestId, submissionId);
+        }
       }
 
       setActiveReview(requiresHairReview ? {
-        attendee: updated || null,
+        attendee: updatedForDisplay || null,
         submission: submission || null,
         details,
+        aiScreening,
         waybillCode: resolvedWaybillCode,
       } : null);
+      setAiReviewTab('screening');
       setQualityReason('');
       setDetailDraft(createDetailDraft(details?.[0] || null));
 
-      const attendeeLabel = updated?.Full_Name || resolvedWaybillCode || 'attendee';
+      const attendeeLabel = updatedForDisplay?.Full_Name || resolvedWaybillCode || 'attendee';
       setNotice({
         kind: 'success',
         text: requiresHairReview
@@ -794,14 +1094,42 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           ? `Hair intake opened.${submissionStatus ? ` Submission: ${submissionStatus}.` : ''} Review the details below.`
           : `RSVP success: ${attendeeLabel} marked Present.`,
       });
+      setScanOutcome({
+        tone: 'success',
+        title: requiresHairReview ? 'Hair intake opened' : 'RSVP check-in completed',
+        waybill: resolvedWaybillCode,
+        subject: attendeeLabel,
+        action: requiresHairReview ? 'Loaded donor submission and hair details' : 'Marked attendance as Present',
+        status: requiresHairReview ? 'Awaiting decision' : 'Present',
+        nextStep: requiresHairReview
+          ? 'Review the hair and choose Approve, Reject, or Rejected Cut'
+          : attendeeType === 'Voluntary' ? 'Process complete' : 'Use Hair Intake & Review when hair is received',
+        statusChanges: requiresHairReview ? [] : [{
+          label: 'Attendance',
+          before: existingAttendee?.Attendance_Status || 'Not Marked',
+          after: updatedForDisplay?.Attendance_Status || 'Present',
+        }],
+      });
+      return true;
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to process scan.' });
       setCameraStatus({ kind: 'error', message: error.message || 'Scan failed.' });
+      const scan = parseRsvpScanPayload(rawValue);
+      setScanOutcome({
+        tone: 'error',
+        title: 'Waybill was not processed',
+        waybill: scan.waybillCode,
+        action: 'No database change',
+        status: 'Blocked',
+        nextStep: error.message || 'Check the code and scan again',
+        statusChanges: [],
+      });
+      return false;
     } finally {
       setIsSaving(false);
       isScanProcessingRef.current = false;
     }
-  }, [loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, scanMode, selectedEvent]);
+  }, [attendees, loadAiScreeningBySubmissionId, loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, scanMode, selectedEvent]);
 
   const handleSaveDetailEdits = useCallback(async () => {
     if (!supabase || !selectedEvent) return;
@@ -853,6 +1181,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         attendee: prev?.attendee || null,
         submission: updatedSubmission || prev?.submission || null,
         details: updatedDetails.length ? updatedDetails : (prev?.details || []),
+        aiScreening: prev?.aiScreening || null,
         waybillCode: prev?.waybillCode || '',
       }));
       setDetailDraft(createDetailDraft(updatedDetails?.[0] || null));
@@ -892,11 +1221,37 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       return;
     }
 
+    const lengthRaw = String(detailDraft?.declaredLength || '').trim();
+    const parsedLength = lengthRaw === '' ? null : Number(lengthRaw);
+    if (parsedLength != null && (!Number.isFinite(parsedLength) || parsedLength < 0)) {
+      setNotice({ kind: 'error', text: 'Declared length must be a non-negative number.' });
+      return;
+    }
+
     setIsSubmittingQuality(true);
     setIsSaving(true);
     setNotice({ kind: '', text: '' });
 
     try {
+      // Persist the values currently visible in the editable form before the
+      // decision trigger calculates AI-vs-human accuracy. This also covers the
+      // common flow where staff edits a field and clicks Approve immediately.
+      const detailSaveResult = await supabase.rpc('staff_update_hair_submission_details', {
+        p_event_request_id: eventRequestId,
+        p_submission_id: submissionId,
+        p_declared_length: parsedLength,
+        p_declared_color: String(detailDraft?.declaredColor || '').trim() || null,
+        p_declared_texture: String(detailDraft?.declaredTexture || '').trim() || null,
+        p_declared_density: String(detailDraft?.declaredDensity || '').trim() || null,
+        p_declared_condition: String(detailDraft?.declaredCondition || '').trim() || null,
+        p_is_chemically_treated: Boolean(detailDraft?.isChemicallyTreated),
+        p_is_colored: Boolean(detailDraft?.isColored),
+        p_is_bleached: Boolean(detailDraft?.isBleached),
+        p_is_rebonded: Boolean(detailDraft?.isRebonded),
+        p_detail_notes: String(detailDraft?.detailNotes || '').trim() || null,
+      });
+      if (detailSaveResult.error) throw detailSaveResult.error;
+
       const result = await supabase.rpc('staff_review_hair_submission_quality', {
         p_event_request_id: eventRequestId,
         p_submission_id: submissionId,
@@ -944,6 +1299,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         attendee: updatedAttendee || prev?.attendee || null,
         submission: updatedSubmission || prev?.submission || null,
         details: updatedDetails.length ? updatedDetails : (prev?.details || []),
+        aiScreening: prev?.aiScreening || null,
         waybillCode: prev?.waybillCode || '',
       }));
       setDetailDraft(createDetailDraft(updatedDetails?.[0] || null));
@@ -963,6 +1319,28 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           : resolvedDecision === 'Rejected Cut'
             ? 'Hair quality marked Rejected Cut and submission marked Cancelled.'
             : 'Hair quality rejected and marked Cancelled.',
+      });
+      setScanOutcome({
+        tone: resolvedDecision === 'Approved' ? 'success' : 'warning',
+        title: `Hair review finalized as ${resolvedDecision}`,
+        waybill: activeReview?.waybillCode || updatedAttendee?.Waybill_Code || '',
+        subject: activeReview?.attendee?.Full_Name || updatedAttendee?.Full_Name || 'Donor',
+        action: 'Saved the final staff quality decision',
+        status: resolvedDecision === 'Approved' ? 'Cut' : 'Cancelled',
+        nextStep: resolvedDecision === 'Approved'
+          ? 'Hair is available in Cut Hair Inventory and can be bundled'
+          : 'No further processing is allowed for this hair',
+        statusChanges: [
+          { label: 'Quality detail', before: 'Pending', after: resolvedDecision },
+          {
+            label: 'Hair submission',
+            before: activeReview?.submission?.Status || 'Pending',
+            after: resolvedDecision === 'Approved' ? 'Cut' : 'Cancelled',
+          },
+          ...(resolvedDecision === 'Approved'
+            ? [{ label: 'Cut inventory', before: 'Not available', after: 'Cut / Available' }]
+            : []),
+        ],
       });
 
       if (resolvedDecision === 'Approved') {
@@ -993,7 +1371,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
       setIsSubmittingQuality(false);
       setIsSaving(false);
     }
-  }, [activeReview, qualityReason, reviewStatusMeta.isFinal, selectedEvent, selectedEventEnded, loadAttendees, startCameraScanner]);
+  }, [activeReview, detailDraft, qualityReason, reviewStatusMeta.isFinal, selectedEvent, selectedEventEnded, loadAttendees, startCameraScanner]);
 
   const handleToggleCamera = async () => {
     if (reviewStatusMeta.needsDecision) {
@@ -1018,17 +1396,23 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     await startCameraScanner();
   };
 
-  const handleManualScanLookup = () => {
-    const value = String(manualWaybillCode || '').trim();
+  const handleManualScanLookup = async () => {
+    const value = normalizeWaybillCodeInput(manualWaybillCode);
     if (!value) return;
+    if (!isValidWaybillCode(value)) {
+      const message = 'Enter a complete waybill: WB followed by 6 letters or numbers.';
+      setNotice({ kind: 'warning', text: message });
+      setCameraStatus({ kind: 'warning', message });
+      return;
+    }
     if (reviewStatusMeta.needsDecision) {
       const message = 'Complete the current hair quality decision before scanning another donor.';
       setNotice({ kind: 'warning', text: message });
       setCameraStatus({ kind: 'warning', message });
       return;
     }
-    setManualWaybillCode('');
-    void markAttendeePresentByWaybill(value);
+    const succeeded = await markAttendeePresentByWaybill(value);
+    if (succeeded) setManualWaybillCode('');
   };
 
   const handleScanModeChange = (nextMode) => {
@@ -1044,6 +1428,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     stopCamera();
     setIsCameraOn(false);
     setScanMode(nextMode);
+    lastScanRef.current = { raw: '', at: 0, mode: '', locked: false };
     setManualWaybillCode('');
     setCameraStatus({
       kind: 'info',
@@ -1089,9 +1474,14 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         if (!decoded) return;
 
         const now = Date.now();
-        if (lastScanRef.current.raw === decoded && now - lastScanRef.current.at < SCAN_DEBOUNCE_MS) return;
-        lastScanRef.current = { raw: decoded, at: now };
-        void markAttendeePresentByWaybill(decoded);
+        const isSameScan = lastScanRef.current.raw === decoded && lastScanRef.current.mode === scanMode;
+        if (isSameScan && (lastScanRef.current.locked || now - lastScanRef.current.at < SCAN_DEBOUNCE_MS)) return;
+        lastScanRef.current = { raw: decoded, at: now, mode: scanMode, locked: false };
+        void markAttendeePresentByWaybill(decoded).then((succeeded) => {
+          if (succeeded && lastScanRef.current.raw === decoded && lastScanRef.current.mode === scanMode) {
+            lastScanRef.current.locked = true;
+          }
+        });
       } catch {
         // ignore frame-level scan errors
       }
@@ -1100,7 +1490,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [isCameraOn, markAttendeePresentByWaybill]);
+  }, [isCameraOn, markAttendeePresentByWaybill, scanMode]);
 
   useEffect(() => {
     return () => {
@@ -1258,6 +1648,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
         row.Contact_Number,
         row.Waybill_Code,
         row.Attendance_Status,
+        row.Hair_Intake_Label,
       ]
         .filter(Boolean)
         .join(' ')
@@ -1445,53 +1836,24 @@ export default function AssignedEventOperationsPage({ userProfile }) {
   }, [attendees, resolveStaffUserId, selectedEvent]);
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden">
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Assigned Events</h1>
           <p className="text-sm text-slate-600">View events admin assigned to you, search attendees, and print waybills.</p>
-          <p className="mt-1 text-xs text-emerald-700">
-            Live updates are active. Data refreshes only when a related database record changes.
-          </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowHowToModal(true)}
-            aria-label="Open workflow guide"
-            title="Workflow guide"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-700 transition hover:bg-slate-100"
-          >
-            <HelpCircle size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => { void handleRefreshAll(); }}
-            disabled={isLoadingEvents || isLoadingAttendees || isSaving}
-            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-          >
-            {(isLoadingEvents || isLoadingAttendees || isSaving) ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-            Refresh
-          </button>
-        </div>
+        <PageHeaderActions
+          onHelp={() => setShowHowToModal(true)}
+          helpTitle="Assigned Events workflow guide"
+          onRefresh={() => { void handleRefreshAll(); }}
+          refreshLoading={isLoadingEvents || isLoadingAttendees || isSaving}
+        />
       </div>
 
-      {notice.text && (
-        <div className={`rounded-lg px-4 py-3 text-sm ${
-          notice.kind === 'error'
-            ? 'border border-rose-200 bg-rose-50 text-rose-700'
-            : notice.kind === 'warning'
-              ? 'border border-amber-200 bg-amber-50 text-amber-700'
-              : 'border border-emerald-200 bg-emerald-50 text-emerald-700'
-        }`}>
-          {notice.text}
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[340px,1fr]">
-        <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-4 py-3">
+      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(220px,35%),minmax(0,1fr)] gap-4 overflow-hidden lg:grid-cols-[340px,minmax(0,1fr)] lg:grid-rows-1">
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="shrink-0 border-b border-slate-200 px-4 py-3">
             <div className="flex items-center justify-between">
               <h2 className="flex items-center gap-2 text-sm font-bold text-slate-800">
                 <Inbox size={14} />
@@ -1515,24 +1877,23 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                 </span>
               </div>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-1 sm:grid-cols-4 lg:grid-cols-2">
-              {EVENT_FILTERS.map((filterItem) => {
-                const active = eventTimeFilter === filterItem.id;
-                return (
-                  <button
-                    key={filterItem.id}
-                    type="button"
-                    onClick={() => setEventTimeFilter(filterItem.id)}
-                    className={`rounded-md border px-2 py-1 text-[11px] font-semibold transition ${
-                      active
-                        ? 'border-slate-900 bg-slate-900 text-white'
-                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    {filterItem.label}
-                  </button>
-                );
-              })}
+            <div className="mt-3">
+              <label htmlFor="assigned-event-time-filter" className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Show events
+              </label>
+              <select
+                id="assigned-event-time-filter"
+                value={eventTimeFilter}
+                onChange={(event) => {
+                  setEventTimeFilter(event.target.value);
+                  setSelectedCalendarDate('');
+                }}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+              >
+                {EVENT_FILTERS.map((filterItem) => (
+                  <option key={filterItem.id} value={filterItem.id}>{filterItem.label}</option>
+                ))}
+              </select>
             </div>
             {selectedCalendarDate && (
               <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
@@ -1553,7 +1914,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
               </div>
             )}
           </div>
-          <div className="max-h-[640px] overflow-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
             {isLoadingEvents && filteredEvents.length === 0 ? (
               <div className="flex items-center gap-2 px-4 py-5 text-sm text-slate-600">
                 <Loader2 size={15} className="animate-spin" />Loading...
@@ -1614,7 +1975,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
           </div>
         </section>
 
-        <section className="space-y-4">
+        <section className="min-h-0 space-y-4 overflow-y-auto overscroll-y-contain pr-1">
           {!selectedEvent ? (
             <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white px-6 py-20 text-center shadow-sm">
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-400">
@@ -1657,7 +2018,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Schedule</p>
                         <p className="text-sm text-slate-800">
-                          {formatDateTime(selectedEvent.Start_Date)} â€” {formatDateTime(selectedEvent.End_Date)}
+                          {formatDateTime(selectedEvent.Start_Date)} - {formatDateTime(selectedEvent.End_Date)}
                         </p>
                       </div>
                     </div>
@@ -1700,8 +2061,9 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                       ['Rejected cut', eventSummary?.rejected_cut],
                       ['Pending review', eventSummary?.pending],
                       ['Inventory added', eventSummary?.inventory_added],
-                      ['AI corrections', eventSummary?.ai_corrections],
-                      ['AI accuracy', eventSummary?.ai_accuracy_percent == null ? 'N/A' : `${eventSummary.ai_accuracy_percent}%`],
+                      ['Corrected AI fields', eventSummary?.ai_corrections],
+                      ['AI correct', eventSummary?.ai_accuracy_percent == null ? 'N/A' : `${eventSummary.ai_accuracy_percent}%`],
+                      ['Human changes', eventSummary?.ai_accuracy_percent == null ? 'N/A' : `${Math.max(0, 100 - Number(eventSummary.ai_accuracy_percent || 0))}%`],
                     ].map(([label, value]) => (
                       <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
                         <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
@@ -1778,7 +2140,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                   </div>
 
                   <div className="space-y-2">
-                    <div
+                    {cameraStatus.kind !== 'error' && <div
                       className={`rounded-md border px-3 py-2 text-xs ${
                         cameraStatus.kind === 'error'
                           ? 'border-rose-200 bg-rose-50 text-rose-700'
@@ -1793,20 +2155,24 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                         <AlertCircle size={12} className="mt-0.5" />
                         {cameraStatus.message}
                       </span>
-                    </div>
+                    </div>}
 
                     <div className="flex gap-2">
                       <input
                         type="text"
                         value={manualWaybillCode}
-                        onChange={(event) => setManualWaybillCode(event.target.value)}
+                        onChange={(event) => setManualWaybillCode(normalizeWaybillCodeInput(event.target.value))}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter') {
                             event.preventDefault();
-                            handleManualScanLookup();
+                            void handleManualScanLookup();
                           }
                         }}
-                        placeholder={scanMode === 'hair_review' ? 'Enter checked-in donor waybill' : 'Enter attendee waybill'}
+                        placeholder="WBXXXXXX"
+                        maxLength={WAYBILL_CODE_LENGTH}
+                        autoCapitalize="characters"
+                        autoComplete="off"
+                        spellCheck={false}
                         className="w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
                         disabled={reviewStatusMeta.needsDecision}
                       />
@@ -1821,6 +2187,11 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                       </button>
                     </div>
 
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                      <span>Manual entry: WB + 6 letters or numbers</span>
+                      <span className="font-mono">{manualWaybillCode.length}/{WAYBILL_CODE_LENGTH}</span>
+                    </div>
+
                     <p className="text-[11px] text-slate-500">
                       {scanMode === 'hair_review'
                         ? 'This scan does not change attendance. It opens a checked-in donor for the final hair decision.'
@@ -1829,6 +2200,8 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                   </div>
                 </div>
               </div>
+
+              <WaybillScanResult outcome={scanOutcome} possibleOutcomes={EVENT_SCAN_OUTCOMES} />
 
               {/* Hair Quality Review */}
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1839,33 +2212,91 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                   </span>
                 </div>
 
-                {!activeReview?.submission?.Submission_ID ? (
+                {activeReview?.voluntaryOnly ? (
+                  <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-4 text-sm text-sky-800">
+                    <div className="flex items-start gap-2">
+                      <CheckCircle2 size={17} className="mt-0.5 shrink-0" />
+                      <div>
+                        <p className="font-bold">Voluntary attendee — no hair review required</p>
+                        <p className="mt-1 text-xs leading-5">
+                          {activeReview?.attendee?.Full_Name || activeReview?.waybillCode || 'This attendee'} only needs RSVP check-in and does not submit hair for quality review.
+                        </p>
+                        <p className="mt-1 font-mono text-xs">{activeReview?.waybillCode}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : !activeReview?.submission?.Submission_ID ? (
                   <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-xs text-slate-600">
                     Select <strong>Hair Intake &amp; Review</strong>, then scan a donor who already completed RSVP Check-in.
                   </div>
                 ) : (
                   <div className="mt-3 space-y-3">
-                    <div className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs md:grid-cols-2">
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Donor</p>
-                        <p className="text-sm font-semibold text-slate-900">{activeReview?.attendee?.Full_Name || 'N/A'}</p>
-                        <p className="text-slate-600">{activeReview?.attendee?.Email || 'No email'}</p>
-                      </div>
-                      <div className="md:text-right">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Codes</p>
-                        <p className="font-mono text-slate-800">{activeReview?.waybillCode || activeReview?.attendee?.Waybill_Code || 'N/A'}</p>
-                        <p className="font-mono text-slate-700">
-                          {activeReview?.submission?.Submission_ID
-                            ? `Submission #${activeReview.submission.Submission_ID}`
-                            : 'No submission linked'}
-                        </p>
-                        <p className="text-slate-600">Submission status: <strong>{activeReview?.submission?.Status || 'Pending'}</strong></p>
-                        <p className="text-slate-600">
-                          Decision:
-                          {' '}
-                          <strong>{reviewStatusMeta.finalStatusLabel || 'Pending'}</strong>
-                        </p>
-                      </div>
+                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.35fr,1fr]">
+                      <section className="rounded-xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4">
+                        <div className="flex items-start gap-3">
+                          <div
+                            className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 bg-white text-base font-bold shadow-sm"
+                            style={{ borderColor: `${primaryColor}35`, color: primaryColor, backgroundColor: `${primaryColor}0D` }}
+                          >
+                            {getInitials(activeReview?.attendee?.Full_Name)}
+                            {donorPhotoUrl ? (
+                              <img
+                                src={donorPhotoUrl}
+                                alt={`${activeReview?.attendee?.Full_Name || 'Donor'} profile`}
+                                className="absolute inset-0 h-full w-full object-cover"
+                              />
+                            ) : null}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Donor profile</p>
+                                <p className="mt-0.5 truncate text-base font-bold text-slate-900">{activeReview?.attendee?.Full_Name || 'Unknown donor'}</p>
+                              </div>
+                              <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700">
+                                {activeReview?.attendee?.Attendee_Type || 'Donor'}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid gap-1.5 text-xs text-slate-600 sm:grid-cols-2">
+                              <span className="inline-flex min-w-0 items-center gap-1.5">
+                                <Mail size={12} className="shrink-0 text-slate-400" />
+                                <span className="truncate">{activeReview?.attendee?.Email || 'No email provided'}</span>
+                              </span>
+                              <span className="inline-flex items-center gap-1.5">
+                                <Phone size={12} className="shrink-0 text-slate-400" />
+                                {activeReview?.attendee?.Contact_Number || 'No contact number'}
+                              </span>
+                              <span className="inline-flex items-center gap-1.5">
+                                <Users size={12} className="shrink-0 text-slate-400" />
+                                {activeReview?.attendee?.Gender || 'Gender not provided'}
+                              </span>
+                              <span className="inline-flex items-center gap-1.5">
+                                <Calendar size={12} className="shrink-0 text-slate-400" />
+                                {activeReview?.attendee?.Birthdate ? formatDateShort(activeReview.attendee.Birthdate) : 'Birthdate not provided'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section className="rounded-xl border border-slate-200 bg-white p-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Submission details</p>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${reviewStatusMeta.isFinal ? 'bg-slate-200 text-slate-700' : 'bg-amber-100 text-amber-800'}`}>
+                            {reviewStatusMeta.finalStatusLabel || activeReview?.submission?.Status || 'Pending review'}
+                          </span>
+                        </div>
+                        <dl className="mt-3 grid grid-cols-[auto,1fr] gap-x-3 gap-y-2 text-xs">
+                          <dt className="text-slate-500">Waybill</dt>
+                          <dd className="text-right font-mono font-semibold text-slate-900">{activeReview?.waybillCode || activeReview?.attendee?.Waybill_Code || 'N/A'}</dd>
+                          <dt className="text-slate-500">Submission</dt>
+                          <dd className="text-right font-semibold text-slate-900">#{activeReview.submission.Submission_ID}</dd>
+                          <dt className="text-slate-500">Submitted</dt>
+                          <dd className="text-right font-medium text-slate-700">{formatDateTime(activeReview?.submission?.Created_At)}</dd>
+                          <dt className="text-slate-500">AI screening</dt>
+                          <dd className="text-right font-medium text-slate-700">{activeAiScreening ? `#${activeAiScreening.AI_Screening_ID || activeReview?.submission?.AI_Screening_ID || 'Linked'}` : 'Not linked'}</dd>
+                        </dl>
+                      </section>
                     </div>
 
                     <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -2014,6 +2445,156 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                       </div>
                     </div>
 
+                    {activeAiScreening ? (
+                      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+                          <div className="flex items-start gap-2">
+                            <Sparkles size={16} className="mt-0.5 shrink-0" style={{ color: primaryColor }} />
+                            <div>
+                              <h4 className="text-sm font-bold text-slate-900">AI vs Staff Comparison</h4>
+                              <p className="mt-0.5 text-[11px] text-slate-500">Staff values update live as you edit the hair details above.</p>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+                              {liveAiAccuracy.comparable - changedAiHairFields.length}/{liveAiAccuracy.comparable} match
+                            </span>
+                            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${changedAiHairFields.length ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                              {changedAiHairFields.length ? `${changedAiHairFields.length} staff change${changedAiHairFields.length === 1 ? '' : 's'}` : 'No staff changes'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="p-3">
+                          <div className="hidden grid-cols-[1fr,1.2fr,28px,1.2fr,92px] items-center gap-2 px-3 pb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500 md:grid">
+                            <span>Field</span>
+                            <span>Original AI</span>
+                            <span />
+                            <span>Staff review</span>
+                            <span className="text-right">Result</span>
+                          </div>
+                          <div className="space-y-2">
+                            {aiStaffComparisonRows.map((row) => {
+                              const resultLabel = !row.comparable ? 'Not compared' : !row.hasStaffValue ? 'Needs value' : row.matches ? 'Match' : 'Changed';
+                              const resultClass = !row.comparable
+                                ? 'border-slate-200 bg-slate-100 text-slate-600'
+                                : !row.hasStaffValue
+                                  ? 'border-amber-200 bg-amber-50 text-amber-800'
+                                  : row.matches
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    : 'border-amber-200 bg-amber-50 text-amber-800';
+                              return (
+                                <div key={row.key} className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-white p-3 md:grid-cols-[1fr,1.2fr,28px,1.2fr,92px] md:items-center">
+                                  <p className="text-xs font-bold text-slate-800">{row.label}</p>
+                                  <div className="rounded-md bg-slate-100 px-2.5 py-2">
+                                    <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400 md:hidden">Original AI</p>
+                                    <p className="text-xs font-semibold text-slate-700">{row.aiDisplay}</p>
+                                  </div>
+                                  <ArrowRight size={14} className="hidden justify-self-center text-slate-400 md:block" />
+                                  <div className={`rounded-md border px-2.5 py-2 ${row.matches ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-200 bg-amber-50/60'}`}>
+                                    <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400 md:hidden">Staff review</p>
+                                    <p className="text-xs font-semibold text-slate-900">{row.staffDisplay}</p>
+                                  </div>
+                                  <span className={`justify-self-start rounded-full border px-2 py-1 text-[10px] font-bold md:justify-self-end ${resultClass}`}>
+                                    {resultLabel}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </section>
+                    ) : null}
+
+                    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+                        <div>
+                          <h4 className="text-sm font-bold text-slate-900">Detailed AI Assessment</h4>
+                          <p className="mt-0.5 text-[11px] text-slate-500">Supporting observations from the original AI screening. The five comparable fields are summarized above.</p>
+                        </div>
+                        {activeAiScreening ? (
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${changedAiHairFields.length ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-emerald-300 bg-emerald-50 text-emerald-700'}`}>
+                              {liveAiAccuracy.comparable > 0
+                                ? `AI ${Number(liveAiAccuracy.aiPercent.toFixed(1))}% · Human ${Number(liveAiAccuracy.humanPercent.toFixed(1))}%${changedAiHairFields.length ? ` · Changed: ${changedAiHairFields.join(', ')}` : ''}`
+                                : 'No comparable AI fields'}
+                            </span>
+                            <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: `${primaryColor}40`, color: primaryColor, backgroundColor: `${primaryColor}0D` }}>
+                              AI confidence {formatAiConfidence(activeAiScreening.Confidence_Score)}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="flex gap-1 border-b border-slate-200 bg-white px-3 pt-3" role="tablist" aria-label="AI review information">
+                        {[
+                          { id: 'screening', label: 'AI Observations' },
+                          { id: 'comments', label: 'AI Comments' },
+                        ].map((tab) => {
+                          const isSelected = aiReviewTab === tab.id;
+                          return (
+                            <button
+                              key={tab.id}
+                              type="button"
+                              role="tab"
+                              aria-selected={isSelected}
+                              onClick={() => setAiReviewTab(tab.id)}
+                              className={`rounded-t-lg border border-b-0 px-3 py-2 text-xs font-semibold transition ${isSelected ? 'text-white shadow-sm' : 'border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`}
+                              style={isSelected ? { backgroundColor: primaryColor, borderColor: primaryColor } : undefined}
+                            >
+                              {tab.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {!activeAiScreening ? (
+                        <div className="m-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center text-xs text-slate-600">
+                          No AI screening is linked to this submission. Staff can still complete the manual quality review, but it will not be included in AI accuracy reporting.
+                        </div>
+                      ) : aiReviewTab === 'screening' ? (
+                        <div className="grid grid-cols-2 gap-2 p-4 md:grid-cols-3 xl:grid-cols-5" role="tabpanel">
+                          {[
+                            ['Hair density score', `${displayAiValue(activeAiScreening.Hair_Density_Score, '0')}%`],
+                            ['Shine level', `${displayAiValue(activeAiScreening.Shine_Level, '0')}/10`],
+                            ['Frizz level', `${displayAiValue(activeAiScreening.Frizz_Level, '0')}/10`],
+                            ['Dryness level', `${displayAiValue(activeAiScreening.Dryness_Level, '0')}/10`],
+                            ['Damage level', `${displayAiValue(activeAiScreening.Damage_Level, '0')}/10`],
+                            ['Bald spots', activeAiScreening.Bald_Spots_Present ? 'Detected' : 'Not detected'],
+                            ['Dandruff', activeAiScreening.Dandruff_Detected ? displayAiValue(activeAiScreening.Dandruff_Severity, 'Detected') : 'Not detected'],
+                            ['Lice indicators', activeAiScreening.Lice_Detected ? displayAiValue(activeAiScreening.Lice_Confidence, 'Detected') : 'Not detected'],
+                            ['Shedding', displayAiValue(activeAiScreening.Shedding_Level)],
+                            ['Visible scalp', displayAiValue(activeAiScreening.Visible_Scalp_Area)],
+                          ].map(([label, value]) => (
+                            <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+                              <p className="mt-1 text-xs font-semibold text-slate-900">{value}</p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2" role="tabpanel">
+                          {[
+                            ['AI decision', activeAiScreening.Decision],
+                            ['Analysis summary', activeAiScreening.Summary],
+                            ['Visible damage notes', activeAiScreening.Visible_Damage_Notes],
+                            ['Length assessment', activeAiScreening.Length_Assessment],
+                            ['Donation readiness', activeAiScreening.Donation_Readiness_Note],
+                            ['History assessment', activeAiScreening.History_Assessment],
+                            ['Improvement recommendation', activeAiScreening.Improvement_Recommendation],
+                            ['Scalp coverage notes', activeAiScreening.Scalp_Coverage_Notes],
+                            ['Dandruff notes', activeAiScreening.Dandruff_Notes],
+                            ['Lice notes', activeAiScreening.Lice_Notes],
+                          ].map(([label, value]) => (
+                            <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+                              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+                              <p className="mt-1 text-xs leading-5 text-slate-700">{displayAiValue(value)}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+
                     <div>
                       <label className="mb-1 block text-xs font-semibold text-slate-700" htmlFor="hair-quality-reason">
                         Rejection reason (required for Rejected and Rejected Cut)
@@ -2145,6 +2726,7 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                           <th className="px-5 py-3 font-semibold text-slate-700">Waybill</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Attendance</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">RSVP Scanned</th>
+                          <th className="px-5 py-3 font-semibold text-slate-700">Hair Intake</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Printed At</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Actions</th>
                         </tr>
@@ -2189,6 +2771,19 @@ export default function AssignedEventOperationsPage({ userProfile }) {
                               ) : (
                                 <span className="text-slate-400">Not scanned</span>
                               )}
+                            </td>
+                            <td className="px-5 py-3 align-top">
+                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${
+                                attendee.Hair_Intake_State === 'done'
+                                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                  : attendee.Hair_Intake_State === 'pending'
+                                    ? 'border-amber-200 bg-amber-50 text-amber-700'
+                                    : attendee.Hair_Intake_State === 'not_required'
+                                      ? 'border-sky-200 bg-sky-50 text-sky-700'
+                                      : 'border-slate-200 bg-slate-100 text-slate-600'
+                              }`}>
+                                {attendee.Hair_Intake_Label || 'Not started'}
+                              </span>
                             </td>
                             <td className="px-5 py-3 align-top text-xs text-slate-600">
                               {attendee.Waybill_Printed_At ? (

@@ -27,6 +27,10 @@ import {
   extractMedicalDocumentText,
   parseMedicalDocumentFields,
 } from '../../../lib/medicalDocumentAutofill';
+import {
+  PERSON_SUFFIX_OPTIONS,
+  normalizePersonSuffix,
+} from '../../../lib/personIdentity';
 
 const PATIENTS_TABLE = 'Patients';
 const USERS_TABLE = 'users';
@@ -68,6 +72,14 @@ const EMPTY_FORM = {
   allergiesCurrentMedications: '',
   insurancePhilHealthInfo: '',
   clinicalSpecialNote: '',
+  hasKnownAllergies: '',
+  allergyDetails: '',
+  hasSensitiveScalp: '',
+  hasScalpIrritation: '',
+  hasOpenScalpWounds: '',
+  hasMedicalRestriction: '',
+  medicalRestrictionDetails: '',
+  informationConfirmed: false,
 };
 
 const CONDITION_OPTIONS = ['Cancer', 'Alopecia', 'Other Hair-Loss Disease'];
@@ -79,8 +91,6 @@ const CONDITION_STAGE_OPTIONS = {
 const GENDER_OPTIONS = [
   { id: 'Male', label: 'Male' },
   { id: 'Female', label: 'Female' },
-  { id: 'Other', label: 'Other' },
-  { id: 'Prefer not to say', label: 'Prefer not to say' },
 ];
 
 const AUTOFILL_FIELD_LABELS = {
@@ -103,7 +113,7 @@ const AUTOFILL_FIELD_LABELS = {
   treatmentHospitalClinic: 'Treatment hospital or clinic',
   treatmentPlan: 'Treatment plan',
   treatmentStatus: 'Treatment status',
-  allergiesCurrentMedications: 'Allergies and medications',
+  allergiesCurrentMedications: 'Current medications',
   insurancePhilHealthInfo: 'Insurance or PhilHealth',
   clinicalSpecialNote: 'Clinical special note',
 };
@@ -172,15 +182,19 @@ function normalizePatientGender(value) {
     return 'Female';
   }
 
-  if (normalized === 'other' || normalized === 'non binary' || normalized === 'non-binary' || normalized === 'nonbinary') {
-    return 'Other';
-  }
-
-  if (normalized === 'prefer not to say' || normalized === 'prefer-not-to-say') {
-    return 'Prefer not to say';
-  }
-
   return '';
+}
+
+function toNullableBoolean(value) {
+  if (value === 'yes' || value === true) return true;
+  if (value === 'no' || value === false) return false;
+  return null;
+}
+
+function safetyAnswerLabel(value) {
+  if (value === 'yes' || value === true) return 'Yes';
+  if (value === 'no' || value === false) return 'No';
+  return 'Not provided';
 }
 
 function toSafeFileName(fileName) {
@@ -464,7 +478,7 @@ function isPdfDocument(pathValue, urlValue) {
 function mapStorageUploadError(rawMessage) {
   const message = String(rawMessage || 'Upload failed.');
   if (message.toLowerCase().includes('row-level security')) {
-    return 'Upload blocked by Storage RLS policy. Apply patient_assets storage policies first.';
+    return 'Your account is not authorized to upload patient files. Refresh your session and try again. If it continues, contact an administrator.';
   }
   return message;
 }
@@ -507,6 +521,14 @@ function mapPatientInsertError(rawMessage) {
 
   if (lowerMessage.includes('duplicate key value') && lowerMessage.includes('patient_code')) {
     return 'Patient code already exists. Please generate a new PT code.';
+  }
+
+  if (lowerMessage.includes('email address is already in use')) {
+    return 'Email is already registered. Use a different email address.';
+  }
+
+  if (lowerMessage.includes('contact number is already in use')) {
+    return 'That mobile number is already assigned to another account or patient contact.';
   }
 
   if (
@@ -565,7 +587,7 @@ function extractReadableErrorText(error, fallback = 'Unable to process this requ
   return fallback;
 }
 
-export default function ManagePatientsPage({ userProfile }) {
+export default function ManagePatientsPage({ userProfile, isActivePage = true }) {
   const { theme } = useTheme();
   const submitLockRef = useRef(false);
   const errorToastIdRef = useRef(0);
@@ -577,6 +599,7 @@ export default function ManagePatientsPage({ userProfile }) {
 
   const [patients, setPatients] = useState([]);
   const [patientUsers, setPatientUsers] = useState([]);
+  const [applicationAssetUrls, setApplicationAssetUrls] = useState(() => new Map());
 
   const [form, setForm] = useState(() => ({
     ...EMPTY_FORM,
@@ -695,6 +718,34 @@ export default function ManagePatientsPage({ userProfile }) {
     const { data } = supabase.storage.from(PATIENT_ASSETS_BUCKET).getPublicUrl(path);
     return data?.publicUrl || '';
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const resolvePrivateApplicationAssets = async () => {
+      const paths = [...new Set(
+        patients
+          .flatMap((patient) => [patient.Patient_Picture, patient.Medical_Document])
+          .map((value) => String(value || '').trim())
+          .filter((value) => value.startsWith('applications/')),
+      )];
+
+      if (!supabase || paths.length === 0) {
+        if (mounted) setApplicationAssetUrls(new Map());
+        return;
+      }
+
+      const signed = await Promise.all(paths.map(async (path) => {
+        const { data, error } = await supabase.storage
+          .from('patient-application-assets')
+          .createSignedUrl(path, 15 * 60);
+        return [path, error ? '' : data?.signedUrl || ''];
+      }));
+      if (mounted) setApplicationAssetUrls(new Map(signed));
+    };
+
+    void resolvePrivateApplicationAssets();
+    return () => { mounted = false; };
+  }, [patients]);
 
   const resolveAssignedHospital = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -869,7 +920,7 @@ export default function ManagePatientsPage({ userProfile }) {
   }, [hospitalId, fetchPatients, fetchTransferData]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase || !hospitalId) {
+    if (!isActivePage || !isSupabaseConfigured || !supabase || !hospitalId) {
       return undefined;
     }
 
@@ -889,7 +940,7 @@ export default function ManagePatientsPage({ userProfile }) {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [hospitalId, fetchPatients, fetchTransferData]);
+  }, [hospitalId, fetchPatients, fetchTransferData, isActivePage]);
 
   useEffect(() => {
     if (!patientPictureFile) {
@@ -941,12 +992,12 @@ export default function ManagePatientsPage({ userProfile }) {
         accessStart: linkedUser?.access_start || null,
         accessEnd: linkedUser?.access_end || null,
         isActive: linkedUser?.is_active !== false,
-        pictureUrl: resolveAssetUrl(patient.Patient_Picture),
-        documentUrl: resolveAssetUrl(patient.Medical_Document),
+        pictureUrl: applicationAssetUrls.get(String(patient.Patient_Picture || '').trim()) || resolveAssetUrl(patient.Patient_Picture),
+        documentUrl: applicationAssetUrls.get(String(patient.Medical_Document || '').trim()) || resolveAssetUrl(patient.Medical_Document),
         createdByName: creatorUser ? getPatientFullName(creatorUser) : 'N/A',
       };
     });
-  }, [patients, patientUsersById, resolveAssetUrl]);
+  }, [applicationAssetUrls, patients, patientUsersById, resolveAssetUrl]);
 
   const filteredPatients = useMemo(() => {
     let results = enrichedPatients;
@@ -1012,7 +1063,7 @@ export default function ManagePatientsPage({ userProfile }) {
   }, []);
 
   const handleInputChange = useCallback((event) => {
-    const { name, value } = event.target;
+    const { name, value, type, checked } = event.target;
 
     if (name === 'guardianContactNumber' || name === 'secondaryGuardianContactNumber') {
       const formattedContactNumber = formatPhilippineMobileInput(value);
@@ -1036,7 +1087,7 @@ export default function ManagePatientsPage({ userProfile }) {
 
     setForm((previous) => ({
       ...previous,
-      [name]: value,
+      [name]: type === 'checkbox' ? checked : value,
     }));
   }, []);
 
@@ -1085,7 +1136,7 @@ export default function ManagePatientsPage({ userProfile }) {
 
       Object.entries(recognizedFields).forEach(([fieldName, value]) => {
         if (!String(formRef.current[fieldName] || '').trim() && String(value || '').trim()) {
-          nextForm[fieldName] = value;
+          nextForm[fieldName] = fieldName === 'suffix' ? normalizePersonSuffix(value) : value;
           appliedFieldNames.push(fieldName);
         }
       });
@@ -1451,7 +1502,7 @@ export default function ManagePatientsPage({ userProfile }) {
     const normalizedFirstName = String(form.firstName || '').trim();
     const normalizedMiddleName = String(form.middleName || '').trim();
     const normalizedLastName = String(form.lastName || '').trim();
-    const normalizedSuffix = String(form.suffix || '').trim();
+    const normalizedSuffix = normalizePersonSuffix(form.suffix);
     const normalizedBirthdate = String(form.birthdate || '').trim();
     const normalizedGender = normalizePatientGender(form.gender);
     const normalizedDisplayName = buildDisplayName({
@@ -1523,6 +1574,12 @@ export default function ManagePatientsPage({ userProfile }) {
       submitLockRef.current = false;
       return;
     }
+    if (normalizedSecondaryGuardianContactNumber
+      && normalizedSecondaryGuardianContactNumber === normalizedGuardianContactNumber) {
+      setNotice({ kind: 'error', text: 'Primary and secondary contacts must use different mobile numbers.' });
+      submitLockRef.current = false;
+      return;
+    }
 
     if (!CONDITION_OPTIONS.includes(normalizedConditionCategory)) {
       setNotice({ kind: 'error', text: 'Select the patient clinical condition.' });
@@ -1572,6 +1629,22 @@ export default function ManagePatientsPage({ userProfile }) {
 
     if (String(form.dateOfDiagnosis || '').trim() && new Date(form.dateOfDiagnosis) > new Date()) {
       setNotice({ kind: 'error', text: 'Date of diagnosis cannot be in the future.' });
+      submitLockRef.current = false;
+      return;
+    }
+
+    if (form.hasKnownAllergies === 'yes' && !String(form.allergyDetails || '').trim()) {
+      setNotice({ kind: 'error', text: 'Enter allergy details when Known allergies is Yes.' });
+      submitLockRef.current = false;
+      return;
+    }
+    if (form.hasMedicalRestriction === 'yes' && !String(form.medicalRestrictionDetails || '').trim()) {
+      setNotice({ kind: 'error', text: 'Enter the medical restriction details.' });
+      submitLockRef.current = false;
+      return;
+    }
+    if (!form.informationConfirmed) {
+      setNotice({ kind: 'error', text: 'Confirm that the safety checklist was reviewed with the patient or guardian.' });
       submitLockRef.current = false;
       return;
     }
@@ -1695,6 +1768,21 @@ export default function ManagePatientsPage({ userProfile }) {
         throw new Error(`Patients insert failed: ${mappedInsertError}`);
       }
       createdPatientId = Number(insertedPatientRow?.Patient_ID || 0) || createdPatientId;
+
+      const { error: safetyProfileError } = await supabase.rpc('save_patient_wig_safety_profile', {
+        p_patient_id: createdPatientId,
+        p_has_known_allergies: toNullableBoolean(form.hasKnownAllergies),
+        p_allergy_details: String(form.allergyDetails || '').trim() || null,
+        p_has_sensitive_scalp: toNullableBoolean(form.hasSensitiveScalp),
+        p_has_scalp_irritation: toNullableBoolean(form.hasScalpIrritation),
+        p_has_open_scalp_wounds: toNullableBoolean(form.hasOpenScalpWounds),
+        p_has_medical_restriction: toNullableBoolean(form.hasMedicalRestriction),
+        p_medical_restriction_details: String(form.medicalRestrictionDetails || '').trim() || null,
+        p_information_confirmed: Boolean(form.informationConfirmed),
+      });
+      if (safetyProfileError) {
+        throw new Error(`Safety checklist failed: ${extractReadableErrorText(safetyProfileError, 'Unable to save safety checklist.')}`);
+      }
 
       const authUserId = await sendPatientInviteEmail({
         email: normalizedEmail,
@@ -1820,6 +1908,9 @@ export default function ManagePatientsPage({ userProfile }) {
     if (secondaryGuardianContactNumber && !isValidPhilippineMobileNumber(secondaryGuardianContactNumber)) {
       return 'Secondary guardian contact must use +63 912 345 6789 format.';
     }
+    if (secondaryGuardianContactNumber && secondaryGuardianContactNumber === guardianContactNumber) {
+      return 'Primary and secondary contacts must use different mobile numbers.';
+    }
     if (!CONDITION_OPTIONS.includes(String(form.conditionCategory || '').trim())) {
       return 'Select the patient clinical condition.';
     }
@@ -1842,6 +1933,15 @@ export default function ManagePatientsPage({ userProfile }) {
     if (new Date(form.birthdate) > new Date()) return 'Birthdate cannot be in the future.';
     if (String(form.dateOfDiagnosis || '').trim() && new Date(form.dateOfDiagnosis) > new Date()) {
       return 'Date of diagnosis cannot be in the future.';
+    }
+    if (form.hasKnownAllergies === 'yes' && !String(form.allergyDetails || '').trim()) {
+      return 'Enter allergy details when Known allergies is Yes.';
+    }
+    if (form.hasMedicalRestriction === 'yes' && !String(form.medicalRestrictionDetails || '').trim()) {
+      return 'Enter the medical restriction details.';
+    }
+    if (!form.informationConfirmed) {
+      return 'Confirm that the safety checklist was reviewed with the patient or guardian.';
     }
     return '';
   }, [documentAutofill.status, form, hospitalId]);
@@ -1972,7 +2072,7 @@ export default function ManagePatientsPage({ userProfile }) {
         <div>
           <h1 className="role-page-title text-3xl font-bold text-gray-900">Manage Patients</h1>
           <p className="mt-1 text-sm text-gray-600">
-            Create patient account, user details, and patient record in one flow with invite email credential delivery.
+            View accepted patients and manage the existing hospital-transfer process.
           </p>
         </div>
 
@@ -2011,7 +2111,6 @@ export default function ManagePatientsPage({ userProfile }) {
         <nav className="-mb-px flex flex-wrap gap-1">
           {[
             { id: 'directory', label: 'Patient Directory', icon: Users },
-            { id: 'add', label: 'Add New Patient', icon: UserPlus },
             { id: 'transfers', label: 'Hospital Transfers', icon: ArrowRightLeft },
           ].map((tab) => {
             const isActive = activeTab === tab.id;
@@ -2050,14 +2149,6 @@ export default function ManagePatientsPage({ userProfile }) {
               </div>
               <div className="flex items-center gap-2">
                 <p className="text-xs text-gray-500">Showing {filteredPatients.length} of {enrichedPatients.length}</p>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('add')}
-                  className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-white"
-                  style={{ backgroundColor: theme.primaryColor }}
-                >
-                  <Plus size={14} /> Add Patient
-                </button>
               </div>
             </div>
 
@@ -2126,18 +2217,8 @@ export default function ManagePatientsPage({ userProfile }) {
                 <Users size={28} className="mx-auto text-gray-300" />
                 <p className="mt-2 text-sm font-semibold text-gray-700">No patients found</p>
                 <p className="mt-1 text-xs text-gray-500">
-                  {patientSearchTerm ? 'Try a different search term.' : 'Start by adding your first patient.'}
+                  {patientSearchTerm ? 'Try a different search term.' : 'Accepted applications will appear here automatically.'}
                 </p>
-                {!patientSearchTerm && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('add')}
-                    className="mt-3 inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-white"
-                    style={{ backgroundColor: theme.primaryColor }}
-                  >
-                    <Plus size={14} /> Add First Patient
-                  </button>
-                )}
               </div>
             ) : (
               <div className="max-h-[650px] overflow-auto rounded-lg border border-gray-200">
@@ -2442,6 +2523,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <input
                       type="email"
                       name="email"
+                      autoComplete="email"
                       value={form.email}
                       onChange={handleInputChange}
                       required
@@ -2490,6 +2572,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <label className="mb-1 block text-sm font-medium text-gray-700">First Name (required)</label>
                     <input
                       name="firstName"
+                      autoComplete="given-name"
                       value={form.firstName}
                       onChange={handleInputChange}
                       required
@@ -2502,6 +2585,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <label className="mb-1 block text-sm font-medium text-gray-700">Middle Name</label>
                     <input
                       name="middleName"
+                      autoComplete="additional-name"
                       value={form.middleName}
                       onChange={handleInputChange}
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
@@ -2513,6 +2597,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <label className="mb-1 block text-sm font-medium text-gray-700">Last Name (required)</label>
                     <input
                       name="lastName"
+                      autoComplete="family-name"
                       value={form.lastName}
                       onChange={handleInputChange}
                       required
@@ -2523,13 +2608,17 @@ export default function ManagePatientsPage({ userProfile }) {
 
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Suffix</label>
-                    <input
+                    <select
                       name="suffix"
                       value={form.suffix}
                       onChange={handleInputChange}
+                      autoComplete="honorific-suffix"
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
-                      placeholder="Jr, Sr, III"
-                    />
+                    >
+                      {PERSON_SUFFIX_OPTIONS.map((option) => (
+                        <option key={option.label} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
                   </div>
 
                   <div>
@@ -2537,6 +2626,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <input
                       type="date"
                       name="birthdate"
+                      autoComplete="bday"
                       value={form.birthdate}
                       onChange={handleInputChange}
                       max={todayDateValue}
@@ -2549,6 +2639,7 @@ export default function ManagePatientsPage({ userProfile }) {
                     <label className="mb-1 block text-sm font-medium text-gray-700">Gender (required)</label>
                     <select
                       name="gender"
+                      autoComplete="sex"
                       value={form.gender}
                       onChange={handleInputChange}
                       required
@@ -2660,8 +2751,8 @@ export default function ManagePatientsPage({ userProfile }) {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">Allergies & Current Medications</label>
-                    <textarea name="allergiesCurrentMedications" value={form.allergiesCurrentMedications} onChange={handleInputChange} rows={3} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Known allergies and current medication" />
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Current Medications</label>
+                    <textarea name="allergiesCurrentMedications" value={form.allergiesCurrentMedications} onChange={handleInputChange} rows={3} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Current prescribed medicines, dosage, or treatment medicines" />
                   </div>
 
                   <div>
@@ -2674,6 +2765,79 @@ export default function ManagePatientsPage({ userProfile }) {
                     <textarea name="clinicalSpecialNote" value={form.clinicalSpecialNote} onChange={handleInputChange} rows={3} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Other important clinical information" />
                   </div>
                 </div>
+
+                <div className="border-t border-gray-200 pt-4">
+                  <h3 className="text-sm font-semibold text-gray-900">Wig Safety Checklist</h3>
+                  <p className="text-xs text-gray-500">
+                    Record the answers provided by the patient or guardian. These answers will automatically prefill the patient's future wig request safety assessment.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {[
+                    ['hasKnownAllergies', 'Known allergies?'],
+                    ['hasSensitiveScalp', 'Sensitive scalp?'],
+                    ['hasScalpIrritation', 'Current scalp irritation?'],
+                    ['hasOpenScalpWounds', 'Open scalp wounds?'],
+                    ['hasMedicalRestriction', 'Medical restriction for wig use?'],
+                  ].map(([name, label]) => (
+                    <label key={name} className="rounded-lg border border-gray-200 bg-white p-3">
+                      <span className="mb-2 block text-sm font-medium text-gray-800">{label}</span>
+                      <select
+                        name={name}
+                        value={form[name]}
+                        onChange={handleInputChange}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2"
+                      >
+                        <option value="">Not provided</option>
+                        <option value="yes">Yes</option>
+                        <option value="no">No</option>
+                      </select>
+                    </label>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">
+                      Allergy Details {form.hasKnownAllergies === 'yes' ? <span className="text-red-600">*</span> : '(optional)'}
+                    </label>
+                    <textarea
+                      name="allergyDetails"
+                      value={form.allergyDetails}
+                      onChange={handleInputChange}
+                      rows={3}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      placeholder="Allergen, reaction, medicine, or wig material to avoid"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">
+                      Medical Restriction Details {form.hasMedicalRestriction === 'yes' ? <span className="text-red-600">*</span> : '(optional)'}
+                    </label>
+                    <textarea
+                      name="medicalRestrictionDetails"
+                      value={form.medicalRestrictionDetails}
+                      onChange={handleInputChange}
+                      rows={3}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      placeholder="Required clearance, restriction, or care instructions"
+                    />
+                  </div>
+                </div>
+
+                <label className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                  <input
+                    type="checkbox"
+                    name="informationConfirmed"
+                    checked={form.informationConfirmed}
+                    onChange={handleInputChange}
+                    className="mt-0.5 h-4 w-4"
+                  />
+                  <span>
+                    I confirm that this safety information was reviewed with the patient or guardian and is accurate. <span className="font-bold text-red-600">*</span>
+                  </span>
+                </label>
 
                 <div className="border-t border-gray-200 pt-4">
                   <h3 className="text-sm font-semibold text-gray-900">Primary Guardian / Emergency Contact</h3>
@@ -2708,6 +2872,9 @@ export default function ManagePatientsPage({ userProfile }) {
                     <label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number (required)</label>
                     <input
                       name="guardianContactNumber"
+                      type="tel"
+                      inputMode="numeric"
+                      autoComplete="tel"
                       value={form.guardianContactNumber}
                       onChange={handleInputChange}
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
@@ -2725,7 +2892,7 @@ export default function ManagePatientsPage({ userProfile }) {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                   <div><label className="mb-1 block text-sm font-medium text-gray-700">Name</label><input name="secondaryGuardian" value={form.secondaryGuardian} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Alternate contact name" /></div>
                   <div><label className="mb-1 block text-sm font-medium text-gray-700">Relationship</label><input name="secondaryGuardianRelationship" value={form.secondaryGuardianRelationship} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="e.g., Father" /></div>
-                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number</label><input name="secondaryGuardianContactNumber" value={form.secondaryGuardianContactNumber} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="+63 912 345 6789" maxLength={16} /></div>
+                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number</label><input type="tel" inputMode="numeric" name="secondaryGuardianContactNumber" value={form.secondaryGuardianContactNumber} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="+63 912 345 6789" maxLength={16} /></div>
                 </div>
               </div>
             )}
@@ -2807,6 +2974,20 @@ export default function ManagePatientsPage({ userProfile }) {
                 <DrawerRow label="Patient picture" value={patientPictureFile?.name || 'Not attached'} />
                 <DrawerRow label="Medical document" value={medicalDocumentFile?.name || 'Not attached'} />
               </dl>
+
+              <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
+                <h4 className="text-sm font-bold text-slate-900">Wig Safety Checklist</h4>
+                <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <DrawerRow label="Known allergies" value={safetyAnswerLabel(form.hasKnownAllergies)} />
+                  <DrawerRow label="Sensitive scalp" value={safetyAnswerLabel(form.hasSensitiveScalp)} />
+                  <DrawerRow label="Scalp irritation" value={safetyAnswerLabel(form.hasScalpIrritation)} />
+                  <DrawerRow label="Open scalp wounds" value={safetyAnswerLabel(form.hasOpenScalpWounds)} />
+                  <DrawerRow label="Medical restriction" value={safetyAnswerLabel(form.hasMedicalRestriction)} />
+                  <DrawerRow label="Information confirmed" value={form.informationConfirmed ? 'Yes' : 'No'} />
+                  <DrawerRow label="Allergy details" value={form.allergyDetails || 'Not provided'} />
+                  <DrawerRow label="Restriction details" value={form.medicalRestrictionDetails || 'Not provided'} />
+                </dl>
+              </div>
 
               <div className="flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
                 <CheckCircle2 size={18} className="mt-0.5 shrink-0" />
@@ -2936,7 +3117,7 @@ export default function ManagePatientsPage({ userProfile }) {
                   <DrawerRow label="Treatment Hospital / Clinic" value={selectedPatient.Treatment_Hospital_Clinic || 'N/A'} />
                   <DrawerRow label="Treatment Plan" value={selectedPatient.Treatment_Plan || 'N/A'} />
                   <DrawerRow label="Current Status" value={selectedPatient.Current_Treatment_Status || 'N/A'} />
-                  <DrawerRow label="Allergies & Medications" value={selectedPatient.Allergies_Current_Medications || 'N/A'} />
+                  <DrawerRow label="Current Medications" value={selectedPatient.Allergies_Current_Medications || 'N/A'} />
                   <DrawerRow label="Insurance / PhilHealth" value={selectedPatient.Insurance_PhilHealth_Info || 'N/A'} />
                   <DrawerRow label="Special Note" value={selectedPatient.Clinical_Special_Note || 'N/A'} />
                 </ProfileSection>
@@ -3062,8 +3243,8 @@ export default function ManagePatientsPage({ userProfile }) {
         </div>
       )}
 
-      {successPopup.open && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/55 px-4 backdrop-blur-[1px]">
+      {successPopup.open && typeof document !== 'undefined' ? createPortal(
+        <div className="fixed inset-0 z-[10010] flex items-center justify-center bg-black/55 px-4 backdrop-blur-[1px]">
           <button
             type="button"
             aria-label="Close success popup"
@@ -3104,36 +3285,38 @@ export default function ManagePatientsPage({ userProfile }) {
               </button>
             </div>
           </section>
-        </div>
-      )}
+        </div>,
+        document.body,
+      ) : null}
 
-      {errorToasts.length > 0 && (
+      {errorToasts.length > 0 && typeof document !== 'undefined' ? createPortal(
         <div className="fixed bottom-5 right-5 z-[10020] flex w-[min(92vw,390px)] flex-col gap-2" aria-live="assertive">
           {errorToasts.map((toast) => (
             <div
               key={toast.id}
               role="alert"
-              className="flex items-start gap-3 rounded-xl border border-red-200 bg-white px-4 py-3 text-red-900 shadow-xl"
+              className="flex items-start gap-3 rounded-xl border border-red-800 bg-red-700 px-4 py-3 text-white shadow-2xl"
             >
-              <div className="mt-0.5 rounded-full bg-red-100 p-1.5 text-red-700">
+              <div className="mt-0.5 rounded-full bg-white p-1.5 text-red-700">
                 <AlertTriangle size={16} />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-bold uppercase tracking-wide text-red-700">Unable to continue</p>
-                <p className="mt-0.5 break-words text-sm text-gray-800">{toast.text}</p>
+                <p className="text-xs font-bold uppercase tracking-wide text-white">Unable to continue</p>
+                <p className="mt-0.5 break-words text-sm text-red-50">{toast.text}</p>
               </div>
               <button
                 type="button"
                 onClick={() => dismissErrorToast(toast.id)}
-                className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                className="rounded-md p-1 text-red-100 hover:bg-red-800 hover:text-white"
                 aria-label="Dismiss error"
               >
                 <X size={16} />
               </button>
             </div>
           ))}
-        </div>
-      )}
+        </div>,
+        document.body,
+      ) : null}
     </div>
   );
 }

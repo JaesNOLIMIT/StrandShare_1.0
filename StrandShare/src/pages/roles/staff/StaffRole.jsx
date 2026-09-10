@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy } from 'react';
 import {
   BarChart3,
   Boxes,
@@ -11,21 +11,22 @@ import {
   Settings,
 } from 'lucide-react';
 import RoleDashboardShell from '../../shared/RoleDashboardShell';
-import DashboardPage from './DashboardPage';
-import EventApplicationIntakePage from './EventApplicationIntakePage';
-import AssignedEventOperationsPage from './AssignedEventOperationsPage';
-import UpdateWigRequestStatusPage from './UpdateWigRequestStatusPage';
-import SettingsPage from './SettingsPage';
-import ManageRequirementsPage from '../../shared/features/ManageRequirementsPage';
-import RoleReportsPage from '../../shared/features/RoleReportsPage';
-import SalonSchedulePage from './SalonSchedulePage';
-import CutHairInventoryPage from '../../shared/features/CutHairInventoryPage';
+
+const DashboardPage = lazy(() => import('./DashboardPage'));
+const EventApplicationIntakePage = lazy(() => import('./EventApplicationIntakePage'));
+const AssignedEventOperationsPage = lazy(() => import('./AssignedEventOperationsPage'));
+const UpdateWigRequestStatusPage = lazy(() => import('./UpdateWigRequestStatusPage'));
+const SettingsPage = lazy(() => import('./SettingsPage'));
+const ManageRequirementsPage = lazy(() => import('../../shared/features/ManageRequirementsPage'));
+const RoleReportsPage = lazy(() => import('../../shared/features/RoleReportsPage'));
+const SalonSchedulePage = lazy(() => import('./SalonSchedulePage'));
+const CutHairInventoryPage = lazy(() => import('../../shared/features/CutHairInventoryPage'));
 
 const staffNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'salon-schedule', label: 'Salon Schedule', icon: CalendarDays },
+  { id: 'salon-schedule', label: 'Receiving Schedule', icon: CalendarDays },
   { id: 'event-application-intake', label: 'Manage Event Application', icon: CheckCircle },
-  { id: 'assigned-event-operations', label: 'Manage Assigned Events', icon: FileText },
+  { id: 'assigned-event-operations', label: 'Manage Assigned Events', icon: FileText, scrollMode: 'contained' },
   { id: 'cut-hair-inventory', label: 'Cut Hair Inventory', icon: Boxes },
   { id: 'update-wig-request-status', label: 'Manage Wig Request', icon: Package },
   { id: 'manage-requirements', label: 'Manage Requirements', icon: SlidersHorizontal },
@@ -45,7 +46,7 @@ const staffPageComponents = {
   settings: SettingsPage,
 };
 
-export default function StaffRole({ onSignOut, userProfile }) {
+export default function StaffRole({ onSignOut, userProfile, onInitialDashboardReady }) {
   return (
     <RoleDashboardShell
       onSignOut={onSignOut}
@@ -53,6 +54,7 @@ export default function StaffRole({ onSignOut, userProfile }) {
       navItems={staffNavItems}
       pageComponents={staffPageComponents}
       defaultPage="dashboard"
+      onInitialDashboardReady={onInitialDashboardReady}
     />
   );
 }

@@ -22,6 +22,7 @@ export const BUNDLE_HAIR_COUNT_TARGET_MAX = 10;
 export const HAIR_SUBMISSION_STATUS = {
   PENDING: 'Pending',
   CUT: 'Cut',
+  AVAILABLE: 'Available',
   WIG_IN_PRODUCTION: 'Wig In Production',
   WIG_CREATED: 'Wig Created',
   CANCELLED: 'Cancelled',
@@ -36,12 +37,25 @@ export const HAIR_SUBMISSION_STATUS = {
 export const HAIR_SUBMISSION_STATUS_ORDER = [
   HAIR_SUBMISSION_STATUS.PENDING,
   HAIR_SUBMISSION_STATUS.CUT,
+  HAIR_SUBMISSION_STATUS.AVAILABLE,
   HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
   HAIR_SUBMISSION_STATUS.WIG_CREATED,
   HAIR_SUBMISSION_STATUS.CANCELLED,
 ];
 
 const UTC8_OFFSET_MINUTES = 8 * 60;
+export const WAYBILL_CODE_LENGTH = 8;
+
+export function normalizeWaybillCodeInput(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, WAYBILL_CODE_LENGTH);
+}
+
+export function isValidWaybillCode(value) {
+  return /^WB[A-Z0-9]{6}$/.test(String(value || '').trim().toUpperCase());
+}
 
 export function getManilaSqlTimestamp(dateValue = new Date()) {
   const date = dateValue instanceof Date ? dateValue : new Date(dateValue);

@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Info, Loader2, RefreshCw, Save, MapPin, Search } from 'lucide-react';
+import { Info, Loader2, Save, MapPin, Search } from 'lucide-react';
 import maplibregl from 'maplibre-gl';
 import { useTheme } from '../../../context/ThemeContext';
+import { useToast } from '../../../context/ToastContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
-import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
 import { logAuditAction } from '../../../lib/auditLogger';
 import philippineAddressOptions from '../../../data/philippineAddressOptions.json';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -259,6 +259,7 @@ function LogisticsLocationPinPicker({ latitude, longitude, onChange, disabled = 
   const onChangeRef = useRef(onChange);
   const initialLatitudeRef = useRef(latitude);
   const initialLongitudeRef = useRef(longitude);
+  const appliedMapViewRef = useRef('satellite');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchError, setSearchError] = useState('');
   const [isSearching, setIsSearching] = useState(false);
@@ -404,12 +405,24 @@ function LogisticsLocationPinPicker({ latitude, longitude, onChange, disabled = 
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) {
-      return;
+    if (!map || appliedMapViewRef.current === mapView) {
+      return undefined;
     }
 
     const nextStyle = mapView === 'street' ? MAP_STREET_STYLE : MAP_SATELLITE_STYLE;
-    map.setStyle(nextStyle);
+    const applyStyle = () => {
+      if (mapRef.current !== map || appliedMapViewRef.current === mapView) return;
+      map.setStyle(nextStyle);
+      appliedMapViewRef.current = mapView;
+    };
+
+    if (map.isStyleLoaded()) {
+      applyStyle();
+      return undefined;
+    }
+
+    map.once('style.load', applyStyle);
+    return () => map.off('style.load', applyStyle);
   }, [mapView]);
 
   return (
@@ -494,12 +507,23 @@ function LogisticsLocationPinPicker({ latitude, longitude, onChange, disabled = 
 
 export default function LogisticsDestinationSettingsPage({ userProfile }) {
   const { theme } = useTheme();
+  const { showToast } = useToast();
 
   const [uiSettings, setUiSettings] = useState(null);
   const [recordId, setRecordId] = useState(null);
   const [updatedAt, setUpdatedAt] = useState('');
   const [form, setForm] = useState(DEFAULT_FORM);
   const [notice, setNotice] = useState({ kind: '', text: '' });
+
+  useEffect(() => {
+    if (!notice.text || !['error', 'success'].includes(notice.kind)) return;
+    showToast({
+      type: notice.kind,
+      title: notice.kind === 'error' ? 'Logistics Destination error' : 'Logistics Destination updated',
+      message: notice.text,
+    });
+    setNotice({ kind: '', text: '' });
+  }, [notice, showToast]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -592,15 +616,6 @@ export default function LogisticsDestinationSettingsPage({ userProfile }) {
     void fetchUiSettings();
     void loadSettings();
   }, [fetchUiSettings, loadSettings]);
-
-  useRealtimeRefresh({
-    channelName: 'requirements-logistics-live',
-    tables: [UI_SETTINGS_TABLE, LOGISTICS_SETTINGS_TABLE],
-    onChange: () => {
-      void fetchUiSettings();
-      void loadSettings();
-    },
-  });
 
   const cards = useMemo(() => {
     const fullAddress = [form.street, form.barangay, form.city, form.province, form.region, form.country]
@@ -791,7 +806,7 @@ export default function LogisticsDestinationSettingsPage({ userProfile }) {
   return (
     <div className="space-y-6" style={rootStyle}>
       <section className="rounded-2xl border bg-white p-6 shadow-sm" style={{ borderColor: `${secondaryColor}30`, backgroundColor }}>
-        <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
           <div>
             <h2 className="text-2xl font-bold" style={{ color: primaryTextColor, fontFamily: `${headingFont}, sans-serif` }}>
               Logistics Destination Settings
@@ -800,15 +815,6 @@ export default function LogisticsDestinationSettingsPage({ userProfile }) {
               Maintain the single global logistics destination record shown to users.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={loadSettings}
-            disabled={isLoading}
-            className="inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
-            style={{ borderColor: `${secondaryColor}55`, color: secondaryTextColor }}
-          >
-            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} /> Refresh
-          </button>
         </div>
 
         <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
@@ -820,12 +826,6 @@ export default function LogisticsDestinationSettingsPage({ userProfile }) {
           ))}
         </div>
       </section>
-
-      {notice.text ? (
-        <div className={`rounded-lg border px-4 py-3 text-sm ${notice.kind === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-rose-200 bg-rose-50 text-rose-900'}`}>
-          {notice.kind === 'success' ? notice.text : `Error: ${notice.text}`}
-        </div>
-      ) : null}
 
       <section className="rounded-2xl border bg-white p-6 shadow-sm" style={{ borderColor: `${secondaryColor}30` }}>
         <div className="mb-4 flex items-center gap-2 text-sm" style={{ color: secondaryTextColor }}>
