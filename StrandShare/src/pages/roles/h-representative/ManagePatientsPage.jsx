@@ -599,6 +599,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
 
   const [patients, setPatients] = useState([]);
   const [patientUsers, setPatientUsers] = useState([]);
+  const [applicationAssetUrls, setApplicationAssetUrls] = useState(() => new Map());
 
   const [form, setForm] = useState(() => ({
     ...EMPTY_FORM,
@@ -717,6 +718,34 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
     const { data } = supabase.storage.from(PATIENT_ASSETS_BUCKET).getPublicUrl(path);
     return data?.publicUrl || '';
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const resolvePrivateApplicationAssets = async () => {
+      const paths = [...new Set(
+        patients
+          .flatMap((patient) => [patient.Patient_Picture, patient.Medical_Document])
+          .map((value) => String(value || '').trim())
+          .filter((value) => value.startsWith('applications/')),
+      )];
+
+      if (!supabase || paths.length === 0) {
+        if (mounted) setApplicationAssetUrls(new Map());
+        return;
+      }
+
+      const signed = await Promise.all(paths.map(async (path) => {
+        const { data, error } = await supabase.storage
+          .from('patient-application-assets')
+          .createSignedUrl(path, 15 * 60);
+        return [path, error ? '' : data?.signedUrl || ''];
+      }));
+      if (mounted) setApplicationAssetUrls(new Map(signed));
+    };
+
+    void resolvePrivateApplicationAssets();
+    return () => { mounted = false; };
+  }, [patients]);
 
   const resolveAssignedHospital = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -963,12 +992,12 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
         accessStart: linkedUser?.access_start || null,
         accessEnd: linkedUser?.access_end || null,
         isActive: linkedUser?.is_active !== false,
-        pictureUrl: resolveAssetUrl(patient.Patient_Picture),
-        documentUrl: resolveAssetUrl(patient.Medical_Document),
+        pictureUrl: applicationAssetUrls.get(String(patient.Patient_Picture || '').trim()) || resolveAssetUrl(patient.Patient_Picture),
+        documentUrl: applicationAssetUrls.get(String(patient.Medical_Document || '').trim()) || resolveAssetUrl(patient.Medical_Document),
         createdByName: creatorUser ? getPatientFullName(creatorUser) : 'N/A',
       };
     });
-  }, [patients, patientUsersById, resolveAssetUrl]);
+  }, [applicationAssetUrls, patients, patientUsersById, resolveAssetUrl]);
 
   const filteredPatients = useMemo(() => {
     let results = enrichedPatients;
@@ -2043,7 +2072,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
         <div>
           <h1 className="role-page-title text-3xl font-bold text-gray-900">Manage Patients</h1>
           <p className="mt-1 text-sm text-gray-600">
-            Create patient account, user details, and patient record in one flow with invite email credential delivery.
+            View accepted patients and manage the existing hospital-transfer process.
           </p>
         </div>
 
@@ -2082,7 +2111,6 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
         <nav className="-mb-px flex flex-wrap gap-1">
           {[
             { id: 'directory', label: 'Patient Directory', icon: Users },
-            { id: 'add', label: 'Add New Patient', icon: UserPlus },
             { id: 'transfers', label: 'Hospital Transfers', icon: ArrowRightLeft },
           ].map((tab) => {
             const isActive = activeTab === tab.id;
@@ -2121,14 +2149,6 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
               </div>
               <div className="flex items-center gap-2">
                 <p className="text-xs text-gray-500">Showing {filteredPatients.length} of {enrichedPatients.length}</p>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('add')}
-                  className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-white"
-                  style={{ backgroundColor: theme.primaryColor }}
-                >
-                  <Plus size={14} /> Add Patient
-                </button>
               </div>
             </div>
 
@@ -2197,18 +2217,8 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                 <Users size={28} className="mx-auto text-gray-300" />
                 <p className="mt-2 text-sm font-semibold text-gray-700">No patients found</p>
                 <p className="mt-1 text-xs text-gray-500">
-                  {patientSearchTerm ? 'Try a different search term.' : 'Start by adding your first patient.'}
+                  {patientSearchTerm ? 'Try a different search term.' : 'Accepted applications will appear here automatically.'}
                 </p>
-                {!patientSearchTerm && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('add')}
-                    className="mt-3 inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-white"
-                    style={{ backgroundColor: theme.primaryColor }}
-                  >
-                    <Plus size={14} /> Add First Patient
-                  </button>
-                )}
               </div>
             ) : (
               <div className="max-h-[650px] overflow-auto rounded-lg border border-gray-200">

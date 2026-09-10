@@ -7,15 +7,17 @@ import {
   Clock3,
   History,
   ImageOff,
+  Power,
+  PowerOff,
   RefreshCw,
   ScanLine,
   Search,
   SlidersHorizontal,
+  Trash2,
 } from 'lucide-react';
 
 import {
   checkerboardStyle,
-  LOW_STOCK_ALERT_BELOW,
   stockState,
   withAlpha,
 } from './wigCatalogUtils';
@@ -34,13 +36,25 @@ function SummaryCard({ label, value, accent = '#0f172a' }) {
 function StatusBadge({ row }) {
   const status = stockState(row);
   const styles = {
-    in: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    low: 'border-red-200 bg-red-50 text-red-700',
-    out: 'border-slate-200 bg-slate-100 text-slate-600',
+    in: 'bg-emerald-50 text-emerald-700',
+    low: 'bg-red-50 text-red-700',
+    out: 'bg-slate-100 text-slate-600',
   };
   return (
-    <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-semibold ${styles[status.key]}`}>
+    <span className={`inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${styles[status.key]}`}>
       {status.label}
+    </span>
+  );
+}
+
+function CatalogVisibilityBadge({ active }) {
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold ${active
+      ? 'text-emerald-700'
+      : 'text-slate-500'}`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+      {active ? 'Active' : 'Inactive'}
     </span>
   );
 }
@@ -50,6 +64,7 @@ export default function WigInventoryTab({
   loading,
   onOpenHistory,
   onOpenBundleScanner,
+  onManageCatalog,
   primaryColor,
 }) {
   const [search, setSearch] = useState('');
@@ -203,18 +218,18 @@ export default function WigInventoryTab({
                   <th className="px-4 py-3">Style</th>
                   <th className="px-4 py-3">Hair details</th>
                   <th className="px-4 py-3">Cap size</th>
-                  <th className="px-4 py-3">Stock</th>
-                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Availability</th>
+                  <th className="px-4 py-3">Phone catalog</th>
                   <th className="px-5 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleRows.map((row) => (
-                  <tr key={row.wigId} className="border-t border-slate-200 hover:bg-slate-50/70">
-                    <td className="px-5 py-3">
+                  <tr key={row.wigId} className="border-t border-slate-100 bg-white transition-colors hover:bg-slate-50/80">
+                    <td className="px-5 py-2.5">
                       <div className="flex min-w-[190px] items-center gap-3">
                         <div
-                          className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200"
+                          className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1 ring-slate-200"
                           style={checkerboardStyle()}
                         >
                           {row.imageUrl ? (
@@ -228,7 +243,7 @@ export default function WigInventoryTab({
                           )}
                         </div>
                         <div>
-                          <p className="font-semibold text-slate-900">{row.wigName}</p>
+                          <p className="text-sm font-semibold leading-5 text-slate-900">{row.wigName}</p>
                           <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500">
                             <Clock3 size={10} />
                             {row.createdAt
@@ -241,11 +256,11 @@ export default function WigInventoryTab({
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-700">
+                    <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-700">
                       {row.wigCode || '-'}
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-700">{row.style || '-'}</td>
-                    <td className="px-4 py-3">
+                    <td className="max-w-[210px] px-4 py-2.5 text-xs leading-5 text-slate-700">{row.style || '-'}</td>
+                    <td className="px-4 py-2.5">
                       <p className="text-xs font-medium text-slate-700">
                         {[row.hairColor, row.hairTexture].filter(Boolean).join(' · ') || '-'}
                       </p>
@@ -255,24 +270,50 @@ export default function WigInventoryTab({
                         {row.hairDensity || 'Density —'}
                       </p>
                     </td>
-                    <td className="px-4 py-3">
-                      <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-slate-300 px-2 text-[11px] font-semibold text-slate-700">
-                        {row.capSize ? row.capSize.charAt(0) : '-'}
+                    <td className="px-4 py-2.5">
+                      <span className="inline-flex rounded-md bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700">
+                        {row.capSize || '-'}
                       </span>
                     </td>
-                    <td className="px-4 py-3">
-                      <p className="text-sm font-semibold text-slate-900">{row.stockCount}</p>
-                      <p className="text-[10px] text-slate-500">Low below {LOW_STOCK_ALERT_BELOW}</p>
+                    <td className="px-4 py-2.5">
+                      <div className="flex min-w-[108px] items-center gap-2">
+                        <span className="min-w-5 text-center text-base font-semibold text-slate-900">{row.stockCount}</span>
+                        <StatusBadge row={row} />
+                      </div>
                     </td>
-                    <td className="px-4 py-3"><StatusBadge row={row} /></td>
-                    <td className="px-5 py-3">
-                      <div className="flex justify-end gap-1.5">
+                    <td className="px-4 py-2.5">
+                      <CatalogVisibilityBadge active={row.isActive} />
+                    </td>
+                    <td className="px-5 py-2.5">
+                      <div className="flex min-w-[108px] justify-end gap-1.5">
                         <button
                           type="button"
                           onClick={() => onOpenHistory(row)}
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-white"
+                          title="View stock history"
+                          aria-label={`View history for ${row.wigName}`}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
                         >
-                          <History size={12} /> History
+                          <History size={15} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onManageCatalog(row, row.isActive ? 'deactivate' : 'activate')}
+                          title={row.isActive ? 'Deactivate phone filter' : 'Activate phone filter'}
+                          aria-label={`${row.isActive ? 'Deactivate' : 'Activate'} ${row.wigName}`}
+                          className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${row.isActive
+                            ? 'text-amber-600 hover:bg-amber-50 hover:text-amber-700'
+                            : 'text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700'}`}
+                        >
+                          {row.isActive ? <PowerOff size={12} /> : <Power size={12} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onManageCatalog(row, 'delete')}
+                          title="Delete unused wig variant"
+                          aria-label={`Delete ${row.wigName}`}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-red-500 transition-colors hover:bg-red-50 hover:text-red-700"
+                        >
+                          <Trash2 size={14} />
                         </button>
                       </div>
                     </td>

@@ -216,11 +216,22 @@
 }
 .hero-sub.vis{opacity:1;transform:translateY(0)}
 .hero-ctas{
-  display:flex;gap:14px;justify-content:center;flex-wrap:wrap;
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:14px;
+  width:min(100%,760px);
+  margin-inline:auto;
   opacity:0;transform:translateY(14px);
   transition:opacity .9s 3s var(--ease),transform .9s 3s var(--ease);
 }
 .hero-ctas.vis{opacity:1;transform:translateY(0)}
+.hero-ctas .btn-primary{
+  width:100%;
+  min-height:50px;
+  justify-content:center;
+  padding:12px 18px;
+  white-space:nowrap;
+}
 .scroll-hint{
   position:absolute;bottom:2.5rem;left:50%;transform:translateX(-50%);
   font-size:.65rem;letter-spacing:.22em;font-weight: 600;text-transform:uppercase;
@@ -373,8 +384,8 @@
 /* ── IMPACT ──────────────────────────────────────── */
 #impact{background:var(--color-bg,#f5f0e8);padding:8rem 2rem;color:var(--color-text-primary,#0f172a)}
 
-/* ── PARTNERSHIP TRACKS ──────────────────────────── */
-#tracks{
+/* ── PROGRAM APPLICATION ─────────────────────────── */
+#programs{
   background:rgba(var(--color-primary-rgb,184,149,90),0.04);
   padding:8rem 2rem;color:var(--color-text-primary,#0f172a);
   border-top:1px solid rgba(var(--color-primary-rgb,184,149,90),0.08);
@@ -446,8 +457,8 @@
 }
 .step-detail{font-size:.85rem;font-weight:400;line-height:1.7;color:var(--color-text-secondary,#7a6f61)}
 
-/* ── APPLY / REQUIREMENTS ────────────────────────── */
-#apply{background:var(--color-bg,#f5f0e8);padding:8rem 2rem;color:var(--color-text-primary,#0f172a)}
+/* ── BECOME A PARTNER / REQUIREMENTS ─────────────── */
+#become-partner{background:var(--color-bg,#f5f0e8);padding:8rem 2rem;color:var(--color-text-primary,#0f172a)}
 .req-grid{
   display:grid;grid-template-columns:repeat(2,1fr);
   gap:1rem;margin-bottom:2.5rem;
@@ -470,6 +481,82 @@
   background:var(--color-primary,#b8955a);display:flex;align-items:center;justify-content:center;
 }
 .req-check svg{width:12px;height:12px;stroke:var(--color-bg,#fff);fill:none}
+
+/* ── LIVE METRICS & PARTNER HOSPITALS ───────────── */
+.landing-metrics-grid{grid-template-columns:repeat(4,1fr)}
+.landing-metric{padding:2rem 1.5rem}
+.landing-metric-value{
+  margin-bottom:.6rem;
+  font-family:var(--font-serif,'Cormorant Garamond',serif);
+  font-size:clamp(2.6rem,5vw,4.5rem);
+  font-weight:500;
+  line-height:1;
+  color:var(--color-primary,#8a6c3a);
+}
+.landing-live-note{
+  margin-top:1rem;
+  color:var(--color-text-tertiary,#94a3b8);
+  font-size:.72rem;
+  letter-spacing:.06em;
+}
+.landing-inline-icon{display:inline;vertical-align:-2px;margin-right:.35rem}
+#partners{
+  padding:8rem 2rem;
+  color:var(--color-text-primary,#0f172a);
+  background:rgba(var(--color-primary-rgb,184,149,90),.04);
+  border-block:1px solid rgba(var(--color-primary-rgb,184,149,90),.1);
+}
+.landing-partner-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:1rem;
+}
+.landing-partner-card{
+  display:flex;
+  align-items:flex-start;
+  gap:1rem;
+  min-height:140px;
+  padding:1.4rem;
+  border:1px solid rgba(var(--color-text-primary-rgb,15,13,10),.08);
+  border-radius:10px;
+  background:var(--color-bg,#fff);
+}
+.landing-partner-icon{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex:0 0 42px;
+  width:42px;
+  height:42px;
+  border-radius:50%;
+  color:var(--color-primary,#8a6c3a);
+  background:rgba(var(--color-primary-rgb,184,149,90),.14);
+}
+.landing-partner-card h3{
+  font-family:var(--font-serif,'Cormorant Garamond',serif);
+  font-size:1.15rem;
+  font-weight:600;
+}
+.landing-partner-card p{
+  display:flex;
+  align-items:flex-start;
+  gap:.35rem;
+  margin-top:.4rem;
+  color:var(--color-text-secondary,#7a6f61);
+  font-size:.78rem;
+  line-height:1.5;
+}
+.landing-partner-card span{
+  display:inline-block;
+  margin-top:.8rem;
+  color:var(--color-text-tertiary,#94a3b8);
+  font-size:.68rem;
+  font-weight:700;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+}
+.landing-partner-card span.is-open{color:#13795b}
+.landing-section-actions{display:flex;justify-content:center;margin-top:2.5rem}
 
 /* ── FAQ ─────────────────────────────────────────── */
 #faq{background:var(--color-bg,#f5f0e8);padding:6rem 2rem;color:var(--color-text-primary,#0f172a)}
@@ -601,9 +688,13 @@ footer{
     height:40px;
   }
   .about-grid,.impact-grid{grid-template-columns:1fr 1fr}
+  .landing-metrics-grid,.landing-partner-grid{grid-template-columns:1fr 1fr}
   .steps-wrap{grid-template-columns:1fr 1fr;gap:2rem}
   .steps-wrap::before{display:none}
   .req-grid{grid-template-columns:1fr}
+}
+@media(max-width:720px){
+  .hero-ctas{grid-template-columns:1fr;width:min(100%,330px)}
 }
 @media(max-width:640px){
   .landing-scroll-root nav{padding:0 1rem}
@@ -620,6 +711,7 @@ footer{
     height:38px;
   }
   .about-grid,.impact-grid,.stats-grid{grid-template-columns:1fr}
+  .landing-metrics-grid,.landing-partner-grid{grid-template-columns:1fr}
   .steps-wrap{grid-template-columns:1fr}
   .footer-inner{flex-direction:column}
 }

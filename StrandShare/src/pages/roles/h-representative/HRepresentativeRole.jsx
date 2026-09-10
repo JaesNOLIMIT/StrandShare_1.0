@@ -5,6 +5,8 @@ import {
   Package,
   FileBarChart,
   Settings,
+  ClipboardCheck,
+  FileCog,
 } from 'lucide-react';
 import RoleDashboardShell from '../../shared/RoleDashboardShell';
 
@@ -13,10 +15,14 @@ const ManagePatientsPage = lazy(() => import('./ManagePatientsPage'));
 const WigRequestPage = lazy(() => import('./WigRequestPage'));
 const GenerateReportsPage = lazy(() => import('./GenerateReportsPage'));
 const SettingsPage = lazy(() => import('./SettingsPage'));
+const PatientApplicationsPage = lazy(() => import('./PatientApplicationsPage'));
+const PatientApplicationSettingsPage = lazy(() => import('./PatientApplicationSettingsPage'));
 
 const hRepresentativeNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'patient-applications', label: 'Patient Applications', icon: ClipboardCheck },
   { id: 'manage-patients', label: 'Manage Patients', icon: Users },
+  { id: 'patient-application-setup', label: 'Application Setup', icon: FileCog },
   { id: 'wig-request', label: 'Wig Requests', icon: Package },
   { id: 'reports', label: 'Reports', icon: FileBarChart },
   { id: 'settings', label: 'Settings', icon: Settings },
@@ -24,7 +30,9 @@ const hRepresentativeNavItems = [
 
 const hRepresentativePageComponents = {
   dashboard: DashboardPage,
+  'patient-applications': PatientApplicationsPage,
   'manage-patients': ManagePatientsPage,
+  'patient-application-setup': PatientApplicationSettingsPage,
   'wig-request': WigRequestPage,
   reports: GenerateReportsPage,
   settings: SettingsPage,

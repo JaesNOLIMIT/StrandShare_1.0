@@ -175,7 +175,11 @@
                 </table>
                 {{ end }}
 
-                {{ if or (eq .Data.account_type "patient") (eq .Data.account_type "partner_hospital") (eq .Data.account_type "internal_web_user") }}
+                {{ if eq .Data.account_type "patient" }}
+                <div style="margin:0 0 16px 0;background-color:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:12px 14px;color:#065f46;font-size:13px;line-height:1.6;">
+                  Use these credentials to sign in through the Donivra mobile application. Patient accounts are not available in the staff website.
+                </div>
+                {{ else if or (eq .Data.account_type "partner_hospital") (eq .Data.account_type "internal_web_user") }}
                 <div style="margin:0 0 16px 0;">
                   <a href="{{ .SiteURL }}/login" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 18px;border-radius:8px;">
                     Go To Login
@@ -192,7 +196,7 @@
                   If you did not expect this email, you may safely ignore it.
                 </p>
 
-                {{ if or (eq .Data.account_type "patient") (eq .Data.account_type "partner_hospital") (eq .Data.account_type "internal_web_user") }}
+                {{ if or (eq .Data.account_type "partner_hospital") (eq .Data.account_type "internal_web_user") }}
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:18px;">
                   <tr>
                     <td style="border-top:1px dashed #2a2a2a;padding-top:12px;">

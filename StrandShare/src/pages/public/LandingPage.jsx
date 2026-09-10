@@ -1,59 +1,39 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, ChevronUp, HeartPulse, Mail, MapPin, Phone } from 'lucide-react';
+import {
+  ArrowRight, Building2, CalendarDays, ChevronUp, HeartPulse, Mail, MapPin,
+  Phone,
+} from 'lucide-react';
 import { motion, useAnimation, useScroll, useSpring, useTransform } from 'framer-motion';
 import { useTheme } from '../../context/ThemeContext';
 import { TransitionFlipExit } from '../../components/transitions/TransitionFlip';
 import { isSupabaseConfigured, supabase } from '../../lib/supabaseClient';
 import './landing-scroll.css';
 
-const EVENT_REQUESTS_TABLE = 'Event_Requests';
-const WIG_REQUESTS_TABLE = 'Wig_Requests';
-
-function normalizeKey(value) {
-  return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
-}
-
-function labelFromStatusKey(value) {
-  const key = normalizeKey(value);
-  if (!key) return 'Unknown';
-  if (key === 'pendingstaffreview') return 'Pending Staff Review';
-  if (key === 'pendingadmindecision') return 'Pending Admin Decision';
-  if (key === 'pendingadminapproval') return 'Pending Admin Approval';
-  if (key === 'approved') return 'Approved';
-  if (key === 'rejected') return 'Rejected';
-  if (key === 'appealed') return 'Appealed';
-  if (key === 'cancelled') return 'Cancelled';
-  if (key === 'released' || key === 'completed') return 'Completed';
-  return String(value || 'Unknown');
-}
-
-function formatFlowTimestamp(value) {
-  if (!value) return 'No update time';
+function formatPublicDate(value) {
+  if (!value) return 'Schedule to be announced';
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return 'No update time';
-  return parsed.toLocaleString('en-PH', {
+  if (Number.isNaN(parsed.getTime())) return 'Schedule to be announced';
+  return parsed.toLocaleDateString('en-PH', {
     timeZone: 'Asia/Manila',
     year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
+    month: 'long',
+    day: 'numeric',
   });
 }
 
 /*  static content  */
 const applicationChecklist = [
-  { group: 'Hospital Partnership Essentials', items: [
-    'Hospital Name and Facility Details',
-    'Primary Contact Number and Preferred Contact Method',
-    'Authorized Representative Full Name and Email',
-    'Complete Address (Street, Barangay, City, Province, Region)',
+  { group: 'Hospital information', items: [
+    'Licensed hospital or qualified healthcare facility details',
+    'Complete facility address and official contact channels',
+    'Authorized representative’s identity and work email',
+    'Hospital logo and supporting accreditation documents',
   ]},
-  { group: 'Event Planning Requirements', items: [
-    'Program Title and Overview',
-    'Proposed Event Schedule Window',
-    'Venue and Location Information',
-    'Expected Attendee Volume',
+  { group: 'Partnership readiness', items: [
+    'Commitment to verify patient eligibility and protect medical information',
+    'A designated H-Representative who will manage requests',
+    'Agreement to Donivra’s operational and data-handling requirements',
+    'A reachable contact for partnership review and coordination',
   ]},
 ];
 
@@ -233,7 +213,13 @@ export default function LandingPage() {
   const [topHoverActive, setTopHoverActive] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const [openFaq,    setOpenFaq]    = useState(-1);
-  const [liveFlowRows, setLiveFlowRows] = useState([]);
+  const [publicContent, setPublicContent] = useState({
+    metrics: {},
+    upcoming_programs: [],
+    partner_hospitals: [],
+    updated_at: null,
+  });
+  const [publicContentStatus, setPublicContentStatus] = useState('loading');
   const topHoverStateRef = useRef(false);
   const lastScrollYRef = useRef(0);
 
@@ -255,57 +241,21 @@ export default function LandingPage() {
   useEffect(() => {
     let isCancelled = false;
 
-    const fetchLandingMetrics = async () => {
+    const fetchLandingContent = async () => {
       if (!isSupabaseConfigured || !supabase) {
+        if (!isCancelled) setPublicContentStatus('unavailable');
         return;
       }
-
-      const flowTasks = await Promise.allSettled([
-        supabase
-          .from(EVENT_REQUESTS_TABLE)
-          .select('Event_Request_ID,Event_Name,Status,Updated_At')
-          .order('Updated_At', { ascending: false })
-          .limit(3),
-        supabase
-          .from(WIG_REQUESTS_TABLE)
-          .select('Req_ID,Status,Updated_At')
-          .order('Updated_At', { ascending: false })
-          .limit(3),
-      ]);
-
-      const nextFlowRows = [];
-      const eventRowsResult = flowTasks[0];
-      if (eventRowsResult.status === 'fulfilled' && !eventRowsResult.value.error) {
-        (eventRowsResult.value.data || []).forEach((row) => {
-          nextFlowRows.push({
-            id: `event-${row.Event_Request_ID}`,
-            stage: 'Event Request',
-            title: row.Event_Name || `ER-${row.Event_Request_ID}`,
-            status: labelFromStatusKey(row.Status),
-            updatedAt: formatFlowTimestamp(row.Updated_At),
-          });
-        });
-      }
-
-      const wigRowsResult = flowTasks[1];
-      if (wigRowsResult.status === 'fulfilled' && !wigRowsResult.value.error) {
-        (wigRowsResult.value.data || []).forEach((row) => {
-          nextFlowRows.push({
-            id: `wig-${row.Req_ID}`,
-            stage: 'Wig Request',
-            title: `WR-${String(row.Req_ID || '').padStart(4, '0')}`,
-            status: labelFromStatusKey(row.Status),
-            updatedAt: formatFlowTimestamp(row.Updated_At),
-          });
-        });
-      }
-
-      if (!isCancelled) {
-        setLiveFlowRows(nextFlowRows);
+      const { data, error: contentError } = await supabase.rpc('get_public_landing_content');
+      if (!isCancelled && !contentError && data) {
+        setPublicContent(data);
+        setPublicContentStatus('ready');
+      } else if (!isCancelled) {
+        setPublicContentStatus('unavailable');
       }
     };
 
-    void fetchLandingMetrics();
+    void fetchLandingContent();
 
     return () => {
       isCancelled = true;
@@ -459,37 +409,19 @@ export default function LandingPage() {
   const toggleFaq = useCallback(i => setOpenFaq(prev => (prev === i ? -1 : i)), []);
   const aboutCards = useMemo(() => ([
     {
-      title: 'Hospital-First Partnership',
-      body: 'Donivra supports approved partner hospitals through one connected operational workflow.',
-      icon: 'HF',
+      title: 'Purposeful Donations',
+      body: 'We help turn qualified hair donations into responsibly produced wigs for patients experiencing medical hair loss.',
+      icon: '01',
     },
     {
-      title: 'Event-Driven Process',
-      body: 'Program applications are validated by staff, then elevated to admin decision in a structured queue.',
-      icon: 'EP',
+      title: 'Verified Care Network',
+      body: 'Approved hospitals, trained staff, and specialists work through one traceable process with clear responsibilities.',
+      icon: '02',
     },
     {
-      title: 'Patient-Centered Impact',
-      body: 'Wig request operations are tracked from request intake up to release and completion stages.',
-      icon: 'PI',
-    },
-  ]), []);
-
-  const impactCards = useMemo(() => ([
-    {
-      eyebrow: 'Partnership Intake',
-      title: 'Hospital Intake to Approval',
-      body: 'Hospital partnership intake is reviewed for eligibility and aligned to approved operational standards.',
-    },
-    {
-      eyebrow: 'Decision Pipeline',
-      title: 'Event Decision Pipeline',
-      body: 'Event requests move through staff coordination, then admin review for approval or rejection.',
-    },
-    {
-      eyebrow: 'Outcome Monitoring',
-      title: 'Wig Request Outcomes',
-      body: 'Wig request outcomes are monitored for fulfillment, release readiness, and completed delivery.',
+      title: 'Patient Privacy',
+      body: 'Medical applications and documents are kept private and reviewed only by the patient’s selected hospital.',
+      icon: '03',
     },
   ]), []);
 
@@ -497,60 +429,68 @@ export default function LandingPage() {
     {
       id: 'hospital',
       eyebrow: 'Hospital Track',
-      title: 'Partner Hospital',
+      title: 'Apply for a Donation Program',
       icon: 'hospital',
-      body: 'Partner hospital flow is tied to event operations from intake, coordination, review, and activation.',
+      body: 'Organizations and communities can propose a hair-donation program for formal review and coordination.',
       points: [
-        `Submit hospital partnership + event details in one intake flow`,
-        `Coordinate with assigned staff while request status is pending`,
-        `Proceed only after admin decision and status approval`,
+        'Complete the public program application and attach the requested documents',
+        'Donivra staff validates the proposal and coordinates missing details',
+        'An administrator makes the final decision before the program is published',
       ],
     },
   ]), []);
 
   const journeyCards = useMemo(() => ([
-    { num: 'Apply', title: 'Apply as Partner Hospital', detail: 'Submit hospital details and event context through the partnership intake form.' },
-    { num: 'Coordinate', title: 'Staff Coordination', detail: 'Assigned staff validates details, clarifies schedule, and prepares request completeness.' },
-    { num: 'Review', title: 'Admin Decision', detail: 'Admin reviews the staff-endorsed request and confirms approval or rejection status.' },
-    { num: 'Support', title: 'Event & Wig Support', detail: 'Approved operations continue to event execution and downstream wig request handling.' },
+    { num: '01', title: 'Apply for a Program', detail: 'Submit a complete public application for a proposed hair-donation program.' },
+    { num: '02', title: 'Staff Review', detail: 'Staff checks eligibility, documents, venue details, and schedule readiness.' },
+    { num: '03', title: 'Admin Approval', detail: 'An administrator reviews the endorsed application and records the final decision.' },
+    { num: '04', title: 'Program Delivery', detail: 'Approved programs move into attendee registration, receiving, quality checks, and reporting.' },
   ]), []);
 
   const faqItems = useMemo(() => ([
     {
-      q: 'Who can apply for partnership?',
-      a: 'Only hospitals and care centers can apply for partnership in this workflow.',
+      q: 'Who can apply for a Donivra program?',
+      a: 'Organizations, hospitals, schools, and community groups may submit a program proposal. Every proposal is reviewed before approval.',
     },
     {
-      q: 'Who can apply for event?',
-      a: 'Any user can apply for event support requests through the public intake flow.',
+      q: 'How can a patient request support?',
+      a: 'A patient views the approved partner hospitals, chooses one accepting applications, verifies an email by OTP, and submits the hospital’s required information. Patient accounts are used only in the Donivra mobile app.',
     },
     {
-      q: 'How is the process connected in Donivra?',
-      a: 'The process is connected through Event_Applications -> Event_Requests -> Wig_Requests for end-to-end tracking.',
+      q: 'Are patient medical details public?',
+      a: 'No. Medical details and documents are private and are reviewed only by the H-Representative assigned to the selected hospital.',
     },
     {
-      q: 'What happens after we submit?',
-      a: 'Staff coordinates details first, then admin finalizes approval or rejection status.',
+      q: 'What happens after a program application is submitted?',
+      a: 'Donivra sends a confirmation, staff reviews and coordinates the details, and an administrator makes the final approval or rejection decision.',
     },
     {
-      q: 'Can we proceed immediately after applying?',
-      a: 'No. Admin approval is required before event execution can proceed.',
+      q: 'How does a hospital become a partner?',
+      a: 'The hospital submits its facility and authorized representative details. Donivra reviews the application before enabling hospital access.',
     },
     {
-      q: 'Do you track completion?',
-      a: 'Yes. Wig request outcomes are tracked through release and completion stages.',
+      q: 'How is donated hair tracked?',
+      a: 'Eligible donations use waybill and QR records through receiving, quality review, bundling, wig production, stock, and release.',
     },
   ]), []);
 
   const dynamicMarqueeItems = useMemo(() => ([
-    'Hospital Partnerships',
-    'Event Intake',
-    'Staff Coordination',
-    'Admin Decision',
-    'Wig Request Tracking',
-    'Release Operations',
+    'Hair Donation Programs',
+    'Partner Hospitals',
+    'Patient Privacy',
+    'Quality Verification',
+    'Wig Production',
+    'Hope in Every Strand',
   ]), []);
 
+  const publicMetrics = [
+    { label: 'Approved partner hospitals', value: publicContentStatus === 'ready' ? Number(publicContent?.metrics?.partner_hospitals || 0) : null },
+    { label: 'Hospitals accepting applications', value: publicContentStatus === 'ready' ? Number(publicContent?.metrics?.open_patient_applications || 0) : null },
+    { label: 'Approved donation programs', value: publicContentStatus === 'ready' ? Number(publicContent?.metrics?.approved_programs || 0) : null },
+    { label: 'Wigs released', value: publicContentStatus === 'ready' ? Number(publicContent?.metrics?.released_wigs || 0) : null },
+  ];
+  const upcomingPrograms = Array.isArray(publicContent?.upcoming_programs) ? publicContent.upcoming_programs : [];
+  const featuredHospitals = Array.isArray(publicContent?.partner_hospitals) ? publicContent.partner_hospitals : [];
   const marqueeDouble = [...dynamicMarqueeItems, ...dynamicMarqueeItems];
 
   return (
@@ -589,11 +529,11 @@ export default function LandingPage() {
 
         <div className={`nav-links${heroVis ? ' vis' : ''}`}>
           <a href="#about">About</a>
-          <a href="#impact">Impact</a>
-          <a href="#tracks">Tracks</a>
           <a href="#journey">How It Works</a>
+          <a href="#programs">Programs</a>
+          <a href="#partners">Partner Hospitals</a>
+          <a href="#become-partner">Become a Partner</a>
           <a href="#faq">FAQ</a>
-          <a href="#contact">Contact</a>
         </div>
 
         <div className={`nav-actions${heroVis ? ' vis' : ''}`}>
@@ -650,16 +590,19 @@ export default function LandingPage() {
           </h1>
 
           <p className={`hero-sub${heroVis ? ' vis' : ''}`}>
-            {brandName} connects partnered hospitals, hospital teams, and community applicants
-            through one linked workflow from intake to release.
+            {brandName} connects donors, communities, specialists, and trusted hospitals to turn
+            qualified hair donations into dignified patient support.
           </p>
 
           <div className={`hero-ctas${heroVis ? ' vis' : ''}`}>
-            <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-partnership')}>
-              Apply as Partner Hospital <ArrowRight size={15} />
-            </button>
             <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-event')}>
-              Apply for Program <ArrowRight size={15} />
+              Apply for a Program <ArrowRight size={15} />
+            </button>
+            <button type="button" className="btn-primary" onClick={() => handleNavigate('/partner-hospitals')}>
+              Become a Donivra Patient <ArrowRight size={15} />
+            </button>
+            <button type="button" className="btn-primary" onClick={() => handleNavigate('/apply-partnership')}>
+              Become a Partner <ArrowRight size={15} />
             </button>
           </div>
         </motion.div>
@@ -702,30 +645,31 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/*  IMPACT  */}
-      <section id="impact">
+      {/*  HOW IT WORKS  */}
+      <section id="journey">
         <div className="container">
-          <p className="eyebrow">Impact Areas</p>
-          <h2 className="section-title">Where Our Work<br />Creates <em>Impact</em></h2>
-          <div className="impact-grid">
-            {impactCards.map((item) => (
-              <article className="impact-card" key={item.title}>
-                <div className="impact-num">{item.eyebrow}</div>
-                <h3 className="impact-title">{item.title}</h3>
-                <p className="impact-body">{item.body}</p>
+          <p className="eyebrow">How It Works</p>
+          <h2 className="section-title">A Clear Path from<br /><em>Application to Impact</em></h2>
+          <p className="section-lead">Every public program follows a reviewed and traceable process before collection begins.</p>
+          <div className="steps-wrap">
+            {journeyCards.map((step) => (
+              <article className="step" key={step.title}>
+                <div className="step-num">{step.num}</div>
+                <h3 className="step-title">{step.title}</h3>
+                <p className="step-detail">{step.detail}</p>
               </article>
             ))}
           </div>
         </div>
       </section>
 
-      {/*  Hospital Partnership  */}
-      <section id="tracks">
+      {/*  PROGRAM APPLICATION  */}
+      <section id="programs">
         <div className="container">
-          <p className="eyebrow">Hospital Partnership</p>
-          <h2 className="section-title">One Track.<br /><em>Hospital Partnership Mission.</em></h2>
+          <p className="eyebrow">Program Application</p>
+          <h2 className="section-title">Bring a Hair Donation<br /><em>Program to Your Community</em></h2>
           <p className="section-lead">
-            Hospital partnership is focused on event execution. Submit your request, align details with staff, and move to admin decision.
+            Propose a program with a real venue, schedule, organizer, and supporting documents. Submission starts a review—it is not automatic approval.
           </p>
           <div className="impact-grid" style={{ gridTemplateColumns: 'repeat(1, 1fr)' }}>
             {trackCards.map((track) => (
@@ -771,72 +715,89 @@ export default function LandingPage() {
             ))}
           </div>
           <div style={{ marginTop: '2.5rem', display: 'flex', justifyContent: 'center' }}>
-            <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-partnership')}>
-              Apply as Partner Hospital <ArrowRight size={15} />
+            <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-event')}>
+              Start Program Application <ArrowRight size={15} />
             </button>
           </div>
         </div>
       </section>
 
-      {/*  JOURNEY  */}
-      <section id="journey">
+      {/*  LIVE IMPACT  */}
+      <section id="impact">
         <div className="container">
-          <p className="eyebrow">Hospital Event Journey</p>
-          <h2 className="section-title">
-            Four Steps to<br /><em>Change a Life</em>
-          </h2>
-          <div className="steps-wrap">
-            {journeyCards.map(step => (
-              <article className="step" key={step.title}>
-                <div className="step-num">{step.num}</div>
-                <h3 className="step-title">{step.title}</h3>
-                <p className="step-detail">{step.detail}</p>
+          <p className="eyebrow">Live Donivra Network</p>
+          <h2 className="section-title">Real Progress,<br /><em>Safely Summarized</em></h2>
+          <p className="section-lead">These totals come from approved operational records. No patient or applicant information is exposed.</p>
+          <div className="impact-grid landing-metrics-grid">
+            {publicMetrics.map((metric) => (
+              <article className="impact-card landing-metric" key={metric.label}>
+                <div className="landing-metric-value">{metric.value === null ? '—' : metric.value.toLocaleString('en-PH')}</div>
+                <p className="impact-body">{metric.label}</p>
               </article>
             ))}
           </div>
+          {publicContent?.updated_at && <p className="landing-live-note">Live summary updated {formatPublicDate(publicContent.updated_at)}</p>}
         </div>
       </section>
 
-      <section id="flow-live" style={{ background: 'var(--color-bg,#f5f0e8)', padding: '4rem 2rem 2rem' }}>
+      <section id="upcoming-programs" style={{ background: 'var(--color-bg,#f5f0e8)', padding: '4rem 2rem 2rem' }}>
         <div className="container">
-          <p className="eyebrow vis">System Flow Snapshot</p>
-          <h2 className="section-title vis">Latest <em>Operational Records</em></h2>
+          <p className="eyebrow vis">Approved Programs</p>
+          <h2 className="section-title vis">Upcoming <em>Donation Programs</em></h2>
           <p className="section-lead vis">
-            These are pulled from your real records in Event_Requests and Wig_Requests,
-            so the landing story stays connected to your actual workflow.
+            Only administrator-approved public programs appear here. Schedules may still be updated by the organizing team.
           </p>
-          {liveFlowRows.length > 0 ? (
+          {upcomingPrograms.length > 0 ? (
             <div className="impact-grid" style={{ marginTop: 0 }}>
-              {liveFlowRows.map((row) => (
-                <article className="impact-card vis" key={row.id}>
-                  <div className="impact-num">{row.stage}</div>
-                  <h3 className="impact-title" style={{ fontSize: '1.1rem' }}>{row.title}</h3>
-                  <p className="impact-body">
-                    Status: <strong>{row.status}</strong><br />
-                    Updated: {row.updatedAt}
-                  </p>
+              {upcomingPrograms.map((program) => (
+                <article className="impact-card vis" key={program.id}>
+                  <div className="impact-num"><CalendarDays size={14} /> {formatPublicDate(program.start_date)}</div>
+                  <h3 className="impact-title" style={{ fontSize: '1.2rem' }}>{program.name}</h3>
+                  <p className="impact-body"><MapPin size={14} className="landing-inline-icon" /> {[program.venue, program.city, program.province].filter(Boolean).join(', ') || 'Venue to be announced'}</p>
                 </article>
               ))}
             </div>
           ) : (
             <article className="impact-card vis">
-              <div className="impact-num">Live Data</div>
-              <h3 className="impact-title" style={{ fontSize: '1.1rem' }}>Waiting for accessible rows</h3>
-              <p className="impact-body">
-                No flow rows are visible to the public client yet. Once table read access is available, this section updates automatically.
-              </p>
+              <div className="impact-num">Program Calendar</div>
+              <h3 className="impact-title" style={{ fontSize: '1.1rem' }}>{publicContentStatus === 'unavailable' ? 'Live calendar temporarily unavailable' : 'No upcoming approved program yet'}</h3>
+              <p className="impact-body">{publicContentStatus === 'unavailable' ? 'Please check again later.' : 'New approved schedules will appear here automatically.'}</p>
             </article>
           )}
         </div>
       </section>
 
-      {/*  REQUIREMENTS  */}
-      <section id="apply">
+      {/*  PARTNER HOSPITALS  */}
+      <section id="partners">
         <div className="container">
-          <p className="eyebrow">What You'll Need</p>
-          <h2 className="section-title">Hospital Event Partnership<br /><em>Checklist</em></h2>
+          <p className="eyebrow">Partner Hospitals</p>
+          <h2 className="section-title">Care Coordinated with<br /><em>Trusted Hospitals</em></h2>
+          <p className="section-lead">Patients can review approved hospitals and their requirements here. Patient sign-in remains exclusively in the mobile application.</p>
+          <div className="landing-partner-grid">
+            {featuredHospitals.length > 0 ? featuredHospitals.map((hospital) => (
+              <article className="landing-partner-card" key={hospital.id}>
+                <div className="landing-partner-icon"><Building2 size={21} /></div>
+                <div>
+                  <h3>{hospital.name}</h3>
+                  <p><MapPin size={13} /> {hospital.location || 'Location not published'}</p>
+                  <span className={hospital.applications_open ? 'is-open' : ''}>{hospital.applications_open ? 'Accepting patient applications' : 'Applications currently closed'}</span>
+                </div>
+              </article>
+            )) : <article className="landing-partner-card"><div className="landing-partner-icon"><Building2 size={21} /></div><div><h3>Partner directory</h3><p>Approved hospitals will appear here automatically.</p></div></article>}
+          </div>
+          <div className="landing-section-actions">
+            <button type="button" className="btn-primary" onClick={() => handleNavigate('/partner-hospitals')}>Become a Donivra Patient <ArrowRight size={15} /></button>
+          </div>
+        </div>
+      </section>
+
+      {/*  BECOME A PARTNER  */}
+      <section id="become-partner">
+        <div className="container">
+          <p className="eyebrow">Become a Partner</p>
+          <h2 className="section-title">Join the Hospital<br /><em>Care Network</em></h2>
           <p className="section-lead">
-            Prepare the required hospital and event details so staff coordination and admin review can move faster.
+            Partnership is reviewed before access is granted. Prepare accurate facility and representative information to help Donivra validate your application.
           </p>
           {applicationChecklist.map((group, idx) => (
             <div
@@ -869,10 +830,7 @@ export default function LandingPage() {
           ))}
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
             <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-partnership')}>
-              Open Partner Hospital Application Form <ArrowRight size={15} />
-            </button>
-            <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-event')}>
-              Apply for Program <ArrowRight size={15} />
+              Apply to Become a Partner <ArrowRight size={15} />
             </button>
           </div>
         </div>
@@ -905,14 +863,14 @@ export default function LandingPage() {
         <div className="cta-inner container">
           <h2 className="cta-title">Ready to Make a<br /><em>Difference?</em></h2>
           <p className="cta-sub">
-            Join the hospital partnership network and run better-coordinated community events for patient support.
+            Organize a verified donation program, apply for patient assistance, or help your hospital join Donivra.
           </p>
           <div className="cta-btns">
-            <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-partnership')}>
-              Apply as Partner Hospital <ArrowRight size={15} />
+            <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-event')}>
+              Apply for a Program <ArrowRight size={15} />
             </button>
-            <button type="button" className="btn-outline" onClick={() => handleNavigate('/login')}>
-              Login to Dashboard
+            <button type="button" className="btn-outline" onClick={() => handleNavigate('/partner-hospitals')}>
+              Become a Donivra Patient
             </button>
           </div>
         </div>
@@ -929,17 +887,17 @@ export default function LandingPage() {
           </div>
           <div className="footer-links">
             <a href="#about">About</a>
-            <a href="#impact">Impact</a>
-            <a href="#tracks">Tracks</a>
             <a href="#journey">How It Works</a>
-            <a href="#flow-live">Flow</a>
-            <a href="#apply">Apply</a>
+            <a href="#programs">Programs</a>
+            <a href="#impact">Impact</a>
+            <a href="#partners">Partner Hospitals</a>
+            <a href="#become-partner">Become a Partner</a>
             <a href="#faq">FAQ</a>
           </div>
           <div className="footer-contact">
             <span><Mail size={14} /> donivraproject@gmail.com</span>
-            <span><Phone size={14} /> +63 917 586 0145</span>
-            <span><MapPin size={14} /> Makati, Philippines</span>
+            <span><Phone size={14} /> +63 919 399 9824</span>
+            <span><MapPin size={14} /> Angat, Bulacan, Philippines</span>
           </div>
         </div>
       </footer>

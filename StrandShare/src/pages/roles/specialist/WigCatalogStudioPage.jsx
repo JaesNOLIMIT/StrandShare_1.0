@@ -6,7 +6,9 @@ import {
   History,
   Loader2,
   PackagePlus,
+  Power,
   PlusCircle,
+  Trash2,
   X,
 } from 'lucide-react';
 
@@ -236,6 +238,13 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
     error: '',
   });
   const [bundleScanner, setBundleScanner] = useState(createBundleScannerState);
+  const [catalogAction, setCatalogAction] = useState({
+    open: false,
+    row: null,
+    action: '',
+    saving: false,
+    error: '',
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -396,6 +405,44 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
     }));
   };
 
+  const openCatalogAction = useCallback((row, action) => {
+    setCatalogAction({ open: true, row, action, saving: false, error: '' });
+  }, []);
+
+  const closeCatalogAction = useCallback(() => {
+    setCatalogAction((previous) => (
+      previous.saving
+        ? previous
+        : { open: false, row: null, action: '', saving: false, error: '' }
+    ));
+  }, []);
+
+  const submitCatalogAction = useCallback(async () => {
+    if (!supabase || !catalogAction.row || !catalogAction.action) return;
+    setCatalogAction((previous) => ({ ...previous, saving: true, error: '' }));
+    try {
+      const result = await supabase.rpc('manage_wig_catalog_item', {
+        p_wig_id: Number(catalogAction.row.wigId),
+        p_action: catalogAction.action,
+      });
+      if (result.error) throw result.error;
+
+      const label = catalogAction.row.wigCode || catalogAction.row.wigName;
+      const actionMessage = catalogAction.action === 'delete'
+        ? `${label} was deleted from the catalog.`
+        : `${label} is now ${catalogAction.action === 'activate' ? 'active and visible on the phone' : 'inactive and hidden from the phone'}.`;
+      setCatalogAction({ open: false, row: null, action: '', saving: false, error: '' });
+      setNotice({ kind: 'success', message: actionMessage });
+      await loadInventory();
+    } catch (error) {
+      setCatalogAction((previous) => ({
+        ...previous,
+        saving: false,
+        error: error?.message || 'Could not update this wig catalog item.',
+      }));
+    }
+  }, [catalogAction.action, catalogAction.row, loadInventory]);
+
   const openBundleScanner = useCallback(() => {
     setBundleScanner({
       open: true,
@@ -553,6 +600,7 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
           loading={loading}
           onOpenHistory={openHistory}
           onOpenBundleScanner={openBundleScanner}
+          onManageCatalog={openCatalogAction}
           primaryColor={accent}
         />
       </div>
@@ -579,6 +627,59 @@ export default function WigCatalogStudioPage({ userProfile, isActivePage = true 
         state={historyModal}
         onClose={() => setHistoryModal((previous) => ({ ...previous, open: false }))}
       />
+      {catalogAction.open && catalogAction.row ? (
+        <ModalFrame
+          title={`${catalogAction.action === 'delete' ? 'Delete' : catalogAction.action === 'activate' ? 'Activate' : 'Deactivate'} wig`}
+          icon={catalogAction.action === 'delete'
+            ? <Trash2 size={17} className="text-red-600" />
+            : <Power size={17} className="text-slate-700" />}
+          onClose={catalogAction.saving ? undefined : closeCatalogAction}
+        >
+          <div className="space-y-4 p-5">
+            <div className="rounded-xl bg-slate-50 p-4">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Selected wig variant</p>
+              <p className="mt-1 font-semibold text-slate-900">{catalogAction.row.wigName}</p>
+              <p className="mt-1 font-mono text-xs text-slate-600">{catalogAction.row.wigCode} · {catalogAction.row.capSize || 'No cap size'} cap</p>
+            </div>
+
+            <p className="text-sm leading-6 text-slate-600">
+              {catalogAction.action === 'delete'
+                ? 'Delete this catalog variant permanently? Deletion is allowed only when stock is zero and the wig has no request, bundle, allocation, or inventory history.'
+                : catalogAction.action === 'activate'
+                  ? 'Activate this wig filter and make this cap-size variant available on the phone catalog?'
+                  : 'Deactivate this wig filter and hide this cap-size variant from the phone catalog? Existing history will be preserved.'}
+            </p>
+
+            {catalogAction.error ? (
+              <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+                <AlertCircle size={15} className="mt-0.5 shrink-0" />
+                <span>{catalogAction.error}</span>
+              </div>
+            ) : null}
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button
+                type="button"
+                onClick={closeCatalogAction}
+                disabled={catalogAction.saving}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold text-slate-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitCatalogAction}
+                disabled={catalogAction.saving}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold text-white disabled:opacity-50 ${catalogAction.action === 'delete' ? 'bg-red-600' : ''}`}
+                style={catalogAction.action === 'delete' ? undefined : { backgroundColor: accent }}
+              >
+                {catalogAction.saving ? <Loader2 size={13} className="animate-spin" /> : catalogAction.action === 'delete' ? <Trash2 size={13} /> : <Power size={13} />}
+                Confirm {catalogAction.action}
+              </button>
+            </div>
+          </div>
+        </ModalFrame>
+      ) : null}
       <BundleCompletionScanner
         open={bundleScanner.open}
         manualCode={bundleScanner.manualCode}

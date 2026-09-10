@@ -130,6 +130,7 @@ export function normalizeInventory(wigs, specs, filters) {
       aiSuggestions: spec.AI_Suggestions || {},
       aiModelVersion: spec.AI_Model_Version || filter.AI_Model_Version || '',
       filterId: filter.Filter_ID || null,
+      isActive: filter.Is_Active === true,
     };
   });
 }

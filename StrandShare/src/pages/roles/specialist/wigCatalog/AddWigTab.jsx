@@ -25,7 +25,6 @@ import {
 
 import { supabase } from '../../../../lib/supabaseClient';
 import { logAuditAction } from '../../../../lib/auditLogger';
-import PhotoTryOn, { DEFAULT_TRY_ON_FIT } from './PhotoTryOn';
 import {
   COLOR_OPTIONS,
   DENSITY_OPTIONS,
@@ -56,6 +55,16 @@ const LOCAL_AI_OFFLINE_MESSAGE =
   'Local AI is offline. Start the Donivra Local AI service on this computer and allow Local Network Access if your browser asks. Then choose Check again. Refreshing this page does not start a local program.';
 const POLL_MS = 1800;
 const OFFLINE_RECHECK_MS = 10000;
+const DEFAULT_FILTER_FIT = Object.freeze({
+  full_wig: {
+    offsetX: 0,
+    offsetY: 0,
+    scale: 1,
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+  },
+});
 
 function Step({ number, label, active, done }) {
   return (
@@ -119,7 +128,7 @@ function WigDetailsForm({
   requireAllDetails = false,
 }) {
   return (
-    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-x-5 gap-y-4 md:grid-cols-2">
       <FieldShell
         label="Wig name"
         required
@@ -285,13 +294,8 @@ export default function AddWigTab({
   const [finalizing, setFinalizing] = useState(false);
   const [notice, setNotice] = useState({ kind: '', message: '' });
   const [health, setHealth] = useState({ state: 'checking', details: null });
-  const [fit, setFit] = useState(() => ({
-    full_wig: { ...DEFAULT_TRY_ON_FIT.full_wig },
-  }));
-  const [portraitReady, setPortraitReady] = useState(false);
   const [detailsConfirmed, setDetailsConfirmed] = useState(false);
   const [duplicateConfirmed, setDuplicateConfirmed] = useState(false);
-  const [reviewComplete, setReviewComplete] = useState(false);
   const [reservedFor, setReservedFor] = useState('');
 
   const wigPhotoUrl = useMemo(
@@ -507,7 +511,7 @@ export default function AddWigTab({
           Source_Side_Path: null,
           Source_Top_Path: null,
           Source_Back_Path: null,
-          Fit_Settings: fit,
+          Fit_Settings: DEFAULT_FILTER_FIT,
           Created_By_User_ID: userIdInt,
           Pending_Wig_Name: form.wigName.trim() || null,
           Pending_Wig_Code: null,
@@ -603,11 +607,8 @@ export default function AddWigTab({
     setCurrentFilter(null);
     setSubmitting(false);
     setFinalizing(false);
-    setFit({ full_wig: { ...DEFAULT_TRY_ON_FIT.full_wig } });
-    setPortraitReady(false);
     setDetailsConfirmed(false);
     setDuplicateConfirmed(false);
-    setReviewComplete(false);
     setReservedFor('');
     setNotice({ kind: '', message: '' });
     appliedSuggestionsRef.current = null;
@@ -657,17 +658,14 @@ export default function AddWigTab({
     && form.wigCode
     && form.wigCode.startsWith(codeKey),
   );
-  const canCompleteReview =
+  const reviewValid =
     isReview
     && missing.length === 0
     && stockValid
     && codeMatchesDetails
     && (!needsDuplicateConfirmation || duplicateConfirmed);
   const canFinalize =
-    canCompleteReview
-    && reviewComplete
-    && stockValid
-    && portraitReady
+    reviewValid
     && detailsConfirmed
     && !finalizing;
 
@@ -688,7 +686,7 @@ export default function AddWigTab({
         p_style: form.style.trim(),
         p_stock_count: stockCount,
         p_low_stock_threshold: LOW_STOCK_THRESHOLD,
-        p_fit_settings: fit,
+        p_fit_settings: DEFAULT_FILTER_FIT,
         p_duplicate_confirmed: needsDuplicateConfirmation ? duplicateConfirmed : false,
       });
       if (result.error) throw result.error;
@@ -719,20 +717,18 @@ export default function AddWigTab({
   };
 
   return (
-    <div className="space-y-5">
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex min-w-0 items-center gap-3 sm:gap-5">
+    <div className="mx-auto max-w-7xl space-y-4">
+      <section className="border-b border-slate-200 bg-white px-1 py-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3 sm:gap-4">
             <Step number="1" label="Details & photo" active={!currentFilter} done={Boolean(currentFilter)} />
             <ChevronRight size={15} className="shrink-0 text-slate-300" />
             <Step
               number="2"
-              label="Local AI review"
-              active={isProcessing || isFailed || (isReview && !reviewComplete)}
-              done={isReview && reviewComplete}
+              label="Review & create"
+              active={isProcessing || isFailed || isReview}
+              done={false}
             />
-            <ChevronRight size={15} className="shrink-0 text-slate-300" />
-            <Step number="3" label="Try-on & confirm" active={isReview && reviewComplete} done={false} />
           </div>
           <AiStatusPill health={health} onRetry={checkHealth} />
         </div>
@@ -757,7 +753,7 @@ export default function AddWigTab({
 
       {notice.message ? (
         <div
-          className={`flex items-start gap-2 rounded-xl border p-3 text-sm ${
+          className={`fixed bottom-5 right-5 z-[2147482000] flex w-[min(420px,calc(100vw-2rem))] items-start gap-2 rounded-xl border p-3 text-sm shadow-xl ${
             notice.kind === 'error'
               ? 'border-red-200 bg-red-50 text-red-700'
               : 'border-emerald-200 bg-emerald-50 text-emerald-700'
@@ -772,46 +768,38 @@ export default function AddWigTab({
       ) : null}
 
       {!currentFilter ? (
-        <>
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
+        <section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+          <div className="grid xl:grid-cols-[minmax(0,1fr)_420px]">
+            <div className="flex flex-col p-5 sm:p-6">
               <div>
-                <h2 className="text-base font-semibold text-slate-900">Wig details</h2>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Catalog information</p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-900">Describe the wig</h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Enter what you know. Local AI fills only high-confidence visual attributes;
-                  every field remains editable.
+                  Add what you know now. Missing visual details can be suggested during review.
                 </p>
               </div>
-              <span className="hidden rounded-full bg-slate-100 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500 sm:inline-flex">
-                All details required before final confirmation
-              </span>
-            </div>
-            <div className="mt-5">
+              <div className="mt-6 flex-1">
               <WigDetailsForm
                 form={form}
                 setField={setField}
                 primaryColor={primaryColor}
               />
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-start gap-3">
-              <span
-                className="rounded-xl p-2.5"
-                style={{ backgroundColor: withAlpha(primaryColor, 0.08), color: primaryColor || '#7f1d1d' }}
-              >
-                <ImagePlus size={20} />
-              </span>
-              <div>
-                <h2 className="text-base font-semibold text-slate-900">Wig photo</h2>
-                <p className="mt-1 text-xs text-slate-500">
-                  Use one sharp, well-lit front photo with the whole wig visible.
-                </p>
+              </div>
+              <div className="mt-6 border-t border-slate-100 pt-4 text-[11px] leading-5 text-slate-500">
+                Wig name and density are needed to begin. You will verify every field before creating the catalog variants.
               </div>
             </div>
 
-            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(260px,0.8fr)_1.2fr]">
+            <aside className="flex flex-col border-t border-slate-200 bg-slate-50/70 p-5 xl:border-l xl:border-t-0">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Source image</p>
+                  <h2 className="mt-1 text-base font-semibold text-slate-900">Upload wig photo</h2>
+                  <p className="mt-1 text-xs text-slate-500">Use one clear front photo showing the entire wig.</p>
+                </div>
+                <ImagePlus size={19} style={{ color: primaryColor || '#7f1d1d' }} />
+              </div>
+
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -829,7 +817,7 @@ export default function AddWigTab({
                   if (!event.currentTarget.contains(event.relatedTarget)) setIsPhotoDragging(false);
                 }}
                 onDrop={handlePhotoDrop}
-                className={`group relative flex min-h-[300px] items-center justify-center overflow-hidden rounded-xl border-2 border-dashed transition ${
+                className={`group relative mt-4 flex min-h-[250px] flex-1 items-center justify-center overflow-hidden rounded-xl border border-dashed bg-white transition ${
                   isPhotoDragging
                     ? 'border-emerald-500 bg-emerald-50 ring-4 ring-emerald-100'
                     : 'border-slate-300 hover:border-slate-500'
@@ -866,59 +854,37 @@ export default function AddWigTab({
                 }}
               />
 
-              <div className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <div className="space-y-3">
-                  <div className="flex gap-3">
-                    <ShieldCheck size={18} className="mt-0.5 shrink-0 text-emerald-600" />
-                    <div>
-                      <p className="text-xs font-semibold text-slate-800">Local and private processing</p>
-                      <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">
-                        The raw photo goes directly to the AI service on this PC. It is not sent
-                        to an external AI provider or saved in cloud storage.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex gap-3">
-                    <Wand2 size={18} className="mt-0.5 shrink-0 text-violet-600" />
-                    <div>
-                      <p className="text-xs font-semibold text-slate-800">Quality background removal</p>
-                      <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">
-                        BiRefNet preserves fine hair edges and outputs a transparent PNG without
-                        recoloring or restyling the wig.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex gap-3">
-                    <SearchCheck size={18} className="mt-0.5 shrink-0 text-blue-600" />
-                    <div>
-                      <p className="text-xs font-semibold text-slate-800">Redundancy check</p>
-                      <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">
-                        The local visual fingerprint is combined with the entered color, texture,
-                        density, cap size, length, and style.
-                      </p>
-                    </div>
-                  </div>
+              <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[11px] text-slate-500">
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck size={13} className="text-emerald-600" /> Local processing
                 </div>
-                <button
-                  type="button"
-                  disabled={!wigPhoto || submitting || health.state !== 'online'}
-                  onClick={handleAnalyze}
-                  className="mt-5 inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-45"
-                  style={{ backgroundColor: primaryColor || '#7f1d1d' }}
-                >
-                  {submitting || health.state === 'checking'
-                    ? <Loader2 size={16} className="animate-spin" />
-                    : <BrainCircuit size={16} />}
-                  {health.state === 'offline'
-                    ? 'Start Local AI to continue'
-                    : health.state === 'checking'
-                      ? 'Checking Local AI...'
-                      : 'Remove background & check inventory'}
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <Wand2 size={13} className="text-violet-600" /> Background removal
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <SearchCheck size={13} className="text-blue-600" /> Duplicate check
+                </div>
               </div>
-            </div>
-          </section>
-        </>
+
+              <button
+                type="button"
+                disabled={!wigPhoto || submitting || health.state !== 'online'}
+                onClick={handleAnalyze}
+                className="mt-4 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-45"
+                style={{ backgroundColor: primaryColor || '#7f1d1d' }}
+              >
+                {submitting || health.state === 'checking'
+                  ? <Loader2 size={16} className="animate-spin" />
+                  : <BrainCircuit size={16} />}
+                {health.state === 'offline'
+                  ? 'Start Local AI to continue'
+                  : health.state === 'checking'
+                    ? 'Checking Local AI...'
+                    : 'Analyze and continue'}
+              </button>
+            </aside>
+          </div>
+        </section>
       ) : null}
 
       {isProcessing ? (
@@ -962,9 +928,7 @@ export default function AddWigTab({
 
       {isReview ? (
         <>
-          {!reviewComplete ? (
-            <>
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <section className="rounded-xl bg-white p-5">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <div className="flex items-center gap-2">
@@ -990,7 +954,7 @@ export default function AddWigTab({
             <div className="mt-5 grid gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
               <div>
                 <div
-                  className="flex min-h-[310px] items-center justify-center overflow-hidden rounded-xl border border-slate-200 p-3"
+                  className="flex min-h-[260px] items-center justify-center overflow-hidden rounded-xl ring-1 ring-slate-200"
                   style={checkerboardStyle()}
                 >
                   <img
@@ -1016,10 +980,10 @@ export default function AddWigTab({
           </section>
 
           <section
-            className={`rounded-2xl border p-5 shadow-sm ${
+            className={`rounded-xl p-5 ${
               needsDuplicateConfirmation
-                ? 'border-amber-300 bg-amber-50'
-                : 'border-emerald-200 bg-emerald-50'
+                ? 'bg-amber-50'
+                : 'bg-emerald-50'
             }`}
           >
             <div className="flex items-start gap-3">
@@ -1092,7 +1056,7 @@ export default function AddWigTab({
 
             <div className="mt-4 flex flex-col gap-3 border-t border-slate-200/80 pt-4 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-[11px] text-slate-500">
-                Restart this entry or cancel it before continuing to try-on.
+                Restart this entry if the image or details need to be replaced.
               </p>
               <div className="flex flex-wrap gap-2">
                 <button
@@ -1113,64 +1077,7 @@ export default function AddWigTab({
             </div>
           </section>
 
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900">Finish the Local AI review</h3>
-                <p className="mt-1 text-xs text-slate-500">
-                  Verify every detail and the generated wig code before continuing to try-on.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setReviewComplete(true)}
-                disabled={!canCompleteReview}
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2.5 text-xs font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-45"
-                style={{ backgroundColor: primaryColor || '#7f1d1d' }}
-              >
-                Continue to try-on <ChevronRight size={13} />
-              </button>
-            </div>
-            {!canCompleteReview ? (
-              <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-slate-500">
-                {missing.length ? (
-                  <span className="rounded-full bg-red-50 px-2.5 py-1 text-red-700">
-                    Complete: {missing.join(', ')}
-                  </span>
-                ) : null}
-                {!codeMatchesDetails ? (
-                  <span className="rounded-full bg-slate-100 px-2.5 py-1">Generating matching wig code</span>
-                ) : null}
-                {needsDuplicateConfirmation && !duplicateConfirmed ? (
-                  <span className="rounded-full bg-amber-100 px-2.5 py-1 text-amber-800">
-                    Confirm similar-wig review
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-          </section>
-            </>
-          ) : (
-            <>
-          <div className="flex justify-start">
-            <button
-              type="button"
-              onClick={() => setReviewComplete(false)}
-              disabled={finalizing}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-            >
-              Back to Local AI review
-            </button>
-          </div>
-
-          <PhotoTryOn
-            wigImageUrl={processedImageUrl}
-            fit={fit}
-            setFit={setFit}
-            onPortraitReady={setPortraitReady}
-          />
-
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <section className="rounded-xl bg-white p-5">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <label className="flex cursor-pointer items-start gap-3">
                 <input
@@ -1184,9 +1091,9 @@ export default function AddWigTab({
                     Final confirmation
                   </span>
                   <span className="mt-0.5 block max-w-2xl text-[11px] leading-relaxed text-slate-500">
-                    I checked the transparent image, wig details, generated code, duplicate review,
-                    and portrait try-on. This creates Small, Medium, and Large catalog specifications
-                    at zero stock. Physical stock is added only when a completed bundle QR is scanned.
+                    I checked the transparent image, wig details, generated code, and duplicate review.
+                    This creates Small, Medium, and Large catalog variants at zero stock. Physical stock
+                    is added only when a completed bundle QR is scanned.
                   </span>
                 </span>
               </label>
@@ -1225,9 +1132,6 @@ export default function AddWigTab({
                 {!codeMatchesDetails ? (
                   <span className="rounded-full bg-slate-100 px-2.5 py-1">Generating matching wig code</span>
                 ) : null}
-                {!portraitReady ? (
-                  <span className="rounded-full bg-slate-100 px-2.5 py-1">Upload try-on portrait</span>
-                ) : null}
                 {needsDuplicateConfirmation && !duplicateConfirmed ? (
                   <span className="rounded-full bg-amber-100 px-2.5 py-1 text-amber-800">Confirm similar-wig review</span>
                 ) : null}
@@ -1237,12 +1141,10 @@ export default function AddWigTab({
               </div>
             ) : null}
           </section>
-            </>
-          )}
 
           <div className="flex items-center justify-center gap-2 text-[10px] text-slate-500">
             <Lock size={11} />
-            Portrait and raw wig photo remain local. Only the transparent wig asset is staged for review and inventory.
+            The raw wig photo remains local. Only the transparent wig asset is saved for the catalog.
           </div>
         </>
       ) : null}

@@ -17,6 +17,7 @@ const DOCUMENT_TYPES = [
   { value: 'consent_for_minors', label: 'Consent for Minors' },
   { value: 'event_application_terms', label: 'Event Application Terms and Conditions' },
   { value: 'hospital_representative_application_terms', label: 'H-Representative Application Terms and Conditions' },
+  { value: 'patient_application_terms', label: 'Patient Application Terms and Conditions' },
   { value: 'wig_request_terms', label: 'Wig Request Terms and Conditions' },
 ];
 
@@ -138,6 +139,8 @@ export default function LegalDocumentsPage({ userProfile }) {
   const [localPreviewUrl, setLocalPreviewUrl] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef(null);
+  const canManageSelected = canManage
+    && (selectedDocumentType !== 'patient_application_terms' || roleKey === 'admin' || roleKey === 'superadmin');
 
   useEffect(() => {
     if (!notice.text || !['error', 'success'].includes(notice.kind)) return;
@@ -261,8 +264,8 @@ export default function LegalDocumentsPage({ userProfile }) {
   }, [pdfFile]);
 
   const handlePublish = async () => {
-    if (!canManage) {
-      setNotice({ kind: 'error', text: 'Only admin and staff can publish consent documents.' });
+    if (!canManageSelected) {
+      setNotice({ kind: 'error', text: 'Only Admin can publish the overall patient application terms.' });
       return;
     }
 
@@ -366,7 +369,7 @@ export default function LegalDocumentsPage({ userProfile }) {
 
   const handleSetActive = async (row) => {
     const targetId = Number(row?.legal_document_id || 0);
-    if (!targetId || !canManage) return;
+    if (!targetId || !canManageSelected) return;
 
     try {
       setIsActivatingId(targetId);
@@ -439,7 +442,7 @@ export default function LegalDocumentsPage({ userProfile }) {
             min={nowLocalDateTimeValue}
             className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2"
             style={{ '--tw-ring-color': primaryColor }}
-            disabled={!canManage || isPublishing}
+            disabled={!canManageSelected || isPublishing}
           />
         </div>
 
@@ -451,17 +454,17 @@ export default function LegalDocumentsPage({ userProfile }) {
             accept=".pdf,application/pdf"
             onChange={(event) => handleSelectPdfFile(event.target.files?.[0] || null)}
             className="hidden"
-            disabled={!canManage || isPublishing}
+            disabled={!canManageSelected || isPublishing}
           />
           <div
             onDragOver={(event) => {
               event.preventDefault();
-              if (!canManage || isPublishing) return;
+              if (!canManageSelected || isPublishing) return;
               setIsDragOver(true);
             }}
             onDragEnter={(event) => {
               event.preventDefault();
-              if (!canManage || isPublishing) return;
+              if (!canManageSelected || isPublishing) return;
               setIsDragOver(true);
             }}
             onDragLeave={(event) => {
@@ -471,21 +474,21 @@ export default function LegalDocumentsPage({ userProfile }) {
             onDrop={(event) => {
               event.preventDefault();
               setIsDragOver(false);
-              if (!canManage || isPublishing) return;
+              if (!canManageSelected || isPublishing) return;
               const droppedFile = event.dataTransfer?.files?.[0] || null;
               handleSelectPdfFile(droppedFile);
             }}
             className={`rounded-lg border-2 border-dashed px-4 py-8 text-center transition-colors ${
               isDragOver ? 'border-blue-400 bg-blue-50' : 'border-gray-300 bg-gray-50'
-            } ${!canManage || isPublishing ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+            } ${!canManageSelected || isPublishing ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
             onClick={() => {
-              if (!canManage || isPublishing) return;
+              if (!canManageSelected || isPublishing) return;
               fileInputRef.current?.click();
             }}
             role="button"
             tabIndex={0}
             onKeyDown={(event) => {
-              if (!canManage || isPublishing) return;
+              if (!canManageSelected || isPublishing) return;
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
                 fileInputRef.current?.click();
@@ -505,7 +508,7 @@ export default function LegalDocumentsPage({ userProfile }) {
           <button
             type="button"
             onClick={handlePublish}
-            disabled={!canManage || isPublishing}
+            disabled={!canManageSelected || isPublishing}
             className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
             style={{ backgroundColor: primaryColor }}
           >
@@ -571,7 +574,7 @@ export default function LegalDocumentsPage({ userProfile }) {
                               <button
                                 type="button"
                                 onClick={() => handleSetActive(row)}
-                                disabled={!canManage || isActivating}
+                                disabled={!canManageSelected || isActivating}
                                 className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-white disabled:opacity-60"
                                 style={{ backgroundColor: primaryColor }}
                               >

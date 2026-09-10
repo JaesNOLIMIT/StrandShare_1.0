@@ -690,7 +690,15 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           .from(WIG_REQUESTS_TABLE)
           .select('*')
           .order('Request_Date', { ascending: false }),
-        supabase.from(PATIENTS_TABLE).select('*'),
+        supabase.from(PATIENTS_TABLE).select([
+          'Patient_ID', 'User_ID', 'Hospital_ID', 'Patient_Code', 'Medical_Condition',
+          'Patient_Picture', 'Condition_Category', 'Condition_Stage_Severity',
+          'Doctor_Name', 'Attending_Physician_Contact', 'Treatment_Hospital_Clinic',
+          'Treatment_Plan', 'Current_Treatment_Status', 'Allergies_Current_Medications',
+          'Guardian', 'Guardian_Relationship', 'Guardian_Contact_Number',
+          'Secondary_Guardian', 'Secondary_Guardian_Relationship',
+          'Secondary_Guardian_Contact_Number',
+        ].join(',')),
         supabase.from(HOSPITALS_TABLE).select('Hospital_ID,Hospital_Name'),
         supabase.from(SAFETY_ASSESSMENTS_TABLE).select('*'),
         supabase.rpc('get_available_physical_wig_counts'),

@@ -762,7 +762,7 @@ export default function LoginPage({ authNotice, onClearNotice }) {
           <div className="flex gap-4 justify-center">
             <div className="bg-white rounded-full px-6 py-3 shadow-md flex items-center gap-2 whitespace-nowrap">
               <Coins size={18} style={{ color: theme.primaryColor }} />
-              <span className="text-sm font-medium text-gray-800">1K Donors</span>
+              <span className="text-sm font-medium text-gray-800">Verified Workflows</span>
             </div>
             <div className="bg-white rounded-full px-6 py-3 shadow-md flex items-center gap-2 whitespace-nowrap">
               <Heart size={18} style={{ color: theme.primaryColor }} />

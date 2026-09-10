@@ -11,6 +11,8 @@ import HRepresentativeRole from './pages/roles/h-representative/HRepresentativeR
 import EventApplicationPage from './pages/public/EventApplicationPage';
 import EventApplicationSuccessPage from './pages/public/EventApplicationSuccessPage';
 import PartnershipApplicationPage from './pages/public/PartnershipApplicationPage';
+import PartnerHospitalsPage from './pages/public/PartnerHospitalsPage';
+import PatientApplicationPage from './pages/public/PatientApplicationPage';
 import StaffRole from './pages/roles/staff/StaffRole';
 import SpecialistRole from './pages/roles/specialist/SpecialistRole';
 import {
@@ -521,6 +523,8 @@ export default function App() {
   const isPartnershipApplicationRoute = currentPath === '/apply-partnership';
   const isEventApplicationRoute = currentPath === '/apply-event';
   const isEventApplicationSuccessRoute = currentPath === '/apply-event/success';
+  const isPartnerHospitalsRoute = currentPath === '/partner-hospitals';
+  const isPatientApplicationRoute = currentPath === '/apply-patient';
   const isCompleteAccountRoute = currentPath === '/complete-account';
   const isResetPasswordRoute = currentPath === '/reset-password';
   const isConfirmationCompleteRoute = currentPath === '/confirmation-complete';
@@ -529,7 +533,15 @@ export default function App() {
   const showPartnershipApplicationPage = canRenderMainRoutes && !session && isPartnershipApplicationRoute;
   const showEventApplicationPage = canRenderMainRoutes && !session && isEventApplicationRoute;
   const showEventApplicationSuccessPage = canRenderMainRoutes && !session && isEventApplicationSuccessRoute;
-  const showLoginPage = canRenderMainRoutes && !session && !isLandingRoute && !isPartnershipApplicationRoute && !isEventApplicationRoute && !isEventApplicationSuccessRoute;
+  const showPartnerHospitalsPage = canRenderMainRoutes && !session && isPartnerHospitalsRoute;
+  const showPatientApplicationPage = canRenderMainRoutes && !session && isPatientApplicationRoute;
+  const showLoginPage = canRenderMainRoutes && !session
+    && !isLandingRoute
+    && !isPartnershipApplicationRoute
+    && !isEventApplicationRoute
+    && !isEventApplicationSuccessRoute
+    && !isPartnerHospitalsRoute
+    && !isPatientApplicationRoute;
   const showDashboard =
     canRenderMainRoutes &&
     !isLoadingAuth &&
@@ -582,6 +594,14 @@ export default function App() {
           <EventApplicationSuccessPage />
         )}
 
+        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showPartnerHospitalsPage && (
+          <PartnerHospitalsPage />
+        )}
+
+        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showPatientApplicationPage && (
+          <PatientApplicationPage />
+        )}
+
         {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && (showLoginPage || showLoginPreparationOverlay) && (
           <div className={showLoginPreparationOverlay ? 'fixed inset-0 z-[100] overflow-auto bg-white' : ''}>
             <LoginPage
@@ -619,9 +639,11 @@ export default function App() {
         {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showUnsupportedRole && (
           <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
             <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
-              <h1 className="text-xl font-semibold text-slate-900">Management access only</h1>
+              <h1 className="text-xl font-semibold text-slate-900">{canonicalActiveRole === 'patient' ? 'Continue in the Donivra mobile app' : 'Management access only'}</h1>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                This account is not assigned to an authorized management role.
+                {canonicalActiveRole === 'patient'
+                  ? 'Patient sign-in and wig-request features are available only in the mobile application.'
+                  : 'This account is not assigned to an authorized management role.'}
               </p>
               <button type="button" onClick={handleSignOut} className="mt-5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
                 Sign out

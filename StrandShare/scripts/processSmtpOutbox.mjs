@@ -226,6 +226,7 @@ function buildTemplateContext(row, payload) {
     'staff_contacted_at',
     'admin_reviewed_at',
     'private_event_code_sent_at',
+    'reviewed_at',
   ];
   for (const key of dateKeys) {
     const raw = context[key];
