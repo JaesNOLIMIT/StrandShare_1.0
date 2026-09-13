@@ -1,0 +1,22 @@
+<!-- Template: program_successful_attendee | Includes a generated individual Participation Certificate PDF. -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Participation Certificate</title></head>
+<body style="margin:0;background:#f5f3f1;color:#1f2937;font-family:Segoe UI,Arial,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your Donivra participation certificate is attached.</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 12px;background:#f5f3f1;"><tr><td align="center">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;overflow:hidden;border:1px solid #dbe5f5;border-radius:18px;background:#ffffff;box-shadow:0 10px 30px rgba(37,99,235,.08);">
+      <tr><td style="height:7px;background:#2563eb;"></td></tr>
+      <tr><td style="padding:24px 28px;border-bottom:1px solid #e7eaf0;"><div style="font-size:22px;font-weight:800;color:#5b0b16;">Donivra</div><div style="margin-top:3px;font-size:12px;color:#9a6a62;">Where Hair Becomes Hope</div></td></tr>
+      <tr><td style="padding:30px 28px;">
+        <div style="display:inline-block;padding:6px 10px;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;">Certificate ready</div>
+        <h1 style="margin:16px 0 10px;font-size:27px;line-height:1.25;color:#1f2937;">Thank you for participating</h1>
+        <p style="margin:0 0 20px;font-size:15px;line-height:1.7;color:#64748b;">Hello {{recipient_name}}, thank you for joining <strong style="color:#374151;">{{program_name}}</strong> as a {{recipient_role}}. The program has been formally completed.</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #bfdbfe;border-radius:12px;background:#eff6ff;"><tr><td style="padding:18px;color:#1e40af;font-size:14px;line-height:1.7;"><strong>Your individual Participation Certificate is attached as a PDF.</strong><br>Certificate ID: {{certificate_id}}</td></tr></table>
+        <p style="margin:20px 0 0;font-size:13px;line-height:1.7;color:#64748b;">We appreciate your time and support in helping hair become hope.</p>
+      </td></tr>
+      <tr><td style="padding:16px 28px;border-top:1px solid #eee7e3;background:#faf9f8;font-size:11px;color:#94a3b8;">Issued by Donivra · {{certificate_issued_at}} · Reference ER-{{event_request_id}}</td></tr>
+    </table>
+  </td></tr></table>
+</body>
+</html>

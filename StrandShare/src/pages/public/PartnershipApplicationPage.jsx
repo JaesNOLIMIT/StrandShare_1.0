@@ -5,7 +5,6 @@ import maplibregl from 'maplibre-gl';
 import { useTheme } from '../../context/ThemeContext';
 import { supabase } from '../../lib/supabaseClient';
 import philippineAddressOptions from '../../data/philippineAddressOptions.json';
-import { TransitionFlipEntrance } from '../../components/transitions/TransitionFlip';
 import LegalTermsGate from '../../components/LegalTermsGate';
 import useActiveLegalDocument from '../../hooks/useActiveLegalDocument';
 import { getAdultBirthdateMax, isAtLeastAge } from '../../lib/personIdentity';
@@ -1342,6 +1341,7 @@ export default function PartnershipApplicationPage() {
 
   const goBack = () => {
     if (typeof window === 'undefined') return;
+    try { sessionStorage.setItem('Donivra:skip-landing-intro', 'true'); } catch { /* ignore */ }
     window.location.assign('/');
   };
 
@@ -1596,21 +1596,6 @@ export default function PartnershipApplicationPage() {
     }
   };
 
-  const incomingTransition = (() => {
-    try {
-      return typeof window !== 'undefined' ? sessionStorage.getItem('Donivra:incoming-transition') : '';
-    } catch {
-      return '';
-    }
-  })();
-
-  useEffect(() => {
-    if (incomingTransition === 'apply') {
-      try { sessionStorage.removeItem('Donivra:incoming-transition'); } catch { /* ignore */ }
-    }
-  }, [incomingTransition]);
-
-  const Wrapper = incomingTransition === 'apply' ? TransitionFlipEntrance : React.Fragment;
   const entityDisplayName = 'Partner Hospital';
   const formTitle = 'Submit Partner Hospital Application';
   const currentStepNumber = activePage;
@@ -1624,7 +1609,7 @@ export default function PartnershipApplicationPage() {
 
   if (!hasAcceptedTerms) {
     return (
-      <Wrapper>
+      <React.Fragment>
         <div className="min-h-screen px-4 py-8 md:px-8" style={{ backgroundColor }}>
           <div className="mx-auto max-w-4xl">
             <section className="overflow-hidden rounded-2xl border bg-white shadow-sm" style={{ borderColor: `${secondaryColor}44` }}>
@@ -1680,7 +1665,7 @@ export default function PartnershipApplicationPage() {
             </section>
           </div>
         </div>
-      </Wrapper>
+      </React.Fragment>
     );
   }
 
@@ -1745,7 +1730,7 @@ export default function PartnershipApplicationPage() {
   }
 
   return (
-    <Wrapper>
+    <React.Fragment>
     <div className="min-h-screen px-4 py-8 md:px-8" style={{ backgroundColor }}>
       <div className="mx-auto max-w-4xl">
         <button
@@ -2607,7 +2592,7 @@ export default function PartnershipApplicationPage() {
         </section>
       </div>
     </div>
-    </Wrapper>
+    </React.Fragment>
   );
 }
 

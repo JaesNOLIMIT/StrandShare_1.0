@@ -15,7 +15,7 @@ const LEGAL_DOCUMENTS_TABLE = 'legal_documents';
 const LEGAL_DOCUMENTS_BUCKET = 'legal-documents';
 const DOCUMENT_TYPES = [
   { value: 'consent_for_minors', label: 'Consent for Minors' },
-  { value: 'event_application_terms', label: 'Event Application Terms and Conditions' },
+  { value: 'event_application_terms', label: 'Program Application Terms and Conditions' },
   { value: 'hospital_representative_application_terms', label: 'H-Representative Application Terms and Conditions' },
   { value: 'patient_application_terms', label: 'Patient Application Terms and Conditions' },
   { value: 'wig_request_terms', label: 'Wig Request Terms and Conditions' },

@@ -2229,7 +2229,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
     addField('Style Preference', previewPayload.stylePreference);
     addField('Preferred Color', previewPayload.preferredColor);
     addField('Preferred Length', previewPayload.preferredLength);
-    addField('Hair Texture', previewPayload.hairTexture);
+    addField('Hair Pattern', previewPayload.hairTexture);
     addField('Hair Density', previewPayload.hairDensity);
     addField('Cap Size', previewPayload.capSize);
     addField('Special Note', previewPayload.specialNote);
@@ -2889,7 +2889,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                               {isSelected ? <CheckCircle2 size={14} className="shrink-0 text-blue-600" /> : null}
                             </div>
                             <p className="mt-1 line-clamp-1 text-[10px] text-slate-500">
-                              {family.hairLength ? `${family.hairLength} in | ` : ''}{family.texture || 'Texture N/A'} | {family.density || 'Density N/A'}
+                              {family.hairLength ? `${family.hairLength} in | ` : ''}{family.texture || 'Hair Pattern N/A'} | {family.density || 'Density N/A'}
                             </p>
                           </div>
                         </button>
@@ -2924,7 +2924,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                         </p>
                         <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] font-semibold text-slate-600">
                           <span className="rounded-full bg-white px-2 py-1">{selectedRequestedSpecification.hairLength || 'N/A'} in</span>
-                          <span className="rounded-full bg-white px-2 py-1">{selectedRequestedSpecification.texture || 'Texture N/A'}</span>
+                          <span className="rounded-full bg-white px-2 py-1">{selectedRequestedSpecification.texture || 'Hair Pattern N/A'}</span>
                           <span className="rounded-full bg-white px-2 py-1">{selectedRequestedSpecification.density || 'Density N/A'}</span>
                         </div>
                       </div>
@@ -2951,7 +2951,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                       </option>
                     ))}
                   </select>
-                  <p className="mt-1 text-[11px] text-slate-500">Changing cap size selects the matching catalog variant; style, color, length, texture, and density stay unchanged.</p>
+                  <p className="mt-1 text-[11px] text-slate-500">Changing cap size selects the matching catalog variant; style, color, length, hair pattern, and density stay unchanged.</p>
                 </div>
 
                 {selectedRequestedSpecification && !selectedRequestedSpecification.isAvailable ? (
@@ -3004,7 +3004,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                 </div>
 
                 <div>
-                  <label className={LABEL_CLASS}>Texture</label>
+                  <label className={LABEL_CLASS}>Hair Pattern</label>
                   <input
                     value={selectedRequestedSpecification?.texture || ''}
                     className={READONLY_INPUT_CLASS}
@@ -3494,7 +3494,7 @@ export default function WigRequestPage({ userProfile, isActivePage = true }) {
                     <p className="text-base font-bold text-slate-900">{selectedSubmittedRequest.requestSpecWigName}</p>
                     <p className="mt-0.5 text-xs text-slate-500">Specification #{selectedSubmittedRequest.requestSpecId || 'N/A'}</p>
                     <div className="mt-3 grid grid-cols-2 gap-x-5 gap-y-2 text-sm text-slate-700 md:grid-cols-3">
-                      <p><span className="font-semibold text-slate-900">Style:</span> {selectedSubmittedRequest.requestSpecStyle}</p><p><span className="font-semibold text-slate-900">Color:</span> {selectedSubmittedRequest.requestSpecColor}</p><p><span className="font-semibold text-slate-900">Length:</span> {selectedSubmittedRequest.requestSpecLength}</p><p><span className="font-semibold text-slate-900">Density:</span> {selectedSubmittedRequest.requestSpecDensity}</p><p><span className="font-semibold text-slate-900">Texture:</span> {selectedSubmittedRequest.requestSpecTexture}</p><p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedSubmittedRequest.requestSpecCapSize}</p>
+                      <p><span className="font-semibold text-slate-900">Style:</span> {selectedSubmittedRequest.requestSpecStyle}</p><p><span className="font-semibold text-slate-900">Color:</span> {selectedSubmittedRequest.requestSpecColor}</p><p><span className="font-semibold text-slate-900">Length:</span> {selectedSubmittedRequest.requestSpecLength}</p><p><span className="font-semibold text-slate-900">Density:</span> {selectedSubmittedRequest.requestSpecDensity}</p><p><span className="font-semibold text-slate-900">Hair Pattern:</span> {selectedSubmittedRequest.requestSpecTexture}</p><p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedSubmittedRequest.requestSpecCapSize}</p>
                     </div>
                     <p className="mt-3 text-sm text-slate-700"><span className="font-semibold text-slate-900">Special Note:</span> {selectedSubmittedRequest.requestSpecSpecialNote}</p>
                   </div>

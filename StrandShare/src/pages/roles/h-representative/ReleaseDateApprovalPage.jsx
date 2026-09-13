@@ -1577,7 +1577,7 @@ export default function ReleaseDateApprovalPage({ userProfile, embedded = false,
                       <p><span className="font-semibold text-slate-900">Style:</span> {selectedRow.allocatedWigStyle}</p>
                       <p><span className="font-semibold text-slate-900">Color:</span> {selectedRow.allocatedWigColor}</p>
                       <p><span className="font-semibold text-slate-900">Length:</span> {selectedRow.allocatedWigLength}</p>
-                      <p><span className="font-semibold text-slate-900">Texture:</span> {selectedRow.allocatedWigTexture}</p>
+                      <p><span className="font-semibold text-slate-900">Hair Pattern:</span> {selectedRow.allocatedWigTexture}</p>
                       <p><span className="font-semibold text-slate-900">Density:</span> {selectedRow.allocatedWigDensity}</p>
                       <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedRow.allocatedWigCapSize}</p>
                     </div>

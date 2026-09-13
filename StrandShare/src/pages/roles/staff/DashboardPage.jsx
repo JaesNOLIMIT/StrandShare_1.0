@@ -415,7 +415,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
       const actionItems = [];
       if (pendingStaffRows.length > 0) {
         actionItems.push({
-          title: 'Pending event applications to review',
+          title: 'Pending program applications to review',
           count: pendingStaffRows.length,
           detail: 'Contact requestors and validate details.',
           page: 'event-application-intake',
@@ -433,7 +433,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
         actionItems.push({
           title: 'Attendees without waybill',
           count: attendeesWithoutWaybill,
-          detail: 'Print waybills before event operations.',
+          detail: 'Print waybills before program operations.',
           page: 'assigned-event-operations',
         });
       }
@@ -508,10 +508,10 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
     },
     {
       key: 'myEvents',
-      label: 'My Assigned Events',
+      label: 'My Assigned Programs',
       value: dashboard.kpis.myAssignedEvents,
       accentColor: tertiaryColor,
-      helper: 'Approved events assigned to you',
+      helper: 'Approved programs assigned to you',
       page: 'assigned-event-operations',
     },
     {
@@ -561,7 +561,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
             refreshLoading={isLoading}
             autoRefreshOnChanges={false}
             helpTitle="About the Staff Dashboard"
-            helpContent={<p>Review event intake, assigned operations, attendee waybills, and wig-request stages from this overview.</p>}
+            helpContent={<p>Review program intake, assigned operations, attendee waybills, and wig-request stages from this overview.</p>}
           />
         </div>
       </div>
@@ -746,7 +746,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
                 {dashboard.pendingStaffRows.map((row) => (
                   <li key={row.Event_Application_ID} className="flex items-center justify-between gap-2 py-2 text-xs">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-semibold text-slate-900">{row.Event_Name || 'Untitled Event'}</p>
+                      <p className="truncate font-semibold text-slate-900">{row.Event_Name || 'Untitled Program'}</p>
                       <p className="truncate text-[11px] text-slate-500">
                         EA-{row.Event_Application_ID} | {applicantName(row)}
                       </p>
@@ -765,7 +765,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
           <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-bold text-slate-800">My Assigned Events</h3>
+                <h3 className="text-sm font-bold text-slate-800">My Assigned Programs</h3>
                 <p className="text-xs text-slate-500">Approved + assigned to you</p>
               </div>
               <button
@@ -779,7 +779,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
             </div>
             {dashboard.assignedRows.length === 0 ? (
               <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                No assigned events yet.
+                No assigned programs yet.
               </p>
             ) : (
               <ul className="divide-y divide-slate-100">
@@ -790,7 +790,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
                         <Users size={13} />
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="truncate font-semibold text-slate-900">{row.Event_Name || 'Untitled Event'}</p>
+                        <p className="truncate font-semibold text-slate-900">{row.Event_Name || 'Untitled Program'}</p>
                         <p className="truncate text-[11px] text-slate-500">
                           ER-{row.Event_Request_ID} | {formatShortDate(row.Start_Date)}
                         </p>

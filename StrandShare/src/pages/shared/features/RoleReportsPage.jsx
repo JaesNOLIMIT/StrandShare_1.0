@@ -29,10 +29,13 @@ import {
   YAxis,
   AreaChart,
   Area,
-  PieChart,
-  Pie,
+  LabelList,
 } from 'recharts';
 import PageHeaderActions from '../../../components/PageHeaderActions';
+import ProgramScheduleCalendarModal, {
+  formatScheduleDateLabel,
+  scheduleDateKeysForRecord,
+} from '../../../components/events/ProgramScheduleCalendarModal';
 import { useTheme } from '../../../context/ThemeContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
@@ -41,6 +44,14 @@ const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const HOSPITALS_TABLE = 'Hospitals';
 const WIG_REQUESTS_TABLE = 'Wig_Requests';
 const USERS_TABLE = 'users';
+const EVENT_LIFECYCLE_COLORS = {
+  applications: '#6b1010',
+  approved: '#2563eb',
+  rejected: '#dc2626',
+  ended: '#64748b',
+  successful: '#059669',
+  cancelled: '#d97706',
+};
 
 function normalizeKey(value) {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -163,6 +174,7 @@ function labelFromKey(key) {
   if (key === 'returnedcompleted') return 'Returned - Completed';
   if (key === 'cancelled') return 'Cancelled';
   if (key === 'ended') return 'Ended';
+  if (key === 'successful') return 'Successful';
   if (key === 'cut') return 'Cut';
   if (key === 'bundling') return 'Bundling';
   if (key === 'wiginproduction') return 'Wig In Production';
@@ -194,12 +206,81 @@ function pendingLikeStatus(statusKey) {
 
 function approvedLikeStatus(statusKey) {
   if (!statusKey) return false;
-  return statusKey.includes('approved') || statusKey.includes('completed') || statusKey.includes('released');
+  return statusKey.includes('approved') || statusKey.includes('completed') || statusKey.includes('released') || statusKey === 'successful';
 }
 
 function rejectedLikeStatus(statusKey) {
   if (!statusKey) return false;
   return statusKey.includes('rejected');
+}
+
+function manilaDateParts(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(parsed).reduce((result, part) => {
+    if (part.type !== 'literal') result[part.type] = Number(part.value);
+    return result;
+  }, {});
+  return parts;
+}
+
+function emptyLifecycleBucket(label, key) {
+  return {
+    label,
+    key,
+    applications: 0,
+    approved: 0,
+    rejected: 0,
+    ended: 0,
+    successful: 0,
+    cancelled: 0,
+  };
+}
+
+function buildEventLifecyclePeriodSeries(grouping, selectedMonth, selectedYear, applications, requests) {
+  const currentYear = new Date().getFullYear();
+  const year = Number(selectedYear) || currentYear;
+  const [monthYear, monthNumber] = String(selectedMonth || '').split('-').map(Number);
+  let buckets = [];
+  let bucketKeyForParts = () => null;
+
+  if (grouping === 'weekly') {
+    const targetYear = monthYear || currentYear;
+    const targetMonth = monthNumber || 1;
+    const weekCount = Math.ceil(new Date(targetYear, targetMonth, 0).getDate() / 7);
+    buckets = Array.from({ length: weekCount }, (_, index) => emptyLifecycleBucket(`Week ${index + 1}`, `${targetYear}-${targetMonth}-${index + 1}`));
+    bucketKeyForParts = (parts) => (
+      parts?.year === targetYear && parts?.month === targetMonth
+        ? `${targetYear}-${targetMonth}-${Math.floor((parts.day - 1) / 7) + 1}`
+        : null
+    );
+  } else if (grouping === 'monthly') {
+    const monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    buckets = monthLabels.map((label, index) => emptyLifecycleBucket(label, `${year}-${index + 1}`));
+    bucketKeyForParts = (parts) => (parts?.year === year ? `${year}-${parts.month}` : null);
+  } else {
+    const years = Array.from({ length: 5 }, (_, index) => currentYear - 4 + index);
+    buckets = years.map((item) => emptyLifecycleBucket(String(item), String(item)));
+    bucketKeyForParts = (parts) => (years.includes(parts?.year) ? String(parts.year) : null);
+  }
+
+  const byKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+  applications.forEach((row) => {
+    const bucket = byKey.get(bucketKeyForParts(manilaDateParts(row.createdAt)));
+    if (bucket) bucket.applications += 1;
+  });
+  requests.forEach((row) => {
+    if (!Object.prototype.hasOwnProperty.call(EVENT_LIFECYCLE_COLORS, row.statusKey) || row.statusKey === 'applications') return;
+    const bucket = byKey.get(bucketKeyForParts(manilaDateParts(row.filterDate || row.createdAt)));
+    if (bucket) bucket[row.statusKey] += 1;
+  });
+  return buckets;
 }
 
 function cancelledLikeStatus(statusKey) {
@@ -217,7 +298,7 @@ function calculateAiReviewAccuracy(screening, staffValues) {
       staff: staff.length,
       matches: (aiValue, staffValue) => staffValue != null
         && String(staffValue).trim() !== ''
-        && Number(aiValue) === Number(staffValue),
+        && Math.abs(Number(aiValue) - Number(staffValue)) <= 4,
     },
     { key: 'color', ai: ai.Detected_Color, staff: staff.color },
     { key: 'texture', ai: ai.Detected_Texture, staff: staff.texture },
@@ -325,37 +406,37 @@ function templateCatalogForRole(roleKey, theme) {
   const base = [
     {
       id: 'event_applications',
-      name: 'Event Applications',
-      shortName: 'Events',
-      description: 'Public event submissions and current intake status.',
+      name: 'Program Applications',
+      shortName: 'Programs',
+      description: 'Public program submissions and current intake status.',
       icon: ClipboardList,
       accent: primary,
       page: isAdmin ? 'manage-event-applications' : 'event-application-intake',
       exportPrefix: 'event_applications',
       columns: [
         { key: 'recordId', label: 'Application ID' },
-        { key: 'eventName', label: 'Event Name' },
+        { key: 'eventName', label: 'Program Name' },
         { key: 'applicant', label: 'Applicant' },
         { key: 'statusLabel', label: 'Status' },
         { key: 'preferredContact', label: 'Preferred Contact' },
-        { key: 'linkedRequest', label: 'Linked Event Request' },
+        { key: 'linkedRequest', label: 'Linked Program Request' },
         { key: 'createdAtLabel', label: 'Submitted At' },
       ],
     },
     {
       id: 'event_requests',
-      name: isAdmin ? 'Event Requests' : 'Assigned Event Requests',
-      shortName: 'Requests',
+      name: isAdmin ? 'Program Analytics' : 'Assigned Program Analytics',
+      shortName: 'Program Analytics',
       description: isAdmin
-        ? 'Staff-submitted event requests for admin decision and assignment.'
-        : 'Events currently assigned to this staff account.',
+        ? 'Complete program lifecycle, including applications rejected during staff review.'
+        : 'Programs currently assigned to this staff account.',
       icon: Send,
       accent: tertiary,
       page: isAdmin ? 'manage-event-applications' : 'assigned-event-operations',
       exportPrefix: 'event_requests',
       columns: [
-        { key: 'recordId', label: 'Request ID' },
-        { key: 'eventName', label: 'Event Name' },
+        { key: 'recordId', label: 'Program Record' },
+        { key: 'eventName', label: 'Program Name' },
         { key: 'statusLabel', label: 'Status' },
         { key: 'eventVisibility', label: 'Visibility' },
         { key: 'assignedStaff', label: 'Assigned Staff' },
@@ -394,7 +475,7 @@ function templateCatalogForRole(roleKey, theme) {
       columns: [
         { key: 'recordId', label: 'Inventory ID' },
         { key: 'submissionId', label: 'Submission' },
-        { key: 'eventName', label: 'Event / Source' },
+        { key: 'eventName', label: 'Program / Source' },
         { key: 'statusLabel', label: 'Inventory Status' },
         { key: 'bundleLabel', label: 'Bundle' },
         { key: 'wigLabel', label: 'Wig' },
@@ -405,7 +486,7 @@ function templateCatalogForRole(roleKey, theme) {
       id: 'ai_hair_accuracy',
       name: 'AI Hair Scan Accuracy',
       shortName: 'AI Accuracy',
-      description: 'AI predictions compared with final staff observations and corrections.',
+      description: 'AI predictions compared with the final human review.',
       icon: ScanLine,
       accent: secondary,
       page: 'reports',
@@ -414,11 +495,11 @@ function templateCatalogForRole(roleKey, theme) {
         { key: 'recordId', label: 'Comparison ID' },
         { key: 'submissionId', label: 'Submission' },
         { key: 'sourceLabel', label: 'Source Type' },
-        { key: 'eventName', label: 'Event / Source' },
+        { key: 'eventName', label: 'Program / Source' },
         { key: 'statusLabel', label: 'Final Decision' },
         { key: 'accuracyLabel', label: 'AI Correct' },
         { key: 'humanChangeLabel', label: 'Human Changes' },
-        { key: 'aiComments', label: 'AI Comments' },
+        { key: 'changedFieldsLabel', label: 'Changes' },
         { key: 'createdAtLabel', label: 'Reviewed At' },
       ],
     },
@@ -475,6 +556,10 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
   const fontFamily = theme?.fontFamily || 'Poppins';
   const headingFontFamily = theme?.secondaryFontFamily || theme?.fontFamily || 'Poppins';
   const palette = useMemo(() => buildStatusPalette(theme), [theme]);
+  const lifecycleColors = useMemo(() => ({
+    ...EVENT_LIFECYCLE_COLORS,
+    applications: primaryColor,
+  }), [primaryColor]);
 
   const roleKey = normalizeKey(userProfile?.role);
   const isAdmin = roleKey === 'admin';
@@ -491,7 +576,16 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
   const [statusFilter, setStatusFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
   const [rejectedRecordsFilter, setRejectedRecordsFilter] = useState('include');
+  const [selectedAiEventKey, setSelectedAiEventKey] = useState('all');
+  const [aiEventDate, setAiEventDate] = useState('');
+  const [showAiReviewCalendar, setShowAiReviewCalendar] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [eventReportPage, setEventReportPage] = useState(1);
+  const [eventActivityGrouping, setEventActivityGrouping] = useState('weekly');
+  const [eventActivityMonth, setEventActivityMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [eventActivityYear, setEventActivityYear] = useState(() => String(new Date().getFullYear()));
+  const [previewPage, setPreviewPage] = useState(1);
+  const [eventApplicationAnalyticsRows, setEventApplicationAnalyticsRows] = useState([]);
   const [staffUserId, setStaffUserId] = useState(Number(userProfile?.user_id || 0) || null);
 
   useEffect(() => {
@@ -534,6 +628,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
 
     setIsLoading(true);
     setNotice({ kind: '', text: '' });
+    if (selectedTemplate.id !== 'event_requests') setEventApplicationAnalyticsRows([]);
 
     try {
       let mappedRows = [];
@@ -551,7 +646,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           const linked = Number(row.Linked_Event_Request_ID || 0);
           return {
             recordId: `EA-${row.Event_Application_ID}`,
-            eventName: row.Event_Name || 'Untitled Event',
+            eventName: row.Event_Name || 'Untitled Program',
             applicant: applicantFullName(row),
             statusKey,
             statusLabel: labelFromKey(statusKey),
@@ -574,35 +669,69 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           };
         });
       } else if (selectedTemplate.id === 'event_requests') {
+        let resolvedStaffId = null;
         let query = supabase
           .from(EVENT_REQUESTS_TABLE)
-          .select('Event_Request_ID,Event_Name,Status,Event_Visibility,Assigned_Staff_User_ID,Start_Date,End_Date,Created_At,Updated_At')
+          .select('Event_Request_ID,Event_Application_ID,Event_Name,Status,Event_Visibility,Assigned_Staff_User_ID,Start_Date,End_Date,Ended_At,Successful_At,Created_At,Updated_At')
           .order('Created_At', { ascending: false })
           .limit(2000);
 
         if (!isAdmin) {
-          const resolved = await resolveStaffUserId();
-          if (!resolved) {
-            throw new Error('Unable to resolve your staff account for assigned event reports.');
+          resolvedStaffId = await resolveStaffUserId();
+          if (!resolvedStaffId) {
+            throw new Error('Unable to resolve your staff account for assigned program reports.');
           }
-          query = query.eq('Assigned_Staff_User_ID', resolved);
+          query = query.eq('Assigned_Staff_User_ID', resolvedStaffId);
         }
 
         const result = await query;
         if (result.error) throw result.error;
 
-        mappedRows = (result.data || []).map((row) => {
+        let applicationQuery = supabase
+          .from(EVENT_APPLICATIONS_TABLE)
+          .select('Event_Application_ID,Linked_Event_Request_ID,Event_Name,Status,Event_Visibility,Staff_Reviewer_User_ID,Proposed_Start_At,Proposed_End_At,Created_At,Updated_At')
+          .order('Created_At', { ascending: false })
+          .limit(2000);
+        if (!isAdmin) {
+          const linkedIds = (result.data || []).map((row) => Number(row.Event_Application_ID || 0)).filter(Boolean);
+          const ownershipFilters = [`Staff_Reviewer_User_ID.eq.${resolvedStaffId}`];
+          if (linkedIds.length) ownershipFilters.push(`Event_Application_ID.in.(${linkedIds.join(',')})`);
+          applicationQuery = applicationQuery.or(ownershipFilters.join(','));
+        }
+        const applicationResult = await applicationQuery;
+        if (applicationResult.error) throw applicationResult.error;
+        const applicationRows = applicationResult.data || [];
+        setEventApplicationAnalyticsRows(applicationRows.map((row) => ({
+          applicationId: Number(row.Event_Application_ID || 0) || null,
+          linkedRequestId: Number(row.Linked_Event_Request_ID || 0) || null,
+          statusKey: normalizeKey(row.Status),
+          createdAt: row.Created_At,
+          filterDate: row.Updated_At || row.Created_At,
+          searchText: [row.Event_Application_ID, row.Event_Name].filter(Boolean).join(' ').toLowerCase(),
+        })));
+
+        const requestRows = result.data || [];
+        const requestApplicationIds = new Set(
+          requestRows.map((row) => Number(row.Event_Application_ID || 0)).filter(Boolean),
+        );
+        const mappedRequestRows = requestRows.map((row) => {
           const statusKey = normalizeKey(row.Status);
           const visibility = normalizeKey(row.Event_Visibility) === 'private' ? 'Private' : 'Public';
+          const lifecycleAt = statusKey === 'successful'
+            ? row.Successful_At || row.Updated_At || row.Created_At
+            : statusKey === 'ended'
+              ? row.Ended_At || row.Updated_At || row.End_Date || row.Created_At
+              : row.Updated_At || row.Created_At;
           return {
             recordId: `ER-${row.Event_Request_ID}`,
-            eventName: row.Event_Name || 'Untitled Event',
+            eventName: row.Event_Name || 'Untitled Program',
             statusKey,
             statusLabel: labelFromKey(statusKey),
             eventVisibility: visibility,
             assignedStaff: row.Assigned_Staff_User_ID ? `User #${row.Assigned_Staff_User_ID}` : 'Not assigned',
             schedule: `${formatShortDate(row.Start_Date)} - ${formatShortDate(row.End_Date)}`,
             createdAt: row.Created_At || null,
+            filterDate: lifecycleAt,
             updatedAt: row.Updated_At || null,
             createdAtLabel: formatDateTime(row.Created_At),
             updatedAtLabel: formatDateTime(row.Updated_At),
@@ -618,6 +747,43 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               .toLowerCase(),
           };
         });
+        const applicationOnlyOutcomes = applicationRows
+          .filter((row) => {
+            const applicationId = Number(row.Event_Application_ID || 0);
+            const hasLinkedRequest = Number(row.Linked_Event_Request_ID || 0) > 0 || requestApplicationIds.has(applicationId);
+            return !hasLinkedRequest && ['rejected', 'cancelled'].includes(normalizeKey(row.Status));
+          })
+          .map((row) => {
+            const statusKey = normalizeKey(row.Status);
+            const visibility = normalizeKey(row.Event_Visibility) === 'private' ? 'Private' : 'Public';
+            const lifecycleAt = row.Updated_At || row.Created_At;
+            return {
+              recordId: `EA-${row.Event_Application_ID}`,
+              eventName: row.Event_Name || 'Untitled Program',
+              statusKey,
+              statusLabel: labelFromKey(statusKey),
+              eventVisibility: visibility,
+              assignedStaff: row.Staff_Reviewer_User_ID ? `Reviewed by User #${row.Staff_Reviewer_User_ID}` : 'Rejected during intake',
+              schedule: `${formatShortDate(row.Proposed_Start_At)} - ${formatShortDate(row.Proposed_End_At)}`,
+              createdAt: row.Created_At || null,
+              filterDate: lifecycleAt,
+              updatedAt: row.Updated_At || null,
+              createdAtLabel: formatDateTime(row.Created_At),
+              updatedAtLabel: formatDateTime(row.Updated_At),
+              searchText: [
+                `EA-${row.Event_Application_ID}`,
+                row.Event_Name,
+                row.Status,
+                visibility,
+                row.Staff_Reviewer_User_ID,
+              ]
+                .filter(Boolean)
+                .join(' ')
+                .toLowerCase(),
+            };
+          });
+        mappedRows = [...mappedRequestRows, ...applicationOnlyOutcomes]
+          .sort((a, b) => new Date(b.filterDate || b.createdAt || 0).getTime() - new Date(a.filterDate || a.createdAt || 0).getTime());
       } else if (selectedTemplate.id === 'hospital_applications') {
         const result = await supabase
           .from(HOSPITALS_TABLE)
@@ -707,7 +873,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
         mappedRows = inventoryRows.map((row) => {
           const statusKey = normalizeKey(row.Status);
           const eventName = eventsById.get(Number(row.Event_Request_ID))?.Event_Name
-            || (row.Source_Type === 'Non-Event' ? 'Non-event donation' : `Event #${row.Event_Request_ID || 'N/A'}`);
+            || (row.Source_Type === 'Non-Event' ? 'Independent donation' : `Program #${row.Event_Request_ID || 'N/A'}`);
           return {
             recordId: `CHI-${String(row.Inventory_ID).padStart(6, '0')}`,
             submissionId: `Submission #${row.Submission_ID}`,
@@ -726,7 +892,18 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       } else if (selectedTemplate.id === 'ai_hair_accuracy') {
         const result = await supabase.rpc('get_hair_ai_accuracy_report');
         if (result.error) throw result.error;
+        const programIds = [...new Set((result.data || []).map((row) => Number(row.event_request_id || 0)).filter(Boolean))];
+        let programsById = new Map();
+        if (programIds.length) {
+          const programResult = await supabase
+            .from(EVENT_REQUESTS_TABLE)
+            .select('Event_Request_ID,Event_Name,Start_Date,End_Date,Status')
+            .in('Event_Request_ID', programIds);
+          if (programResult.error) throw programResult.error;
+          programsById = new Map((programResult.data || []).map((program) => [Number(program.Event_Request_ID), program]));
+        }
         mappedRows = (result.data || []).map((row) => {
+          const program = programsById.get(Number(row.event_request_id || 0));
           const statusKey = normalizeKey(row.final_decision || 'Pending');
           const screening = row.ai_screening || {};
           const comparison = calculateAiReviewAccuracy(screening, row.staff_values);
@@ -746,31 +923,31 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           const aiPercent = comparableFieldCount > 0
             ? (matchedFieldCount / comparableFieldCount) * 100
             : null;
-          const aiComments = String(
-            screening.Summary
-            || screening.Visible_Damage_Notes
-            || screening.Decision
-            || '',
-          ).trim() || 'No AI comments';
           return {
             recordId: `AI-${String(row.comparison_id).padStart(6, '0')}`,
             submissionId: `Submission #${row.submission_id}`,
-            eventName: row.event_name || `Event #${row.event_request_id || 'N/A'}`,
+            eventRequestId: Number(row.event_request_id || 0) || null,
+            eventName: program?.Event_Name || row.event_name || `Program #${row.event_request_id || 'N/A'}`,
+            programStartDate: program?.Start_Date || null,
+            programEndDate: program?.End_Date || program?.Start_Date || null,
+            programStatus: normalizeKey(program?.Status || 'ended'),
             sourceType: normalizeKey(row.source_type) === 'event' ? 'event' : 'non-event',
-            sourceLabel: normalizeKey(row.source_type) === 'event' ? 'Event' : 'Non-event',
+            sourceLabel: normalizeKey(row.source_type) === 'event' ? 'Program' : 'Independent',
             statusKey,
             statusLabel: labelFromKey(statusKey),
             accuracyLabel: aiPercent == null ? 'N/A' : `${formatPercentage(aiPercent)}%`,
             humanChangeLabel: aiPercent == null ? 'N/A' : `${formatPercentage(100 - aiPercent)}%`,
-            aiComments,
             comparableFieldCount,
             matchedFieldCount,
             changedFields: recordedChangedFields,
+            changedFieldsLabel: recordedChangedFields.length
+              ? recordedChangedFields.map(labelFromKey).join(', ')
+              : 'No changes',
             createdAt: row.reviewed_at,
             updatedAt: row.reviewed_at,
             createdAtLabel: formatDateTime(row.reviewed_at),
             updatedAtLabel: formatDateTime(row.reviewed_at),
-            searchText: [row.comparison_id, row.submission_id, row.source_type, row.event_name, row.final_decision, aiComments, ...recordedChangedFields].filter(Boolean).join(' ').toLowerCase(),
+            searchText: [row.comparison_id, row.submission_id, row.source_type, row.event_name, row.final_decision, ...recordedChangedFields].filter(Boolean).join(' ').toLowerCase(),
           };
         });
       } else if (selectedTemplate.id === 'user_accounts' && isAdmin) {
@@ -823,6 +1000,8 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     setStatusFilter('all');
     setSourceFilter('all');
     setRejectedRecordsFilter('include');
+    setSelectedAiEventKey('all');
+    setAiEventDate('');
     setSearchTerm('');
     void loadTemplateRows();
   }, [loadTemplateRows, selectedTemplateId]);
@@ -832,11 +1011,63 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     return ['all', ...unique];
   }, [rawRows]);
 
+  const aiEventOptions = useMemo(() => {
+    if (!isAiAccuracyReport) return [];
+    const grouped = new Map();
+    rawRows.forEach((row) => {
+      if (row.sourceType !== 'event') return;
+      if (rejectedRecordsFilter === 'exclude' && rejectedLikeStatus(row.statusKey)) return;
+      if ((dateFrom || dateTo) && !withinDateRange(row.createdAt, dateFrom, dateTo)) return;
+      if (searchTerm.trim() && !String(row.searchText || '').includes(searchTerm.trim().toLowerCase())) return;
+      const key = String(row.eventRequestId || row.eventName);
+      const reviewedAt = row.createdAt ? new Date(row.createdAt).getTime() : 0;
+      const current = grouped.get(key);
+      if (!current || reviewedAt > current.reviewedAt) {
+        grouped.set(key, {
+          key,
+          eventName: row.eventName,
+          reviewedAt,
+          reviewedAtValue: row.createdAt,
+          programStartDate: row.programStartDate,
+          programEndDate: row.programEndDate,
+          programStatus: row.programStatus,
+        });
+      }
+    });
+    return Array.from(grouped.values()).sort((a, b) => b.reviewedAt - a.reviewedAt);
+  }, [dateFrom, dateTo, isAiAccuracyReport, rawRows, rejectedRecordsFilter, searchTerm]);
+
+  const aiCalendarPrograms = useMemo(() => {
+    const programs = new Map();
+    rawRows.forEach((row) => {
+      if (row.sourceType !== 'event' || !row.eventRequestId || !row.programStartDate) return;
+      const key = String(row.eventRequestId);
+      if (!programs.has(key)) {
+        programs.set(key, {
+          key,
+          eventName: row.eventName,
+          programStartDate: row.programStartDate,
+          programEndDate: row.programEndDate,
+          programStatus: row.programStatus,
+        });
+      }
+    });
+    return Array.from(programs.values());
+  }, [rawRows]);
+
   const filteredRows = useMemo(() => {
     return rawRows.filter((row) => {
       if (statusFilter !== 'all' && row.statusLabel !== statusFilter) return false;
-      if (isAiAccuracyReport && sourceFilter !== 'all' && row.sourceType !== sourceFilter) return false;
+      if (isAiAccuracyReport && sourceFilter !== 'all') {
+        const wantedSource = sourceFilter === 'per-event' ? 'event' : sourceFilter;
+        if (row.sourceType !== wantedSource) return false;
+      }
       if (isAiAccuracyReport && rejectedRecordsFilter === 'exclude' && rejectedLikeStatus(row.statusKey)) return false;
+      if (isAiAccuracyReport && sourceFilter === 'per-event') {
+        const rowEventKey = String(row.eventRequestId || row.eventName);
+        if (selectedAiEventKey !== 'all' && rowEventKey !== selectedAiEventKey) return false;
+        if (aiEventDate && !scheduleDateKeysForRecord(row, (item) => item.programStartDate, (item) => item.programEndDate).includes(aiEventDate)) return false;
+      }
       if ((dateFrom || dateTo) && !withinDateRange(row.createdAt, dateFrom, dateTo)) return false;
       if (searchTerm.trim()) {
         const query = searchTerm.trim().toLowerCase();
@@ -844,7 +1075,68 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       }
       return true;
     });
-  }, [rawRows, statusFilter, sourceFilter, rejectedRecordsFilter, dateFrom, dateTo, searchTerm, isAiAccuracyReport]);
+  }, [rawRows, statusFilter, sourceFilter, rejectedRecordsFilter, selectedAiEventKey, aiEventDate, dateFrom, dateTo, searchTerm, isAiAccuracyReport]);
+
+  useEffect(() => {
+    setEventReportPage(1);
+    setPreviewPage(1);
+  }, [sourceFilter, rejectedRecordsFilter, selectedAiEventKey, aiEventDate, dateFrom, dateTo, searchTerm]);
+
+  useEffect(() => {
+    setPreviewPage(1);
+  }, [selectedTemplateId, statusFilter]);
+
+  const perEventRows = useMemo(() => {
+    if (!isAiAccuracyReport || sourceFilter !== 'per-event') return [];
+    const grouped = new Map();
+    filteredRows.forEach((row) => {
+      const key = row.eventRequestId || row.eventName;
+      const current = grouped.get(key) || {
+        key,
+        eventName: row.eventName,
+        reviewed: 0,
+        accepted: 0,
+        rejected: 0,
+        rejectedCut: 0,
+        comparable: 0,
+        matched: 0,
+        latestReviewedAt: null,
+        donations: [],
+      };
+      current.reviewed += 1;
+      current.donations.push(row);
+      current.comparable += Number(row.comparableFieldCount || 0);
+      current.matched += Number(row.matchedFieldCount || 0);
+      if (row.statusKey === 'rejectedcut') current.rejectedCut += 1;
+      else if (rejectedLikeStatus(row.statusKey)) current.rejected += 1;
+      else if (approvedLikeStatus(row.statusKey) || row.statusKey === 'cut') current.accepted += 1;
+      if (!current.latestReviewedAt || new Date(row.createdAt || 0).getTime() > new Date(current.latestReviewedAt || 0).getTime()) {
+        current.latestReviewedAt = row.createdAt;
+      }
+      grouped.set(key, current);
+    });
+    return Array.from(grouped.values())
+      .map((row) => ({
+        ...row,
+        aiPercent: row.comparable > 0 ? (row.matched / row.comparable) * 100 : null,
+        donations: [...row.donations].sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()),
+      }))
+      .sort((a, b) => new Date(b.latestReviewedAt || 0).getTime() - new Date(a.latestReviewedAt || 0).getTime());
+  }, [filteredRows, isAiAccuracyReport, sourceFilter]);
+
+  const eventReportPageSize = 1;
+  const eventReportPageCount = Math.max(1, Math.ceil(perEventRows.length / eventReportPageSize));
+  const visiblePerEventRows = perEventRows.slice(
+    (Math.min(eventReportPage, eventReportPageCount) - 1) * eventReportPageSize,
+    Math.min(eventReportPage, eventReportPageCount) * eventReportPageSize,
+  );
+  const previewPageSize = 15;
+  const previewPageCount = Math.max(1, Math.ceil(filteredRows.length / previewPageSize));
+  const safePreviewPage = Math.min(previewPage, previewPageCount);
+  const visiblePreviewRows = filteredRows.slice(
+    (safePreviewPage - 1) * previewPageSize,
+    safePreviewPage * previewPageSize,
+  );
 
   const summary = useMemo(() => {
     const total = filteredRows.length;
@@ -854,6 +1146,20 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     const cancelled = filteredRows.filter((row) => cancelledLikeStatus(row.statusKey)).length;
     return { total, pending, approved, rejected, cancelled };
   }, [filteredRows]);
+
+  const eventLifecycleSummary = useMemo(() => ({
+    total: eventApplicationAnalyticsRows.filter((row) => {
+      if ((dateFrom || dateTo) && !withinDateRange(row.filterDate || row.createdAt, dateFrom, dateTo)) return false;
+      if (searchTerm.trim() && !row.searchText.includes(searchTerm.trim().toLowerCase())) return false;
+      return true;
+    }).length,
+    requests: filteredRows.length,
+    approved: filteredRows.filter((row) => row.statusKey === 'approved').length,
+    rejected: filteredRows.filter((row) => row.statusKey === 'rejected').length,
+    ended: filteredRows.filter((row) => row.statusKey === 'ended').length,
+    successful: filteredRows.filter((row) => row.statusKey === 'successful').length,
+    cancelled: filteredRows.filter((row) => row.statusKey === 'cancelled').length,
+  }), [dateFrom, dateTo, eventApplicationAnalyticsRows, filteredRows, searchTerm]);
 
   const aiAccuracySummary = useMemo(() => {
     const comparableRows = filteredRows.filter((row) => Number(row.comparableFieldCount || 0) > 0);
@@ -872,22 +1178,31 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     };
   }, [filteredRows]);
 
-  const aiAccuracyPieData = useMemo(() => [
-    {
-      name: 'AI correct',
-      value: Number(aiAccuracySummary.aiPercent.toFixed(2)),
-      color: '#059669',
-    },
-    {
-      name: 'Human changes',
-      value: Number(aiAccuracySummary.humanPercent.toFixed(2)),
-      color: '#d97706',
-    },
-  ], [aiAccuracySummary.aiPercent, aiAccuracySummary.humanPercent]);
+  const aiDecisionBarData = useMemo(() => ([
+    { name: 'Approved', value: filteredRows.filter((row) => row.statusKey === 'approved').length, color: '#059669' },
+    { name: 'Rejected', value: filteredRows.filter((row) => row.statusKey === 'rejected').length, color: '#dc2626' },
+    { name: 'Rejected cut', value: filteredRows.filter((row) => row.statusKey === 'rejectedcut').length, color: '#d97706' },
+  ]), [filteredRows]);
 
   const pct = (value, total) => (total > 0 ? Math.round((value / total) * 100) : 0);
 
   const statusChartData = useMemo(() => {
+    if (selectedTemplate?.id === 'event_requests') {
+      const applicationCount = eventApplicationAnalyticsRows.filter((row) => {
+        if ((dateFrom || dateTo) && !withinDateRange(row.createdAt, dateFrom, dateTo)) return false;
+        if (searchTerm.trim() && !row.searchText.includes(searchTerm.trim().toLowerCase())) return false;
+        return true;
+      }).length;
+      const count = (status) => filteredRows.filter((row) => row.statusKey === status).length;
+      return [
+        { name: 'Applications', value: applicationCount, statusKey: 'applications', color: lifecycleColors.applications },
+        { name: 'Approved', value: count('approved'), statusKey: 'approved', color: lifecycleColors.approved },
+        { name: 'Rejected', value: count('rejected'), statusKey: 'rejected', color: lifecycleColors.rejected },
+        { name: 'Ended', value: count('ended'), statusKey: 'ended', color: lifecycleColors.ended },
+        { name: 'Successful', value: count('successful'), statusKey: 'successful', color: lifecycleColors.successful },
+        { name: 'Cancelled', value: count('cancelled'), statusKey: 'cancelled', color: lifecycleColors.cancelled },
+      ];
+    }
     const map = new Map();
     filteredRows.forEach((row) => {
       const name = row.statusLabel || 'Unknown';
@@ -902,18 +1217,42 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       map.get(name).value += 1;
     });
     return Array.from(map.values());
-  }, [filteredRows, palette]);
+  }, [dateFrom, dateTo, eventApplicationAnalyticsRows, filteredRows, lifecycleColors, palette, searchTerm, selectedTemplate?.id]);
 
   const recentTrend = useMemo(() => {
     const frame = buildRecent7DayFrame();
     const byDay = new Map(frame.map((row) => [row.dayKey, row]));
     filteredRows.forEach((row) => {
-      const key = toDayKey(row.createdAt);
+      const key = toDayKey(row.filterDate || row.createdAt);
       if (!byDay.has(key)) return;
       byDay.get(key).value += 1;
     });
     return frame;
   }, [filteredRows]);
+
+  const eventLifecyclePeriodData = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    const requests = rawRows.filter((row) => {
+      if (selectedTemplate?.id !== 'event_requests') return false;
+      if (statusFilter !== 'all' && row.statusLabel !== statusFilter) return false;
+      return !query || String(row.searchText || '').includes(query);
+    });
+    const applications = eventApplicationAnalyticsRows.filter((row) => (
+      !query || String(row.searchText || '').includes(query)
+    ));
+    return buildEventLifecyclePeriodSeries(
+      eventActivityGrouping,
+      eventActivityMonth,
+      eventActivityYear,
+      applications,
+      requests,
+    );
+  }, [eventActivityGrouping, eventActivityMonth, eventActivityYear, eventApplicationAnalyticsRows, rawRows, searchTerm, selectedTemplate?.id, statusFilter]);
+
+  const eventActivityYears = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return Array.from({ length: 10 }, (_, index) => String(currentYear - index));
+  }, []);
 
   const exportCsv = async () => {
     if (!selectedTemplate || filteredRows.length === 0) return;
@@ -1056,36 +1395,16 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     },
   ];
 
-  const kpiTiles = isAiAccuracyReport ? [
-    {
-      key: 'total-reviewed',
-      label: 'Total Reviewed Records',
-      value: aiAccuracySummary.totalRecords,
-      icon: SelectedIcon,
-      accent: palette.primary,
-    },
-    {
-      key: 'comparable-reviews',
-      label: 'Comparable Reviews',
-      value: `${aiAccuracySummary.scoredRecords} of ${aiAccuracySummary.totalRecords}`,
-      icon: ClipboardList,
-      accent: palette.neutral,
-    },
-    {
-      key: 'ai-correct',
-      label: 'AI Correct',
-      value: `${formatPercentage(aiAccuracySummary.aiPercent)}%`,
-      icon: CheckCircle2,
-      accent: palette.approved,
-    },
-    {
-      key: 'human-change',
-      label: 'Human Changes',
-      value: `${formatPercentage(aiAccuracySummary.humanPercent)}%`,
-      icon: Users,
-      accent: palette.pendingStaff,
-    },
-  ] : standardKpiTiles;
+  const eventRequestKpiTiles = [
+    { key: 'event-applications', label: 'Applications', value: eventLifecycleSummary.total, pctValue: eventLifecycleSummary.total > 0 ? 100 : 0, icon: ClipboardList, accent: lifecycleColors.applications },
+    { key: 'approved-events', label: 'Approved Programs', value: eventLifecycleSummary.approved, pctValue: pct(eventLifecycleSummary.approved, eventLifecycleSummary.requests), icon: CheckCircle2, accent: lifecycleColors.approved },
+    { key: 'rejected-events', label: 'Rejected Programs', value: eventLifecycleSummary.rejected, pctValue: pct(eventLifecycleSummary.rejected, eventLifecycleSummary.requests), icon: XCircle, accent: lifecycleColors.rejected },
+    { key: 'ended-events', label: 'Ended Programs', value: eventLifecycleSummary.ended, pctValue: pct(eventLifecycleSummary.ended, eventLifecycleSummary.requests), icon: Clock3, accent: lifecycleColors.ended },
+    { key: 'successful-events', label: 'Successful Programs', value: eventLifecycleSummary.successful, pctValue: pct(eventLifecycleSummary.successful, eventLifecycleSummary.requests), icon: CheckCircle2, accent: lifecycleColors.successful },
+    { key: 'cancelled-events', label: 'Cancelled Programs', value: eventLifecycleSummary.cancelled, pctValue: pct(eventLifecycleSummary.cancelled, eventLifecycleSummary.requests), icon: XCircle, accent: lifecycleColors.cancelled },
+  ];
+
+  const kpiTiles = selectedTemplate.id === 'event_requests' ? eventRequestKpiTiles : standardKpiTiles;
 
   return (
     <div
@@ -1102,7 +1421,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
             {isAdmin ? 'Admin Reports' : 'Staff Reports'}
           </h1>
           <p className="text-sm" style={{ color: secondaryTextColor }}>
-            Filter, visualize, and export data on events, wigs, and partner activity.
+            Filter, visualize, and export data on programs, wigs, and partner activity.
           </p>
           <p className="mt-1 text-xs text-slate-500">
             Last refreshed: <strong className="font-semibold text-slate-700">{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : 'Not refreshed yet'}</strong>
@@ -1160,7 +1479,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                 className={`-mb-px inline-flex items-center gap-2 border-b-2 px-1 pb-3 pt-2 text-sm font-semibold transition-colors ${
                   isActive ? '' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
                 }`}
-                style={isActive ? { borderColor: template.accent, color: template.accent } : undefined}
+                style={isActive ? { borderColor: primaryColor, color: primaryColor } : undefined}
               >
                 <Icon size={14} />
                 {template.name}
@@ -1172,7 +1491,31 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
 
       {/* Filters bar */}
       <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-        <div className={`grid grid-cols-1 gap-3 md:grid-cols-2 ${isAiAccuracyReport ? 'xl:grid-cols-[1fr_1fr_1fr_1fr_2fr]' : 'xl:grid-cols-[1fr_1fr_1fr_2fr]'}`}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-xs font-bold text-slate-800">Filter report</h3>
+            <p className="text-[11px] text-slate-500">Narrow the report without changing stored results.</p>
+          </div>
+          {(dateFrom || dateTo || statusFilter !== 'all' || sourceFilter !== 'all' || rejectedRecordsFilter !== 'include' || searchTerm || selectedAiEventKey !== 'all' || aiEventDate) && (
+            <button
+              type="button"
+              onClick={() => {
+                setDateFrom('');
+                setDateTo('');
+                setStatusFilter('all');
+                setSourceFilter('all');
+                setRejectedRecordsFilter('include');
+                setSelectedAiEventKey('all');
+                setAiEventDate('');
+                setSearchTerm('');
+              }}
+              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+        <div className={`grid grid-cols-1 gap-3 md:grid-cols-2 ${isAiAccuracyReport ? 'xl:grid-cols-[0.85fr_0.85fr_1.15fr_1.15fr_1.6fr]' : 'xl:grid-cols-[1fr_1fr_1fr_2fr]'}`}>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">From Date</span>
             <input
@@ -1210,9 +1553,10 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
             <label className="flex flex-col gap-1">
               <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Donation Source</span>
               <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[var(--report-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--report-accent)]/20">
-                <option value="all">Events and non-events</option>
-                <option value="event">Events only</option>
-                <option value="non-event">Non-events only</option>
+                <option value="all">All donation sources</option>
+                <option value="event">Program donations</option>
+                <option value="per-event">Per program</option>
+                <option value="non-event">Non-program donations</option>
               </select>
             </label>
           )}
@@ -1236,30 +1580,74 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               <input
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search by id, name, status..."
+                placeholder={isAiAccuracyReport && sourceFilter === 'per-event' ? 'Search programs or decisions...' : 'Search by id, name, status...'}
                 className="w-full rounded-lg border border-slate-300 py-2 pl-8 pr-3 text-sm focus:border-[var(--report-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--report-accent)]/20"
               />
             </div>
           </label>
         </div>
+        {isAiAccuracyReport && sourceFilter === 'per-event' && (
+          <div className="mt-3 grid grid-cols-1 gap-3 border-t border-slate-200 pt-3 md:grid-cols-[minmax(170px,0.7fr)_minmax(260px,1.8fr)_auto] md:items-end">
+            <label className="flex flex-col gap-1">
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-500"><Calendar size={12} /> Program Date</span>
+              <button
+                type="button"
+                onClick={() => setShowAiReviewCalendar(true)}
+                className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left text-sm transition focus:outline-none focus:ring-2 focus:ring-[var(--report-accent)]/20 ${aiEventDate ? 'border-slate-400 bg-slate-50 font-semibold text-slate-800' : 'border-slate-300 bg-white text-slate-500 hover:bg-slate-50'}`}
+              >
+                <span>{aiEventDate ? formatScheduleDateLabel(aiEventDate, true) : 'Choose program date'}</span>
+                <Calendar size={14} className="flex-none" />
+              </button>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Program</span>
+              <select
+                value={selectedAiEventKey}
+                onChange={(event) => setSelectedAiEventKey(event.target.value)}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[var(--report-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--report-accent)]/20"
+              >
+                <option value="all">All programs — newest reviewed first</option>
+                {aiEventOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.eventName} — {formatShortDate(option.programStartDate)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              onClick={() => { setSelectedAiEventKey('all'); setAiEventDate(''); }}
+              disabled={selectedAiEventKey === 'all' && !aiEventDate}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+            >
+              Show all programs
+            </button>
+          </div>
+        )}
       </div>
 
       {/* KPI tiles */}
-      <section className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${isAiAccuracyReport ? 'lg:grid-cols-4' : 'lg:grid-cols-5'}`}>
+      {!isAiAccuracyReport && (
+      <section className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${selectedTemplate.id === 'event_requests' ? 'lg:grid-cols-3 xl:grid-cols-6' : 'lg:grid-cols-5'}`}>
         {kpiTiles.map((tile) => {
           const Icon = tile.icon;
+          const isEventMetric = selectedTemplate.id === 'event_requests';
           return (
             <div
               key={tile.key}
-              className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+              className={`rounded-xl border border-slate-200 bg-white shadow-sm ${isEventMetric ? 'p-3.5' : 'p-4'}`}
             >
               <div className="flex items-start justify-between gap-2">
-                <div
-                  className="flex h-9 w-9 flex-none items-center justify-center rounded-lg text-white shadow-sm"
-                  style={{ backgroundColor: tile.accent }}
-                >
-                  <Icon size={15} />
-                </div>
+                {isEventMetric ? (
+                  <span className="mt-1 h-2.5 w-2.5 rounded-full" style={{ backgroundColor: tile.accent }} />
+                ) : (
+                  <div
+                    className="flex h-9 w-9 flex-none items-center justify-center rounded-lg text-white shadow-sm"
+                    style={{ backgroundColor: tile.accent }}
+                  >
+                    <Icon size={15} />
+                  </div>
+                )}
                 {!isAiAccuracyReport ? (
                   <span
                     className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold"
@@ -1269,85 +1657,96 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                   </span>
                 ) : null}
               </div>
-              <p className="mt-3 text-[11px] font-bold uppercase tracking-wider text-slate-500">{tile.label}</p>
-              <p className="mt-1 text-3xl font-bold leading-none text-slate-900">{tile.value}</p>
+              <p className={`${isEventMetric ? 'mt-2' : 'mt-3'} text-[10px] font-bold uppercase tracking-wider text-slate-500`}>{tile.label}</p>
+              <p className="mt-1 text-2xl font-bold leading-none text-slate-900">{tile.value}</p>
             </div>
           );
         })}
       </section>
+      )}
 
       {/* Charts row */}
       {isAiAccuracyReport ? (
-        <section className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(280px,0.75fr)]">
-          <article className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">AI Accuracy vs Human Changes</h3>
-              <p className="mt-0.5 text-xs text-slate-500">Five comparable fields contribute equally. Reviews without both AI and staff field data are marked N/A and are not used in the percentage.</p>
+        <section className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[minmax(0,1.5fr)_minmax(280px,0.5fr)]">
+          <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">AI vs Human</h3>
+                <p className="mt-0.5 text-xs text-slate-500">AI results compared with the final human review.</p>
+              </div>
+              <span className="text-xs font-semibold text-slate-500">{aiAccuracySummary.scoredRecords} comparison{aiAccuracySummary.scoredRecords === 1 ? '' : 's'}</span>
             </div>
-            <div className="mt-3 h-64 min-h-64">
-              {aiAccuracySummary.comparableFields === 0 ? (
-                <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 text-xs text-slate-500">
-                  No completed AI-to-staff comparisons match the selected filters.
+            {aiAccuracySummary.comparableFields === 0 ? (
+              <div className="mt-4 flex h-20 items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 text-xs text-slate-500">
+                No AI and human comparisons match these filters.
+              </div>
+            ) : (
+              <div className="mt-4">
+                <div className="mb-2 flex items-center justify-between gap-4 text-xs font-semibold">
+                  <span className="inline-flex items-center gap-2 text-blue-700"><span className="h-2.5 w-2.5 rounded-full bg-blue-600" />AI correct <strong>{formatPercentage(aiAccuracySummary.aiPercent)}%</strong></span>
+                  <span className="inline-flex items-center gap-2 text-amber-700"><strong>{formatPercentage(aiAccuracySummary.humanPercent)}%</strong> Human changes<span className="h-2.5 w-2.5 rounded-full bg-amber-600" /></span>
                 </div>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%" minWidth={240} minHeight={240}>
-                  <PieChart>
-                    <Pie
-                      data={aiAccuracyPieData}
-                      dataKey="value"
-                      nameKey="name"
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={62}
-                      outerRadius={94}
-                      paddingAngle={2}
-                      label={({ name, value }) => `${name}: ${formatPercentage(value)}%`}
-                      labelLine
-                    >
-                      {aiAccuracyPieData.map((entry) => (
-                        <Cell key={entry.name} fill={entry.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip formatter={(value) => `${formatPercentage(value)}%`} />
-                  </PieChart>
-                </ResponsiveContainer>
-              )}
-            </div>
+                <div className="relative flex h-4 overflow-hidden rounded-full bg-slate-100 ring-1 ring-inset ring-slate-200" aria-label={`AI correct ${formatPercentage(aiAccuracySummary.aiPercent)} percent; Human changes ${formatPercentage(aiAccuracySummary.humanPercent)} percent`}>
+                  <div className="h-full bg-blue-600 transition-all" style={{ width: `${Math.min(Math.max(aiAccuracySummary.aiPercent, 0), 100)}%` }} />
+                  <div className="h-full flex-1 bg-amber-600" />
+                  <span className="pointer-events-none absolute left-1/2 top-0 h-full w-px bg-white/90" />
+                </div>
+                <div className="relative mt-1 h-4 text-[9px] font-semibold text-slate-400">
+                  <span className="absolute left-1/2 -translate-x-1/2">50%</span>
+                </div>
+                <div className="mt-2 border-t border-slate-100 pt-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Decisions</p>
+                  <div className="h-24">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={aiDecisionBarData} margin={{ top: 18, right: 8, left: 8, bottom: 0 }} barCategoryGap="24%">
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                        <XAxis dataKey="name" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
+                        <YAxis hide allowDecimals={false} />
+                        <Tooltip cursor={{ fill: '#f8fafc' }} />
+                        <Bar dataKey="value" name="Donations" radius={[5, 5, 0, 0]} maxBarSize={76}>
+                          {aiDecisionBarData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                          <LabelList dataKey="value" position="top" className="fill-slate-500 text-[9px]" />
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+            )}
           </article>
 
-          <aside className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h3 className="text-sm font-bold text-slate-900">How to read this report</h3>
-            <p className="mt-1 text-xs leading-5 text-slate-600">AI Correct is the share of comparable fields matching the original AI screening. Human Changes is the share corrected by staff.</p>
-            <div className="mt-4 space-y-3">
-              {aiAccuracyPieData.map((entry) => (
-                <div key={entry.name} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
-                      <span className="h-3 w-3 rounded-full" style={{ backgroundColor: entry.color }} />
-                      {entry.name}
-                    </span>
-                    <strong className="text-lg text-slate-900">{formatPercentage(entry.value)}%</strong>
-                  </div>
+          <aside
+            className="h-fit self-start overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+            style={{ alignSelf: 'flex-start', height: 'fit-content' }}
+          >
+            <h3 className="border-b border-slate-200 px-4 py-3 text-sm font-bold text-slate-900">Summary</h3>
+            <div>
+              {[
+                { label: 'Reviews', value: aiAccuracySummary.totalRecords, color: '#64748b' },
+                { label: 'Compared', value: aiAccuracySummary.scoredRecords, color: '#475569' },
+                { label: 'AI correct', value: `${formatPercentage(aiAccuracySummary.aiPercent)}%`, color: '#2563eb' },
+                { label: 'Human changes', value: `${formatPercentage(aiAccuracySummary.humanPercent)}%`, color: '#d97706' },
+              ].map((entry) => (
+                <div key={entry.label} className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-2.5 first:border-t-0 even:bg-slate-50/60">
+                  <span className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
+                    {entry.label}
+                  </span>
+                  <strong className="text-sm text-slate-900">{entry.value}</strong>
                 </div>
               ))}
             </div>
-            <p className="mt-4 rounded-lg border px-3 py-2 text-[11px] leading-5" style={{ borderColor: `${primaryColor}30`, color: primaryTextColor, backgroundColor: `${primaryColor}08` }}>
-              AI Correct and Human Changes always total 100% across all comparable fields in the selected completed reviews.
-            </p>
           </aside>
         </section>
       ) : (
       <section className="grid grid-cols-1 gap-3 xl:grid-cols-12">
         <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-5">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <div>
               <h3 className="text-sm font-bold text-slate-800">{selectedTemplate.shortName || 'Report'} Statistics</h3>
               <p className="text-xs text-slate-500">Records grouped by current status</p>
             </div>
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: selectedTemplate.accent }} />
-              {selectedTemplate.shortName}
-            </span>
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500"><span className="h-2 w-2 rounded-full" style={{ backgroundColor: selectedTemplate.accent }} />{selectedTemplate.shortName}</span>
           </div>
           <div className="mt-3 h-56">
             {statusChartData.length === 0 ? (
@@ -1358,7 +1757,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={statusChartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} angle={-15} textAnchor="end" height={48} tickLine={false} axisLine={false} />
+                  <XAxis dataKey="name" tick={{ fontSize: 9 }} interval={0} height={28} tickLine={false} axisLine={false} />
                   <YAxis allowDecimals={false} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
                   <Tooltip cursor={{ fill: '#f1f5f9' }} />
                   <Bar dataKey="value" name="Records" radius={[6, 6, 0, 0]}>
@@ -1373,18 +1772,46 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
         </article>
 
         <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-7">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 className="text-sm font-bold text-slate-800">7-Day Activity Overview</h3>
-              <p className="text-xs text-slate-500">Records created per day (within current filters)</p>
+              <h3 className="text-sm font-bold text-slate-800">{selectedTemplate.id === 'event_requests' ? 'Program Lifecycle by Period' : '7-Day Activity Overview'}</h3>
+              <p className="text-xs text-slate-500">{selectedTemplate.id === 'event_requests' ? 'Applications compared with current program outcomes' : 'Records created per day (within current filters)'}</p>
             </div>
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
-              <Calendar size={11} />
-              Last 7 days
-            </span>
+            {selectedTemplate.id === 'event_requests' ? (
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                  {['weekly', 'monthly', 'yearly'].map((grouping) => (
+                    <button key={grouping} type="button" onClick={() => setEventActivityGrouping(grouping)} className={`rounded-md px-2.5 py-1.5 text-[10px] font-semibold capitalize ${eventActivityGrouping === grouping ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>{grouping}</button>
+                  ))}
+                </div>
+                {eventActivityGrouping === 'weekly' && <input type="month" value={eventActivityMonth} onChange={(event) => setEventActivityMonth(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700" />}
+                {eventActivityGrouping === 'monthly' && (
+                  <select value={eventActivityYear} onChange={(event) => setEventActivityYear(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700">
+                    {eventActivityYears.map((year) => <option key={year} value={year}>{year}</option>)}
+                  </select>
+                )}
+                {eventActivityGrouping === 'yearly' && <span className="rounded-lg bg-slate-100 px-2.5 py-1.5 text-[10px] font-semibold text-slate-600">Past 5 years</span>}
+              </div>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500"><Calendar size={11} />Last 7 days</span>
+            )}
           </div>
           <div className="mt-3 h-56">
             <ResponsiveContainer width="100%" height="100%">
+              {selectedTemplate.id === 'event_requests' ? (
+                <BarChart data={eventLifecyclePeriodData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }} barGap={2}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
+                  <Tooltip cursor={{ fill: '#f8fafc' }} />
+                  <Bar dataKey="applications" name="Applications" fill={lifecycleColors.applications} radius={[4, 4, 0, 0]} maxBarSize={30} />
+                  <Bar dataKey="approved" name="Approved" fill={lifecycleColors.approved} radius={[4, 4, 0, 0]} maxBarSize={30} />
+                  <Bar dataKey="rejected" name="Rejected" fill={lifecycleColors.rejected} radius={[4, 4, 0, 0]} maxBarSize={30} />
+                  <Bar dataKey="ended" name="Ended" fill={lifecycleColors.ended} radius={[4, 4, 0, 0]} maxBarSize={30} />
+                  <Bar dataKey="successful" name="Successful" fill={lifecycleColors.successful} radius={[4, 4, 0, 0]} maxBarSize={30} />
+                  <Bar dataKey="cancelled" name="Cancelled" fill={lifecycleColors.cancelled} radius={[4, 4, 0, 0]} maxBarSize={30} />
+                </BarChart>
+              ) : (
               <AreaChart data={recentTrend} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="reportTrendGradient" x1="0" y1="0" x2="0" y2="1">
@@ -1405,13 +1832,91 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                   fill="url(#reportTrendGradient)"
                 />
               </AreaChart>
+              )}
             </ResponsiveContainer>
           </div>
+          {selectedTemplate.id === 'event_requests' && (
+            <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 text-[10px] text-slate-600">
+              {Object.entries(lifecycleColors).map(([key, color]) => <span key={key} className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />{key.charAt(0).toUpperCase() + key.slice(1)}</span>)}
+            </div>
+          )}
         </article>
       </section>
       )}
 
+      {isAiAccuracyReport && sourceFilter === 'per-event' && (
+        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3.5">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Program donation reviews</h3>
+              <p className="text-xs text-slate-500">
+                {selectedAiEventKey === 'all'
+                  ? 'Programs are ordered by their latest review, with every cut donation shown inside.'
+                  : 'Every reviewed cut donation from the selected program is shown.'}
+              </p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">{perEventRows.length} program{perEventRows.length === 1 ? '' : 's'}</span>
+          </div>
+          {perEventRows.length === 0 ? (
+            <div className="px-5 py-8 text-center text-sm text-slate-500">No program reviews match the selected filters.</div>
+          ) : (
+            <>
+              <div className="space-y-3 bg-slate-50/60 p-3">
+                {visiblePerEventRows.map((program) => (
+                  <article key={program.key} className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900">{program.eventName}</h4>
+                        <p className="mt-0.5 text-[11px] text-slate-500">Last reviewed {formatDateTime(program.latestReviewedAt)}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 text-[10px] font-semibold">
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-700">{program.reviewed} donation{program.reviewed === 1 ? '' : 's'}</span>
+                        <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700">{program.accepted} approved</span>
+                        <span className="rounded-full bg-rose-50 px-2 py-1 text-rose-700">{program.rejected} rejected</span>
+                        <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-700">{program.rejectedCut} rejected cut</span>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-left text-xs">
+                        <thead className="bg-slate-50 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                          <tr><th className="px-4 py-2.5">Cut donation</th><th className="px-4 py-2.5">Decision</th><th className="px-4 py-2.5">AI correct</th><th className="px-4 py-2.5">Human changes</th><th className="px-4 py-2.5">Changes</th><th className="px-4 py-2.5">Reviewed</th></tr>
+                        </thead>
+                        <tbody>
+                          {program.donations.map((donation) => {
+                            const donationAiPercent = Number(donation.comparableFieldCount || 0) > 0
+                              ? (Number(donation.matchedFieldCount || 0) / Number(donation.comparableFieldCount)) * 100
+                              : null;
+                            return (
+                              <tr key={donation.recordId} className="border-t border-slate-100 hover:bg-slate-50/70">
+                                <td className="px-4 py-2.5 font-semibold text-slate-800">{donation.submissionId}</td>
+                                <td className="px-4 py-2.5"><span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold ${statusBadgeClass(donation.statusKey)}`}>{donation.statusLabel}</span></td>
+                                <td className="px-4 py-2.5 font-semibold text-blue-700">{donationAiPercent == null ? 'N/A' : `${formatPercentage(donationAiPercent)}%`}</td>
+                                <td className="px-4 py-2.5 font-semibold text-amber-700">{donationAiPercent == null ? 'N/A' : `${formatPercentage(100 - donationAiPercent)}%`}</td>
+                                <td className="max-w-xs px-4 py-2.5 text-slate-600">{donation.changedFields?.length ? donation.changedFields.map(labelFromKey).join(', ') : 'None'}</td>
+                                <td className="whitespace-nowrap px-4 py-2.5 text-slate-600">{donation.createdAtLabel}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3">
+                <span className="text-xs text-slate-500">Page {Math.min(eventReportPage, eventReportPageCount)} of {eventReportPageCount}</span>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setEventReportPage((page) => Math.max(1, page - 1))} disabled={eventReportPage <= 1} className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40">Previous</button>
+                  <button type="button" onClick={() => setEventReportPage((page) => Math.min(eventReportPageCount, page + 1))} disabled={eventReportPage >= eventReportPageCount} className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40">Next</button>
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+      )}
+
       {/* Preview table */}
+      {!(isAiAccuracyReport && sourceFilter === 'per-event') && (
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3.5">
           <div className="flex items-center gap-2.5">
@@ -1470,7 +1975,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.slice(0, 200).map((row) => (
+                {visiblePreviewRows.map((row) => (
                   <tr
                     key={`${row.recordId}-${row.createdAt || row.updatedAt || Math.random()}`}
                     className="border-t border-slate-100 transition hover:bg-slate-50/50"
@@ -1500,7 +2005,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                         const isUnavailable = Number(row.comparableFieldCount || 0) === 0;
                         const accent = isUnavailable
                           ? palette.neutral
-                          : (isAiCorrect ? palette.approved : palette.pendingStaff);
+                          : (isAiCorrect ? '#2563eb' : '#d97706');
                         return (
                           <td key={`${row.recordId}-${column.key}`} className="px-5 py-2.5">
                             <span
@@ -1510,13 +2015,6 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                             >
                               {cellValue}
                             </span>
-                          </td>
-                        );
-                      }
-                      if (column.key === 'aiComments') {
-                        return (
-                          <td key={`${row.recordId}-${column.key}`} className="max-w-xs px-5 py-2.5 text-slate-700">
-                            <p className="line-clamp-2 text-xs leading-5" title={String(cellValue || '')}>{String(cellValue || 'No AI comments')}</p>
                           </td>
                         );
                       }
@@ -1530,14 +2028,39 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                 ))}
               </tbody>
             </table>
-            {filteredRows.length > 200 && (
-              <div className="border-t border-slate-100 bg-slate-50 px-5 py-2 text-[11px] text-slate-500">
-                Preview shows first 200 rows. Export CSV or PDF for the complete data set.
-              </div>
-            )}
+            <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3">
+              <span className="text-xs text-slate-500">Page {safePreviewPage} of {previewPageCount} · {filteredRows.length} records</span>
+              <div className="flex gap-2"><button type="button" onClick={() => setPreviewPage((page) => Math.max(1, page - 1))} disabled={safePreviewPage <= 1} className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40">Previous</button><button type="button" onClick={() => setPreviewPage((page) => Math.min(previewPageCount, page + 1))} disabled={safePreviewPage >= previewPageCount} className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40">Next</button></div>
+            </div>
           </div>
         )}
       </section>
+      )}
+
+      <ProgramScheduleCalendarModal
+        open={isAiAccuracyReport && sourceFilter === 'per-event' && showAiReviewCalendar}
+        onClose={() => setShowAiReviewCalendar(false)}
+        records={aiCalendarPrograms}
+        selectedDate={aiEventDate}
+        onSelectDate={setAiEventDate}
+        primaryColor={primaryColor}
+        title="Program Calendar"
+        description="Choose a scheduled program date. Each program appears only once."
+        recordNoun="program"
+        resultCount={perEventRows.length}
+        getStartDate={(row) => row.programStartDate}
+        getEndDate={(row) => row.programEndDate}
+        getStatus={(row) => row.programStatus}
+        getRecordLabel={(row) => row.eventName}
+        statusItems={[
+          { key: 'approved', label: 'Approved', dotClass: 'bg-blue-600', reserved: true },
+          { key: 'rejected', label: 'Rejected', dotClass: 'bg-rose-600', reserved: true },
+          { key: 'ended', label: 'Ended', dotClass: 'bg-slate-500', reserved: true },
+          { key: 'successful', label: 'Successful', dotClass: 'bg-emerald-600', reserved: true },
+          { key: 'cancelled', label: 'Cancelled', dotClass: 'bg-amber-600', reserved: true },
+        ]}
+        showOpenDates={false}
+      />
 
       {(selectedTemplate.id === 'hospital_applications' && !isAdmin) && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">

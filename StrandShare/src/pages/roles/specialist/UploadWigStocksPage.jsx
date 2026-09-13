@@ -854,14 +854,14 @@ export default function UploadWigStocksPage({ userProfile, isActivePage = true }
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold mb-1" style={labelStyle}>Hair Texture</label>
+                      <label className="block text-xs font-semibold mb-1" style={labelStyle}>Hair Pattern</label>
                       <select
                         value={wigForm.hairTexture}
                         onChange={(e) => setWigForm((p) => ({ ...p, hairTexture: e.target.value }))}
                         className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none"
                         style={inputStyle}
                       >
-                        <option value="">Select texture</option>
+                        <option value="">Select hair pattern</option>
                         {TEXTURE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
                       </select>
                     </div>
@@ -964,7 +964,7 @@ export default function UploadWigStocksPage({ userProfile, isActivePage = true }
                     <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Bundle</th>
                     <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Length</th>
                     <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Color</th>
-                    <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Texture</th>
+                    <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Hair Pattern</th>
                     <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Density</th>
                     <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Style</th>
                     <th className="px-4 py-3 text-left font-semibold" style={{ color: primaryTextColor }}>Cap Size</th>

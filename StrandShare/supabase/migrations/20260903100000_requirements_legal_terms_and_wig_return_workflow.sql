@@ -117,7 +117,7 @@ begin
       and document.is_active = true
       and document.effective_at <= timezone('Asia/Manila', now())
   ) then
-    raise exception 'Review and accept the active Event Application Terms PDF before submitting';
+    raise exception 'Review and accept the active Program Application Terms PDF before submitting';
   end if;
   new."Terms_Accepted_At" := coalesce(new."Terms_Accepted_At", timezone('Asia/Manila', now()));
   return new;
@@ -208,7 +208,7 @@ begin
     select 1 from public."Event_Applications" e
     where e."Event_Application_ID" = p_context_id
       and lower(coalesce(e."Applicant_Email", '')) = v_email
-  ) then raise exception 'The event application does not belong to the verified email';
+  ) then raise exception 'The program application does not belong to the verified email';
   elsif p_context_type = 'hospital_application' and not exists (
     select 1 from public."Hospitals" h
     join public.users u on u.user_id = h."Created_By"

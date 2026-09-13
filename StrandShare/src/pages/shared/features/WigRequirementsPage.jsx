@@ -22,7 +22,6 @@ import { useToast } from '../../../context/ToastContext';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
 const WIG_REQUIREMENTS_TABLE = 'wig_requirements';
-const USERS_TABLE = 'users';
 
 const EMPTY_FORM = {
   minimumNumberDonor: '',
@@ -108,6 +107,12 @@ function mapSaveError(rawMessage) {
   }
   if (lower.includes('does not exist') && lower.includes('wig_requirements')) {
     return 'wig_requirements table is missing. Run migration 067_create_wig_requirements.sql.';
+  }
+  if (lower.includes('save_wig_requirements_v2') && lower.includes('schema cache')) {
+    return 'The safe requirements update is not installed yet. Apply the latest Supabase migration, then refresh this page.';
+  }
+  if (lower.includes('update requires a where clause')) {
+    return 'The database rejected the requirements save. Refresh the page and try again.';
   }
   return message;
 }
@@ -270,30 +275,6 @@ export default function WigRequirementsPage({ userProfile }) {
     setOriginalForm(nextForm);
   }, []);
 
-  const resolveActorUserId = useCallback(async () => {
-    if (userProfile?.user_id) {
-      return Number(userProfile.user_id) || null;
-    }
-
-    if (!supabase) {
-      return null;
-    }
-
-    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !sessionData?.session?.user?.id) {
-      return null;
-    }
-
-    const authUserId = sessionData.session.user.id;
-    const result = await supabase
-      .from(USERS_TABLE)
-      .select('user_id')
-      .eq('auth_user_id', authUserId)
-      .maybeSingle();
-
-    return result?.data?.user_id || null;
-  }, [userProfile?.user_id]);
-
   const loadWigRequirements = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
       setNotice({
@@ -373,39 +354,29 @@ export default function WigRequirementsPage({ userProfile }) {
     setNotice({ kind: '', text: '' });
 
     try {
-      let targetRequirementId = wigRequirementId;
-      if (!targetRequirementId) {
+      if (!wigRequirementId) {
         const repairResult = await supabase.rpc('get_or_create_wig_requirements');
         if (repairResult.error) throw repairResult.error;
         const repairedRow = Array.isArray(repairResult.data) ? repairResult.data[0] : repairResult.data;
-        targetRequirementId = Number(repairedRow?.Wig_Requirement_ID || 0) || null;
-        if (!targetRequirementId) throw new Error('The Wig Requirements record could not be initialized.');
+        if (!Number(repairedRow?.Wig_Requirement_ID || 0)) throw new Error('The Wig Requirements record could not be initialized.');
       }
 
-      const actorUserId = await resolveActorUserId();
-      const payload = {
-        Minimum_Number_Donor: toIntegerOrNull(form.minimumNumberDonor),
-        Minimum_Hair_Length: toDecimalOrNull(form.minimumHairLength),
-        Chemical_Treatment_Status: Boolean(form.chemicalTreatmentStatus),
-        Colored_Hair_Status: Boolean(form.coloredHairStatus),
-        Bleached_Hair_Status: Boolean(form.bleachedHairStatus),
-        Rebonded_Hair_Status: Boolean(form.rebondedHairStatus),
-        Hair_Texture_Status: String(form.hairTextureStatus || '').trim() || null,
-        Notes: String(form.notes || '').trim() || null,
-        Updated_By: actorUserId,
-        Updated_At: new Date().toISOString(),
-      };
-
-      const result = await supabase
-        .from(WIG_REQUIREMENTS_TABLE)
-        .update(payload)
-        .eq('Wig_Requirement_ID', targetRequirementId)
-        .select('*')
-        .single();
+      const result = await supabase.rpc('save_wig_requirements_v2', {
+        p_minimum_number_donor: toIntegerOrNull(form.minimumNumberDonor),
+        p_minimum_hair_length: toDecimalOrNull(form.minimumHairLength),
+        p_chemical_treatment_status: Boolean(form.chemicalTreatmentStatus),
+        p_colored_hair_status: Boolean(form.coloredHairStatus),
+        p_bleached_hair_status: Boolean(form.bleachedHairStatus),
+        p_rebonded_hair_status: Boolean(form.rebondedHairStatus),
+        p_hair_texture_status: String(form.hairTextureStatus || '').trim() || null,
+        p_notes: String(form.notes || '').trim() || null,
+      });
 
       if (result.error) throw result.error;
 
-      applyRowToForm(result.data);
+      const updatedRow = Array.isArray(result.data) ? result.data[0] : result.data;
+      if (!updatedRow) throw new Error('The updated Wig Requirements record was not returned.');
+      applyRowToForm(updatedRow);
       setNotice({ kind: 'success', text: 'Wig requirements updated successfully.' });
     } catch (error) {
       setNotice({ kind: 'error', text: mapSaveError(error?.message) });
@@ -487,7 +458,7 @@ export default function WigRequirementsPage({ userProfile }) {
           >
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <NumberField
-                label="Minimum Number of Donors"
+                label="Minimum Donors Required for a Program"
                 icon={Users}
                 unit="donors"
                 value={form.minimumNumberDonor}
@@ -496,7 +467,7 @@ export default function WigRequirementsPage({ userProfile }) {
                 min="0"
                 step="1"
                 placeholder="e.g., 5"
-                helper="Minimum donors required to bundle into a single wig."
+                helper="Minimum expected donors required before a hair donation program can proceed."
                 accentColor={primaryColor}
               />
               <NumberField
@@ -547,18 +518,18 @@ export default function WigRequirementsPage({ userProfile }) {
             </div>
           </SectionCard>
 
-          {/* Texture + Notes */}
+          {/* Hair Pattern + Notes */}
           <SectionCard
             icon={FileText}
-            title="Texture & Internal Notes"
-            description="Acceptable hair textures and additional guidance for screeners."
+            title="Hair Pattern & Internal Notes"
+            description="Acceptable hair patterns and additional guidance for screeners."
             accentColor={primaryColor}
           >
             <div className="space-y-4">
               <label className="flex flex-col gap-1.5">
                 <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-600">
                   <Sparkles size={11} />
-                  Hair Texture Status
+                  Hair Pattern Status
                 </span>
                 <input
                   type="text"
@@ -580,7 +551,7 @@ export default function WigRequirementsPage({ userProfile }) {
                     ))}
                   </div>
                 )}
-                <span className="text-[11px] text-slate-500">Separate textures with commas. Each entry shows as a chip.</span>
+                <span className="text-[11px] text-slate-500">Separate hair patterns with commas. Each entry shows as a chip.</span>
               </label>
 
               <label className="flex flex-col gap-1.5">

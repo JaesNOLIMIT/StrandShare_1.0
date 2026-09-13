@@ -32,6 +32,7 @@ import {
 } from '../../../lib/hairSubmissionWorkflow';
 
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
+const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
 const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
 const WIGS_TABLE = 'Wigs';
 const USER_DETAILS_TABLE = 'user_details';
@@ -96,13 +97,36 @@ function statusKey(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function workflowStatusKey(value) {
+  return statusKey(value).replace(/[^a-z0-9]/g, '');
+}
+
+function finalReviewOutcome(value) {
+  const key = workflowStatusKey(value);
+  if (key === 'approved') return 'Approved';
+  if (key === 'rejected') return 'Rejected';
+  if (key === 'rejectedcut') return 'Rejected Cut';
+  return '';
+}
+
+function effectiveSubmissionStatus(submission) {
+  return submission?._reviewOutcome || submission?.Status || '';
+}
+
 function statusBadgeStyle(value, primaryColor, tertiaryColor) {
   const key = statusKey(value);
+  const flowKey = workflowStatusKey(value);
   if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase() || key === HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase() || key.includes('approved')) {
     return { backgroundColor: withColorAlpha(tertiaryColor, 0.16), color: tertiaryColor, borderColor: withColorAlpha(tertiaryColor, 0.4) };
   }
-  if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase() || key === 'rejected' || key.includes('rejected')) {
+  if (flowKey === 'rejectedcut') {
+    return { backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' };
+  }
+  if (flowKey === 'rejected') {
     return { backgroundColor: '#fef2f2', color: '#b91c1c', borderColor: '#fecaca' };
+  }
+  if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) {
+    return { backgroundColor: '#f1f5f9', color: '#475569', borderColor: '#cbd5e1' };
   }
   if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) {
     return { backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' };
@@ -120,13 +144,16 @@ function statusBadgeStyle(value, primaryColor, tertiaryColor) {
 }
 
 function actionLabelFor(submission) {
-  const key = statusKey(submission.Status);
+  const effectiveStatus = effectiveSubmissionStatus(submission);
+  const key = statusKey(effectiveStatus);
+  const flowKey = workflowStatusKey(effectiveStatus);
+  if (flowKey === 'rejectedcut') return 'Rejected Cut';
+  if (flowKey === 'rejected') return 'Rejected';
   if (key === HAIR_SUBMISSION_STATUS.CUT.toLowerCase()) return 'Approved / Cut';
   if (key === HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase()) return 'Approved / Available';
   if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) return 'Cancelled';
-  if (key === 'rejected') return 'Rejected';
   if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) return 'Pending Quality Check';
-  return submission.Status || 'Updated';
+  return effectiveStatus || 'Updated';
 }
 
 export default function DashboardPage({ onNavigate, onInitialDataReady }) {
@@ -195,6 +222,30 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
       const bundleRows = bundlesRes.data || [];
       const wigRows = wigsRes.data || [];
 
+      const submissionIds = submissionRowsRaw
+        .map((row) => Number(row.Submission_ID || 0))
+        .filter(Boolean);
+      const latestFinalReviewBySubmission = {};
+      if (submissionIds.length) {
+        const { data: detailRows, error: detailError } = await supabase
+          .from(HAIR_SUBMISSION_DETAILS_TABLE)
+          .select('Submission_Detail_ID, Submission_ID, Status, Updated_At')
+          .in('Submission_ID', submissionIds)
+          .order('Submission_Detail_ID', { ascending: false });
+        if (detailError) throw detailError;
+
+        (detailRows || []).forEach((detail) => {
+          const submissionId = Number(detail.Submission_ID || 0);
+          const outcome = finalReviewOutcome(detail.Status);
+          if (submissionId && outcome && !latestFinalReviewBySubmission[submissionId]) {
+            latestFinalReviewBySubmission[submissionId] = {
+              outcome,
+              updatedAt: detail.Updated_At || null,
+            };
+          }
+        });
+      }
+
       const attendeeIds = Array.from(new Set(submissionRowsRaw.map((r) => Number(r.Event_Attendee_ID || 0)).filter(Boolean)));
       let attendeeToRequestId = {};
       let attendeeToWaybillCode = {};
@@ -220,11 +271,17 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
 
       const submissionRows = submissionRowsRaw.map((row) => {
         const attendeeId = Number(row.Event_Attendee_ID || 0);
+        const submissionId = Number(row.Submission_ID || 0);
         const resolvedEventRequestId = Number(attendeeToRequestId[attendeeId] || row.Event_Request_ID || 0) || null;
+        const finalReview = latestFinalReviewBySubmission[submissionId] || null;
+        const shouldUseReviewOutcome = statusKey(row.Status) === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()
+          && ['Rejected', 'Rejected Cut'].includes(finalReview?.outcome);
         return {
           ...row,
           _resolvedEventRequestId: resolvedEventRequestId,
           _resolvedWaybillCode: String(attendeeToWaybillCode[attendeeId] || '').trim() || '',
+          _reviewOutcome: shouldUseReviewOutcome ? finalReview.outcome : '',
+          _reviewUpdatedAt: shouldUseReviewOutcome ? finalReview.updatedAt : null,
         };
       });
 
@@ -288,8 +345,10 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
     const awaitingIntake = 0;
 
     submissions.forEach((row) => {
-      const key = statusKey(row.Status);
-      const updated = row.Updated_At || row.Created_At;
+      const effectiveStatus = effectiveSubmissionStatus(row);
+      const key = statusKey(effectiveStatus);
+      const flowKey = workflowStatusKey(effectiveStatus);
+      const updated = row._reviewUpdatedAt || row.Updated_At || row.Created_At;
       if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) {
         pendingQa += 1;
       }
@@ -297,7 +356,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
         approvedTotal += 1;
         if (isSameDay(updated, todayAnchor)) approvedToday += 1;
       }
-      if (key === 'rejected') {
+      if (flowKey === 'rejected' || flowKey === 'rejectedcut') {
         rejectedTotal += 1;
         if (isSameDay(updated, todayAnchor)) rejectedToday += 1;
       }
@@ -378,30 +437,35 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
 
   const recentActivity = useMemo(() => {
     const submissionEvents = submissions
-      .filter((row) => [
-        HAIR_SUBMISSION_STATUS.PENDING.toLowerCase(),
-        HAIR_SUBMISSION_STATUS.CUT.toLowerCase(),
-        HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase(),
-        'rejected',
-        HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase(),
-        HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION.toLowerCase(),
-        HAIR_SUBMISSION_STATUS.WIG_CREATED.toLowerCase(),
-      ].includes(statusKey(row.Status)))
+      .filter((row) => {
+        const key = workflowStatusKey(effectiveSubmissionStatus(row));
+        return [
+          workflowStatusKey(HAIR_SUBMISSION_STATUS.PENDING),
+          workflowStatusKey(HAIR_SUBMISSION_STATUS.CUT),
+          workflowStatusKey(HAIR_SUBMISSION_STATUS.AVAILABLE),
+          'rejected',
+          'rejectedcut',
+          workflowStatusKey(HAIR_SUBMISSION_STATUS.CANCELLED),
+          workflowStatusKey(HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION),
+          workflowStatusKey(HAIR_SUBMISSION_STATUS.WIG_CREATED),
+        ].includes(key);
+      })
       .map((row) => {
         const donor = donorsById[Number(row.User_ID || 0)];
         const resolvedEventRequestId = Number(row._resolvedEventRequestId || row.Event_Request_ID || 0);
         const drive = drivesById[resolvedEventRequestId];
+        const effectiveStatus = effectiveSubmissionStatus(row);
         return {
           id: `submission-${row.Submission_ID}`,
-          ts: new Date(row.Updated_At || row.Created_At || 0).getTime(),
+          ts: new Date(row._reviewUpdatedAt || row.Updated_At || row.Created_At || 0).getTime(),
           code: row._resolvedWaybillCode || `#${Number(row.Submission_ID || 0)}`,
           action: actionLabelFor(row),
-          status: row.Status,
+          status: effectiveStatus,
           detail: [
             donor ? buildFullName(donor.first_name, donor.middle_name, donor.last_name, donor.suffix) : `User #${row.User_ID || 0}`,
-            drive?.Event_Name || (resolvedEventRequestId ? `Event #${resolvedEventRequestId}` : ''),
+            drive?.Event_Name || (resolvedEventRequestId ? `Program #${resolvedEventRequestId}` : ''),
           ].filter(Boolean).join(' - '),
-          updated: row.Updated_At || row.Created_At,
+          updated: row._reviewUpdatedAt || row.Updated_At || row.Created_At,
         };
       });
 
@@ -445,20 +509,29 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
         anchor: d,
         approved: 0,
         rejected: 0,
+        rejectedCut: 0,
       });
     }
 
     submissions.forEach((row) => {
-      const key = statusKey(row.Status);
-      const ts = new Date(row.Updated_At || row.Created_At || 0);
+      const effectiveStatus = effectiveSubmissionStatus(row);
+      const key = statusKey(effectiveStatus);
+      const flowKey = workflowStatusKey(effectiveStatus);
+      const ts = new Date(row._reviewUpdatedAt || row.Updated_At || row.Created_At || 0);
       if (Number.isNaN(ts.getTime())) return;
       const bucket = buckets.find((b) => isSameDay(ts, b.anchor));
       if (!bucket) return;
       if ([HAIR_SUBMISSION_STATUS.CUT.toLowerCase(), HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase()].includes(key)) bucket.approved += 1;
-      if (key === 'rejected') bucket.rejected += 1;
+      if (flowKey === 'rejected') bucket.rejected += 1;
+      if (flowKey === 'rejectedcut') bucket.rejectedCut += 1;
     });
 
-    return buckets.map(({ label, approved, rejected }) => ({ label, Approved: approved, Rejected: rejected }));
+    return buckets.map(({ label, approved, rejected, rejectedCut }) => ({
+      label,
+      Approved: approved,
+      Rejected: rejected,
+      'Rejected Cut': rejectedCut,
+    }));
   }, [submissions]);
 
   const queueBreakdown = useMemo(() => {
@@ -466,12 +539,18 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
       { name: 'Pending', value: 0, color: '#b45309' },
       { name: 'Approved / Available', value: 0, color: tertiaryColor },
       { name: 'Rejected', value: 0, color: '#dc2626' },
+      { name: 'Rejected Cut', value: 0, color: '#d97706' },
+      { name: 'Cancelled', value: 0, color: '#64748b' },
     ];
     submissions.forEach((row) => {
-      const key = statusKey(row.Status);
+      const effectiveStatus = effectiveSubmissionStatus(row);
+      const key = statusKey(effectiveStatus);
+      const flowKey = workflowStatusKey(effectiveStatus);
       if (key === HAIR_SUBMISSION_STATUS.PENDING.toLowerCase()) data[0].value += 1;
       else if ([HAIR_SUBMISSION_STATUS.CUT.toLowerCase(), HAIR_SUBMISSION_STATUS.AVAILABLE.toLowerCase()].includes(key)) data[1].value += 1;
-      else if (key === 'rejected') data[2].value += 1;
+      else if (flowKey === 'rejected') data[2].value += 1;
+      else if (flowKey === 'rejectedcut') data[3].value += 1;
+      else if (key === HAIR_SUBMISSION_STATUS.CANCELLED.toLowerCase()) data[4].value += 1;
     });
     return data.filter((d) => d.value > 0);
   }, [submissions, tertiaryColor]);
@@ -534,7 +613,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <div>
               <h2 className="text-lg font-semibold" style={headingStyle}>QA Throughput (Last 7 days)</h2>
-              <p className="text-xs" style={{ color: tertiaryTextColor }}>Approved vs Rejected hair submissions per day</p>
+              <p className="text-xs" style={{ color: tertiaryTextColor }}>Final hair-review outcomes per day</p>
             </div>
             <div className="flex items-center gap-3 text-xs" style={{ color: secondaryTextColor }}>
               <span className="inline-flex items-center gap-1.5">
@@ -544,6 +623,10 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
               <span className="inline-flex items-center gap-1.5">
                 <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: '#dc2626' }} />
                 Rejected
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: '#d97706' }} />
+                Rejected Cut
               </span>
             </div>
           </div>
@@ -556,6 +639,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
                 <Tooltip cursor={{ fill: 'rgba(15,23,42,0.04)' }} />
                 <Bar dataKey="Approved" fill={tertiaryColor} radius={[4, 4, 0, 0]} />
                 <Bar dataKey="Rejected" fill="#dc2626" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="Rejected Cut" fill="#d97706" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

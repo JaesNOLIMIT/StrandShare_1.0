@@ -1,6 +1,6 @@
 <!--
   Template:  event_admin_rejected
-  Subject:   Event Request Decision - Admin Rejected
+  Subject:   Program Request Decision - Admin Rejected
   Trigger:   AFTER UPDATE on public."Event_Requests" when Status transitions
              'pendingadminapproval' -> 'rejected'.
   SQL:       076_remove_admin_fields_from_event_applications_and_use_utc8_timestamps.sql
@@ -11,11 +11,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Event Request Decision</title>
+    <title>Program Request Decision</title>
   </head>
   <body style="margin:0;padding:0;background-color:#111111;">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
-      Your event request was reviewed by admin and was not approved.
+      Your program request was reviewed by admin and was not approved.
     </div>
 
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#111111;padding:28px 12px;">
@@ -46,7 +46,7 @@
                   Request ER-{{event_request_id}}
                 </p>
                 <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.25;color:#ffffff;font-weight:800;">
-                  Your event request was not approved
+                  Your program request was not approved
                 </h1>
                 <p style="margin:0 0 16px 0;font-size:14px;line-height:1.7;color:#c9c9c9;">
                   {{message}}
@@ -69,10 +69,10 @@
                   <tr>
                     <td style="background-color:#121212;border:1px solid #2a2a2a;border-radius:12px;padding:16px;">
                       <div style="font-size:11px;line-height:1.4;color:#9ca3af;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">
-                        Event Snapshot
+                        Program Snapshot
                       </div>
                       <div style="font-size:14px;line-height:1.8;color:#ffffff;font-family:Segoe UI,Arial,Helvetica,sans-serif;">
-                        <div><strong>Event:</strong> {{event_name}}</div>
+                        <div><strong>Program:</strong> {{event_name}}</div>
                       </div>
                     </td>
                   </tr>

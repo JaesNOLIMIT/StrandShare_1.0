@@ -2021,7 +2021,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                       <p><span className="font-semibold text-slate-900">Color:</span> {selectedRow.specColor}</p>
                       <p><span className="font-semibold text-slate-900">Length:</span> {selectedRow.specLength}</p>
                       <p><span className="font-semibold text-slate-900">Density:</span> {selectedRow.specDensity}</p>
-                      <p><span className="font-semibold text-slate-900">Texture:</span> {selectedRow.specTexture}</p>
+                      <p><span className="font-semibold text-slate-900">Hair Pattern:</span> {selectedRow.specTexture}</p>
                       <p><span className="font-semibold text-slate-900">Cap Size:</span> {selectedRow.specCapSize}</p>
                     </div>
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
@@ -2075,7 +2075,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                       Status: {selectedRow.allocatedWigStatus || 'N/A'} | Stock: {selectedRow.allocatedWigStockCount ?? 'N/A'}
                     </p>
                     <p className="mt-1">
-                      Style: {selectedRow.allocatedWigStyle || 'N/A'} | Color: {selectedRow.allocatedWigColor || 'N/A'} | Texture: {selectedRow.allocatedWigTexture || 'N/A'} | Cap: {selectedRow.allocatedWigCapSize || 'N/A'}
+                      Style: {selectedRow.allocatedWigStyle || 'N/A'} | Color: {selectedRow.allocatedWigColor || 'N/A'} | Hair Pattern: {selectedRow.allocatedWigTexture || 'N/A'} | Cap: {selectedRow.allocatedWigCapSize || 'N/A'}
                     </p>
                     {selectedRow.allocatedWigFrontImageUrl || selectedRow.allocatedWigSideImageUrl || selectedRow.allocatedWigTopImageUrl || selectedRow.allocatedWigBackImageUrl ? (
                       <img
@@ -2267,7 +2267,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                               Selected: {(selectedAllocationChoice.wigCode || `Wig #${selectedAllocationChoice.wigId}`)} | {selectedAllocationChoice.wigName || 'Unnamed Wig'}
                             </p>
                             <p className="mt-1 text-xs text-slate-700">
-                              Style: {selectedAllocationChoice.style || 'N/A'} | Color: {selectedAllocationChoice.color || 'N/A'} | Texture: {selectedAllocationChoice.texture || 'N/A'} | Cap: {selectedAllocationChoice.capSize || 'N/A'} | Stock: {selectedAllocationChoice.stockCount}
+                              Style: {selectedAllocationChoice.style || 'N/A'} | Color: {selectedAllocationChoice.color || 'N/A'} | Hair Pattern: {selectedAllocationChoice.texture || 'N/A'} | Cap: {selectedAllocationChoice.capSize || 'N/A'} | Stock: {selectedAllocationChoice.stockCount}
                             </p>
                             {selectedAllocationChoice.frontImageUrl || selectedAllocationChoice.sideImageUrl || selectedAllocationChoice.topImageUrl || selectedAllocationChoice.backImageUrl ? (
                               <img src={selectedAllocationChoice.frontImageUrl || selectedAllocationChoice.sideImageUrl || selectedAllocationChoice.topImageUrl || selectedAllocationChoice.backImageUrl} alt="Selected wig" className="mt-2 h-52 w-full rounded-lg bg-white object-contain" />

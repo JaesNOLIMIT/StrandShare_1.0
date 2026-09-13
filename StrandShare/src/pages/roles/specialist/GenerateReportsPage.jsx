@@ -100,12 +100,12 @@ const REPORT_TEMPLATES = [
   {
     id: 'cut_hair_inventory',
     name: 'Cut Hair Inventory Report',
-    description: 'Approved cut hair by event and production lifecycle status.',
+    description: 'Approved cut hair by program and production lifecycle status.',
     icon: Boxes,
     columns: [
       { key: 'code', label: 'Inventory Code' },
       { key: 'submission', label: 'Submission' },
-      { key: 'drive', label: 'Event / Source' },
+      { key: 'drive', label: 'Program / Source' },
       { key: 'status', label: 'Status' },
       { key: 'bundle', label: 'Bundle' },
       { key: 'wig', label: 'Wig' },
@@ -121,7 +121,7 @@ const REPORT_TEMPLATES = [
       { key: 'code', label: 'Comparison' },
       { key: 'submission', label: 'Submission' },
       { key: 'source', label: 'Source Type' },
-      { key: 'drive', label: 'Event / Source' },
+      { key: 'drive', label: 'Program / Source' },
       { key: 'status', label: 'Final Decision' },
       { key: 'accuracy', label: 'AI Correct' },
       { key: 'humanChange', label: 'Human Changes' },
@@ -438,9 +438,9 @@ export default function GenerateReportsPage({ userProfile }) {
 
   const driveOptions = useMemo(() => {
     const options = Object.values(drivesById)
-      .map((row) => ({ id: Number(row.Event_Request_ID), title: row.Event_Name || `Event #${row.Event_Request_ID}` }))
+      .map((row) => ({ id: Number(row.Event_Request_ID), title: row.Event_Name || `Program #${row.Event_Request_ID}` }))
       .sort((a, b) => a.title.localeCompare(b.title));
-    return [{ id: 'all', title: 'Events and non-events' }, { id: 'non-event', title: 'Non-events only' }, ...options];
+    return [{ id: 'all', title: 'Programs and independent donations' }, { id: 'non-event', title: 'Independent donations only' }, ...options];
   }, [drivesById]);
 
   const filteredRows = useMemo(() => {
@@ -459,7 +459,7 @@ export default function GenerateReportsPage({ userProfile }) {
           return {
             code: row._resolvedWaybillCode || `#${Number(row.Submission_ID || 0)}`,
             donor: donor ? buildFullName(donor.first_name, donor.middle_name, donor.last_name, donor.suffix) : `User #${row.User_ID || 0}`,
-            drive: drive?.Event_Name || (resolvedEventRequestId ? `Event #${resolvedEventRequestId}` : '-'),
+            drive: drive?.Event_Name || (resolvedEventRequestId ? `Program #${resolvedEventRequestId}` : '-'),
             status: row._qualityStatus || row.Status || '-',
             created: formatDateTime(row.Created_At),
             updated: formatDateTime(row.Updated_At),
@@ -520,7 +520,7 @@ export default function GenerateReportsPage({ userProfile }) {
           code: `CHI-${String(row.Inventory_ID).padStart(6, '0')}`,
           submission: `#${row.Submission_ID}`,
           drive: drivesById[Number(row.Event_Request_ID)]?.Event_Name
-            || (row.Source_Type === 'Non-Event' ? 'Non-event donation' : `Event #${row.Event_Request_ID || 'N/A'}`),
+            || (row.Source_Type === 'Non-Event' ? 'Independent donation' : `Program #${row.Event_Request_ID || 'N/A'}`),
           status: row.Status || 'Cut',
           bundleId: Number(row.Bundle_ID || 0) || null,
           wigId: Number(row.Wig_ID || 0) || null,
@@ -557,8 +557,8 @@ export default function GenerateReportsPage({ userProfile }) {
           return {
             code: `AI-${String(row.Comparison_ID).padStart(6, '0')}`,
             submission: `#${row.Submission_ID}`,
-            source: isNonEvent ? 'Non-event' : 'Event',
-            drive: isNonEvent ? 'Non-event donation' : (drivesById[Number(row.Event_Request_ID)]?.Event_Name || `Event #${row.Event_Request_ID || 'N/A'}`),
+            source: isNonEvent ? 'Independent' : 'Program',
+            drive: isNonEvent ? 'Independent donation' : (drivesById[Number(row.Event_Request_ID)]?.Event_Name || `Program #${row.Event_Request_ID || 'N/A'}`),
             status: row.Final_Decision || 'Pending',
             accuracy: `${Number(aiPercent.toFixed(2))}%`,
             humanChange: `${Number(humanPercent.toFixed(2))}%`,
@@ -581,7 +581,7 @@ export default function GenerateReportsPage({ userProfile }) {
         if (!grouped.has(driveId)) {
           grouped.set(driveId, {
             driveId,
-            title: drivesById[driveId]?.Event_Name || (driveId ? `Event #${driveId}` : 'Unassigned'),
+            title: drivesById[driveId]?.Event_Name || (driveId ? `Program #${driveId}` : 'Unassigned'),
             donors: new Set(),
             submitted: 0,
             approved: 0,
@@ -1132,7 +1132,7 @@ export default function GenerateReportsPage({ userProfile }) {
           </div>
           {(selectedTemplateId === 'qa_decisions' || selectedTemplateId === 'donor_throughput' || selectedTemplateId === 'ai_hair_accuracy') ? (
             <div>
-              <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>{selectedTemplateId === 'ai_hair_accuracy' ? 'Donation source' : 'Event'}</label>
+              <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>{selectedTemplateId === 'ai_hair_accuracy' ? 'Donation source' : 'Program'}</label>
               <select
                 value={driveFilter}
                 onChange={(event) => setDriveFilter(event.target.value)}

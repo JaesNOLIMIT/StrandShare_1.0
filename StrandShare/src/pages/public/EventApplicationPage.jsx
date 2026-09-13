@@ -1,22 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, CalendarDays, Camera, CheckCircle2, ChevronLeft, ChevronRight, Loader2, MailCheck, Ruler, Search, ShieldCheck, Upload, Users, X } from 'lucide-react';
+import { ArrowLeft, CalendarDays, Camera, CheckCircle2, ChevronLeft, ChevronRight, FileText, Loader2, MailCheck, Ruler, Search, ShieldCheck, Upload, Users, X } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import maplibregl from 'maplibre-gl';
 import { isSupabaseConfigured, supabase } from '../../lib/supabaseClient';
 import { useTheme } from '../../context/ThemeContext';
-import { TransitionFlipEntrance } from '../../components/transitions/TransitionFlip';
 import { triggerSmtpNow } from '../../lib/smtpTriggerClient';
 import LegalTermsGate from '../../components/LegalTermsGate';
 import useActiveLegalDocument from '../../hooks/useActiveLegalDocument';
 import philippineAddressOptions from '../../data/philippineAddressOptions.json';
 import { getAdultBirthdateMax, isAtLeastAge } from '../../lib/personIdentity';
+import { normalizeDiditBirthdate, normalizeDiditDocument } from '../../lib/diditIdentity';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
 const WIG_REQUIREMENTS_TABLE = 'wig_requirements';
 const EVENT_APPLICATION_ASSETS_BUCKET = 'event_application_assets';
 const MAX_UPLOAD_FILE_SIZE_BYTES = 8 * 1024 * 1024;
+const MAX_EXPECTED_ATTENDEES = 500;
 const PROGRAM_DATE_AVAILABILITY_CHANNEL = 'program-date-availability';
 // Realtime broadcasts and the final submit-time availability check provide the
 // fast path. Keep a low-frequency polling fallback for missed broadcasts.
@@ -96,6 +97,11 @@ const FORM_STEPS = [
   { id: 2, title: 'Program', description: 'Schedule & venue' },
   { id: 3, title: 'Review', description: 'Confirm & submit' },
 ];
+const APPLICATION_STEPS = [
+  { id: 1, title: 'About', description: 'What you are applying for' },
+  { id: 2, title: 'Terms', description: 'Read & agree' },
+  ...FORM_STEPS.map((step) => ({ ...step, id: step.id + 2 })),
+];
 const HAIR_TREATMENT_REQUIREMENTS = [
   { key: 'Chemical_Treatment_Status', label: 'Chemically treated hair' },
   { key: 'Colored_Hair_Status', label: 'Colored hair' },
@@ -116,7 +122,7 @@ const INITIAL_FORM = {
   applicantGender: '',
   applicantContactNumber: '',
   preferredContactMethod: 'email',
-  eventVisibility: 'Public',
+  eventVisibility: '',
   eventName: '',
   venueName: '',
   expectedAttendees: '',
@@ -401,16 +407,25 @@ function sanitizeFileName(fileName = 'upload.bin') {
     .slice(-120);
 }
 
+function getAttendeeListFileKind(file) {
+  if (!file) return '';
+  const mimeType = String(file.type || '').trim().toLowerCase();
+  const fileName = String(file.name || '').trim().toLowerCase();
+  if (mimeType === 'application/pdf' || fileName.endsWith('.pdf')) return 'pdf';
+  if (mimeType.startsWith('image/') || /\.(?:jpe?g|png|webp|heic|heif)$/i.test(fileName)) return 'image';
+  return '';
+}
+
 function mapStorageUploadError(rawMessage) {
   const message = String(rawMessage || '').trim();
   const lower = message.toLowerCase();
 
   if (lower.includes('bucket') && lower.includes('not found')) {
-    return 'Program application upload bucket is missing. Run migration 068_refactor_event_application_form_schema.sql.';
+    return 'Program application uploads are temporarily unavailable. Please contact an administrator.';
   }
 
   if (lower.includes('row-level security')) {
-    return 'Upload blocked by storage policy. Re-run migration 068_refactor_event_application_form_schema.sql to apply open upload policies.';
+    return 'The file could not be uploaded because program upload access is unavailable. Please contact an administrator.';
   }
 
   return message || 'Unable to upload file.';
@@ -421,11 +436,11 @@ function mapEventApplicationSubmitError(rawMessage) {
   const lower = message.toLowerCase();
 
   if (lower.includes('row-level security') && lower.includes('event_applications')) {
-    return 'Submit blocked by Event_Applications policy. Ask admin to re-apply the latest Event_Applications RLS SQL migrations, then retry.';
+    return 'Your program application could not be submitted because access is unavailable. Please contact an administrator.';
   }
 
   if (lower.includes('row-level security')) {
-    return 'Submit blocked by database policy. Please retry, or ask admin to re-apply the Event_Applications RLS policies.';
+    return 'Your program application could not be submitted. Please retry or contact an administrator.';
   }
 
   if (
@@ -543,11 +558,6 @@ function mapDiditGender(value) {
   if (key === 'm' || key === 'male') return 'Male';
   if (key === 'f' || key === 'female') return 'Female';
   return '';
-}
-
-function mapDiditBirthdate(value) {
-  const match = String(value || '').trim().match(/^(\d{4}-\d{2}-\d{2})/);
-  return match ? match[1] : '';
 }
 
 function toProgramDateKey(value) {
@@ -893,8 +903,10 @@ export default function EventApplicationPage() {
   const [form, setForm] = useState(INITIAL_FORM);
   const [eventPlacePhotoFile, setEventPlacePhotoFile] = useState(null);
   const [eventPosterPhotoFile, setEventPosterPhotoFile] = useState(null);
+  const [attendeeListPdfFile, setAttendeeListPdfFile] = useState(null);
   const [eventPlacePhotoPreviewUrl, setEventPlacePhotoPreviewUrl] = useState('');
   const [eventPosterPhotoPreviewUrl, setEventPosterPhotoPreviewUrl] = useState('');
+  const [attendeeListPreviewUrl, setAttendeeListPreviewUrl] = useState('');
   const [diditSession, setDiditSession] = useState(null);
   const [diditStatus, setDiditStatus] = useState('Not Started');
   const [verifiedIdPreviewUrl, setVerifiedIdPreviewUrl] = useState('');
@@ -906,6 +918,7 @@ export default function EventApplicationPage() {
   const [unavailableProgramDates, setUnavailableProgramDates] = useState([]);
   const [isLoadingProgramDates, setIsLoadingProgramDates] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
+  const [applicationStage, setApplicationStage] = useState('about');
   const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
   const [hasConfirmedTerms, setHasConfirmedTerms] = useState(false);
   const [isSubmitConfirmationOpen, setIsSubmitConfirmationOpen] = useState(false);
@@ -926,23 +939,10 @@ export default function EventApplicationPage() {
   const [isLoadingWigRequirements, setIsLoadingWigRequirements] = useState(true);
   const [wigRequirementsError, setWigRequirementsError] = useState('');
   const fieldRefs = useRef({});
+  const diditStatusCheckInFlightRef = useRef(false);
   const programDateAvailabilityChannelRef = useRef(null);
   const idPreviewRefreshSessionRef = useRef('');
   const submitConfirmationScrollRef = useRef(null);
-
-  const incomingTransition = (() => {
-    try {
-      return typeof window !== 'undefined' ? sessionStorage.getItem('Donivra:incoming-transition') : '';
-    } catch {
-      return '';
-    }
-  })();
-
-  useEffect(() => {
-    if (incomingTransition === 'apply') {
-      try { sessionStorage.removeItem('Donivra:incoming-transition'); } catch { /* ignore */ }
-    }
-  }, [incomingTransition]);
 
   useEffect(() => {
     if (!isSubmitConfirmationOpen) return undefined;
@@ -993,8 +993,6 @@ export default function EventApplicationPage() {
       isCurrent = false;
     };
   }, []);
-
-  const Wrapper = incomingTransition === 'apply' ? TransitionFlipEntrance : React.Fragment;
 
   const setFieldRef = useCallback((fieldKey) => (node) => {
     if (!fieldKey) return;
@@ -1101,6 +1099,17 @@ export default function EventApplicationPage() {
   }, [eventPosterPhotoFile]);
 
   useEffect(() => {
+    if (!attendeeListPdfFile || !getAttendeeListFileKind(attendeeListPdfFile)) {
+      setAttendeeListPreviewUrl('');
+      return undefined;
+    }
+
+    const objectUrl = URL.createObjectURL(attendeeListPdfFile);
+    setAttendeeListPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [attendeeListPdfFile]);
+
+  useEffect(() => {
     if (otpCooldownSeconds <= 0) return undefined;
     const timeout = window.setTimeout(() => {
       setOtpCooldownSeconds((previous) => Math.max(0, previous - 1));
@@ -1147,12 +1156,12 @@ export default function EventApplicationPage() {
     [unavailableProgramDates],
   );
 
-  const minimumDonorsPerWig = useMemo(() => {
+  const minimumRequiredDonors = useMemo(() => {
     const parsedMinimum = Number(wigRequirements?.Minimum_Number_Donor);
     return Number.isInteger(parsedMinimum) && parsedMinimum > 0 ? parsedMinimum : null;
   }, [wigRequirements]);
 
-  const minimumExpectedAttendees = minimumDonorsPerWig || 1;
+  const minimumExpectedAttendees = minimumRequiredDonors || 1;
   const expectedAttendeeCount = Number(form.expectedAttendees);
   const isExpectedAttendeesBelowMinimum = Boolean(form.expectedAttendees)
     && Number.isFinite(expectedAttendeeCount)
@@ -1222,6 +1231,8 @@ export default function EventApplicationPage() {
       && form.expectedAttendees
       && Number.isInteger(Number(form.expectedAttendees))
       && Number(form.expectedAttendees) >= minimumExpectedAttendees
+      && Number(form.expectedAttendees) <= MAX_EXPECTED_ATTENDEES
+      && attendeeListPdfFile
       && form.proposedStartAt.trim()
       && form.proposedEndAt.trim()
       && eventPlacePhotoFile
@@ -1246,6 +1257,7 @@ export default function EventApplicationPage() {
     normalizedEmail,
     verifiedEmail,
     minimumExpectedAttendees,
+    attendeeListPdfFile,
   ]);
 
   useEffect(() => {
@@ -1337,12 +1349,16 @@ export default function EventApplicationPage() {
       if (!Number.isInteger(Number(form.expectedAttendees)) || Number(form.expectedAttendees) <= 0) {
         return issue('expectedAttendees', 'Expected attendees must be a whole number greater than zero.');
       }
+      if (Number(form.expectedAttendees) > MAX_EXPECTED_ATTENDEES) {
+        return issue('expectedAttendees', `Expected attendees cannot exceed ${MAX_EXPECTED_ATTENDEES}.`);
+      }
       if (Number(form.expectedAttendees) < minimumExpectedAttendees) {
         return issue(
           'expectedAttendees',
-          `Expected attendees cannot be below the current minimum of ${minimumExpectedAttendees} donors per wig.`,
+          `Expected attendees cannot be below the required ${minimumExpectedAttendees} donors for a program.`,
         );
       }
+      if (!attendeeListPdfFile) return issue('attendeeListPdf', 'Upload the attendee list as a PDF or clear photo.');
       if (!form.proposedDate.trim()) return issue('proposedDate', 'Choose an available program date.');
       if (!form.proposedStartTime.trim()) return issue('proposedStartTime', 'Start time is required.');
       if (!form.proposedEndTime.trim()) return issue('proposedEndTime', 'End time is required.');
@@ -1389,6 +1405,7 @@ export default function EventApplicationPage() {
     normalizedEmail,
     verifiedEmail,
     minimumExpectedAttendees,
+    attendeeListPdfFile,
   ]);
 
   const getStepValidationErrors = useCallback((stepNumber) => {
@@ -1421,7 +1438,10 @@ export default function EventApplicationPage() {
       if (!form.eventOverview.trim()) add('eventOverview', 'Program overview is required.');
       if (!Number.isInteger(Number(form.expectedAttendees)) || Number(form.expectedAttendees) < minimumExpectedAttendees) {
         add('expectedAttendees', `Enter at least ${minimumExpectedAttendees} expected attendees.`);
+      } else if (Number(form.expectedAttendees) > MAX_EXPECTED_ATTENDEES) {
+        add('expectedAttendees', `Expected attendees cannot exceed ${MAX_EXPECTED_ATTENDEES}.`);
       }
+      if (!attendeeListPdfFile) add('attendeeListPdf', 'Upload a PDF or clear photo containing each attendee’s full name and age.');
       if (!form.proposedDate.trim()) add('proposedDate', 'Choose an available program date.');
       if (!form.proposedStartTime.trim()) add('proposedStartTime', 'Start time is required.');
       if (!form.proposedEndTime.trim()) add('proposedEndTime', 'End time is required.');
@@ -1446,6 +1466,7 @@ export default function EventApplicationPage() {
     isDiditVerified,
     isEmailOtpVerified,
     minimumExpectedAttendees,
+    attendeeListPdfFile,
     normalizedEmail,
     verifiedEmail,
   ]);
@@ -1471,13 +1492,19 @@ export default function EventApplicationPage() {
   }, []);
 
   const handleDeclineTerms = useCallback(() => {
-    if (typeof window === 'undefined') return;
+    setErrorMessage('');
+    setApplicationStage('about');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  const returnToHome = useCallback(() => {
+    try { sessionStorage.setItem('Donivra:skip-landing-intro', 'true'); } catch { /* ignore */ }
     window.location.assign('/');
   }, []);
 
   const handleAcceptTerms = useCallback(() => {
     if (!eventTerms.document?.legal_document_id || !eventTerms.previewUrl) {
-      setErrorMessage('The Event Application Terms PDF is unavailable. Please try again after an administrator publishes it.');
+      setErrorMessage('The Program Application Terms PDF is unavailable. Please try again after an administrator publishes it.');
       return;
     }
     if (!hasConfirmedTerms) {
@@ -1488,6 +1515,7 @@ export default function EventApplicationPage() {
     setErrorMessage('');
     setFieldErrors({});
     setHasAcceptedTerms(true);
+    setApplicationStage('form');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [eventTerms.document?.legal_document_id, eventTerms.previewUrl, hasConfirmedTerms]);
 
@@ -1587,19 +1615,20 @@ export default function EventApplicationPage() {
   }, [form.proposedDate, minimumProgramDateKey, minimumProgramDateLabel]);
 
   const applyDiditDocument = useCallback((document) => {
-    if (!document || typeof document !== 'object') return;
-    const middleName = String(document.middle_name || '').trim();
+    const normalizedDocument = normalizeDiditDocument(document);
+    if (!normalizedDocument) return;
+    const middleName = String(normalizedDocument.middle_name || '').trim();
 
     setForm((previous) => ({
       ...previous,
-      applicantValidIdType: mapDiditDocumentType(document),
-      applicantFirstName: String(document.first_name || previous.applicantFirstName || '').trim(),
+      applicantValidIdType: mapDiditDocumentType(normalizedDocument),
+      applicantFirstName: String(normalizedDocument.first_name || previous.applicantFirstName || '').trim(),
       applicantMiddleName: middleName || previous.applicantMiddleName,
-      applicantLastName: String(document.last_name || previous.applicantLastName || '').trim(),
-      applicantBirthdate: mapDiditBirthdate(document.date_of_birth || document.birth_date) || previous.applicantBirthdate,
-      applicantGender: mapDiditGender(document.gender) || previous.applicantGender,
-      applicantIdDocumentNumber: String(document.document_number || previous.applicantIdDocumentNumber || '').trim(),
-      applicantIdAddress: String(document.formatted_address || document.address || previous.applicantIdAddress || '').trim(),
+      applicantLastName: String(normalizedDocument.last_name || previous.applicantLastName || '').trim(),
+      applicantBirthdate: normalizeDiditBirthdate(normalizedDocument.date_of_birth) || previous.applicantBirthdate,
+      applicantGender: mapDiditGender(normalizedDocument.gender) || previous.applicantGender,
+      applicantIdDocumentNumber: String(normalizedDocument.document_number || previous.applicantIdDocumentNumber || '').trim(),
+      applicantIdAddress: String(normalizedDocument.formatted_address || previous.applicantIdAddress || '').trim(),
     }));
     setFieldErrors((previous) => {
       const next = { ...previous };
@@ -1622,7 +1651,9 @@ export default function EventApplicationPage() {
       setDiditNotice('Start an ID verification first.');
       return;
     }
+    if (diditStatusCheckInFlightRef.current) return;
 
+    diditStatusCheckInFlightRef.current = true;
     setIsCheckingDiditStatus(true);
     setDiditNotice('Checking the identity verification result...');
     try {
@@ -1640,8 +1671,11 @@ export default function EventApplicationPage() {
       setDiditWarnings(Array.isArray(data?.warnings) ? data.warnings : []);
       const nextIdPreviewUrl = data?.verified ? String(data?.idFrontImageUrl || '') : '';
       setVerifiedIdPreviewUrl(nextIdPreviewUrl);
-      if (data?.verified && data?.document) {
-        applyDiditDocument(data.document);
+      if (data?.verified && (data?.document || data?.birthdate)) {
+        applyDiditDocument({
+          ...(data?.document || {}),
+          date_of_birth: data?.document?.date_of_birth || data?.birthdate || '',
+        });
         setDiditNotice(
           nextIdPreviewUrl
             ? 'ID verified. Name, birthdate, ID number, gender, and address were filled when detected. You may correct any scan error.'
@@ -1660,6 +1694,7 @@ export default function EventApplicationPage() {
     } catch (verificationError) {
       setDiditNotice(String(verificationError?.message || 'Unable to check ID verification.'));
     } finally {
+      diditStatusCheckInFlightRef.current = false;
       setIsCheckingDiditStatus(false);
     }
   }, [applyDiditDocument, diditSession]);
@@ -1712,12 +1747,28 @@ export default function EventApplicationPage() {
   useEffect(() => {
     const handleDiditMessage = (event) => {
       if (event.origin !== 'https://verify.didit.me') return;
-      if (event.data?.type !== 'didit:completed') return;
-      checkDiditStatus();
+      const eventType = String(event.data?.type || event.data?.event || '').toLowerCase();
+      const completionEvents = new Set(['didit:completed', 'verification_complete', 'verification_completed']);
+      const terminalStatusEvent = eventType === 'didit:status_updated'
+        && ['approved', 'declined', 'in review', 'in_review'].includes(String(event.data?.status || event.data?.data?.status || '').toLowerCase());
+      if (!completionEvents.has(eventType) && !terminalStatusEvent) return;
+
+      const messageSessionId = String(event.data?.sessionId || event.data?.session_id || event.data?.data?.sessionId || '').trim();
+      if (messageSessionId && messageSessionId !== String(diditSession?.sessionId || '')) return;
+      void checkDiditStatus();
     };
     window.addEventListener('message', handleDiditMessage);
     return () => window.removeEventListener('message', handleDiditMessage);
-  }, [checkDiditStatus]);
+  }, [checkDiditStatus, diditSession?.sessionId]);
+
+  useEffect(() => {
+    if (!isDiditModalOpen || !diditSession?.sessionId || isDiditVerified) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      void checkDiditStatus();
+    }, 5000);
+    return () => window.clearInterval(intervalId);
+  }, [checkDiditStatus, diditSession?.sessionId, isDiditModalOpen, isDiditVerified]);
 
   const handleEventPlacePhotoFileChange = (event) => {
     const file = event.target.files?.[0] || null;
@@ -1744,6 +1795,34 @@ export default function EventApplicationPage() {
     const file = event.target.files?.[0] || null;
     setErrorMessage('');
     setEventPosterPhotoFile(file);
+  };
+
+  const handleAttendeeListPdfFileChange = (event) => {
+    const file = event.target.files?.[0] || null;
+    setErrorMessage('');
+
+    if (file) {
+      if (!getAttendeeListFileKind(file)) {
+        setAttendeeListPdfFile(null);
+        markFieldError('attendeeListPdf', 'The attendee list must be a PDF or image file.');
+        event.target.value = '';
+        return;
+      }
+      if (file.size > MAX_UPLOAD_FILE_SIZE_BYTES) {
+        setAttendeeListPdfFile(null);
+        markFieldError('attendeeListPdf', 'The attendee list file must be 8 MB or smaller.');
+        event.target.value = '';
+        return;
+      }
+    }
+
+    setAttendeeListPdfFile(file);
+    setFieldErrors((previous) => {
+      if (!previous.attendeeListPdf) return previous;
+      const next = { ...previous };
+      delete next.attendeeListPdf;
+      return next;
+    });
   };
 
   const autoPinFromAddressSnapshot = useCallback(async (formSnapshot) => {
@@ -1955,6 +2034,19 @@ export default function EventApplicationPage() {
         setVerifiedEmail('');
         setOtpCode('');
       }
+    }
+
+    if (key === 'expectedAttendees') {
+      setFieldErrors((previous) => {
+        const next = { ...previous };
+        delete next.expectedAttendees;
+        return next;
+      });
+      setForm((previous) => ({
+        ...previous,
+        expectedAttendees: nextValue,
+      }));
+      return;
     }
 
     setFieldErrors((previous) => {
@@ -2247,6 +2339,9 @@ export default function EventApplicationPage() {
       const posterPhotoUpload = eventPosterPhotoFile
         ? await uploadEventAsset(eventPosterPhotoFile, 'event-poster-photos')
         : { path: null, url: null };
+      const attendeeListUpload = attendeeListPdfFile
+        ? await uploadEventAsset(attendeeListPdfFile, 'attendee-lists')
+        : { path: null, url: null };
 
       const venueAddress = [form.venueName, form.street, form.barangay, form.city, form.province, form.region, form.country]
         .map((part) => String(part || '').trim())
@@ -2284,6 +2379,9 @@ export default function EventApplicationPage() {
         Region: form.region.trim() || null,
         Country: form.country.trim() || DEFAULT_COUNTRY,
         Expected_Attendees: form.expectedAttendees ? Number(form.expectedAttendees) : null,
+        Expected_Attendee_Details: [],
+        Expected_Attendee_List_Path: attendeeListUpload.path,
+        Expected_Attendee_List_URL: attendeeListUpload.url,
         Latitude: form.latitude ? Number(form.latitude) : null,
         Longitude: form.longitude ? Number(form.longitude) : null,
         Applicant_Valid_ID_Path: null,
@@ -2345,9 +2443,160 @@ export default function EventApplicationPage() {
     }
   };
 
-  if (!hasAcceptedTerms) {
+  if (applicationStage === 'about') {
     return (
-      <Wrapper>
+      <React.Fragment>
+        <div className="flex min-h-screen justify-center bg-slate-50 px-4 py-6 md:px-8">
+          <main className="my-auto w-full max-w-5xl overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-xl shadow-slate-900/10">
+            <div className="grid lg:grid-cols-[1.08fr_0.92fr]">
+              <section className="p-7 sm:p-10 lg:p-14">
+                <button
+                  type="button"
+                  onClick={returnToHome}
+                  className="mb-10 inline-flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
+                >
+                  <ArrowLeft size={16} />
+                  Back to Home
+                </button>
+
+                <p className="text-xs font-bold uppercase tracking-[0.18em]" style={{ color: primaryColor }}>Program Application</p>
+                <h1 className="mt-4 max-w-xl text-4xl font-bold leading-[1.08] text-slate-900 sm:text-5xl">
+                  Apply to host a hair<br className="hidden sm:block" /> donation program
+                </h1>
+                <p className="mt-6 max-w-lg text-base leading-7 text-slate-600">
+                  Organize a verified hair donation program with Donivra in your community.
+                </p>
+
+                <div className="mt-14 grid max-w-lg gap-x-10 gap-y-9 sm:grid-cols-2">
+                  <section>
+                    <h2 className="text-sm font-bold text-slate-900">Who can apply</h2>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      Individuals, schools, companies, community groups, and organizations.
+                    </p>
+                  </section>
+                  <section>
+                    <h2 className="text-sm font-bold text-slate-900">What you need</h2>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      Contact details, schedule, venue, attendee list, photos, and location.
+                    </p>
+                  </section>
+                  <section>
+                    <h2 className="text-sm font-bold text-slate-900">Your responsibility</h2>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      Provide accurate information, prepare a safe venue, and coordinate with Donivra during the review.
+                    </p>
+                  </section>
+                  <section>
+                    <h2 className="text-sm font-bold text-slate-900">What happens next</h2>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">
+                      Staff reviews your application, an admin decides, and an assigned staff member coordinates approved programs.
+                    </p>
+                  </section>
+                </div>
+              </section>
+
+              <aside className="flex flex-col border-t border-slate-200 bg-[#fbf7f5] p-7 text-slate-900 sm:p-10 lg:border-l lg:border-t-0 lg:p-12">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em]" style={{ color: primaryColor }}>Before you begin</p>
+                  <h2 className="mt-3 text-2xl font-bold text-slate-900">Prepare these details</h2>
+                  <ul className="mt-6 space-y-3.5 text-sm leading-5 text-slate-700">
+                    {[
+                      'Valid government ID',
+                      'Verified email address',
+                      'Program date, time, and venue',
+                      'Clear venue photo',
+                      'Attendee list with names and ages (PDF or photo)',
+                    ].map((text) => (
+                      <li key={text} className="flex items-start gap-3">
+                        <CheckCircle2 size={16} className="mt-0.5 flex-none" style={{ color: primaryColor }} />
+                        <span>{text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <section className="mt-9 border-t border-slate-200 pt-8">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.16em]" style={{ color: primaryColor }}>Donation requirements</p>
+
+                  {isLoadingWigRequirements ? (
+                    <p className="mt-4 flex items-center gap-2 text-xs text-slate-500">
+                      <Loader2 size={14} className="animate-spin" /> Loading current requirements...
+                    </p>
+                  ) : wigRequirementsError || !wigRequirements ? (
+                    <p className="mt-4 text-xs leading-5 text-rose-700">{wigRequirementsError || 'Current hair requirements are unavailable.'}</p>
+                  ) : (
+                    <div className="mt-5 space-y-6">
+                      <dl className="grid grid-cols-2 gap-8">
+                        <div>
+                          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Minimum hair length</dt>
+                          <dd className="mt-1 text-lg font-bold text-slate-900">
+                            {wigRequirements.Minimum_Hair_Length == null
+                              ? 'Not specified'
+                              : `${Number(wigRequirements.Minimum_Hair_Length).toLocaleString()} ${Number(wigRequirements.Minimum_Hair_Length) === 1 ? 'inch' : 'inches'}`}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Required donors</dt>
+                          <dd className="mt-1 text-lg font-bold text-slate-900">{minimumRequiredDonors || 'Not specified'}</dd>
+                          <p className="mt-1 text-[10px] text-slate-500">Minimum needed for a program</p>
+                        </div>
+                      </dl>
+
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Not accepted</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {HAIR_TREATMENT_REQUIREMENTS.filter((requirement) => !wigRequirements[requirement.key]).map((requirement) => (
+                            <span key={requirement.key} className="inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-700">
+                              <X size={11} /> {requirement.label}
+                            </span>
+                          ))}
+                          {HAIR_TREATMENT_REQUIREMENTS.every((requirement) => wigRequirements[requirement.key]) && (
+                            <span className="text-xs text-slate-600">No listed treatments are rejected.</span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Accepted hair patterns</p>
+                        <p className="mt-1.5 text-sm leading-5 text-slate-700">{wigRequirements.Hair_Texture_Status || 'No restriction'}</p>
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                <div className="mt-10 border-t border-slate-200 pt-7 lg:mt-auto">
+                  <div className="mb-4 flex items-center justify-between gap-3 text-xs text-slate-500">
+                    <span>Step 1 of {APPLICATION_STEPS.length}</span>
+                    <span>About the application</span>
+                  </div>
+                  <div className="mb-5 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                    <div className="h-full rounded-full" style={{ width: `${100 / APPLICATION_STEPS.length}%`, backgroundColor: primaryColor }} />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorMessage('');
+                      setApplicationStage('terms');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-bold text-white shadow-sm hover:brightness-95"
+                    style={{ backgroundColor: primaryColor }}
+                  >
+                    Review Terms & Conditions
+                    <ChevronRight size={17} />
+                  </button>
+                </div>
+              </aside>
+            </div>
+          </main>
+        </div>
+      </React.Fragment>
+    );
+  }
+
+  if (applicationStage === 'terms') {
+    return (
+      <React.Fragment>
         <div className="min-h-screen bg-gradient-to-b from-slate-100 to-slate-50 px-4 py-8 md:px-8">
           <div className="mx-auto max-w-4xl rounded-3xl border border-slate-200 bg-white/95 p-6 shadow-lg backdrop-blur md:p-8">
             <button
@@ -2356,12 +2605,16 @@ export default function EventApplicationPage() {
               className="mb-5 inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
             >
               <ArrowLeft size={16} />
-              Back To Landing
+              About This Application
             </button>
 
+            <p className="mb-4 text-xs font-bold uppercase tracking-[0.16em] text-slate-500">
+              Step 2 of {APPLICATION_STEPS.length} · Terms & Conditions
+            </p>
+
             <LegalTermsGate
-              title="Event Application Terms and Conditions"
-              description="Review the active Event Application Terms PDF before starting the program application."
+              title="Program Application Terms and Conditions"
+              description="Review the active Program Application Terms PDF before entering your application details."
               {...eventTerms}
               checked={hasConfirmedTerms}
               onCheckedChange={(checked) => {
@@ -2384,7 +2637,7 @@ export default function EventApplicationPage() {
                 onClick={handleDeclineTerms}
                 className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
               >
-                Decline
+                Back
               </button>
               <button
                 type="button"
@@ -2397,21 +2650,25 @@ export default function EventApplicationPage() {
             </div>
           </div>
         </div>
-      </Wrapper>
+      </React.Fragment>
     );
   }
 
   return (
-    <Wrapper>
+    <React.Fragment>
       <div className="min-h-screen bg-gradient-to-b from-slate-100 to-slate-50 px-4 py-8 md:px-8">
       <div className="mx-auto max-w-4xl rounded-3xl border border-slate-200 bg-white/95 p-6 shadow-lg backdrop-blur md:p-8">
         <button
           type="button"
-          onClick={currentStep > 1 ? goPreviousStep : () => window.location.assign('/')}
+          onClick={currentStep > 1 ? goPreviousStep : () => {
+            setHasAcceptedTerms(false);
+            setApplicationStage('terms');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
           className="mb-5 inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
         >
           <ArrowLeft size={16} />
-          {currentStep > 1 ? 'Previous Step' : 'Back to Home'}
+          {currentStep > 1 ? 'Previous Step' : 'Review Terms'}
         </button>
 
         <h1 className="text-2xl font-bold text-slate-900 md:text-3xl">Program Application Form</h1>
@@ -2436,7 +2693,7 @@ export default function EventApplicationPage() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
-                Step {currentStep} of {FORM_STEPS.length}
+                Step {currentStep + 2} of {APPLICATION_STEPS.length}
               </p>
               <p className="mt-0.5 text-sm font-bold text-slate-900">
                 {FORM_STEPS[currentStep - 1].title}
@@ -2444,14 +2701,15 @@ export default function EventApplicationPage() {
               </p>
             </div>
             <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-              {Math.round((currentStep / FORM_STEPS.length) * 100)}%
+              {Math.round(((currentStep + 2) / APPLICATION_STEPS.length) * 100)}%
             </span>
           </div>
 
-          <ol className="mt-3 grid grid-cols-3 gap-1.5">
-            {FORM_STEPS.map((step) => {
-              const isActive = currentStep === step.id;
-              const isComplete = currentStep > step.id;
+          <ol className="mt-3 grid grid-cols-5 gap-1.5">
+            {APPLICATION_STEPS.map((step) => {
+              const activeApplicationStep = currentStep + 2;
+              const isActive = activeApplicationStep === step.id;
+              const isComplete = activeApplicationStep > step.id;
               return (
                 <li key={step.id} aria-current={isActive ? 'step' : undefined}>
                   <div
@@ -2482,13 +2740,13 @@ export default function EventApplicationPage() {
               <ShieldCheck size={17} />
             </span>
             <div className="min-w-0 flex-1">
-              <h2 className="text-sm font-bold text-slate-900">Wig donation requirements</h2>
+              <h2 className="text-sm font-bold text-slate-900">Program donation requirements</h2>
               <p className="mt-0.5 truncate text-xs text-slate-500">
                 {isLoadingWigRequirements
                   ? 'Loading current requirements...'
                   : wigRequirementsError
                     ? wigRequirementsError
-                    : `${wigRequirements.Minimum_Number_Donor ?? '—'} donors minimum · ${wigRequirements.Minimum_Hair_Length ?? '—'} inches minimum · ${minimumExpectedAttendees}+ expected attendees`}
+                    : `${wigRequirements.Minimum_Number_Donor ?? '—'} required donors · ${wigRequirements.Minimum_Hair_Length ?? '—'}-inch minimum hair length`}
               </p>
             </div>
             <span className="flex-none text-xs font-semibold text-slate-500 group-open:hidden">View</span>
@@ -2506,15 +2764,16 @@ export default function EventApplicationPage() {
             </div>
           ) : (
             <div className="space-y-3 border-t border-slate-100 bg-slate-50/60 p-4">
-              <div className="grid gap-2 sm:grid-cols-3">
+              <div className="grid gap-2 sm:grid-cols-2">
                 <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
                   <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
                     <Users size={13} />
-                    Donors per wig
+                    Required donors
                   </p>
                   <p className="mt-1 text-base font-bold text-slate-900">
                     {wigRequirements.Minimum_Number_Donor ?? 'Not specified'}
                   </p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">Minimum needed for the program</p>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
                   <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
@@ -2525,14 +2784,9 @@ export default function EventApplicationPage() {
                     {wigRequirements.Minimum_Hair_Length === null
                       || wigRequirements.Minimum_Hair_Length === undefined
                       ? 'Not specified'
-                      : `${Number(wigRequirements.Minimum_Hair_Length).toLocaleString()} inches`}
+                      : `${Number(wigRequirements.Minimum_Hair_Length).toLocaleString()} ${Number(wigRequirements.Minimum_Hair_Length) === 1 ? 'inch' : 'inches'}`}
                   </p>
-                </div>
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-amber-800">Required attendance</p>
-                  <p className="mt-1 text-base font-bold text-amber-950">
-                    {minimumExpectedAttendees}+ attendees
-                  </p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">Measured before donation</p>
                 </div>
               </div>
 
@@ -2563,9 +2817,9 @@ export default function EventApplicationPage() {
 
               <div className="grid gap-2 md:grid-cols-2">
                 <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Accepted hair textures</p>
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Accepted hair patterns</p>
                   <p className="mt-1 text-xs leading-5 text-slate-700">
-                    {wigRequirements.Hair_Texture_Status || 'No texture restriction specified'}
+                    {wigRequirements.Hair_Texture_Status || 'No hair pattern restriction specified'}
                   </p>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
@@ -2860,15 +3114,63 @@ export default function EventApplicationPage() {
 
           {currentStep === 2 && (
             <>
-              <label className="flex flex-col gap-1 md:col-span-2">
-                <span className="text-sm font-medium text-slate-700">Program Type *</span>
-                <select ref={setFieldRef('eventVisibility')} value={form.eventVisibility} onChange={updateField('eventVisibility')} className={getFieldInputClassName('eventVisibility')} style={{ '--tw-ring-color': primaryColor }}>
-                  <option value="Public">Public Program</option>
-                  <option value="Private">Private Program</option>
-                </select>
+              <fieldset className="flex flex-col gap-2 md:col-span-2">
+                <legend className="text-sm font-medium text-slate-700">Program Visibility *</legend>
+                <div
+                  ref={setFieldRef('eventVisibility')}
+                  tabIndex={-1}
+                  role="radiogroup"
+                  aria-label="Program visibility"
+                  aria-invalid={Boolean(fieldErrors.eventVisibility)}
+                  className={`grid gap-3 rounded-xl outline-none sm:grid-cols-2 ${fieldErrors.eventVisibility ? 'ring-2 ring-rose-300' : ''}`}
+                >
+                  {[
+                    {
+                      value: 'Public',
+                      title: 'Public Program',
+                      description: 'Listed publicly so eligible donors and visitors can find and register for it.',
+                    },
+                    {
+                      value: 'Private',
+                      title: 'Private Program',
+                      description: 'Limited to people who receive the private access code after approval.',
+                    },
+                  ].map((option) => {
+                    const isSelected = form.eventVisibility === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={isSelected}
+                        onClick={() => {
+                          setForm((previous) => ({ ...previous, eventVisibility: option.value }));
+                          setFieldErrors((previous) => {
+                            if (!previous.eventVisibility) return previous;
+                            const next = { ...previous };
+                            delete next.eventVisibility;
+                            return next;
+                          });
+                        }}
+                        className={`rounded-xl border-2 p-4 text-left transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${isSelected ? 'bg-slate-50 shadow-sm' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                        style={isSelected ? { borderColor: primaryColor, '--tw-ring-color': primaryColor } : { '--tw-ring-color': primaryColor }}
+                      >
+                        <span className="flex items-center justify-between gap-3">
+                          <span className="text-sm font-bold text-slate-900">{option.title}</span>
+                          <span
+                            className={`inline-flex h-5 w-5 items-center justify-center rounded-full border ${isSelected ? 'text-white' : 'border-slate-300 bg-white text-transparent'}`}
+                            style={isSelected ? { backgroundColor: primaryColor, borderColor: primaryColor } : undefined}
+                          >
+                            <CheckCircle2 size={13} />
+                          </span>
+                        </span>
+                        <span className="mt-2 block text-xs leading-5 text-slate-600">{option.description}</span>
+                      </button>
+                    );
+                  })}
+                </div>
                 {fieldError('eventVisibility')}
-                <span className="text-xs text-slate-500">Private programs receive a private access code after admin approval.</span>
-              </label>
+              </fieldset>
 
               <label className="flex flex-col gap-1 md:col-span-2">
                 <span className="text-sm font-medium text-slate-700">Program Name *</span>
@@ -2906,6 +3208,7 @@ export default function EventApplicationPage() {
                   type="number"
                   inputMode="numeric"
                   min={minimumExpectedAttendees}
+                  max={MAX_EXPECTED_ATTENDEES}
                   step="1"
                   value={form.expectedAttendees}
                   onChange={updateField('expectedAttendees')}
@@ -2921,11 +3224,61 @@ export default function EventApplicationPage() {
                   </span>
                 )}
                 <span id="expected-attendees-requirement" className="text-xs text-slate-500">
-                  {minimumDonorsPerWig
-                    ? `Enter at least ${minimumExpectedAttendees} attendees to meet the current donor requirement.`
+                  {minimumRequiredDonors
+                    ? `Enter at least ${minimumExpectedAttendees} attendees and check that enough people can meet the required donor count.`
                     : 'Enter the expected attendance as a whole number greater than zero.'}
                 </span>
               </label>
+
+              <section
+                ref={setFieldRef('attendeeListPdf')}
+                className={`md:col-span-2 rounded-xl border p-4 ${fieldErrors.attendeeListPdf ? 'border-rose-500 bg-rose-50 ring-2 ring-rose-100' : 'border-slate-200 bg-slate-50/70'}`}
+              >
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span className="inline-flex h-10 w-10 flex-none items-center justify-center rounded-xl bg-white text-slate-600 shadow-sm ring-1 ring-slate-200">
+                      <FileText size={18} />
+                    </span>
+                    <div>
+                      <p className="text-sm font-bold text-slate-900">Attendee name list *</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        Provide one clear PDF or photo listing every expected attendee's full name and age. Maximum file size: 8 MB.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white" style={{ backgroundColor: primaryColor }}>
+                      <Upload size={15} />
+                      {attendeeListPdfFile ? 'Replace file' : 'Upload file'}
+                      <input type="file" accept="application/pdf,.pdf,image/*" onChange={handleAttendeeListPdfFileChange} className="sr-only" />
+                    </label>
+                    <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700">
+                      <Camera size={15} />
+                      Take photo
+                      <input type="file" accept="image/*" capture="environment" onChange={handleAttendeeListPdfFileChange} className="sr-only" />
+                    </label>
+                  </div>
+                </div>
+
+                {attendeeListPdfFile && (
+                  <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                    <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2.5">
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-bold text-slate-900" title={attendeeListPdfFile.name}>{attendeeListPdfFile.name}</p>
+                        <p className="text-[11px] text-slate-500">{(attendeeListPdfFile.size / (1024 * 1024)).toFixed(2)} MB · Ready to upload</p>
+                      </div>
+                      <CheckCircle2 size={17} className="flex-none text-emerald-600" />
+                    </div>
+                    {attendeeListPreviewUrl && getAttendeeListFileKind(attendeeListPdfFile) === 'image' && (
+                      <img src={attendeeListPreviewUrl} alt="Attendee name list preview" className="max-h-80 w-full bg-slate-100 object-contain" />
+                    )}
+                    {attendeeListPreviewUrl && getAttendeeListFileKind(attendeeListPdfFile) === 'pdf' && (
+                      <iframe title="Attendee name list PDF preview" src={attendeeListPreviewUrl} className="h-80 w-full border-0 bg-white" />
+                    )}
+                  </div>
+                )}
+                {fieldError('attendeeListPdf')}
+              </section>
 
               <section className="md:col-span-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -3123,130 +3476,137 @@ export default function EventApplicationPage() {
           )}
 
           {currentStep === 3 && (
-            <div className="md:col-span-2 space-y-4">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-slate-700">Final Confirmation</h2>
-                <p className="mt-1 text-xs text-slate-500">Review all values before submitting your program application.</p>
-                <div className="mt-4 space-y-4">
-                  <div className="rounded-lg border border-slate-200 bg-white p-3">
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Applicant</p>
-                    <div className="grid grid-cols-1 gap-2 text-sm text-slate-700 md:grid-cols-2">
+            <div className="md:col-span-2 space-y-5">
+              <header className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">Review your application</h2>
+                  <p className="mt-1 text-sm text-slate-500">Check the important details before submitting.</p>
+                </div>
+                <span className="w-fit rounded-full px-3 py-1 text-xs font-bold" style={{ backgroundColor: `${primaryColor}12`, color: primaryColor }}>
+                  Ready for confirmation
+                </span>
+              </header>
+
+              <div className="grid items-start gap-4 lg:grid-cols-[1.05fr_0.95fr]">
+                <div className="space-y-4">
+                  <section className="rounded-xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Applicant</h3>
+                    <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4">
+                      <div className="col-span-2">
+                        <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Full name</dt>
+                        <dd className="mt-1 text-sm font-semibold text-slate-900">{[form.applicantFirstName, form.applicantMiddleName, form.applicantLastName].filter(Boolean).join(' ') || 'N/A'}</dd>
+                      </div>
                       {[
-                        ['Name', [form.applicantFirstName, form.applicantMiddleName, form.applicantLastName].filter(Boolean).join(' ') || 'N/A'],
                         ['Birthdate', form.applicantBirthdate || 'N/A'],
                         ['Gender', form.applicantGender || 'N/A'],
-                        ['ID Type', PH_VALID_ID_OPTIONS.find((option) => option.value === form.applicantValidIdType)?.label || 'N/A'],
-                        ['ID Verification', isDiditVerified ? 'Approved' : diditStatus],
-                        ['ID Number', form.applicantIdDocumentNumber || 'N/A'],
-                        ['Address on ID', form.applicantIdAddress || 'N/A'],
+                        ['ID type', PH_VALID_ID_OPTIONS.find((option) => option.value === form.applicantValidIdType)?.label || 'N/A'],
+                        ['ID status', isDiditVerified ? 'Approved' : diditStatus],
                         ['Email', form.applicantEmail || 'N/A'],
-                        ['Contact Number', form.applicantContactNumber || 'N/A'],
+                        ['Phone', form.applicantContactNumber || 'N/A'],
                       ].map(([label, value]) => (
-                        <div key={label}>
-                          <span className="font-semibold">{label}:</span> {value}
+                        <div key={label} className="min-w-0">
+                          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</dt>
+                          <dd className="mt-1 break-words text-sm text-slate-700">{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                    <div className="mt-4 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-600">
+                      <p><span className="font-semibold text-slate-800">ID number:</span> {form.applicantIdDocumentNumber || 'N/A'}</p>
+                      <p className="mt-1"><span className="font-semibold text-slate-800">Address on ID:</span> {form.applicantIdAddress || 'N/A'}</p>
+                      <p className="mt-1"><span className="font-semibold text-slate-800">Preferred contact:</span> {normalizePreferredContactLabel(form.preferredContactMethod)}</p>
+                    </div>
+                  </section>
+
+                  <section className="rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Program</p>
+                        <h3 className="mt-1 text-lg font-bold text-slate-900">{form.eventName || 'Untitled program'}</h3>
+                      </div>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">{normalizeEventVisibility(form.eventVisibility)}</span>
+                    </div>
+                    <dl className="mt-4 grid grid-cols-2 gap-4 border-t border-slate-100 pt-4">
+                      <div>
+                        <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Expected attendees</dt>
+                        <dd className="mt-1 text-lg font-bold text-slate-900">{form.expectedAttendees || 'N/A'}</dd>
+                        {attendeeListPreviewUrl && (
+                          <a href={attendeeListPreviewUrl} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1.5 text-xs font-bold hover:underline" style={{ color: primaryColor }}>
+                            <FileText size={13} /> View attendee name list
+                          </a>
+                        )}
+                      </div>
+                      <div>
+                        <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Venue</dt>
+                        <dd className="mt-1 text-sm font-semibold text-slate-800">{form.venueName || 'N/A'}</dd>
+                      </div>
+                    </dl>
+                    <div className="mt-4 border-t border-slate-100 pt-4">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Overview</p>
+                      <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-600">{form.eventOverview || 'N/A'}</p>
+                    </div>
+                  </section>
+                </div>
+
+                <div className="space-y-4">
+                  <section className="rounded-xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Schedule and location</h3>
+                    <div className="mt-4 space-y-3 text-sm text-slate-700">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Schedule (UTC+8)</p>
+                        <p className="mt-1 font-semibold text-slate-900">{formatUtc8DateTimeDisplay(form.proposedStartAt)}</p>
+                        <p className="text-xs text-slate-500">until {formatUtc8DateTimeDisplay(form.proposedEndAt)}</p>
+                      </div>
+                      <div className="border-t border-slate-100 pt-3">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Complete address</p>
+                        <p className="mt-1 leading-5">{[form.street, form.barangay, form.city, form.province, form.region, form.country].filter(Boolean).join(', ') || 'N/A'}</p>
+                      </div>
+                    </div>
+                    <div className="mt-4 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                      {form.latitude && form.longitude ? (
+                        <iframe
+                          title="Pinned map location preview"
+                          src={`https://maps.google.com/maps?q=${encodeURIComponent(`${form.latitude},${form.longitude}`)}&z=16&output=embed`}
+                          className="h-48 w-full border-0 bg-white"
+                          loading="lazy"
+                          referrerPolicy="no-referrer-when-downgrade"
+                        />
+                      ) : (
+                        <div className="flex h-48 items-center justify-center text-xs text-slate-500">No pinned location yet.</div>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="rounded-xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Photos</h3>
+                    <div className="mt-3 grid grid-cols-3 gap-2">
+                      {[
+                        { label: 'Verified ID', url: verifiedIdPreviewUrl },
+                        { label: 'Venue', url: eventPlacePhotoPreviewUrl },
+                        { label: 'Poster', url: eventPosterPhotoPreviewUrl },
+                      ].map((item) => (
+                        <div key={item.label} className="min-w-0">
+                          {item.url ? (
+                            <img src={item.url} alt={`${item.label} preview`} className="aspect-square w-full rounded-lg bg-slate-100 object-contain" />
+                          ) : (
+                            <div className="flex aspect-square w-full items-center justify-center rounded-lg bg-slate-100 px-2 text-center text-[10px] text-slate-400">Not provided</div>
+                          )}
+                          <p className="mt-1.5 truncate text-center text-[10px] font-semibold text-slate-500">{item.label}</p>
                         </div>
                       ))}
                     </div>
-                    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Submitted Government ID</p>
-                      {verifiedIdPreviewUrl ? (
-                        <img
-                          src={verifiedIdPreviewUrl}
-                          alt="Submitted government ID"
-                          onError={() => setVerifiedIdPreviewUrl('')}
-                          className="max-h-72 w-full rounded-lg border border-slate-200 bg-white object-contain"
-                        />
-                      ) : (
-                        <div className="space-y-2">
-                          <p className="text-xs text-slate-500">The secure ID preview is unavailable or has expired.</p>
-                          <button
-                            type="button"
-                            onClick={() => checkDiditStatus()}
-                            disabled={isCheckingDiditStatus}
-                            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-                          >
-                            {isCheckingDiditStatus && <Loader2 size={13} className="animate-spin" />}
-                            Refresh ID preview
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-slate-200 bg-white p-3">
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Preferred Contact Way</p>
-                    <div className="grid grid-cols-1 gap-2 text-sm text-slate-700 md:grid-cols-2">
-                      <div>
-                        <span className="font-semibold">Preferred Contact Method:</span> {normalizePreferredContactLabel(form.preferredContactMethod)}
-                      </div>
-                      <div>
-                        <span className="font-semibold">Primary:</span>{' '}
-                        {isPhoneContactMethod(form.preferredContactMethod) ? form.applicantContactNumber : form.applicantEmail}
-                      </div>
-                      <div className="md:col-span-2 text-xs text-slate-500">
-                        Secondary: {isPhoneContactMethod(form.preferredContactMethod) ? form.applicantEmail : form.applicantContactNumber}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-slate-200 bg-white p-3">
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Program & Schedule</p>
-                    <div className="grid grid-cols-1 gap-2 text-sm text-slate-700 md:grid-cols-2">
-                      <div className="md:col-span-2"><span className="font-semibold">Program Name:</span> {form.eventName || 'N/A'}</div>
-                      <div><span className="font-semibold">Program Type:</span> {normalizeEventVisibility(form.eventVisibility)}</div>
-                      <div><span className="font-semibold">Expected Attendees:</span> {form.expectedAttendees || 'N/A'}</div>
-                      <div className="md:col-span-2"><span className="font-semibold">Venue Name:</span> {form.venueName || 'N/A'}</div>
-                      <div className="md:col-span-2">
-                        <span className="font-semibold">Schedule (UTC+8):</span>{' '}
-                        {formatUtc8DateTimeDisplay(form.proposedStartAt)} to {formatUtc8DateTimeDisplay(form.proposedEndAt)}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-slate-200 bg-white p-3">
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Locations</p>
-                    <div className="grid grid-cols-1 gap-2 text-sm text-slate-700">
-                      <div><span className="font-semibold">Address:</span> {[form.street, form.barangay, form.city, form.province, form.region, form.country].filter(Boolean).join(', ') || 'N/A'}</div>
-                      <div><span className="font-semibold">Map Coordinates:</span> {form.latitude && form.longitude ? `${form.latitude}, ${form.longitude}` : 'N/A'}</div>
-                      <div><span className="font-semibold">Overview:</span> {form.eventOverview || 'N/A'}</div>
-
-                      <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
-                        <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Pinned Map Location</p>
-                        {form.latitude && form.longitude ? (
-                          <iframe
-                            title="Pinned map location preview"
-                            src={`https://maps.google.com/maps?q=${encodeURIComponent(`${form.latitude},${form.longitude}`)}&z=16&output=embed`}
-                            className="h-56 w-full rounded border border-slate-200 bg-white"
-                            loading="lazy"
-                            referrerPolicy="no-referrer-when-downgrade"
-                          />
-                        ) : (
-                          <div className="flex h-56 items-center justify-center rounded border border-dashed border-slate-300 bg-white text-xs text-slate-500">
-                            No pinned location yet.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+                    {!verifiedIdPreviewUrl && (
+                      <button type="button" onClick={() => checkDiditStatus()} disabled={isCheckingDiditStatus} className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-slate-600 hover:text-slate-900 disabled:opacity-60">
+                        {isCheckingDiditStatus && <Loader2 size={13} className="animate-spin" />}
+                        Refresh ID preview
+                      </button>
+                    )}
+                  </section>
                 </div>
               </div>
 
-              {(eventPlacePhotoPreviewUrl || eventPosterPhotoPreviewUrl) && (
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                  {eventPlacePhotoPreviewUrl && (
-                    <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Program Place Photo Preview</p>
-                      <img src={eventPlacePhotoPreviewUrl} alt="Program place preview" className="max-h-52 w-auto rounded border border-slate-200 object-contain" />
-                    </div>
-                  )}
-                  {eventPosterPhotoPreviewUrl && (
-                    <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Program Poster Photo Preview</p>
-                      <img src={eventPosterPhotoPreviewUrl} alt="Program poster preview" className="max-h-52 w-auto rounded border border-slate-200 object-contain" />
-                    </div>
-                  )}
-                </div>
-              )}
+              <p className="rounded-lg bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
+                Nothing has been submitted yet. Use Previous to correct anything, or continue to the final confirmation.
+              </p>
             </div>
           )}
 
@@ -3381,7 +3741,19 @@ export default function EventApplicationPage() {
               <ConfirmationSection title="Program details">
                 <ConfirmationItem label="Program name" value={form.eventName} />
                 <ConfirmationItem label="Program type" value={normalizeEventVisibility(form.eventVisibility)} />
-                <ConfirmationItem label="Expected attendees" value={form.expectedAttendees} />
+                <ConfirmationItem
+                  label="Expected attendees"
+                  value={(
+                    <div>
+                      <p>{form.expectedAttendees || 'N/A'}</p>
+                      {attendeeListPreviewUrl && (
+                        <a href={attendeeListPreviewUrl} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1.5 text-xs font-bold hover:underline" style={{ color: primaryColor }}>
+                          <FileText size={13} /> View attendee name list
+                        </a>
+                      )}
+                    </div>
+                  )}
+                />
                 <ConfirmationItem label="Program date" value={form.proposedDate} />
                 <ConfirmationItem label="Start" value={formatUtc8DateTimeDisplay(form.proposedStartAt)} />
                 <ConfirmationItem label="End" value={formatUtc8DateTimeDisplay(form.proposedEndAt)} />
@@ -3417,7 +3789,7 @@ export default function EventApplicationPage() {
                   <h3 className="text-xs font-bold uppercase tracking-[0.14em] text-slate-700">Submitted images</h3>
                   <p className="mt-1 text-xs text-slate-500">Check that each image is clear and belongs to this application.</p>
                 </div>
-                <div className="grid gap-3 md:grid-cols-3">
+                <div className="grid gap-3 sm:grid-cols-3">
                   <article className="overflow-hidden rounded-xl border border-slate-200 bg-white">
                     <div className="border-b border-slate-100 px-3 py-2.5">
                       <p className="text-xs font-bold text-slate-800">Government ID</p>
@@ -3501,8 +3873,8 @@ export default function EventApplicationPage() {
         </div>
       ), document.body)}
 
-      {isDiditModalOpen && diditSession?.verificationUrl && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-2 md:p-5">
+      {isDiditModalOpen && diditSession?.verificationUrl && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[10020] m-0 flex h-[100dvh] w-screen items-center justify-center bg-slate-950/70 p-2 md:p-5">
           <div className="flex h-[96vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <div>
@@ -3537,10 +3909,11 @@ export default function EventApplicationPage() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
-    </Wrapper>
+    </React.Fragment>
   );
 }
 

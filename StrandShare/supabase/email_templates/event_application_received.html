@@ -1,6 +1,6 @@
 <!--
   Template:  event_application_received
-  Subject:   Event Application Received - We'll Be in Touch Shortly
+  Subject:   Program Application Received - We'll Be in Touch Shortly
   Trigger:   AFTER INSERT on public."Event_Applications"
   SQL:       083_event_application_received_smtp_receipt.sql
   Extras:    applicant_first_name, applicant_last_name, submitted_at
@@ -10,11 +10,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Event Application Received</title>
+    <title>Program Application Received</title>
   </head>
   <body style="margin:0;padding:0;background-color:#111111;">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
-      We received your event application. Our staff will reach out shortly.
+      We received your program application. Our staff will reach out shortly.
     </div>
 
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#111111;padding:28px 12px;">
@@ -32,7 +32,7 @@
                     </td>
                     <td style="padding-left:10px;vertical-align:middle;">
                       <div style="font-family:Segoe UI,Arial,Helvetica,sans-serif;font-size:20px;line-height:1.2;font-weight:800;color:#ffffff;">Donivra</div>
-                      <div style="font-family:Segoe UI,Arial,Helvetica,sans-serif;font-size:12px;line-height:1.4;color:#b3b3b3;">Event Application Received</div>
+                      <div style="font-family:Segoe UI,Arial,Helvetica,sans-serif;font-size:12px;line-height:1.4;color:#b3b3b3;">Program Application Received</div>
                     </td>
                   </tr>
                 </table>
@@ -58,7 +58,7 @@
                         Submitted Details
                       </div>
                       <div style="font-size:14px;line-height:1.8;color:#ffffff;font-family:Segoe UI,Arial,Helvetica,sans-serif;">
-                        <div><strong>Event:</strong> {{event_name}}</div>
+                        <div><strong>Program:</strong> {{event_name}}</div>
                         {{#proposed_start_at}}<div><strong>Proposed Start:</strong> {{proposed_start_at}}</div>{{/proposed_start_at}}
                         {{#proposed_end_at}}<div><strong>Proposed End:</strong> {{proposed_end_at}}</div>{{/proposed_end_at}}
                         {{#expected_attendees}}<div><strong>Expected Attendees:</strong> {{expected_attendees}}</div>{{/expected_attendees}}

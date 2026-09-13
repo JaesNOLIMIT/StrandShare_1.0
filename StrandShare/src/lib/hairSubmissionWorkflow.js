@@ -265,7 +265,7 @@ const STATUS_NOTIFICATION_TEMPLATES = {
   [HAIR_SUBMISSION_STATUS.PENDING]: {
     title: 'Waybill issued',
     message: ({ waybillCode, eventTitle }) =>
-      `Your waybill ${waybillCode} has been issued${eventTitle ? ` for ${eventTitle}` : ''}. Please bring it to the event for hair collection.`,
+      `Your waybill ${waybillCode} has been issued${eventTitle ? ` for ${eventTitle}` : ''}. Please bring it to the program for hair collection.`,
   },
   [HAIR_SUBMISSION_STATUS.CUT]: {
     title: 'Hair collected',

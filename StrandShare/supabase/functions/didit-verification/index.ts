@@ -40,48 +40,158 @@ async function sha256(value: string) {
     .join('');
 }
 
-function cleanDocument(report: Record<string, unknown>) {
-  const allowedFields = [
-    'status',
-    'document_type',
-    'document_subtype',
-    'document_number',
-    'first_name',
-    'last_name',
-    'full_name',
-    'date_of_birth',
-    'birth_date',
-    'gender',
-    'address',
-    'formatted_address',
-  ];
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
 
-  const cleaned: Record<string, unknown> = Object.fromEntries(
-    allowedFields
-      .filter((field) => report[field] !== undefined && report[field] !== null)
-      .map((field) => [field, report[field]]),
-  );
-  const extraFields = report.extra_fields && typeof report.extra_fields === 'object'
-    ? report.extra_fields as Record<string, unknown>
-    : {};
-  const middleNameKey = Object.keys(extraFields).find((key) => (
-    ['middlename', 'middle'].includes(key.toLowerCase().replace(/[^a-z0-9]/g, ''))
-  ));
-  if (middleNameKey && extraFields[middleNameKey]) {
-    cleaned.middle_name = String(extraFields[middleNameKey]);
+function reportSources(report: Record<string, unknown>) {
+  const sources: Record<string, unknown>[] = [];
+  const queue: Array<{ value: unknown; depth: number }> = [{ value: report, depth: 0 }];
+  const visited = new Set<object>();
+
+  while (queue.length && sources.length < 60) {
+    const current = queue.shift();
+    if (!current || !current.value || typeof current.value !== 'object' || visited.has(current.value)) continue;
+    visited.add(current.value);
+
+    if (Array.isArray(current.value)) {
+      if (current.depth < 4) {
+        current.value.forEach((entry) => queue.push({ value: entry, depth: current.depth + 1 }));
+      }
+      continue;
+    }
+
+    const record = current.value as Record<string, unknown>;
+    sources.push(record);
+    if (current.depth < 4) {
+      Object.values(record).forEach((entry) => queue.push({ value: entry, depth: current.depth + 1 }));
+    }
   }
-  return cleaned;
+
+  return sources;
+}
+
+function mergeDocuments(
+  storedDocument: Record<string, unknown> | null,
+  currentDocument: Record<string, unknown> | null,
+) {
+  if (!storedDocument) return currentDocument;
+  if (!currentDocument) return storedDocument;
+  const merged = { ...storedDocument };
+  Object.entries(currentDocument).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim() !== '') merged[key] = value;
+  });
+  return merged;
+}
+
+function pickValue(sources: Record<string, unknown>[], keys: string[]) {
+  for (const source of sources) {
+    for (const key of keys) {
+      const value = source[key];
+      if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+    }
+  }
+  return '';
+}
+
+function validIsoDate(year: number, month: number, day: number) {
+  const candidate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    candidate.getUTCFullYear() !== year
+    || candidate.getUTCMonth() !== month - 1
+    || candidate.getUTCDate() !== day
+  ) return '';
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function normalizeBirthdate(value: unknown): string {
+  const nested = asRecord(value);
+  if (nested) {
+    const year = Number(nested.year ?? nested.yyyy);
+    const month = Number(nested.month ?? nested.mm);
+    const day = Number(nested.day ?? nested.dd);
+    if (Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)) {
+      return validIsoDate(year, month, day);
+    }
+    return normalizeBirthdate(pickValue([nested], ['date_of_birth', 'birth_date', 'date', 'value', 'iso', 'raw']));
+  }
+
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const yearFirst = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:\D|$)/);
+  if (yearFirst) return validIsoDate(Number(yearFirst[1]), Number(yearFirst[2]), Number(yearFirst[3]));
+
+  const dayFirst = raw.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?:\D|$)/);
+  if (dayFirst) return validIsoDate(Number(dayFirst[3]), Number(dayFirst[2]), Number(dayFirst[1]));
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return validIsoDate(parsed.getUTCFullYear(), parsed.getUTCMonth() + 1, parsed.getUTCDate());
+}
+
+function pickLabeledValue(sources: Record<string, unknown>[], labels: string[]) {
+  const acceptedLabels = new Set(labels.map((label) => label.toLowerCase().replace(/[^a-z0-9]/g, '')));
+  for (const source of sources) {
+    const label = String(source.key || source.name || source.label || source.field || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!acceptedLabels.has(label)) continue;
+    const value = pickValue([source], ['value', 'extracted_value', 'raw_value', 'text']);
+    if (value !== '') return value;
+  }
+  return '';
+}
+
+function normalizeAddress(value: unknown) {
+  const address = asRecord(value);
+  if (!address) return String(value || '').trim();
+  return [
+    address.street_1,
+    address.street_2,
+    address.street,
+    address.barangay,
+    address.city,
+    address.municipality,
+    address.province,
+    address.region,
+    address.postal_code,
+    address.country,
+  ].map((part) => String(part || '').trim()).filter(Boolean).join(', ');
+}
+
+function cleanDocument(report: Record<string, unknown>) {
+  const sources = reportSources(report);
+  const extraSources = sources
+    .map((source) => asRecord(source.extra_fields))
+    .filter((value): value is Record<string, unknown> => Boolean(value));
+
+  const birthdate = pickValue(sources, ['date_of_birth', 'birth_date', 'birthdate', 'dob'])
+    || pickLabeledValue(sources, ['date_of_birth', 'birth_date', 'birthdate', 'dob']);
+
+  return {
+    status: String(pickValue(sources, ['status']) || '').trim(),
+    document_type: String(pickValue(sources, ['document_type', 'documentType', 'type']) || '').trim(),
+    document_subtype: String(pickValue(sources, ['document_subtype', 'documentSubtype', 'subtype']) || '').trim(),
+    document_number: String(pickValue(sources, ['document_number', 'documentNumber', 'id_number', 'personal_number']) || '').trim(),
+    first_name: String(pickValue(sources, ['first_name', 'firstName', 'given_name', 'given_names']) || '').trim(),
+    middle_name: String(pickValue([...sources, ...extraSources], ['middle_name', 'middleName', 'middlename', 'middle']) || '').trim(),
+    last_name: String(pickValue(sources, ['last_name', 'lastName', 'surname', 'family_name']) || '').trim(),
+    full_name: String(pickValue(sources, ['full_name', 'fullName', 'name']) || '').trim(),
+    date_of_birth: normalizeBirthdate(birthdate),
+    gender: String(pickValue(sources, ['gender', 'sex']) || '').trim(),
+    formatted_address: normalizeAddress(pickValue(sources, ['formatted_address', 'full_address', 'address', 'parsed_address'])),
+  };
 }
 
 function getIdFrontImageUrl(report: Record<string, unknown> | null) {
   if (!report) return '';
-  const candidates = [
-    report.front_image,
-    report.full_front_image,
-    report.front_document_image,
-    report.front_image_url,
-  ];
-  return String(candidates.find((value) => typeof value === 'string' && value.trim()) || '').trim();
+  const sources = reportSources(report);
+  return String(pickValue(sources, [
+    'front_image',
+    'full_front_image',
+    'front_document_image',
+    'front_image_url',
+  ]) || '').trim();
 }
 
 async function saveVerifiedIdFrontImage(
@@ -222,7 +332,7 @@ Deno.serve(async (request) => {
       const tokenHash = await sha256(clientToken);
       const { data: storedSession, error: sessionError } = await admin
         .from('Didit_Verification_Sessions')
-        .select('Session_ID, Client_Token_Hash, Vendor_Data, ID_Front_Image_Path')
+        .select('Session_ID, Client_Token_Hash, Vendor_Data, ID_Front_Image_Path, Document_Data')
         .eq('Session_ID', sessionId)
         .maybeSingle();
 
@@ -244,11 +354,18 @@ Deno.serve(async (request) => {
         return jsonResponse({ error: 'Verification session ownership check failed.' }, 403, allowedOrigin || null);
       }
 
-      const idReports = Array.isArray(decision?.id_verifications) ? decision.id_verifications : [];
+      const rawIdReports = decision?.id_verifications ?? decision?.id_verification;
+      const idReports = Array.isArray(rawIdReports)
+        ? rawIdReports
+        : asRecord(rawIdReports)
+          ? [rawIdReports]
+          : [];
       const selectedReport = idReports.find((report: Record<string, unknown>) => (
         String(report?.status || '').toLowerCase() === 'approved'
       )) || idReports[0] || null;
-      const document = selectedReport ? cleanDocument(selectedReport) : null;
+      const storedDocument = asRecord(storedSession.Document_Data);
+      const currentDocument = selectedReport ? cleanDocument(selectedReport) : null;
+      const document = mergeDocuments(storedDocument, currentDocument);
       const status = String(decision?.status || 'Unknown');
       const featureStatus = String(selectedReport?.status || '');
       const verified = status.toLowerCase() === 'approved' && featureStatus.toLowerCase() === 'approved';
@@ -306,6 +423,7 @@ Deno.serve(async (request) => {
         featureStatus,
         verified,
         document,
+        birthdate: normalizeBirthdate(document?.date_of_birth),
         warnings,
         idFrontImageUrl,
         idImageNotice: idFrontImageUrl ? '' : idImageNotice,

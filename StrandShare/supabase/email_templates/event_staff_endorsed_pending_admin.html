@@ -1,6 +1,6 @@
 <!--
   Template:  event_staff_endorsed_pending_admin
-  Subject:   Event Application Update - Staff Review Completed
+  Subject:   Program Application Update - Staff Review Completed
   Trigger:   AFTER UPDATE on public."Event_Applications" when Status transitions
              ('pendingstaffreview' | 'rejected' | 'appealed') -> 'pendingadmindecision'.
   SQL:       076_remove_admin_fields_from_event_applications_and_use_utc8_timestamps.sql
@@ -15,7 +15,7 @@
   </head>
   <body style="margin:0;padding:0;background-color:#111111;">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
-      Your event application has been reviewed by our staff and is now awaiting admin approval.
+      Your program application has been reviewed by our staff and is now awaiting admin approval.
     </div>
 
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#111111;padding:28px 12px;">
@@ -56,10 +56,10 @@
                   <tr>
                     <td style="background-color:#121212;border:1px solid #2a2a2a;border-radius:12px;padding:16px;">
                       <div style="font-size:11px;line-height:1.4;color:#9ca3af;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">
-                        Event Details
+                        Program Details
                       </div>
                       <div style="font-size:14px;line-height:1.8;color:#ffffff;font-family:Segoe UI,Arial,Helvetica,sans-serif;">
-                        <div><strong>Event:</strong> {{event_name}}</div>
+                        <div><strong>Program:</strong> {{event_name}}</div>
                         {{#proposed_start_at}}<div><strong>Proposed Start:</strong> {{proposed_start_at}}</div>{{/proposed_start_at}}
                         {{#proposed_end_at}}<div><strong>Proposed End:</strong> {{proposed_end_at}}</div>{{/proposed_end_at}}
                         {{#expected_attendees}}<div><strong>Expected Attendees:</strong> {{expected_attendees}}</div>{{/expected_attendees}}

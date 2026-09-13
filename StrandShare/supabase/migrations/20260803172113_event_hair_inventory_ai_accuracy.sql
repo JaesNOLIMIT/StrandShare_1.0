@@ -78,7 +78,7 @@ begin
   limit 1;
 
   if actor_user_id is null then
-    raise exception 'Unable to resolve actor profile for event request workflow update.';
+    raise exception 'Unable to resolve actor profile for program request workflow update.';
   end if;
 
   if actor_role_key = 'admin' then
@@ -89,7 +89,7 @@ begin
 
       if new_status_key = 'rejected'
          and length(trim(coalesce(new."Admin_Decision_Reason", ''))) = 0 then
-        raise exception 'Admin rejection reason is required for event requests.';
+        raise exception 'Admin rejection reason is required for program requests.';
       end if;
 
       if new_status_key = 'approved' and new."Event_Visibility" = 'Private' then
@@ -121,7 +121,7 @@ begin
         new."Private_Event_Code_Sent_At" := null;
       end if;
     else
-      raise exception 'Admin cannot change event request status from % to %.', old."Status", new."Status";
+      raise exception 'Admin cannot change program request status from % to %.', old."Status", new."Status";
     end if;
   elsif actor_role_key = 'staff' then
     if old_status_key = 'pendingadminapproval' and new_status_key = 'cancelled' then
@@ -135,10 +135,10 @@ begin
         new."Private_Event_Code_Sent_At" := null;
       end if;
     else
-      raise exception 'Staff cannot change event request status from % to %.', old."Status", new."Status";
+      raise exception 'Staff cannot change program request status from % to %.', old."Status", new."Status";
     end if;
   else
-    raise exception 'Only staff or admin can change event request status.';
+    raise exception 'Only staff or admin can change program request status.';
   end if;
 
   new."Updated_At" := manila_now;

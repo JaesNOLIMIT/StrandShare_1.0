@@ -1,10 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   AlertCircle,
   Camera,
   CameraOff,
   CheckCircle2,
+  ChevronDown,
   Download,
   FileText,
   HelpCircle,
@@ -18,13 +25,13 @@ import {
   Sparkles,
   Trash2,
   X,
-} from 'lucide-react';
-import QRCode from 'qrcode';
-import jsPDF from 'jspdf';
-import jsQR from 'jsqr';
-import { useTheme } from '../../../context/ThemeContext';
-import { useToast } from '../../../context/ToastContext';
-import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+} from "lucide-react";
+import QRCode from "qrcode";
+import jsPDF from "jspdf";
+import jsQR from "jsqr";
+import { useTheme } from "../../../context/ThemeContext";
+import { useToast } from "../../../context/ToastContext";
+import { isSupabaseConfigured, supabase } from "../../../lib/supabaseClient";
 import {
   BUNDLE_HAIR_COUNT_TARGET_MAX,
   BUNDLE_HAIR_COUNT_TARGET_MIN,
@@ -36,48 +43,51 @@ import {
   deleteBundleDraft,
   isValidWaybillCode,
   normalizeWaybillCodeInput,
-} from '../../../lib/hairSubmissionWorkflow';
-import WigSpecificationPicker from './wigCatalog/WigSpecificationPicker';
-import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
-import WaybillScanResult from '../../../components/scanning/WaybillScanResult';
-import PageHeaderActions from '../../../components/PageHeaderActions';
-import { FILTERS_BUCKET, getPublicUrl } from './wigCatalog/wigCatalogUtils';
+} from "../../../lib/hairSubmissionWorkflow";
+import WigSpecificationPicker from "./wigCatalog/WigSpecificationPicker";
+import useRealtimeRefresh from "../../../hooks/useRealtimeRefresh";
+import WaybillScanResult from "../../../components/scanning/WaybillScanResult";
+import PageHeaderActions from "../../../components/PageHeaderActions";
+import { FILTERS_BUCKET, getPublicUrl } from "./wigCatalog/wigCatalogUtils";
 
-const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
-const HAIR_SUBMISSION_BUNDLES_TABLE = 'Hair_Submission_Bundles';
-const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
-const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
-const EVENT_REQUESTS_TABLE = 'Event_Requests';
-const WIG_SPECIFICATIONS_TABLE = 'Wig_Specifications';
-const WIGS_TABLE = 'Wigs';
-const WIG_REQUESTS_TABLE = 'Wig_Requests';
-const CUT_HAIR_INVENTORY_TABLE = 'Cut_Hair_Inventory';
-const PATIENTS_TABLE = 'Patients';
-const USER_DETAILS_TABLE = 'user_details';
+const HAIR_SUBMISSIONS_TABLE = "Hair_Submissions";
+const HAIR_SUBMISSION_BUNDLES_TABLE = "Hair_Submission_Bundles";
+const HAIR_SUBMISSION_DETAILS_TABLE = "Hair_Submission_Details";
+const EVENT_ATTENDEES_TABLE = "Event_Attendees";
+const EVENT_REQUESTS_TABLE = "Event_Requests";
+const WIG_SPECIFICATIONS_TABLE = "Wig_Specifications";
+const WIGS_TABLE = "Wigs";
+const WIG_REQUESTS_TABLE = "Wig_Requests";
+const CUT_HAIR_INVENTORY_TABLE = "Cut_Hair_Inventory";
+const PATIENTS_TABLE = "Patients";
+const USER_DETAILS_TABLE = "user_details";
 const SCAN_DEBOUNCE_MS = 2000;
 const BUNDLING_SCAN_OUTCOMES = [
-  'Eligible Approved/Cut waybill: hair is added to the active draft and inventory becomes Bundling.',
-  'Duplicate in the same draft: blocked; member count and records do not change.',
-  'Already assigned to another bundle: blocked and the existing bundle remains unchanged.',
-  'Pending quality, rejected, cancelled, not Cut, unknown, or malformed waybill: blocked with the exact reason.',
-  'Removed from a draft: Bundle_ID is cleared and the hair returns to Cut / Available inventory.',
-  'Draft reaches 8-10 hairs and is closed: members move to Wig In Production and the bundle waybill can be printed.',
+  "Eligible Approved/Cut waybill: hair is added to the active draft and inventory becomes Bundling.",
+  "Duplicate in the same draft: blocked; member count and records do not change.",
+  "Already assigned to another bundle: blocked and the existing bundle remains unchanged.",
+  "Pending quality, rejected, cancelled, not Cut, unknown, or malformed waybill: blocked with the exact reason.",
+  "Removed from a draft: Bundle_ID is cleared and the hair returns to Cut / Available inventory.",
+  "Draft reaches 8-10 hairs and is closed: members move to Wig In Production and the bundle waybill can be printed.",
 ];
 const INITIAL_CONFIRM_MODAL = {
   isOpen: false,
-  title: '',
-  message: '',
-  action: '',
+  title: "",
+  message: "",
+  action: "",
   bundleId: null,
   submissionId: null,
-  submissionCode: '',
-  donorName: '',
-  tone: 'primary',
+  submissionCode: "",
+  donorName: "",
+  tone: "primary",
 };
 
-function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
-  const safeAlpha = Math.max(0, Math.min(1, Number.isFinite(alpha) ? alpha : 1));
-  const input = String(colorValue || '').trim();
+function withColorAlpha(colorValue, alpha, fallback = "#0275d8") {
+  const safeAlpha = Math.max(
+    0,
+    Math.min(1, Number.isFinite(alpha) ? alpha : 1),
+  );
+  const input = String(colorValue || "").trim();
   const hexMatch = input.match(/^#([0-9a-f]{6})$/i);
   if (hexMatch) {
     const r = parseInt(hexMatch[1].slice(0, 2), 16);
@@ -85,82 +95,138 @@ function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
     const b = parseInt(hexMatch[1].slice(4, 6), 16);
     return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
   }
-  return withColorAlpha(fallback, safeAlpha, '#0275d8');
+  return withColorAlpha(fallback, safeAlpha, "#0275d8");
 }
 
 function buildFullName(first, middle, last, suffix) {
   return [first, middle, last, suffix]
-    .map((value) => String(value || '').trim())
+    .map((value) => String(value || "").trim())
     .filter(Boolean)
-    .join(' ')
+    .join(" ")
     .trim();
 }
 
 function formatDateTime(value) {
-  if (!value) return 'N/A';
+  if (!value) return "N/A";
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return 'N/A';
-  return parsed.toLocaleString('en-PH', { timeZone: 'Asia/Manila', year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  if (Number.isNaN(parsed.getTime())) return "N/A";
+  return parsed.toLocaleString("en-PH", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
-function bundleStatusStyle(statusKey, primaryColor, tertiaryColor, secondaryTextColor) {
+function bundleStatusStyle(
+  statusKey,
+  primaryColor,
+  tertiaryColor,
+  secondaryTextColor,
+) {
   switch (statusKey) {
     case HAIR_BUNDLE_STATUS.WIG_COMPLETED.toLowerCase():
-      return { backgroundColor: withColorAlpha(tertiaryColor, 0.16), color: tertiaryColor, borderColor: withColorAlpha(tertiaryColor, 0.4) };
+      return {
+        backgroundColor: withColorAlpha(tertiaryColor, 0.16),
+        color: tertiaryColor,
+        borderColor: withColorAlpha(tertiaryColor, 0.4),
+      };
     case HAIR_BUNDLE_STATUS.IN_PRODUCTION.toLowerCase():
-      return { backgroundColor: withColorAlpha(primaryColor, 0.12), color: primaryColor, borderColor: withColorAlpha(primaryColor, 0.4) };
+      return {
+        backgroundColor: withColorAlpha(primaryColor, 0.12),
+        color: primaryColor,
+        borderColor: withColorAlpha(primaryColor, 0.4),
+      };
     case HAIR_BUNDLE_STATUS.DRAFT.toLowerCase():
-      return { backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' };
+      return {
+        backgroundColor: "#fffbeb",
+        color: "#b45309",
+        borderColor: "#fde68a",
+      };
     default:
-      return { backgroundColor: '#f1f5f9', color: secondaryTextColor, borderColor: '#cbd5e1' };
+      return {
+        backgroundColor: "#f1f5f9",
+        color: secondaryTextColor,
+        borderColor: "#cbd5e1",
+      };
   }
 }
 
 function normalizeErrorMessage(error, fallback) {
-  const message = String(error?.message || '').trim();
+  const message = String(error?.message || "").trim();
   if (!message) return fallback;
   const key = message.toLowerCase();
 
-  if (key.includes('already scanned in this bundle')) return 'This waybill is already scanned in the active draft.';
-  if (key.includes('already assigned to bundle')) return 'This waybill is already reserved in another bundle.';
+  if (key.includes("already scanned in this bundle"))
+    return "This waybill is already scanned in the active draft.";
+  if (key.includes("already assigned to bundle"))
+    return "This waybill is already reserved in another bundle.";
   if (
-    key.includes('was rejected or cancelled')
-    || (key.includes('cannot be bundled while status is') && key.includes('cancelled'))
-  ) return 'This hair was rejected or cancelled and can no longer be scanned into Bundling.';
-  if (key.includes('cannot be bundled while status is')) return 'This waybill cannot be bundled because its status is not eligible.';
-  if (key.includes('must be in cut status')) return 'This waybill must be in Cut status before bundling.';
-  if (key.includes('must be approved in quality check')) return 'This waybill must be approved in Quality Check before it can be bundled.';
-  if (key.includes('bundle already has 10 hairs')) return 'This bundle already has 10 hairs. Close it and open a new draft.';
-  if (key.includes('bundle must contain 8-10 hairs')) return 'Bundle must contain 8 to 10 hairs before closing.';
-  if (key.includes('no hair submission matched')) return 'No hair submission matched this waybill QR.';
-  if (key.includes('maximum of 3 open drafts')) return 'You already have 3 open drafts. Close or delete one before opening another.';
-  if (key.includes('is not assigned to any bundle')) return 'This waybill is not currently assigned to a draft bundle.';
-  if (key.includes('belongs to bundle')) return 'This waybill belongs to a different bundle.';
-  if (key.includes('only cut submissions can be removed')) return 'Only Cut-status hairs can be removed from a draft.';
-  if (key.includes('no waybill code detected')) return 'No waybill code detected from this QR payload.';
-  if (key.includes('waybill payload is required')) return 'Waybill payload is required. Scan again or enter the code manually.';
-  if (key.includes('is not draft')) return 'This bundle is already closed or in production.';
-  if (key.includes('already in wig in production')) return 'This waybill is already in production and cannot be scanned again.';
-  if (key.includes('already in wig created')) return 'This waybill is already completed as Wig Created.';
-  if (key.includes('already scanned')) return 'This QR was already scanned.';
-  if (key.includes('column hs.submission_code does not exist')) {
-    return 'Bundling scan function is outdated in the database. Run the latest Supabase migrations, then refresh.';
+    key.includes("was rejected or cancelled") ||
+    (key.includes("cannot be bundled while status is") &&
+      key.includes("cancelled"))
+  )
+    return "This hair was rejected or cancelled and can no longer be scanned into Bundling.";
+  if (key.includes("cannot be bundled while status is"))
+    return "This waybill cannot be bundled because its status is not eligible.";
+  if (key.includes("must be in cut status"))
+    return "This waybill must be in Cut status before bundling.";
+  if (key.includes("must be approved in quality check"))
+    return "This waybill must be approved in Quality Check before it can be bundled.";
+  if (key.includes("bundle already has 10 hairs"))
+    return "This bundle already has 10 hairs. Close it and open a new draft.";
+  if (key.includes("bundle must contain 8-10 hairs"))
+    return "Bundle must contain 8 to 10 hairs before closing.";
+  if (key.includes("no hair submission matched"))
+    return "No hair submission matched this waybill QR.";
+  if (key.includes("maximum of 3 open drafts"))
+    return "You already have 3 open drafts. Close or delete one before opening another.";
+  if (key.includes("is not assigned to any bundle"))
+    return "This waybill is not currently assigned to a draft bundle.";
+  if (key.includes("belongs to bundle"))
+    return "This waybill belongs to a different bundle.";
+  if (key.includes("only cut submissions can be removed"))
+    return "Only Cut-status hairs can be removed from a draft.";
+  if (key.includes("no waybill code detected"))
+    return "No waybill code detected from this QR payload.";
+  if (key.includes("waybill payload is required"))
+    return "Waybill payload is required. Scan again or enter the code manually.";
+  if (key.includes("is not draft"))
+    return "This bundle is already closed or in production.";
+  if (key.includes("already in wig in production"))
+    return "This waybill is already in production and cannot be scanned again.";
+  if (key.includes("already in wig created"))
+    return "This waybill is already completed as Wig Created.";
+  if (key.includes("already scanned")) return "This QR was already scanned.";
+  if (key.includes("column hs.submission_code does not exist")) {
+    return "Bundling scan function is outdated in the database. Run the latest Supabase migrations, then refresh.";
   }
-  if (key.includes('row-level security')) return 'You do not have permission for this operation. Please contact admin.';
-  if (key.includes('not found')) return 'Record not found. Refresh and try again.';
-  if (key.includes('permission') || key.includes('not assigned') || key.includes('only specialist/admin')) {
-    return 'You do not have permission for this operation.';
+  if (key.includes("row-level security"))
+    return "You do not have permission for this operation. Please contact admin.";
+  if (key.includes("not found"))
+    return "Record not found. Refresh and try again.";
+  if (
+    key.includes("permission") ||
+    key.includes("not assigned") ||
+    key.includes("only specialist/admin")
+  ) {
+    return "You do not have permission for this operation.";
   }
 
   return message || fallback;
 }
 
 function normalizeAttribute(value) {
-  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ");
 }
 
 function numericLength(value) {
-  const match = String(value ?? '').match(/\d+(?:\.\d+)?/);
+  const match = String(value ?? "").match(/\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : null;
 }
 
@@ -177,90 +243,116 @@ function compareHairToWig(hair, specification) {
   const reasons = [];
   let score = 0;
 
-  const tooShort = targetLength !== null && hairLength !== null && hairLength < targetLength;
+  const tooShort =
+    targetLength !== null && hairLength !== null && hairLength < targetLength;
   const lengthVerified = targetLength !== null && hairLength !== null;
   const hasTrimMargin = lengthVerified && hairLength >= targetLength + 2;
-  const textureMismatch = Boolean(targetTexture && hairTexture && targetTexture !== hairTexture);
-  const colorMismatch = Boolean(targetColor && hairColor && targetColor !== hairColor);
+  const textureMismatch = Boolean(
+    targetTexture && hairTexture && targetTexture !== hairTexture,
+  );
+  const colorMismatch = Boolean(
+    targetColor && hairColor && targetColor !== hairColor,
+  );
   if (targetLength === null || hairLength === null) {
-    reasons.push('Length needs manual verification');
+    reasons.push("Length needs manual verification");
   } else if (hairLength >= targetLength + 2) {
     score += 50;
-    reasons.push(`${hairLength} in provides trimming room for a ${targetLength} in wig`);
+    reasons.push(
+      `${hairLength} in provides trimming room for a ${targetLength} in wig`,
+    );
   } else if (hairLength >= targetLength) {
     score += 35;
-    reasons.push(`${hairLength} in meets the target, with limited trimming room`);
+    reasons.push(
+      `${hairLength} in meets the target, with limited trimming room`,
+    );
   } else {
-    reasons.push(`${hairLength} in is shorter than the ${targetLength} in target`);
+    reasons.push(
+      `${hairLength} in is shorter than the ${targetLength} in target`,
+    );
   }
 
   if (targetTexture && hairTexture) {
     if (targetTexture === hairTexture) {
       score += 20;
-      reasons.push('Texture matches');
+      reasons.push("Hair pattern matches");
     } else {
-      reasons.push(`Texture differs (${detail.Declared_Texture} vs ${specification.hairTexture})`);
+      reasons.push(
+        `Hair pattern differs (${detail.Declared_Texture} vs ${specification.hairTexture})`,
+      );
     }
   } else {
     score += 5;
-    reasons.push('Texture needs manual verification');
+    reasons.push("Hair pattern needs manual verification");
   }
 
   if (targetColor && hairColor) {
     if (targetColor === hairColor) {
       score += 18;
-      reasons.push('Color matches');
+      reasons.push("Color matches");
     } else {
-      reasons.push(`Color differs (${detail.Declared_Color} vs ${specification.hairColor})`);
+      reasons.push(
+        `Color differs (${detail.Declared_Color} vs ${specification.hairColor})`,
+      );
     }
   } else {
     score += 5;
-    reasons.push('Color needs manual verification');
+    reasons.push("Color needs manual verification");
   }
 
   if (targetDensity && hairDensity) {
     if (targetDensity === hairDensity) {
       score += 12;
-      reasons.push('Density matches');
+      reasons.push("Density matches");
     } else {
       score += 3;
-      reasons.push(`Density differs (${detail.Declared_Density} vs ${specification.hairDensity})`);
+      reasons.push(
+        `Density differs (${detail.Declared_Density} vs ${specification.hairDensity})`,
+      );
     }
   } else {
     score += 3;
   }
 
   if (tooShort) {
-    return { score, key: 'not-recommended', label: 'Too short', reasons };
+    return { score, key: "not-recommended", label: "Too short", reasons };
   }
-  if (!lengthVerified) return { score, key: 'review', label: 'Check length', reasons };
+  if (!lengthVerified)
+    return { score, key: "review", label: "Check length", reasons };
   if (hasTrimMargin && !textureMismatch && !colorMismatch) {
-    return { score, key: 'recommended', label: 'Best fit', reasons };
+    return { score, key: "recommended", label: "Best fit", reasons };
   }
-  if (!textureMismatch && !colorMismatch) return { score, key: 'compatible', label: 'Usable', reasons };
-  return { score, key: 'review', label: 'Review', reasons };
+  if (!textureMismatch && !colorMismatch)
+    return { score, key: "compatible", label: "Usable", reasons };
+  return { score, key: "review", label: "Review", reasons };
 }
 
 const COMPATIBILITY_STYLES = {
-  recommended: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-  compatible: 'border-sky-200 bg-sky-50 text-sky-800',
-  review: 'border-amber-200 bg-amber-50 text-amber-800',
-  'not-recommended': 'border-rose-200 bg-rose-50 text-rose-800',
+  recommended: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  compatible: "border-sky-200 bg-sky-50 text-sky-800",
+  review: "border-amber-200 bg-amber-50 text-amber-800",
+  "not-recommended": "border-rose-200 bg-rose-50 text-rose-800",
 };
 
 export default function BundlingPage() {
   const { theme } = useTheme();
   const { showToast } = useToast();
-  const primaryColor = theme?.primaryColor || '#0275d8';
-  const tertiaryColor = theme?.tertiaryColor || '#10b981';
-  const primaryTextColor = theme?.primaryTextColor || '#0f172a';
-  const secondaryTextColor = theme?.secondaryTextColor || '#64748b';
-  const tertiaryTextColor = theme?.tertiaryTextColor || '#94a3b8';
-  const headingFont = theme?.secondaryFontFamily || theme?.fontFamily || 'Poppins';
-  const bodyFont = theme?.fontFamily || 'Poppins';
+  const primaryColor = theme?.primaryColor || "#0275d8";
+  const tertiaryColor = theme?.tertiaryColor || "#10b981";
+  const primaryTextColor = theme?.primaryTextColor || "#0f172a";
+  const secondaryTextColor = theme?.secondaryTextColor || "#64748b";
+  const tertiaryTextColor = theme?.tertiaryTextColor || "#94a3b8";
+  const headingFont =
+    theme?.secondaryFontFamily || theme?.fontFamily || "Poppins";
+  const bodyFont = theme?.fontFamily || "Poppins";
 
-  const rootStyle = { color: primaryTextColor, fontFamily: `${bodyFont}, sans-serif` };
-  const headingStyle = { color: primaryTextColor, fontFamily: `${headingFont}, sans-serif` };
+  const rootStyle = {
+    color: primaryTextColor,
+    fontFamily: `${bodyFont}, sans-serif`,
+  };
+  const headingStyle = {
+    color: primaryTextColor,
+    fontFamily: `${headingFont}, sans-serif`,
+  };
 
   const [bundles, setBundles] = useState([]);
   const [bundleMembersByBundleId, setBundleMembersByBundleId] = useState({});
@@ -268,26 +360,30 @@ export default function BundlingPage() {
   const [isFinalizingDraftId, setIsFinalizingDraftId] = useState(null);
   const [isDeletingDraftId, setIsDeletingDraftId] = useState(null);
   const [isRemovingSubmissionId, setIsRemovingSubmissionId] = useState(null);
-  const [notice, setNotice] = useState({ kind: '', text: '' });
+  const [notice, setNotice] = useState({ kind: "", text: "" });
   const [activePrintBundle, setActivePrintBundle] = useState(null);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [wigSpecOptions, setWigSpecOptions] = useState([]);
   const [availableCutHair, setAvailableCutHair] = useState([]);
   const [wishRequests, setWishRequests] = useState([]);
+  const [showWishRequests, setShowWishRequests] = useState(false);
   const [openingWishRequestId, setOpeningWishRequestId] = useState(null);
   const [scannerDraftBundleId, setScannerDraftBundleId] = useState(null);
-  const [scannerWaybillCode, setScannerWaybillCode] = useState('');
-  const [scannerSpecId, setScannerSpecId] = useState('');
-  const [scannerNotes, setScannerNotes] = useState('');
+  const [scannerWaybillCode, setScannerWaybillCode] = useState("");
+  const [scannerSpecId, setScannerSpecId] = useState("");
+  const [scannerNotes, setScannerNotes] = useState("");
   const [isOpeningScannerBundle, setIsOpeningScannerBundle] = useState(false);
   const [isScanningWaybill, setIsScanningWaybill] = useState(false);
   const [isClosingScannerBundle, setIsClosingScannerBundle] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isStartingCamera, setIsStartingCamera] = useState(false);
-  const [cameraStatus, setCameraStatus] = useState({ kind: 'info', message: 'Camera is off. Start scanner to read waybill QR.' });
+  const [cameraStatus, setCameraStatus] = useState({
+    kind: "info",
+    message: "Camera is off. Start scanner to read waybill QR.",
+  });
   const [confirmModal, setConfirmModal] = useState(INITIAL_CONFIRM_MODAL);
   // Master-detail selection: 'create' | `draft-<id>` | `bundle-<id>`.
-  const [selectedKey, setSelectedKey] = useState('create');
+  const [selectedKey, setSelectedKey] = useState("create");
   const [showHelp, setShowHelp] = useState(false);
   const [scanOutcome, setScanOutcome] = useState(null);
 
@@ -296,50 +392,57 @@ export default function BundlingPage() {
   const cameraStreamRef = useRef(null);
   const isScanProcessingRef = useRef(false);
   const removingSubmissionIdRef = useRef(null);
-  const lastScanRef = useRef({ raw: '', at: 0 });
+  const lastScanRef = useRef({ raw: "", at: 0 });
 
   useEffect(() => {
     if (!notice.text) return;
     showToast({
-      type: notice.kind || 'info',
-      title: notice.kind === 'success'
-        ? 'Bundling updated'
-        : notice.kind === 'error'
-          ? 'Action not completed'
-          : notice.kind === 'warning'
-            ? 'Check before continuing'
-            : 'Bundling information',
+      type: notice.kind || "info",
+      title:
+        notice.kind === "success"
+          ? "Bundling updated"
+          : notice.kind === "error"
+            ? "Action not completed"
+            : notice.kind === "warning"
+              ? "Check before continuing"
+              : "Bundling information",
       message: notice.text,
     });
-    setNotice({ kind: '', text: '' });
+    setNotice({ kind: "", text: "" });
   }, [notice, showToast]);
 
   const loadData = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
-      setNotice({ kind: 'error', text: 'Supabase is not configured.' });
+      setNotice({ kind: "error", text: "Supabase is not configured." });
       return;
     }
 
     setIsLoading(true);
-    setNotice({ kind: '', text: '' });
+    setNotice({ kind: "", text: "" });
 
     try {
       let specRows = await supabase
         .from(WIG_SPECIFICATIONS_TABLE)
-        .select('Wig_Specification_ID, Wig_ID, Hair_Length, Hair_Color, Hair_Texture, Hair_Density, Cap_Size, Style')
-        .order('Wig_Specification_ID', { ascending: false })
+        .select(
+          "Wig_Specification_ID, Wig_ID, Hair_Length, Hair_Color, Hair_Texture, Hair_Density, Cap_Size, Style",
+        )
+        .order("Wig_Specification_ID", { ascending: false })
         .limit(500);
 
       if (specRows.error) throw specRows.error;
       const specs = specRows.data || [];
 
-      const specWigIds = Array.from(new Set(specs.map((row) => Number(row.Wig_ID || 0)).filter(Boolean)));
+      const specWigIds = Array.from(
+        new Set(specs.map((row) => Number(row.Wig_ID || 0)).filter(Boolean)),
+      );
       let wigNamesById = {};
       if (specWigIds.length) {
         const wigResult = await supabase
           .from(WIGS_TABLE)
-          .select('Wig_ID, Wig_Name, Wig_Code, Catalog_Family_Number, Catalog_Image_Path, Stock_Count, Low_Stock_Threshold')
-          .in('Wig_ID', specWigIds);
+          .select(
+            "Wig_ID, Wig_Name, Wig_Code, Catalog_Family_Number, Catalog_Image_Path, Stock_Count, Low_Stock_Threshold",
+          )
+          .in("Wig_ID", specWigIds);
         if (wigResult.error) throw wigResult.error;
         wigNamesById = (wigResult.data || []).reduce((acc, row) => {
           acc[Number(row.Wig_ID)] = row;
@@ -351,161 +454,262 @@ export default function BundlingPage() {
         const wig = wigNamesById[Number(row.Wig_ID || 0)] || {};
         const labelParts = [
           wig.Wig_Name || wig.Wig_Code || `Wig #${row.Wig_ID}`,
-          row.Style || row.Hair_Texture || '',
-          row.Hair_Color || '',
-          row.Hair_Length ? `${row.Hair_Length}in` : '',
-          row.Cap_Size ? `Cap ${row.Cap_Size}` : '',
-        ].map((value) => String(value || '').trim()).filter(Boolean);
+          row.Style || row.Hair_Texture || "",
+          row.Hair_Color || "",
+          row.Hair_Length ? `${row.Hair_Length}in` : "",
+          row.Cap_Size ? `Cap ${row.Cap_Size}` : "",
+        ]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean);
         return {
           ...row,
           wigName: wig.Wig_Name || `Wig #${row.Wig_ID}`,
-          wigCode: wig.Wig_Code || '',
+          wigCode: wig.Wig_Code || "",
           familyNumber: wig.Catalog_Family_Number ?? null,
-          catalogImagePath: wig.Catalog_Image_Path || '',
+          catalogImagePath: wig.Catalog_Image_Path || "",
           stockCount: Math.max(0, Number(wig.Stock_Count || 0)),
           lowStockThreshold: Math.max(0, Number(wig.Low_Stock_Threshold ?? 2)),
-          hairLength: row.Hair_Length ?? '',
-          hairColor: row.Hair_Color || '',
-          hairTexture: row.Hair_Texture || '',
-          hairDensity: row.Hair_Density || '',
-          capSize: row.Cap_Size || '',
-          style: row.Style || '',
-          label: labelParts.join(' | '),
+          hairLength: row.Hair_Length ?? "",
+          hairColor: row.Hair_Color || "",
+          hairTexture: row.Hair_Texture || "",
+          hairDensity: row.Hair_Density || "",
+          capSize: row.Cap_Size || "",
+          style: row.Style || "",
+          label: labelParts.join(" | "),
         };
       });
       setWigSpecOptions(nextSpecOptions);
 
       const availableInventoryResult = await supabase
         .from(CUT_HAIR_INVENTORY_TABLE)
-        .select('Inventory_ID, Submission_ID, Event_Attendee_ID, Donor_User_ID, Source_Type, Status, Approved_At, Bundle_ID')
-        .eq('Status', 'Cut')
-        .is('Bundle_ID', null)
-        .order('Approved_At', { ascending: false })
+        .select(
+          "Inventory_ID, Submission_ID, Event_Attendee_ID, Donor_User_ID, Source_Type, Status, Approved_At, Bundle_ID",
+        )
+        .eq("Status", "Cut")
+        .is("Bundle_ID", null)
+        .order("Approved_At", { ascending: false })
         .limit(500);
       if (availableInventoryResult.error) throw availableInventoryResult.error;
 
       const availableInventory = availableInventoryResult.data || [];
-      const availableSubmissionIds = Array.from(new Set(
-        availableInventory.map((row) => Number(row.Submission_ID || 0)).filter(Boolean),
-      ));
+      const availableSubmissionIds = Array.from(
+        new Set(
+          availableInventory
+            .map((row) => Number(row.Submission_ID || 0))
+            .filter(Boolean),
+        ),
+      );
       const availableSubmissionsResult = availableSubmissionIds.length
         ? await supabase
-          .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Event_Attendee_ID, Event_Request_ID, From_Event, Waybill_Code')
-          .in('Submission_ID', availableSubmissionIds)
+            .from(HAIR_SUBMISSIONS_TABLE)
+            .select(
+              "Submission_ID, User_ID, Event_Attendee_ID, Event_Request_ID, From_Event, Waybill_Code",
+            )
+            .in("Submission_ID", availableSubmissionIds)
         : { data: [], error: null };
-      if (availableSubmissionsResult.error) throw availableSubmissionsResult.error;
-      const availableSubmissionById = (availableSubmissionsResult.data || []).reduce((acc, row) => {
+      if (availableSubmissionsResult.error)
+        throw availableSubmissionsResult.error;
+      const availableSubmissionById = (
+        availableSubmissionsResult.data || []
+      ).reduce((acc, row) => {
         acc[Number(row.Submission_ID || 0)] = row;
         return acc;
       }, {});
-      const availableAttendeeIds = Array.from(new Set(
-        availableInventory.flatMap((row) => {
-          const submission = availableSubmissionById[Number(row.Submission_ID || 0)] || {};
-          return [Number(row.Event_Attendee_ID || 0), Number(submission.Event_Attendee_ID || 0)];
-        }).filter(Boolean),
-      ));
-      const availableDonorIds = Array.from(new Set(
-        availableInventory.flatMap((row) => {
-          const submission = availableSubmissionById[Number(row.Submission_ID || 0)] || {};
-          return [Number(row.Donor_User_ID || 0), Number(submission.User_ID || 0)];
-        }).filter(Boolean),
-      ));
-      const [availableDetailsResult, availableAttendeesResult, availableDonorsResult] = await Promise.all([
+      const availableAttendeeIds = Array.from(
+        new Set(
+          availableInventory
+            .flatMap((row) => {
+              const submission =
+                availableSubmissionById[Number(row.Submission_ID || 0)] || {};
+              return [
+                Number(row.Event_Attendee_ID || 0),
+                Number(submission.Event_Attendee_ID || 0),
+              ];
+            })
+            .filter(Boolean),
+        ),
+      );
+      const availableDonorIds = Array.from(
+        new Set(
+          availableInventory
+            .flatMap((row) => {
+              const submission =
+                availableSubmissionById[Number(row.Submission_ID || 0)] || {};
+              return [
+                Number(row.Donor_User_ID || 0),
+                Number(submission.User_ID || 0),
+              ];
+            })
+            .filter(Boolean),
+        ),
+      );
+      const [
+        availableDetailsResult,
+        availableAttendeesResult,
+        availableDonorsResult,
+      ] = await Promise.all([
         availableSubmissionIds.length
           ? supabase
-            .from(HAIR_SUBMISSION_DETAILS_TABLE)
-            .select('Submission_Detail_ID, Submission_ID, Declared_Length, Declared_Color, Declared_Texture, Declared_Density, Declared_Condition, Is_Chemically_Treated, Is_Colored, Is_Bleached, Is_Rebonded')
-            .in('Submission_ID', availableSubmissionIds)
-            .order('Submission_Detail_ID', { ascending: false })
+              .from(HAIR_SUBMISSION_DETAILS_TABLE)
+              .select(
+                "Submission_Detail_ID, Submission_ID, Declared_Length, Declared_Color, Declared_Texture, Declared_Density, Declared_Condition, Is_Chemically_Treated, Is_Colored, Is_Bleached, Is_Rebonded",
+              )
+              .in("Submission_ID", availableSubmissionIds)
+              .order("Submission_Detail_ID", { ascending: false })
           : Promise.resolve({ data: [], error: null }),
         availableAttendeeIds.length
-          ? supabase
-            .rpc('get_cut_hair_inventory_waybills', { p_event_attendee_ids: availableAttendeeIds })
+          ? supabase.rpc("get_cut_hair_inventory_waybills", {
+              p_event_attendee_ids: availableAttendeeIds,
+            })
           : Promise.resolve({ data: [], error: null }),
         availableDonorIds.length
           ? supabase
-            .from(USER_DETAILS_TABLE)
-            .select('user_id, first_name, middle_name, last_name, suffix')
-            .in('user_id', availableDonorIds)
+              .from(USER_DETAILS_TABLE)
+              .select("user_id, first_name, middle_name, last_name, suffix")
+              .in("user_id", availableDonorIds)
           : Promise.resolve({ data: [], error: null }),
       ]);
       if (availableDetailsResult.error) throw availableDetailsResult.error;
       if (availableAttendeesResult.error) throw availableAttendeesResult.error;
       if (availableDonorsResult.error) throw availableDonorsResult.error;
 
-      const availableDetailsBySubmission = (availableDetailsResult.data || []).reduce((acc, row) => {
+      const availableDetailsBySubmission = (
+        availableDetailsResult.data || []
+      ).reduce((acc, row) => {
         const submissionId = Number(row.Submission_ID || 0);
         if (submissionId && !acc[submissionId]) acc[submissionId] = row;
         return acc;
       }, {});
-      const availableAttendeeRows = (availableAttendeesResult.data || []).map((row) => ({
-        Event_Attendee_ID: row.event_attendee_id,
-        Event_Request_ID: row.event_request_id,
-        User_ID: row.user_id,
-        Waybill_Code: row.waybill_code,
-      }));
-      const availableWaybillByAttendee = availableAttendeeRows.reduce((acc, row) => {
-        acc[Number(row.Event_Attendee_ID || 0)] = String(row.Waybill_Code || '').trim().toUpperCase();
-        return acc;
-      }, {});
+      const availableAttendeeRows = (availableAttendeesResult.data || []).map(
+        (row) => ({
+          Event_Attendee_ID: row.event_attendee_id,
+          Event_Request_ID: row.event_request_id,
+          User_ID: row.user_id,
+          Waybill_Code: row.waybill_code,
+        }),
+      );
+      const availableWaybillByAttendee = availableAttendeeRows.reduce(
+        (acc, row) => {
+          acc[Number(row.Event_Attendee_ID || 0)] = String(
+            row.Waybill_Code || "",
+          )
+            .trim()
+            .toUpperCase();
+          return acc;
+        },
+        {},
+      );
       const availableAttendeeByEventUser = new Map(
         availableAttendeeRows.map((row) => [
           `${Number(row.Event_Request_ID || 0)}:${Number(row.User_ID || 0)}`,
           row,
         ]),
       );
-      const availableDonorById = (availableDonorsResult.data || []).reduce((acc, row) => {
-        acc[Number(row.user_id || 0)] = row;
-        return acc;
-      }, {});
+      const availableDonorById = (availableDonorsResult.data || []).reduce(
+        (acc, row) => {
+          acc[Number(row.user_id || 0)] = row;
+          return acc;
+        },
+        {},
+      );
 
-      setAvailableCutHair(availableInventory.map((row) => {
-        const submissionId = Number(row.Submission_ID || 0);
-        const submission = availableSubmissionById[submissionId] || {};
-        const donorId = Number(row.Donor_User_ID || submission.User_ID || 0);
-        const linkedAttendeeId = Number(row.Event_Attendee_ID || submission.Event_Attendee_ID || 0);
-        const attendee = availableAttendeeRows.find(
-          (candidate) => Number(candidate.Event_Attendee_ID || 0) === linkedAttendeeId,
-        ) || availableAttendeeByEventUser.get(`${Number(submission.Event_Request_ID || 0)}:${donorId}`) || null;
-        const attendeeId = Number(attendee?.Event_Attendee_ID || linkedAttendeeId || 0);
-        const donor = availableDonorById[donorId] || {};
-        const isEventHair = Boolean(attendeeId || submission.From_Event);
-        const attendeeWaybillCode = String(attendee?.Waybill_Code || availableWaybillByAttendee[attendeeId] || '').trim().toUpperCase();
-        return {
-          ...row,
-          submissionId,
-          eventAttendeeId: attendeeId || null,
-          isEventHair,
-          waybillCode: isEventHair
-            ? attendeeWaybillCode
-            : String(submission.Waybill_Code || '').trim().toUpperCase() || buildWaybillCode({ submissionId }),
-          donorName: buildFullName(donor.first_name, donor.middle_name, donor.last_name, donor.suffix)
-            || `Donor #${donorId}`,
-          detail: availableDetailsBySubmission[submissionId] || null,
-        };
-      }));
+      setAvailableCutHair(
+        availableInventory.map((row) => {
+          const submissionId = Number(row.Submission_ID || 0);
+          const submission = availableSubmissionById[submissionId] || {};
+          const donorId = Number(row.Donor_User_ID || submission.User_ID || 0);
+          const linkedAttendeeId = Number(
+            row.Event_Attendee_ID || submission.Event_Attendee_ID || 0,
+          );
+          const attendee =
+            availableAttendeeRows.find(
+              (candidate) =>
+                Number(candidate.Event_Attendee_ID || 0) === linkedAttendeeId,
+            ) ||
+            availableAttendeeByEventUser.get(
+              `${Number(submission.Event_Request_ID || 0)}:${donorId}`,
+            ) ||
+            null;
+          const attendeeId = Number(
+            attendee?.Event_Attendee_ID || linkedAttendeeId || 0,
+          );
+          const donor = availableDonorById[donorId] || {};
+          const isEventHair = Boolean(attendeeId || submission.From_Event);
+          const attendeeWaybillCode = String(
+            attendee?.Waybill_Code ||
+              availableWaybillByAttendee[attendeeId] ||
+              "",
+          )
+            .trim()
+            .toUpperCase();
+          return {
+            ...row,
+            submissionId,
+            eventAttendeeId: attendeeId || null,
+            isEventHair,
+            waybillCode: isEventHair
+              ? attendeeWaybillCode
+              : String(submission.Waybill_Code || "")
+                  .trim()
+                  .toUpperCase() || buildWaybillCode({ submissionId }),
+            donorName:
+              buildFullName(
+                donor.first_name,
+                donor.middle_name,
+                donor.last_name,
+                donor.suffix,
+              ) || `Donor #${donorId}`,
+            detail: availableDetailsBySubmission[submissionId] || null,
+          };
+        }),
+      );
 
       const wishResult = await supabase
         .from(WIG_REQUESTS_TABLE)
-        .select('Req_ID, Request_Code, Patient_ID, Hospital_ID, Status, Request_Date, Requested_Wig_ID, Requested_Wig_Specification_ID, Requested_Cap_Size, Is_Wish_Request, Fulfillment_Status, Fulfillment_Bundle_ID')
-        .order('Request_Date', { ascending: true })
+        .select(
+          "Req_ID, Request_Code, Patient_ID, Hospital_ID, Status, Request_Date, Requested_Wig_ID, Requested_Wig_Specification_ID, Requested_Cap_Size, Is_Wish_Request, Fulfillment_Status, Fulfillment_Bundle_ID",
+        )
+        .order("Request_Date", { ascending: true })
         .limit(200);
       const wishWorkflowUnavailable = Boolean(wishResult.error);
-      const actionableWishRows = (wishResult.error ? [] : (wishResult.data || [])).filter((row) => {
-        const statusKey = String(row.Status || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const fulfillmentKey = String(row.Fulfillment_Status || '').toLowerCase();
-        return ['acceptedinproduction', 'acceptednowigavailable', 'inproduction'].includes(statusKey)
-          && !['catalog_allocated', 'ready_for_release', 'fulfilled', 'released', 'rejected'].includes(fulfillmentKey);
+      const actionableWishRows = (
+        wishResult.error ? [] : wishResult.data || []
+      ).filter((row) => {
+        const statusKey = String(row.Status || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "");
+        const fulfillmentKey = String(
+          row.Fulfillment_Status || "",
+        ).toLowerCase();
+        return (
+          [
+            "acceptedinproduction",
+            "acceptednowigavailable",
+            "inproduction",
+          ].includes(statusKey) &&
+          ![
+            "catalog_allocated",
+            "ready_for_release",
+            "fulfilled",
+            "released",
+            "rejected",
+          ].includes(fulfillmentKey)
+        );
       });
 
-      const patientIds = Array.from(new Set(actionableWishRows.map((row) => Number(row.Patient_ID || 0)).filter(Boolean)));
+      const patientIds = Array.from(
+        new Set(
+          actionableWishRows
+            .map((row) => Number(row.Patient_ID || 0))
+            .filter(Boolean),
+        ),
+      );
       let patientById = {};
       if (patientIds.length) {
         const patientResult = await supabase
           .from(PATIENTS_TABLE)
-          .select('Patient_ID, Patient_Code, User_ID, Medical_Condition')
-          .in('Patient_ID', patientIds);
+          .select("Patient_ID, Patient_Code, User_ID, Medical_Condition")
+          .in("Patient_ID", patientIds);
         if (patientResult.error) throw patientResult.error;
         patientById = (patientResult.data || []).reduce((acc, patient) => {
           acc[Number(patient.Patient_ID)] = patient;
@@ -513,27 +717,42 @@ export default function BundlingPage() {
         }, {});
       }
 
-      setWishRequests(actionableWishRows.map((row) => {
-        const specification = nextSpecOptions.find(
-          (option) => Number(option.Wig_Specification_ID) === Number(row.Requested_Wig_Specification_ID),
-        ) || nextSpecOptions.find((option) => Number(option.Wig_ID) === Number(row.Requested_Wig_ID)) || null;
-        const patient = patientById[Number(row.Patient_ID)] || {};
-        return {
-          ...row,
-          patientCode: patient.Patient_Code || `Patient #${row.Patient_ID}`,
-          medicalCondition: patient.Medical_Condition || '',
-          specification,
-        };
-      }));
+      setWishRequests(
+        actionableWishRows.map((row) => {
+          const specification =
+            nextSpecOptions.find(
+              (option) =>
+                Number(option.Wig_Specification_ID) ===
+                Number(row.Requested_Wig_Specification_ID),
+            ) ||
+            nextSpecOptions.find(
+              (option) =>
+                Number(option.Wig_ID) === Number(row.Requested_Wig_ID),
+            ) ||
+            null;
+          const patient = patientById[Number(row.Patient_ID)] || {};
+          return {
+            ...row,
+            patientCode: patient.Patient_Code || `Patient #${row.Patient_ID}`,
+            medicalCondition: patient.Medical_Condition || "",
+            specification,
+          };
+        }),
+      );
 
       if (wishWorkflowUnavailable) {
-        setNotice({ kind: 'warning', text: 'Requested-wig production queue is not active yet. Apply the new Supabase fulfillment migration to enable it.' });
+        setNotice({
+          kind: "warning",
+          text: "Requested-wig production queue is not active yet. Apply the new Supabase fulfillment migration to enable it.",
+        });
       }
 
       let bundlesResult = await supabase
         .from(HAIR_SUBMISSION_BUNDLES_TABLE)
-        .select('Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At, Created_By, Wig_Specification_ID, Allocated_To_Wig_Request_ID')
-        .order('Created_At', { ascending: false })
+        .select(
+          "Bundle_ID, Status, Bundle_Waybill_Code, Notes, Created_At, Wig_Completed_At, Created_By, Wig_Specification_ID, Allocated_To_Wig_Request_ID",
+        )
+        .order("Created_At", { ascending: false })
         .limit(100);
 
       if (bundlesResult.error) throw bundlesResult.error;
@@ -546,21 +765,37 @@ export default function BundlingPage() {
       if (bundleIds.length) {
         const membersResult = await supabase
           .from(HAIR_SUBMISSIONS_TABLE)
-          .select('Submission_ID, User_ID, Status, Bundle_ID, Event_Attendee_ID, Event_Request_ID, From_Event, Waybill_Code, Updated_At')
-          .in('Bundle_ID', bundleIds);
+          .select(
+            "Submission_ID, User_ID, Status, Bundle_ID, Event_Attendee_ID, Event_Request_ID, From_Event, Waybill_Code, Updated_At",
+          )
+          .in("Bundle_ID", bundleIds);
         if (membersResult.error) throw membersResult.error;
 
         const memberRows = membersResult.data || [];
-        const userIds = Array.from(new Set(memberRows.map((r) => Number(r.User_ID || 0)).filter(Boolean)));
-        const attendeeIds = Array.from(new Set(memberRows.map((r) => Number(r.Event_Attendee_ID || 0)).filter(Boolean)));
-        const submissionIds = Array.from(new Set(memberRows.map((r) => Number(r.Submission_ID || 0)).filter(Boolean)));
+        const userIds = Array.from(
+          new Set(
+            memberRows.map((r) => Number(r.User_ID || 0)).filter(Boolean),
+          ),
+        );
+        const attendeeIds = Array.from(
+          new Set(
+            memberRows
+              .map((r) => Number(r.Event_Attendee_ID || 0))
+              .filter(Boolean),
+          ),
+        );
+        const submissionIds = Array.from(
+          new Set(
+            memberRows.map((r) => Number(r.Submission_ID || 0)).filter(Boolean),
+          ),
+        );
 
         let usersByUserId = {};
         if (userIds.length) {
           const { data, error } = await supabase
             .from(USER_DETAILS_TABLE)
-            .select('user_id, first_name, middle_name, last_name, suffix')
-            .in('user_id', userIds);
+            .select("user_id, first_name, middle_name, last_name, suffix")
+            .in("user_id", userIds);
           if (error) throw error;
           usersByUserId = (data || []).reduce((acc, r) => {
             acc[Number(r.user_id)] = r;
@@ -569,7 +804,11 @@ export default function BundlingPage() {
         }
 
         const attendeeResults = attendeeIds.length
-          ? [await supabase.rpc('get_cut_hair_inventory_waybills', { p_event_attendee_ids: attendeeIds })]
+          ? [
+              await supabase.rpc("get_cut_hair_inventory_waybills", {
+                p_event_attendee_ids: attendeeIds,
+              }),
+            ]
           : [];
         const attendeeRowsById = new Map();
         attendeeResults.forEach((result) => {
@@ -599,21 +838,25 @@ export default function BundlingPage() {
           ]),
         );
 
-        const requestIds = Array.from(new Set(
-          memberRows
-            .map((r) => {
-              const attendeeId = Number(r.Event_Attendee_ID || 0);
-              return Number(attendeeToRequestId[attendeeId] || r.Event_Request_ID || 0);
-            })
-            .filter(Boolean),
-        ));
+        const requestIds = Array.from(
+          new Set(
+            memberRows
+              .map((r) => {
+                const attendeeId = Number(r.Event_Attendee_ID || 0);
+                return Number(
+                  attendeeToRequestId[attendeeId] || r.Event_Request_ID || 0,
+                );
+              })
+              .filter(Boolean),
+          ),
+        );
 
         let eventsByRequestId = {};
         if (requestIds.length) {
           const { data, error } = await supabase
             .from(EVENT_REQUESTS_TABLE)
-            .select('Event_Request_ID, Event_Name')
-            .in('Event_Request_ID', requestIds);
+            .select("Event_Request_ID, Event_Name")
+            .in("Event_Request_ID", requestIds);
           if (error) throw error;
           eventsByRequestId = (data || []).reduce((acc, r) => {
             acc[Number(r.Event_Request_ID)] = r;
@@ -625,16 +868,21 @@ export default function BundlingPage() {
         if (submissionIds.length) {
           const detailResult = await supabase
             .from(HAIR_SUBMISSION_DETAILS_TABLE)
-            .select('Submission_Detail_ID, Submission_ID, Declared_Length, Declared_Color, Declared_Texture, Declared_Density, Declared_Condition, Is_Chemically_Treated, Is_Colored, Is_Bleached, Is_Rebonded, Detail_Notes, Status, Updated_At')
-            .in('Submission_ID', submissionIds)
-            .order('Submission_Detail_ID', { ascending: false });
+            .select(
+              "Submission_Detail_ID, Submission_ID, Declared_Length, Declared_Color, Declared_Texture, Declared_Density, Declared_Condition, Is_Chemically_Treated, Is_Colored, Is_Bleached, Is_Rebonded, Detail_Notes, Status, Updated_At",
+            )
+            .in("Submission_ID", submissionIds)
+            .order("Submission_Detail_ID", { ascending: false });
           if (detailResult.error) throw detailResult.error;
-          detailsBySubmissionId = (detailResult.data || []).reduce((acc, row) => {
-            const key = Number(row.Submission_ID || 0);
-            if (!key || acc[key]) return acc;
-            acc[key] = row;
-            return acc;
-          }, {});
+          detailsBySubmissionId = (detailResult.data || []).reduce(
+            (acc, row) => {
+              const key = Number(row.Submission_ID || 0);
+              if (!key || acc[key]) return acc;
+              acc[key] = row;
+              return acc;
+            },
+            {},
+          );
         }
 
         const grouped = memberRows.reduce((acc, row) => {
@@ -644,33 +892,59 @@ export default function BundlingPage() {
 
           const userId = Number(row.User_ID || 0);
           const linkedAttendeeId = Number(row.Event_Attendee_ID || 0);
-          const fallbackAttendee = attendeeByEventUser.get(`${Number(row.Event_Request_ID || 0)}:${userId}`) || null;
-          const attendee = attendeeRowsById.get(linkedAttendeeId) || fallbackAttendee;
-          const attendeeId = Number(attendee?.Event_Attendee_ID || linkedAttendeeId || 0);
-          const requestId = Number(attendee?.Event_Request_ID || attendeeToRequestId[attendeeId] || row.Event_Request_ID || 0);
-          const attendeeWaybillCode = String(attendee?.Waybill_Code || '').trim().toUpperCase();
-          const waybillCode = attendeeWaybillCode
-            || (!row.From_Event ? String(row.Waybill_Code || '').trim().toUpperCase() : '');
+          const fallbackAttendee =
+            attendeeByEventUser.get(
+              `${Number(row.Event_Request_ID || 0)}:${userId}`,
+            ) || null;
+          const attendee =
+            attendeeRowsById.get(linkedAttendeeId) || fallbackAttendee;
+          const attendeeId = Number(
+            attendee?.Event_Attendee_ID || linkedAttendeeId || 0,
+          );
+          const requestId = Number(
+            attendee?.Event_Request_ID ||
+              attendeeToRequestId[attendeeId] ||
+              row.Event_Request_ID ||
+              0,
+          );
+          const attendeeWaybillCode = String(attendee?.Waybill_Code || "")
+            .trim()
+            .toUpperCase();
+          const waybillCode =
+            attendeeWaybillCode ||
+            (!row.From_Event
+              ? String(row.Waybill_Code || "")
+                  .trim()
+                  .toUpperCase()
+              : "");
           const userDetails = usersByUserId[userId] || {};
           const eventRequest = eventsByRequestId[requestId] || {};
-          const detail = detailsBySubmissionId[Number(row.Submission_ID || 0)] || null;
+          const detail =
+            detailsBySubmissionId[Number(row.Submission_ID || 0)] || null;
 
           acc[key].push({
             submissionId: Number(row.Submission_ID || 0),
             userId,
-            submissionCode: waybillCode || (row.From_Event
-              ? 'Event waybill unavailable'
-              : buildWaybillCode({ submissionId: Number(row.Submission_ID || 0) })),
-            status: row.Status || '',
+            submissionCode:
+              waybillCode ||
+              (row.From_Event
+                ? "Program waybill unavailable"
+                : buildWaybillCode({
+                    submissionId: Number(row.Submission_ID || 0),
+                  })),
+            status: row.Status || "",
             eventAttendeeId: attendeeId || null,
             eventRequestId: requestId || null,
-            donorName: buildFullName(
-              userDetails.first_name,
-              userDetails.middle_name,
-              userDetails.last_name,
-              userDetails.suffix,
-            ) || `User #${userId}`,
-            eventTitle: eventRequest.Event_Name || (requestId ? `Event #${requestId}` : 'Event not linked'),
+            donorName:
+              buildFullName(
+                userDetails.first_name,
+                userDetails.middle_name,
+                userDetails.last_name,
+                userDetails.suffix,
+              ) || `User #${userId}`,
+            eventTitle:
+              eventRequest.Event_Name ||
+              (requestId ? `Program #${requestId}` : "Program not linked"),
             updatedAt: row.Updated_At || null,
             detail,
           });
@@ -683,7 +957,10 @@ export default function BundlingPage() {
         setBundleMembersByBundleId({});
       }
     } catch (error) {
-      setNotice({ kind: 'error', text: error?.message || 'Unable to load bundling data.' });
+      setNotice({
+        kind: "error",
+        text: error?.message || "Unable to load bundling data.",
+      });
     } finally {
       setIsLoading(false);
     }
@@ -694,7 +971,7 @@ export default function BundlingPage() {
   }, [loadData]);
 
   useRealtimeRefresh({
-    channelName: 'specialist-bundling-live',
+    channelName: "specialist-bundling-live",
     tables: [
       HAIR_SUBMISSIONS_TABLE,
       HAIR_SUBMISSION_BUNDLES_TABLE,
@@ -707,24 +984,43 @@ export default function BundlingPage() {
     onChange: () => void loadData(),
   });
 
-  const drafts = useMemo(() => bundles.filter((b) => String(b.Status || '').toLowerCase() === HAIR_BUNDLE_STATUS.DRAFT.toLowerCase()), [bundles]);
-  const activeBundles = useMemo(() => bundles.filter((b) => String(b.Status || '').toLowerCase() !== HAIR_BUNDLE_STATUS.DRAFT.toLowerCase()), [bundles]);
+  const drafts = useMemo(
+    () =>
+      bundles.filter(
+        (b) =>
+          String(b.Status || "").toLowerCase() ===
+          HAIR_BUNDLE_STATUS.DRAFT.toLowerCase(),
+      ),
+    [bundles],
+  );
+  const activeBundles = useMemo(
+    () =>
+      bundles.filter(
+        (b) =>
+          String(b.Status || "").toLowerCase() !==
+          HAIR_BUNDLE_STATUS.DRAFT.toLowerCase(),
+      ),
+    [bundles],
+  );
   const scannerBundleRow = useMemo(
-    () => bundles.find((bundle) => Number(bundle.Bundle_ID || 0) === Number(scannerDraftBundleId || 0)) || null,
+    () =>
+      bundles.find(
+        (bundle) =>
+          Number(bundle.Bundle_ID || 0) === Number(scannerDraftBundleId || 0),
+      ) || null,
     [bundles, scannerDraftBundleId],
   );
-  const scannerBundleMemberCount = useMemo(
-    () => {
-      if (!scannerBundleRow) return 0;
-      const memberRows = bundleMembersByBundleId[scannerBundleRow.Bundle_ID] || [];
-      return memberRows.length;
-    },
-    [bundleMembersByBundleId, scannerBundleRow],
-  );
+  const scannerBundleMemberCount = useMemo(() => {
+    if (!scannerBundleRow) return 0;
+    const memberRows =
+      bundleMembersByBundleId[scannerBundleRow.Bundle_ID] || [];
+    return memberRows.length;
+  }, [bundleMembersByBundleId, scannerBundleRow]);
   const draftCount = drafts.length;
   const activeDraftCounterLabel = `${scannerBundleMemberCount}/${BUNDLE_HAIR_COUNT_TARGET_MAX}`;
-  const canCloseActiveDraft = scannerBundleMemberCount >= BUNDLE_HAIR_COUNT_TARGET_MIN
-    && scannerBundleMemberCount <= BUNDLE_HAIR_COUNT_TARGET_MAX;
+  const canCloseActiveDraft =
+    scannerBundleMemberCount >= BUNDLE_HAIR_COUNT_TARGET_MIN &&
+    scannerBundleMemberCount <= BUNDLE_HAIR_COUNT_TARGET_MAX;
 
   const openConfirmModal = useCallback((payload) => {
     setConfirmModal({
@@ -750,29 +1046,38 @@ export default function BundlingPage() {
     if (isCameraOn) {
       stopCamera();
       setIsCameraOn(false);
-      setCameraStatus({ kind: 'info', message: 'Camera is off. Start scanner to read waybill QR.' });
+      setCameraStatus({
+        kind: "info",
+        message: "Camera is off. Start scanner to read waybill QR.",
+      });
       return;
     }
 
     if (!scannerBundleRow) {
-      setNotice({ kind: 'warning', text: 'Open or continue a draft bundle before starting the camera scanner.' });
+      setNotice({
+        kind: "warning",
+        text: "Open or continue a draft bundle before starting the camera scanner.",
+      });
       return;
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      const message = 'Camera access is unavailable on this browser or device.';
-      setCameraStatus({ kind: 'error', message });
-      setNotice({ kind: 'error', text: message });
+      const message = "Camera access is unavailable on this browser or device.";
+      setCameraStatus({ kind: "error", message });
+      setNotice({ kind: "error", text: message });
       return;
     }
 
     setIsStartingCamera(true);
-    setCameraStatus({ kind: 'info', message: 'Initializing camera scanner...' });
+    setCameraStatus({
+      kind: "info",
+      message: "Initializing camera scanner...",
+    });
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
-          facingMode: { ideal: 'environment' },
+          facingMode: { ideal: "environment" },
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
@@ -787,11 +1092,17 @@ export default function BundlingPage() {
       }
 
       setIsCameraOn(true);
-      setCameraStatus({ kind: 'success', message: 'Scanner is running. Point camera at a donor waybill QR.' });
+      setCameraStatus({
+        kind: "success",
+        message: "Scanner is running. Point camera at a donor waybill QR.",
+      });
     } catch (error) {
-      const message = normalizeErrorMessage(error, 'Could not access the camera.');
-      setCameraStatus({ kind: 'error', message });
-      setNotice({ kind: 'error', text: message });
+      const message = normalizeErrorMessage(
+        error,
+        "Could not access the camera.",
+      );
+      setCameraStatus({ kind: "error", message });
+      setNotice({ kind: "error", text: message });
     } finally {
       setIsStartingCamera(false);
     }
@@ -801,11 +1112,14 @@ export default function BundlingPage() {
     const bundleId = Number(draft?.Bundle_ID || 0);
     if (!bundleId) return;
     setScannerDraftBundleId(bundleId);
-    setScannerWaybillCode('');
-    setScannerSpecId(String(draft?.Wig_Specification_ID || ''));
-    setScannerNotes(String(draft?.Notes || ''));
+    setScannerWaybillCode("");
+    setScannerSpecId(String(draft?.Wig_Specification_ID || ""));
+    setScannerNotes(String(draft?.Notes || ""));
     if (!silent) {
-      setNotice({ kind: 'info', text: `Draft #${bundleId} is open. Scan waybills to reach ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX} and close it.` });
+      setNotice({
+        kind: "info",
+        text: `Draft #${bundleId} is open. Scan waybills to reach ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX} and close it.`,
+      });
     }
   }, []);
 
@@ -815,7 +1129,9 @@ export default function BundlingPage() {
       return;
     }
 
-    const currentExists = drafts.some((row) => Number(row.Bundle_ID || 0) === Number(scannerDraftBundleId || 0));
+    const currentExists = drafts.some(
+      (row) => Number(row.Bundle_ID || 0) === Number(scannerDraftBundleId || 0),
+    );
     if (!currentExists) {
       handleContinueDraft(drafts[0], { silent: true });
     }
@@ -827,106 +1143,165 @@ export default function BundlingPage() {
     if (scannerDraftBundleId) setSelectedKey(`draft-${scannerDraftBundleId}`);
   }, [scannerDraftBundleId]);
 
-  const handleFinalizeDraftNow = useCallback(async (draft) => {
-    if (!draft?.Bundle_ID) return;
-    setIsFinalizingDraftId(draft.Bundle_ID);
-    setNotice({ kind: '', text: '' });
-    try {
-      const result = await supabase.rpc('bundle_close_draft', {
-        p_bundle_id: Number(draft.Bundle_ID),
-      });
-      if (result.error) throw result.error;
+  const handleFinalizeDraftNow = useCallback(
+    async (draft) => {
+      if (!draft?.Bundle_ID) return;
+      setIsFinalizingDraftId(draft.Bundle_ID);
+      setNotice({ kind: "", text: "" });
+      try {
+        const result = await supabase.rpc("bundle_close_draft", {
+          p_bundle_id: Number(draft.Bundle_ID),
+        });
+        if (result.error) throw result.error;
 
-      const payload = result.data || {};
-      const closedBundle = payload.bundle || {};
-      const bundleCode = closedBundle.Bundle_Waybill_Code || `WB${String(Number(draft.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`;
-      const memberCount = Number(payload.member_count || (bundleMembersByBundleId[draft.Bundle_ID] || []).length || 0);
+        const payload = result.data || {};
+        const closedBundle = payload.bundle || {};
+        const bundleCode =
+          closedBundle.Bundle_Waybill_Code ||
+          `WB${String(Number(draft.Bundle_ID || 0))
+            .padStart(6, "0")
+            .slice(-6)}`;
+        const memberCount = Number(
+          payload.member_count ||
+            (bundleMembersByBundleId[draft.Bundle_ID] || []).length ||
+            0,
+        );
 
-      if (Number(scannerDraftBundleId || 0) === Number(draft.Bundle_ID)) {
-        setScannerDraftBundleId(null);
-        setScannerWaybillCode('');
-        if (isCameraOn) {
-          stopCamera();
-          setIsCameraOn(false);
-          setCameraStatus({ kind: 'info', message: 'Camera is off. Start scanner to read waybill QR.' });
+        if (Number(scannerDraftBundleId || 0) === Number(draft.Bundle_ID)) {
+          setScannerDraftBundleId(null);
+          setScannerWaybillCode("");
+          if (isCameraOn) {
+            stopCamera();
+            setIsCameraOn(false);
+            setCameraStatus({
+              kind: "info",
+              message: "Camera is off. Start scanner to read waybill QR.",
+            });
+          }
         }
-      }
 
-      await loadData();
-      setNotice({ kind: 'success', text: `Bundle ${bundleCode} closed with ${memberCount} hairs. Waybill is ready to print.` });
-      setActivePrintBundle({
-        bundleId: Number(closedBundle.Bundle_ID || draft.Bundle_ID),
-        submissionCode: bundleCode,
-        notes: closedBundle.Notes || '',
-        memberCount,
-        members: bundleMembersByBundleId[draft.Bundle_ID] || [],
-        specification: wigSpecOptions.find((option) => (
-          Number(option.Wig_Specification_ID || 0) === Number(closedBundle.Wig_Specification_ID || draft.Wig_Specification_ID || 0)
-        )) || null,
-        status: closedBundle.Status || 'In Production',
-        createdAt: closedBundle.Created_At || new Date().toISOString(),
-        qrDataUrl: '',
-      });
-    } catch (error) {
-      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to finalize draft.') });
-    } finally {
-      setIsFinalizingDraftId(null);
-    }
-  }, [bundleMembersByBundleId, isCameraOn, loadData, scannerDraftBundleId, stopCamera, wigSpecOptions]);
-
-  const handleDeleteDraftNow = useCallback(async (draft) => {
-    if (!draft?.Bundle_ID) return;
-    setIsDeletingDraftId(draft.Bundle_ID);
-    setNotice({ kind: '', text: '' });
-    try {
-      const { error } = await deleteBundleDraft({ bundleId: draft.Bundle_ID });
-      if (error) throw error;
-      setNotice({ kind: 'success', text: `Draft #${draft.Bundle_ID} deleted.` });
-      if (Number(scannerDraftBundleId || 0) === Number(draft.Bundle_ID)) {
-        setScannerDraftBundleId(null);
-        setScannerWaybillCode('');
+        await loadData();
+        setNotice({
+          kind: "success",
+          text: `Bundle ${bundleCode} closed with ${memberCount} hairs. Waybill is ready to print.`,
+        });
+        setActivePrintBundle({
+          bundleId: Number(closedBundle.Bundle_ID || draft.Bundle_ID),
+          submissionCode: bundleCode,
+          notes: closedBundle.Notes || "",
+          memberCount,
+          members: bundleMembersByBundleId[draft.Bundle_ID] || [],
+          specification:
+            wigSpecOptions.find(
+              (option) =>
+                Number(option.Wig_Specification_ID || 0) ===
+                Number(
+                  closedBundle.Wig_Specification_ID ||
+                    draft.Wig_Specification_ID ||
+                    0,
+                ),
+            ) || null,
+          status: closedBundle.Status || "In Production",
+          createdAt: closedBundle.Created_At || new Date().toISOString(),
+          qrDataUrl: "",
+        });
+      } catch (error) {
+        setNotice({
+          kind: "error",
+          text: normalizeErrorMessage(error, "Unable to finalize draft."),
+        });
+      } finally {
+        setIsFinalizingDraftId(null);
       }
-      await loadData();
-    } catch (error) {
-      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to delete draft.') });
-    } finally {
-      setIsDeletingDraftId(null);
-    }
-  }, [loadData, scannerDraftBundleId]);
+    },
+    [
+      bundleMembersByBundleId,
+      isCameraOn,
+      loadData,
+      scannerDraftBundleId,
+      stopCamera,
+      wigSpecOptions,
+    ],
+  );
+
+  const handleDeleteDraftNow = useCallback(
+    async (draft) => {
+      if (!draft?.Bundle_ID) return;
+      setIsDeletingDraftId(draft.Bundle_ID);
+      setNotice({ kind: "", text: "" });
+      try {
+        const { error } = await deleteBundleDraft({
+          bundleId: draft.Bundle_ID,
+        });
+        if (error) throw error;
+        setNotice({
+          kind: "success",
+          text: `Draft #${draft.Bundle_ID} deleted.`,
+        });
+        if (Number(scannerDraftBundleId || 0) === Number(draft.Bundle_ID)) {
+          setScannerDraftBundleId(null);
+          setScannerWaybillCode("");
+        }
+        await loadData();
+      } catch (error) {
+        setNotice({
+          kind: "error",
+          text: normalizeErrorMessage(error, "Unable to delete draft."),
+        });
+      } finally {
+        setIsDeletingDraftId(null);
+      }
+    },
+    [loadData, scannerDraftBundleId],
+  );
 
   const handleOpenDraftBundle = async () => {
     if (draftCount >= 3) {
-      setNotice({ kind: 'warning', text: 'You already have 3 open drafts. Close or delete one before opening a new draft.' });
+      setNotice({
+        kind: "warning",
+        text: "You already have 3 open drafts. Close or delete one before opening a new draft.",
+      });
       return;
     }
 
     const numericSpecId = Number(scannerSpecId || 0);
     if (!numericSpecId) {
-      setNotice({ kind: 'warning', text: 'Select a wig specification before opening a draft.' });
+      setNotice({
+        kind: "warning",
+        text: "Select a wig specification before opening a draft.",
+      });
       return;
     }
 
     setIsOpeningScannerBundle(true);
-    setNotice({ kind: '', text: '' });
+    setNotice({ kind: "", text: "" });
 
     try {
-      const result = await supabase.rpc('create_hair_bundle_draft', {
+      const result = await supabase.rpc("create_hair_bundle_draft", {
         p_wig_specification_id: numericSpecId,
-        p_notes: String(scannerNotes || '').trim() || null,
+        p_notes: String(scannerNotes || "").trim() || null,
       });
       if (result.error) throw result.error;
 
       const bundle = result.data || {};
       const nextBundleId = Number(bundle.Bundle_ID || 0);
       if (!nextBundleId) {
-        throw new Error('Bundle draft was created but no Bundle_ID was returned.');
+        throw new Error(
+          "Bundle draft was created but no Bundle_ID was returned.",
+        );
       }
 
       setScannerDraftBundleId(nextBundleId);
       await loadData();
-      setNotice({ kind: 'success', text: `Draft #${nextBundleId} is open. Scan 8-10 waybills to close it.` });
+      setNotice({
+        kind: "success",
+        text: `Draft #${nextBundleId} is open. Scan 8-10 waybills to close it.`,
+      });
     } catch (error) {
-      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to open draft bundle.') });
+      setNotice({
+        kind: "error",
+        text: normalizeErrorMessage(error, "Unable to open draft bundle."),
+      });
     } finally {
       setIsOpeningScannerBundle(false);
     }
@@ -936,224 +1311,360 @@ export default function BundlingPage() {
     const requestId = Number(requestRow?.Req_ID || 0);
     if (!requestId) return;
     if (draftCount >= 3) {
-      setNotice({ kind: 'warning', text: 'You already have 3 open drafts. Close or delete one before opening this requested wig.' });
+      setNotice({
+        kind: "warning",
+        text: "You already have 3 open drafts. Close or delete one before opening this requested wig.",
+      });
       return;
     }
 
     setOpeningWishRequestId(requestId);
-    setNotice({ kind: '', text: '' });
+    setNotice({ kind: "", text: "" });
     try {
-      const result = await supabase.rpc('create_wig_request_bundle_draft', {
+      const result = await supabase.rpc("create_wig_request_bundle_draft", {
         p_wig_request_id: requestId,
         p_notes: `Requested wig for ${requestRow.patientCode || `patient #${requestRow.Patient_ID}`}`,
       });
       if (result.error) throw result.error;
       const bundle = result.data?.bundle || {};
       const bundleId = Number(bundle.Bundle_ID || 0);
-      if (!bundleId) throw new Error('The linked draft was created but no Bundle_ID was returned.');
+      if (!bundleId)
+        throw new Error(
+          "The linked draft was created but no Bundle_ID was returned.",
+        );
 
-      setScannerSpecId(String(bundle.Wig_Specification_ID || requestRow.Requested_Wig_Specification_ID || ''));
-      setScannerNotes(bundle.Notes || '');
+      setScannerSpecId(
+        String(
+          bundle.Wig_Specification_ID ||
+            requestRow.Requested_Wig_Specification_ID ||
+            "",
+        ),
+      );
+      setScannerNotes(bundle.Notes || "");
       setScannerDraftBundleId(bundleId);
       setSelectedKey(`draft-${bundleId}`);
       await loadData();
       setNotice({
-        kind: 'success',
+        kind: "success",
         text: `${requestRow.Request_Code || `Request #${requestId}`} is linked to draft #${bundleId}. Wig, cap size, patient, and request references were assigned automatically.`,
       });
     } catch (error) {
-      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to open the requested wig draft.') });
+      setNotice({
+        kind: "error",
+        text: normalizeErrorMessage(
+          error,
+          "Unable to open the requested wig draft.",
+        ),
+      });
     } finally {
       setOpeningWishRequestId(null);
     }
   };
 
-  const handleScanWaybillIntoBundle = useCallback(async (rawValue, { fromCamera = false } = {}) => {
-    if (isScanProcessingRef.current) return;
-    const bundleId = Number(scannerDraftBundleId || 0);
-    const rawWaybill = String(rawValue || '').trim();
-    const waybill = fromCamera && rawWaybill.startsWith('{')
-      ? rawWaybill
-      : normalizeWaybillCodeInput(rawWaybill);
-    if (!bundleId) {
-      setNotice({ kind: 'warning', text: 'Open a draft first.' });
-      if (fromCamera) setCameraStatus({ kind: 'warning', message: 'Open a draft before scanning.' });
-      setScanOutcome({ tone: 'warning', title: 'No active draft', action: 'No database change', status: 'Blocked', nextStep: 'Open or continue a draft bundle first' });
-      return;
-    }
-    if (!waybill) {
-      setNotice({ kind: 'warning', text: 'Enter or scan a waybill code.' });
-      if (fromCamera) setCameraStatus({ kind: 'warning', message: 'No QR code was detected from camera frame.' });
-      setScanOutcome({ tone: 'warning', title: 'No waybill detected', action: 'No database change', status: 'Blocked', nextStep: 'Scan a QR or enter the complete WB code' });
-      return;
-    }
-    if (!fromCamera && !isValidWaybillCode(waybill)) {
-      setNotice({ kind: 'warning', text: 'Enter a complete waybill: WB followed by 6 letters or numbers.' });
-      setScanOutcome({ tone: 'warning', title: 'Incomplete waybill', waybill, action: 'No database change', status: 'Blocked', nextStep: 'Enter WB followed by 6 letters or numbers' });
-      return;
-    }
+  const handleScanWaybillIntoBundle = useCallback(
+    async (rawValue, { fromCamera = false } = {}) => {
+      if (isScanProcessingRef.current) return;
+      const bundleId = Number(scannerDraftBundleId || 0);
+      const rawWaybill = String(rawValue || "").trim();
+      const waybill =
+        fromCamera && rawWaybill.startsWith("{")
+          ? rawWaybill
+          : normalizeWaybillCodeInput(rawWaybill);
+      if (!bundleId) {
+        setNotice({ kind: "warning", text: "Open a draft first." });
+        if (fromCamera)
+          setCameraStatus({
+            kind: "warning",
+            message: "Open a draft before scanning.",
+          });
+        setScanOutcome({
+          tone: "warning",
+          title: "No active draft",
+          action: "No database change",
+          status: "Blocked",
+          nextStep: "Open or continue a draft bundle first",
+        });
+        return;
+      }
+      if (!waybill) {
+        setNotice({ kind: "warning", text: "Enter or scan a waybill code." });
+        if (fromCamera)
+          setCameraStatus({
+            kind: "warning",
+            message: "No QR code was detected from camera frame.",
+          });
+        setScanOutcome({
+          tone: "warning",
+          title: "No waybill detected",
+          action: "No database change",
+          status: "Blocked",
+          nextStep: "Scan a QR or enter the complete WB code",
+        });
+        return;
+      }
+      if (!fromCamera && !isValidWaybillCode(waybill)) {
+        setNotice({
+          kind: "warning",
+          text: "Enter a complete waybill: WB followed by 6 letters or numbers.",
+        });
+        setScanOutcome({
+          tone: "warning",
+          title: "Incomplete waybill",
+          waybill,
+          action: "No database change",
+          status: "Blocked",
+          nextStep: "Enter WB followed by 6 letters or numbers",
+        });
+        return;
+      }
 
-    isScanProcessingRef.current = true;
-    setIsScanningWaybill(true);
-    setNotice({ kind: '', text: '' });
+      isScanProcessingRef.current = true;
+      setIsScanningWaybill(true);
+      setNotice({ kind: "", text: "" });
 
-    try {
-      let rpcWaybillPayload = waybill;
-      if (isValidWaybillCode(waybill)) {
-        const knownEventHair = availableCutHair.find((hair) => (
-          hair.isEventHair
-          && String(hair.waybillCode || '').trim().toUpperCase() === waybill
-        ));
+      try {
+        let rpcWaybillPayload = waybill;
+        if (isValidWaybillCode(waybill)) {
+          const knownEventHair = availableCutHair.find(
+            (hair) =>
+              hair.isEventHair &&
+              String(hair.waybillCode || "")
+                .trim()
+                .toUpperCase() === waybill,
+          );
 
-        // Event codes must be sent unchanged because bundle_scan_add_waybill
-        // resolves them from Event_Attendees.Waybill_Code. Only decode locally
-        // generated non-event waybills into their Hair_Submissions ID.
-        if (!knownEventHair) {
-          const decodedSubmissionId = Number.parseInt(waybill.slice(2), 36);
-          if (Number.isInteger(decodedSubmissionId) && decodedSubmissionId > 0) {
-            const submissionLookup = await supabase
-              .from(HAIR_SUBMISSIONS_TABLE)
-              .select('Submission_ID')
-              .eq('Submission_ID', decodedSubmissionId)
-              .eq('From_Event', false)
-              .maybeSingle();
-            if (submissionLookup.error) throw submissionLookup.error;
-            if (submissionLookup.data?.Submission_ID) {
-              rpcWaybillPayload = JSON.stringify({
-                Submission_ID: submissionLookup.data.Submission_ID,
-                Waybill_Code: waybill,
-              });
+          // Event codes must be sent unchanged because bundle_scan_add_waybill
+          // resolves them from Event_Attendees.Waybill_Code. Only decode locally
+          // generated non-event waybills into their Hair_Submissions ID.
+          if (!knownEventHair) {
+            const decodedSubmissionId = Number.parseInt(waybill.slice(2), 36);
+            if (
+              Number.isInteger(decodedSubmissionId) &&
+              decodedSubmissionId > 0
+            ) {
+              const submissionLookup = await supabase
+                .from(HAIR_SUBMISSIONS_TABLE)
+                .select("Submission_ID")
+                .eq("Submission_ID", decodedSubmissionId)
+                .eq("From_Event", false)
+                .maybeSingle();
+              if (submissionLookup.error) throw submissionLookup.error;
+              if (submissionLookup.data?.Submission_ID) {
+                rpcWaybillPayload = JSON.stringify({
+                  Submission_ID: submissionLookup.data.Submission_ID,
+                  Waybill_Code: waybill,
+                });
+              }
             }
           }
         }
-      }
 
-      const result = await supabase.rpc('bundle_scan_add_waybill', {
-        p_bundle_id: bundleId,
-        p_waybill_payload: rpcWaybillPayload,
-      });
-      if (result.error) throw result.error;
-
-      const payload = result.data || {};
-      const memberCount = Number(payload?.member_count || 0);
-      const submissionCode = payload?.submission?.Waybill_Code || waybill;
-      const scannedHair = availableCutHair.find(
-        (hair) => String(hair.waybillCode || '').trim().toUpperCase() === String(submissionCode || '').trim().toUpperCase(),
-      ) || null;
-
-      setScannerWaybillCode('');
-      await loadData();
-      if (fromCamera) {
-        setCameraStatus({
-          kind: 'success',
-          message: `Scanned ${submissionCode}. Bundle count is now ${memberCount}.`,
+        const result = await supabase.rpc("bundle_scan_add_waybill", {
+          p_bundle_id: bundleId,
+          p_waybill_payload: rpcWaybillPayload,
         });
+        if (result.error) throw result.error;
+
+        const payload = result.data || {};
+        const memberCount = Number(payload?.member_count || 0);
+        const submissionCode = payload?.submission?.Waybill_Code || waybill;
+        const scannedHair =
+          availableCutHair.find(
+            (hair) =>
+              String(hair.waybillCode || "")
+                .trim()
+                .toUpperCase() ===
+              String(submissionCode || "")
+                .trim()
+                .toUpperCase(),
+          ) || null;
+
+        setScannerWaybillCode("");
+        await loadData();
+        if (fromCamera) {
+          setCameraStatus({
+            kind: "success",
+            message: `Scanned ${submissionCode}. Bundle count is now ${memberCount}.`,
+          });
+        }
+        setNotice({
+          kind: "success",
+          text: `Waybill ${submissionCode} added to bundle #${bundleId}. Current count: ${memberCount}.`,
+        });
+        setScanOutcome({
+          tone: "success",
+          title: "Hair added to draft",
+          waybill: submissionCode,
+          subject: scannedHair?.donorName || "Donor hair",
+          action: `Added to bundle #${bundleId}; count is now ${memberCount}`,
+          status: "Bundling",
+          nextStep:
+            memberCount >= BUNDLE_HAIR_COUNT_TARGET_MIN
+              ? "Close the draft now or scan up to 10 total hairs"
+              : `Scan ${BUNDLE_HAIR_COUNT_TARGET_MIN - memberCount} more eligible hair${BUNDLE_HAIR_COUNT_TARGET_MIN - memberCount === 1 ? "" : "s"} to unlock closing`,
+          statusChanges: [
+            {
+              label: "Bundle assignment",
+              before: "None",
+              after: `Draft #${bundleId}`,
+            },
+            {
+              label: "Hair submission",
+              before:
+                payload?.submission?.From_Event === false ? "Available" : "Cut",
+              after:
+                payload?.submission?.From_Event === false ? "Available" : "Cut",
+            },
+            {
+              label: "Cut inventory",
+              before: "Cut / Available",
+              after: "Bundling",
+            },
+          ],
+        });
+      } catch (error) {
+        const normalized = normalizeErrorMessage(
+          error,
+          "Unable to scan waybill into bundle.",
+        );
+        setNotice({ kind: "error", text: normalized });
+        if (fromCamera) setCameraStatus({ kind: "error", message: normalized });
+        setScanOutcome({
+          tone: "error",
+          title: "Hair was not added",
+          waybill: isValidWaybillCode(waybill) ? waybill : "",
+          action: "No bundle or inventory change",
+          status: "Blocked",
+          nextStep: normalized,
+        });
+      } finally {
+        setIsScanningWaybill(false);
+        isScanProcessingRef.current = false;
       }
-      setNotice({
-        kind: 'success',
-        text: `Waybill ${submissionCode} added to bundle #${bundleId}. Current count: ${memberCount}.`,
-      });
-      setScanOutcome({
-        tone: 'success', title: 'Hair added to draft', waybill: submissionCode,
-        subject: scannedHair?.donorName || 'Donor hair',
-        action: `Added to bundle #${bundleId}; count is now ${memberCount}`,
-        status: 'Bundling',
-        nextStep: memberCount >= BUNDLE_HAIR_COUNT_TARGET_MIN
-          ? 'Close the draft now or scan up to 10 total hairs'
-          : `Scan ${BUNDLE_HAIR_COUNT_TARGET_MIN - memberCount} more eligible hair${BUNDLE_HAIR_COUNT_TARGET_MIN - memberCount === 1 ? '' : 's'} to unlock closing`,
-        statusChanges: [
-          { label: 'Bundle assignment', before: 'None', after: `Draft #${bundleId}` },
-          { label: 'Hair submission', before: payload?.submission?.From_Event === false ? 'Available' : 'Cut', after: payload?.submission?.From_Event === false ? 'Available' : 'Cut' },
-          { label: 'Cut inventory', before: 'Cut / Available', after: 'Bundling' },
-        ],
-      });
-    } catch (error) {
-      const normalized = normalizeErrorMessage(error, 'Unable to scan waybill into bundle.');
-      setNotice({ kind: 'error', text: normalized });
-      if (fromCamera) setCameraStatus({ kind: 'error', message: normalized });
-      setScanOutcome({
-        tone: 'error', title: 'Hair was not added', waybill: isValidWaybillCode(waybill) ? waybill : '',
-        action: 'No bundle or inventory change', status: 'Blocked', nextStep: normalized,
-      });
-    } finally {
-      setIsScanningWaybill(false);
-      isScanProcessingRef.current = false;
-    }
-  }, [availableCutHair, loadData, scannerDraftBundleId]);
+    },
+    [availableCutHair, loadData, scannerDraftBundleId],
+  );
 
-  const handleCloseScannerBundleNow = useCallback(async (bundleIdInput) => {
-    const bundleId = Number(bundleIdInput || scannerDraftBundleId || 0);
-    if (!bundleId) {
-      setNotice({ kind: 'warning', text: 'Open a draft first.' });
-      return;
-    }
-
-    setIsClosingScannerBundle(true);
-    setNotice({ kind: '', text: '' });
-    try {
-      const result = await supabase.rpc('bundle_close_draft', {
-        p_bundle_id: bundleId,
-      });
-      if (result.error) throw result.error;
-
-      const payload = result.data || {};
-      const closedBundle = payload.bundle || {};
-      const code = closedBundle.Bundle_Waybill_Code || `WB${String(Number(bundleId || 0)).padStart(6, '0').slice(-6)}`;
-      const memberCount = Number(payload.member_count || scannerBundleMemberCount || 0);
-
-      await loadData();
-      setScannerDraftBundleId(null);
-      setScannerWaybillCode('');
-      if (isCameraOn) {
-        stopCamera();
-        setIsCameraOn(false);
-        setCameraStatus({ kind: 'info', message: 'Camera is off. Start scanner to read waybill QR.' });
+  const handleCloseScannerBundleNow = useCallback(
+    async (bundleIdInput) => {
+      const bundleId = Number(bundleIdInput || scannerDraftBundleId || 0);
+      if (!bundleId) {
+        setNotice({ kind: "warning", text: "Open a draft first." });
+        return;
       }
-      setNotice({ kind: 'success', text: `Bundle ${code} closed with ${memberCount} hairs. Waybill is ready to print.` });
-      setScanOutcome({
-        tone: 'success', title: 'Draft closed successfully', waybill: code,
-        subject: `Bundle #${bundleId}`, action: `Finalized ${memberCount} hairs for production`,
-        status: 'Wig In Production', nextStep: 'Print and attach the bundle waybill',
-        statusChanges: [
-          { label: 'Bundle', before: 'Draft', after: 'In Production' },
-          { label: 'Member submissions', before: 'Cut', after: 'Wig In Production' },
-          { label: 'Cut inventory', before: 'Bundling', after: 'Bundling' },
-        ],
-      });
-      setActivePrintBundle({
-        bundleId: Number(closedBundle.Bundle_ID || bundleId),
-        submissionCode: code,
-        notes: closedBundle.Notes || '',
-        memberCount,
-        members: bundleMembersByBundleId[bundleId] || [],
-        specification: wigSpecOptions.find((option) => (
-          Number(option.Wig_Specification_ID || 0) === Number(closedBundle.Wig_Specification_ID || scannerBundleRow?.Wig_Specification_ID || 0)
-        )) || null,
-        status: closedBundle.Status || 'In Production',
-        createdAt: closedBundle.Created_At || new Date().toISOString(),
-        qrDataUrl: '',
-      });
-    } catch (error) {
-      setNotice({ kind: 'error', text: normalizeErrorMessage(error, 'Unable to close draft bundle.') });
-    } finally {
-      setIsClosingScannerBundle(false);
-    }
-  }, [bundleMembersByBundleId, isCameraOn, loadData, scannerBundleMemberCount, scannerBundleRow, scannerDraftBundleId, stopCamera, wigSpecOptions]);
+
+      setIsClosingScannerBundle(true);
+      setNotice({ kind: "", text: "" });
+      try {
+        const result = await supabase.rpc("bundle_close_draft", {
+          p_bundle_id: bundleId,
+        });
+        if (result.error) throw result.error;
+
+        const payload = result.data || {};
+        const closedBundle = payload.bundle || {};
+        const code =
+          closedBundle.Bundle_Waybill_Code ||
+          `WB${String(Number(bundleId || 0))
+            .padStart(6, "0")
+            .slice(-6)}`;
+        const memberCount = Number(
+          payload.member_count || scannerBundleMemberCount || 0,
+        );
+
+        await loadData();
+        setScannerDraftBundleId(null);
+        setScannerWaybillCode("");
+        if (isCameraOn) {
+          stopCamera();
+          setIsCameraOn(false);
+          setCameraStatus({
+            kind: "info",
+            message: "Camera is off. Start scanner to read waybill QR.",
+          });
+        }
+        setNotice({
+          kind: "success",
+          text: `Bundle ${code} closed with ${memberCount} hairs. Waybill is ready to print.`,
+        });
+        setScanOutcome({
+          tone: "success",
+          title: "Draft closed successfully",
+          waybill: code,
+          subject: `Bundle #${bundleId}`,
+          action: `Finalized ${memberCount} hairs for production`,
+          status: "Wig In Production",
+          nextStep: "Print and attach the bundle waybill",
+          statusChanges: [
+            { label: "Bundle", before: "Draft", after: "In Production" },
+            {
+              label: "Member submissions",
+              before: "Cut",
+              after: "Wig In Production",
+            },
+            { label: "Cut inventory", before: "Bundling", after: "Bundling" },
+          ],
+        });
+        setActivePrintBundle({
+          bundleId: Number(closedBundle.Bundle_ID || bundleId),
+          submissionCode: code,
+          notes: closedBundle.Notes || "",
+          memberCount,
+          members: bundleMembersByBundleId[bundleId] || [],
+          specification:
+            wigSpecOptions.find(
+              (option) =>
+                Number(option.Wig_Specification_ID || 0) ===
+                Number(
+                  closedBundle.Wig_Specification_ID ||
+                    scannerBundleRow?.Wig_Specification_ID ||
+                    0,
+                ),
+            ) || null,
+          status: closedBundle.Status || "In Production",
+          createdAt: closedBundle.Created_At || new Date().toISOString(),
+          qrDataUrl: "",
+        });
+      } catch (error) {
+        setNotice({
+          kind: "error",
+          text: normalizeErrorMessage(error, "Unable to close draft bundle."),
+        });
+      } finally {
+        setIsClosingScannerBundle(false);
+      }
+    },
+    [
+      bundleMembersByBundleId,
+      isCameraOn,
+      loadData,
+      scannerBundleMemberCount,
+      scannerBundleRow,
+      scannerDraftBundleId,
+      stopCamera,
+      wigSpecOptions,
+    ],
+  );
 
   const handleFinalizeDraft = (draft) => {
     const draftIds = (bundleMembersByBundleId[draft.Bundle_ID] || [])
       .map((row) => Number(row.submissionId || 0))
       .filter(Boolean);
     if (!draftIds.length) {
-      setNotice({ kind: 'warning', text: 'This draft has no scanned hairs yet.' });
+      setNotice({
+        kind: "warning",
+        text: "This draft has no scanned hairs yet.",
+      });
       return;
     }
 
-    const outsideTarget = draftIds.length < BUNDLE_HAIR_COUNT_TARGET_MIN || draftIds.length > BUNDLE_HAIR_COUNT_TARGET_MAX;
+    const outsideTarget =
+      draftIds.length < BUNDLE_HAIR_COUNT_TARGET_MIN ||
+      draftIds.length > BUNDLE_HAIR_COUNT_TARGET_MAX;
     openConfirmModal({
-      action: 'finalize-draft',
+      action: "finalize-draft",
       bundleId: draft.Bundle_ID,
-      tone: outsideTarget ? 'warning' : 'primary',
+      tone: outsideTarget ? "warning" : "primary",
       title: `Finalize draft #${draft.Bundle_ID}?`,
       message: outsideTarget
         ? `This draft has ${draftIds.length} hairs. Recommended target is ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX}. Finalize anyway?`
@@ -1163,130 +1674,161 @@ export default function BundlingPage() {
 
   const handleDeleteDraft = (draft) => {
     openConfirmModal({
-      action: 'delete-draft',
+      action: "delete-draft",
       bundleId: draft.Bundle_ID,
-      tone: 'danger',
+      tone: "danger",
       title: `Delete draft #${draft.Bundle_ID}?`,
-      message: 'This action cannot be undone.',
+      message: "This action cannot be undone.",
     });
   };
 
-  const handleRemoveDraftMember = useCallback((bundleId, member) => {
-    const submissionId = Number(member?.submissionId || 0);
-    if (!bundleId || !submissionId) return;
-    openConfirmModal({
-      action: 'remove-draft-member',
-      bundleId: Number(bundleId),
-      submissionId,
-      submissionCode: member?.submissionCode || '',
-      donorName: member?.donorName || '',
-      tone: 'warning',
-      title: `Remove ${member?.submissionCode || 'waybill'} from draft?`,
-      message: 'This will remove the hair from this draft and clear its Bundle_ID.',
-    });
-  }, [openConfirmModal]);
+  const handleRemoveDraftMember = useCallback(
+    (bundleId, member) => {
+      const submissionId = Number(member?.submissionId || 0);
+      if (!bundleId || !submissionId) return;
+      openConfirmModal({
+        action: "remove-draft-member",
+        bundleId: Number(bundleId),
+        submissionId,
+        submissionCode: member?.submissionCode || "",
+        donorName: member?.donorName || "",
+        tone: "warning",
+        title: `Remove ${member?.submissionCode || "waybill"} from draft?`,
+        message:
+          "This will remove the hair from this draft and clear its Bundle_ID.",
+      });
+    },
+    [openConfirmModal],
+  );
 
-  const handleRemoveDraftMemberNow = useCallback(async ({ bundleId, submissionId, submissionCode, donorName }) => {
-    if (!bundleId || !submissionId) return;
-    if (removingSubmissionIdRef.current) return;
-    removingSubmissionIdRef.current = Number(submissionId);
-    setIsRemovingSubmissionId(Number(submissionId));
-    setNotice({ kind: '', text: '' });
-    try {
-      const result = await supabase.rpc('bundle_remove_waybill_from_draft', {
-        p_bundle_id: Number(bundleId),
-        p_submission_id: Number(submissionId),
-      });
-      if (result.error) throw result.error;
-      const payload = result.data || {};
-      const memberCount = Number(payload?.member_count || 0);
-      setBundleMembersByBundleId((current) => ({
-        ...current,
-        [Number(bundleId)]: (current[Number(bundleId)] || []).filter(
-          (member) => Number(member.submissionId) !== Number(submissionId),
-        ),
-      }));
-      await loadData();
-      setNotice({
-        kind: 'success',
-        text: `${submissionCode || 'The selected hair'} removed from draft #${bundleId}. Current count: ${memberCount}.`,
-      });
-      setScanOutcome({
-        tone: 'info', title: 'Hair removed from draft', waybill: submissionCode,
-        subject: donorName || 'Donor hair', action: `Removed from bundle #${bundleId}`,
-        status: 'Cut / Available', nextStep: 'The hair may be scanned into another eligible draft',
-        statusChanges: [
-          { label: 'Bundle assignment', before: `Draft #${bundleId}`, after: 'None' },
-          { label: 'Hair submission', before: 'Cut', after: 'Cut' },
-          { label: 'Cut inventory', before: 'Bundling', after: 'Cut / Available' },
-        ],
-      });
-    } catch (error) {
-      const message = normalizeErrorMessage(error, 'Unable to remove this hair from draft.');
-      setNotice({ kind: 'error', text: message });
-      setScanOutcome({
-        tone: 'error', title: 'Hair was not removed', waybill: submissionCode,
-        subject: `Submission #${submissionId}`, action: 'No bundle or inventory change',
-        status: 'Blocked', nextStep: message,
-      });
-    } finally {
-      removingSubmissionIdRef.current = null;
-      setIsRemovingSubmissionId(null);
-    }
-  }, [loadData]);
+  const handleRemoveDraftMemberNow = useCallback(
+    async ({ bundleId, submissionId, submissionCode, donorName }) => {
+      if (!bundleId || !submissionId) return;
+      if (removingSubmissionIdRef.current) return;
+      removingSubmissionIdRef.current = Number(submissionId);
+      setIsRemovingSubmissionId(Number(submissionId));
+      setNotice({ kind: "", text: "" });
+      try {
+        const result = await supabase.rpc("bundle_remove_waybill_from_draft", {
+          p_bundle_id: Number(bundleId),
+          p_submission_id: Number(submissionId),
+        });
+        if (result.error) throw result.error;
+        const payload = result.data || {};
+        const memberCount = Number(payload?.member_count || 0);
+        setBundleMembersByBundleId((current) => ({
+          ...current,
+          [Number(bundleId)]: (current[Number(bundleId)] || []).filter(
+            (member) => Number(member.submissionId) !== Number(submissionId),
+          ),
+        }));
+        await loadData();
+        setNotice({
+          kind: "success",
+          text: `${submissionCode || "The selected hair"} removed from draft #${bundleId}. Current count: ${memberCount}.`,
+        });
+        setScanOutcome({
+          tone: "info",
+          title: "Hair removed from draft",
+          waybill: submissionCode,
+          subject: donorName || "Donor hair",
+          action: `Removed from bundle #${bundleId}`,
+          status: "Cut / Available",
+          nextStep: "The hair may be scanned into another eligible draft",
+          statusChanges: [
+            {
+              label: "Bundle assignment",
+              before: `Draft #${bundleId}`,
+              after: "None",
+            },
+            { label: "Hair submission", before: "Cut", after: "Cut" },
+            {
+              label: "Cut inventory",
+              before: "Bundling",
+              after: "Cut / Available",
+            },
+          ],
+        });
+      } catch (error) {
+        const message = normalizeErrorMessage(
+          error,
+          "Unable to remove this hair from draft.",
+        );
+        setNotice({ kind: "error", text: message });
+        setScanOutcome({
+          tone: "error",
+          title: "Hair was not removed",
+          waybill: submissionCode,
+          subject: `Submission #${submissionId}`,
+          action: "No bundle or inventory change",
+          status: "Blocked",
+          nextStep: message,
+        });
+      } finally {
+        removingSubmissionIdRef.current = null;
+        setIsRemovingSubmissionId(null);
+      }
+    },
+    [loadData],
+  );
 
   const handleCloseScannerBundle = () => {
     const bundleId = Number(scannerDraftBundleId || 0);
     if (!bundleId) {
-      setNotice({ kind: 'warning', text: 'Open a draft first.' });
+      setNotice({ kind: "warning", text: "Open a draft first." });
       return;
     }
     openConfirmModal({
-      action: 'close-scanner-bundle',
+      action: "close-scanner-bundle",
       bundleId,
-      tone: 'primary',
+      tone: "primary",
       title: `Close draft #${bundleId}?`,
       message: `This will finalize the draft and print-ready waybill if it has ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX} hairs.`,
     });
   };
 
   const handleConfirmModalSubmit = async () => {
-    const {
-      action,
-      bundleId,
-      submissionId,
-      submissionCode,
-      donorName,
-    } = confirmModal;
+    const { action, bundleId, submissionId, submissionCode, donorName } =
+      confirmModal;
     closeConfirmModal();
     if (!action || !bundleId) return;
 
-    if (action === 'finalize-draft') {
-      const draft = drafts.find((row) => Number(row.Bundle_ID || 0) === Number(bundleId));
+    if (action === "finalize-draft") {
+      const draft = drafts.find(
+        (row) => Number(row.Bundle_ID || 0) === Number(bundleId),
+      );
       if (!draft) {
-        setNotice({ kind: 'error', text: 'Draft not found. Refresh and try again.' });
+        setNotice({
+          kind: "error",
+          text: "Draft not found. Refresh and try again.",
+        });
         return;
       }
       await handleFinalizeDraftNow(draft);
       return;
     }
 
-    if (action === 'delete-draft') {
-      const draft = drafts.find((row) => Number(row.Bundle_ID || 0) === Number(bundleId));
+    if (action === "delete-draft") {
+      const draft = drafts.find(
+        (row) => Number(row.Bundle_ID || 0) === Number(bundleId),
+      );
       if (!draft) {
-        setNotice({ kind: 'error', text: 'Draft not found. Refresh and try again.' });
+        setNotice({
+          kind: "error",
+          text: "Draft not found. Refresh and try again.",
+        });
         return;
       }
       await handleDeleteDraftNow(draft);
       return;
     }
 
-    if (action === 'close-scanner-bundle') {
+    if (action === "close-scanner-bundle") {
       await handleCloseScannerBundleNow(bundleId);
       return;
     }
 
-    if (action === 'remove-draft-member') {
+    if (action === "remove-draft-member") {
       await handleRemoveDraftMemberNow({
         bundleId,
         submissionId,
@@ -1308,21 +1850,28 @@ export default function BundlingPage() {
       if (!frameWidth || !frameHeight) return;
 
       try {
-        if (!scannerCanvasRef.current) scannerCanvasRef.current = document.createElement('canvas');
+        if (!scannerCanvasRef.current)
+          scannerCanvasRef.current = document.createElement("canvas");
         const canvas = scannerCanvasRef.current;
         canvas.width = frameWidth;
         canvas.height = frameHeight;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) return;
 
         ctx.drawImage(video, 0, 0, frameWidth, frameHeight);
         const imageData = ctx.getImageData(0, 0, frameWidth, frameHeight);
-        const code = jsQR(imageData.data, frameWidth, frameHeight, { inversionAttempts: 'attemptBoth' });
-        const decoded = String(code?.data || '').trim();
+        const code = jsQR(imageData.data, frameWidth, frameHeight, {
+          inversionAttempts: "attemptBoth",
+        });
+        const decoded = String(code?.data || "").trim();
         if (!decoded) return;
 
         const now = Date.now();
-        if (lastScanRef.current.raw === decoded && now - lastScanRef.current.at < SCAN_DEBOUNCE_MS) return;
+        if (
+          lastScanRef.current.raw === decoded &&
+          now - lastScanRef.current.at < SCAN_DEBOUNCE_MS
+        )
+          return;
         lastScanRef.current = { raw: decoded, at: now };
         void handleScanWaybillIntoBundle(decoded, { fromCamera: true });
       } catch {
@@ -1339,130 +1888,192 @@ export default function BundlingPage() {
     if (!scannerBundleRow && isCameraOn) {
       stopCamera();
       setIsCameraOn(false);
-      setCameraStatus({ kind: 'info', message: 'Camera stopped because there is no active draft bundle.' });
+      setCameraStatus({
+        kind: "info",
+        message: "Camera stopped because there is no active draft bundle.",
+      });
     }
   }, [isCameraOn, scannerBundleRow, stopCamera]);
 
-  useEffect(() => () => {
-    stopCamera();
-  }, [stopCamera]);
+  useEffect(
+    () => () => {
+      stopCamera();
+    },
+    [stopCamera],
+  );
 
   const handleOpenPrint = async (bundleRow) => {
-    const code = bundleRow.Bundle_Waybill_Code
-      || buildBundleSubmissionCode({ bundleId: bundleRow.Bundle_ID, createdAt: bundleRow.Created_At });
-    let qrDataUrl = '';
+    const code =
+      bundleRow.Bundle_Waybill_Code ||
+      buildBundleSubmissionCode({
+        bundleId: bundleRow.Bundle_ID,
+        createdAt: bundleRow.Created_At,
+      });
+    let qrDataUrl = "";
     try {
       qrDataUrl = await QRCode.toDataURL(
-        buildBundleWaybillQrPayload({ bundleId: bundleRow.Bundle_ID, bundleWaybillCode: code }),
-        { errorCorrectionLevel: 'M', margin: 1, scale: 8 },
+        buildBundleWaybillQrPayload({
+          bundleId: bundleRow.Bundle_ID,
+          bundleWaybillCode: code,
+        }),
+        { errorCorrectionLevel: "M", margin: 1, scale: 8 },
       );
     } catch {
-      qrDataUrl = '';
+      qrDataUrl = "";
     }
     setActivePrintBundle({
       bundleId: bundleRow.Bundle_ID,
       submissionCode: code,
-      notes: bundleRow.Notes || '',
+      notes: bundleRow.Notes || "",
       memberCount: (bundleMembersByBundleId[bundleRow.Bundle_ID] || []).length,
       members: bundleMembersByBundleId[bundleRow.Bundle_ID] || [],
-      specification: wigSpecOptions.find((option) => (
-        Number(option.Wig_Specification_ID || 0) === Number(bundleRow.Wig_Specification_ID || 0)
-      )) || null,
-      status: bundleRow.Status || '',
+      specification:
+        wigSpecOptions.find(
+          (option) =>
+            Number(option.Wig_Specification_ID || 0) ===
+            Number(bundleRow.Wig_Specification_ID || 0),
+        ) || null,
+      status: bundleRow.Status || "",
       createdAt: bundleRow.Created_At,
       qrDataUrl,
     });
   };
 
   useEffect(() => {
-    if (activePrintBundle && !activePrintBundle.qrDataUrl && activePrintBundle.bundleId) {
+    if (
+      activePrintBundle &&
+      !activePrintBundle.qrDataUrl &&
+      activePrintBundle.bundleId
+    ) {
       let cancelled = false;
       QRCode.toDataURL(
-        buildBundleWaybillQrPayload({ bundleId: activePrintBundle.bundleId, bundleWaybillCode: activePrintBundle.submissionCode }),
-        { errorCorrectionLevel: 'M', margin: 1, scale: 8 },
+        buildBundleWaybillQrPayload({
+          bundleId: activePrintBundle.bundleId,
+          bundleWaybillCode: activePrintBundle.submissionCode,
+        }),
+        { errorCorrectionLevel: "M", margin: 1, scale: 8 },
       ).then((url) => {
         if (!cancelled) {
-          setActivePrintBundle((prev) => (prev && prev.bundleId === activePrintBundle.bundleId ? { ...prev, qrDataUrl: url } : prev));
+          setActivePrintBundle((prev) =>
+            prev && prev.bundleId === activePrintBundle.bundleId
+              ? { ...prev, qrDataUrl: url }
+              : prev,
+          );
         }
       });
-      return () => { cancelled = true; };
+      return () => {
+        cancelled = true;
+      };
     }
     return undefined;
   }, [activePrintBundle]);
 
   const handlePrint = () => {
-    if (typeof window !== 'undefined' && window.print) window.print();
+    if (typeof window !== "undefined" && window.print) window.print();
   };
 
   const handleSavePdf = () => {
     if (!activePrintBundle?.qrDataUrl) return;
     setIsExportingPdf(true);
     try {
-      const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+      const pdf = new jsPDF({
+        unit: "mm",
+        format: "a4",
+        orientation: "portrait",
+      });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
       const margin = 12;
-      const contentWidth = pageWidth - (margin * 2);
-      const members = Array.isArray(activePrintBundle.members) ? activePrintBundle.members : [];
+      const contentWidth = pageWidth - margin * 2;
+      const members = Array.isArray(activePrintBundle.members)
+        ? activePrintBundle.members
+        : [];
       const specification = activePrintBundle.specification || {};
-      const safe = (value, fallback = 'Not provided') => {
-        const normalized = String(value ?? '').trim();
+      const safe = (value, fallback = "Not provided") => {
+        const normalized = String(value ?? "").trim();
         return normalized || fallback;
       };
-      const yesNo = (value) => (value ? 'Yes' : 'No');
+      const yesNo = (value) => (value ? "Yes" : "No");
       let y = margin;
 
       const addPageIfNeeded = (requiredHeight = 18) => {
         if (y + requiredHeight <= pageHeight - 14) return;
         pdf.addPage();
         y = margin;
-        pdf.setFont('helvetica', 'bold');
+        pdf.setFont("helvetica", "bold");
         pdf.setFontSize(9);
-        pdf.text(`Bundle ${activePrintBundle.submissionCode} - contributor details continued`, margin, y);
+        pdf.text(
+          `Bundle ${activePrintBundle.submissionCode} - contributor details continued`,
+          margin,
+          y,
+        );
         y += 7;
       };
 
-      pdf.setFont('helvetica', 'bold');
+      pdf.setFont("helvetica", "bold");
       pdf.setFontSize(16);
-      pdf.text('DONIVRA WIG BUNDLE TRACEABILITY WAYBILL', margin, y + 5);
+      pdf.text("DONIVRA WIG BUNDLE TRACEABILITY WAYBILL", margin, y + 5);
 
       pdf.setFontSize(9);
-      pdf.setFont('helvetica', 'normal');
-      pdf.text('Keep this document with the physical bundle throughout wig production.', margin, y + 11);
+      pdf.setFont("helvetica", "normal");
+      pdf.text(
+        "Keep this document with the physical bundle throughout wig production.",
+        margin,
+        y + 11,
+      );
 
       const qrSize = 42;
-      pdf.addImage(activePrintBundle.qrDataUrl, 'PNG', pageWidth - margin - qrSize, y, qrSize, qrSize);
+      pdf.addImage(
+        activePrintBundle.qrDataUrl,
+        "PNG",
+        pageWidth - margin - qrSize,
+        y,
+        qrSize,
+        qrSize,
+      );
 
       y += 19;
       pdf.setFontSize(15);
-      pdf.setFont('helvetica', 'bold');
+      pdf.setFont("helvetica", "bold");
       pdf.text(activePrintBundle.submissionCode, margin, y);
 
-      pdf.setFont('helvetica', 'normal');
+      pdf.setFont("helvetica", "normal");
       pdf.setFontSize(9);
       y += 6;
       pdf.text(`Bundle ID: ${activePrintBundle.bundleId}`, margin, y);
       y += 5;
-      pdf.text(`Status: ${safe(activePrintBundle.status, 'In Production')}`, margin, y);
+      pdf.text(
+        `Status: ${safe(activePrintBundle.status, "In Production")}`,
+        margin,
+        y,
+      );
       y += 5;
-      pdf.text(`Created: ${formatDateTime(activePrintBundle.createdAt)}`, margin, y);
+      pdf.text(
+        `Created: ${formatDateTime(activePrintBundle.createdAt)}`,
+        margin,
+        y,
+      );
       y += 5;
-      pdf.text(`Verified hair submissions: ${activePrintBundle.memberCount}`, margin, y);
+      pdf.text(
+        `Verified hair submissions: ${activePrintBundle.memberCount}`,
+        margin,
+        y,
+      );
       y = margin + qrSize + 8;
 
       pdf.setDrawColor(203, 213, 225);
       pdf.line(margin, y, pageWidth - margin, y);
       y += 7;
-      pdf.setFont('helvetica', 'bold');
+      pdf.setFont("helvetica", "bold");
       pdf.setFontSize(11);
-      pdf.text('TARGET WIG SPECIFICATION', margin, y);
+      pdf.text("TARGET WIG SPECIFICATION", margin, y);
       y += 6;
-      pdf.setFont('helvetica', 'normal');
+      pdf.setFont("helvetica", "normal");
       pdf.setFontSize(8.5);
       const specificationLines = [
-        `Wig: ${safe(specification.wigName)}${specification.wigCode ? ` (${specification.wigCode})` : ''}`,
+        `Wig: ${safe(specification.wigName)}${specification.wigCode ? ` (${specification.wigCode})` : ""}`,
         `Specification ID: ${safe(specification.Wig_Specification_ID)}  |  Style: ${safe(specification.style || specification.Style)}  |  Cap size: ${safe(specification.capSize || specification.Cap_Size)}`,
-        `Length: ${safe(specification.hairLength || specification.Hair_Length)} in  |  Color: ${safe(specification.hairColor || specification.Hair_Color)}  |  Texture: ${safe(specification.hairTexture || specification.Hair_Texture)}  |  Density: ${safe(specification.hairDensity || specification.Hair_Density)}`,
+        `Length: ${safe(specification.hairLength || specification.Hair_Length)} in  |  Color: ${safe(specification.hairColor || specification.Hair_Color)}  |  Hair Pattern: ${safe(specification.hairTexture || specification.Hair_Texture)}  |  Density: ${safe(specification.hairDensity || specification.Hair_Density)}`,
       ];
       specificationLines.forEach((line) => {
         pdf.text(line, margin, y, { maxWidth: contentWidth });
@@ -1470,30 +2081,47 @@ export default function BundlingPage() {
       });
 
       y += 2;
-      pdf.setFont('helvetica', 'bold');
+      pdf.setFont("helvetica", "bold");
       pdf.setFontSize(11);
       pdf.text(`CONTRIBUTING HAIR RECORDS (${members.length})`, margin, y);
       y += 6;
 
       members.forEach((member, index) => {
         const detail = member.detail || {};
-        const notes = safe(detail.Detail_Notes, 'None');
-        const estimatedHeight = notes === 'None' ? 22 : 28;
+        const notes = safe(detail.Detail_Notes, "None");
+        const estimatedHeight = notes === "None" ? 22 : 28;
         addPageIfNeeded(estimatedHeight);
 
-        pdf.setFillColor(index % 2 === 0 ? 248 : 255, index % 2 === 0 ? 250 : 255, index % 2 === 0 ? 252 : 255);
-        pdf.roundedRect(margin, y - 3.5, contentWidth, estimatedHeight - 2, 1.5, 1.5, 'F');
-        pdf.setFont('helvetica', 'bold');
+        pdf.setFillColor(
+          index % 2 === 0 ? 248 : 255,
+          index % 2 === 0 ? 250 : 255,
+          index % 2 === 0 ? 252 : 255,
+        );
+        pdf.roundedRect(
+          margin,
+          y - 3.5,
+          contentWidth,
+          estimatedHeight - 2,
+          1.5,
+          1.5,
+          "F",
+        );
+        pdf.setFont("helvetica", "bold");
         pdf.setFontSize(8.5);
         pdf.text(
-          `${index + 1}. ${safe(member.submissionCode)} | Submission #${safe(member.submissionId)} | ${safe(member.donorName, 'Unknown donor')}`,
+          `${index + 1}. ${safe(member.submissionCode)} | Submission #${safe(member.submissionId)} | ${safe(member.donorName, "Unknown donor")}`,
           margin + 2,
           y + 1,
           { maxWidth: contentWidth - 4 },
         );
-        pdf.setFont('helvetica', 'normal');
+        pdf.setFont("helvetica", "normal");
         pdf.setFontSize(7.5);
-        pdf.text(`Source: ${safe(member.eventTitle)} | Submission status: ${safe(member.status)}`, margin + 2, y + 6, { maxWidth: contentWidth - 4 });
+        pdf.text(
+          `Source: ${safe(member.eventTitle)} | Submission status: ${safe(member.status)}`,
+          margin + 2,
+          y + 6,
+          { maxWidth: contentWidth - 4 },
+        );
         pdf.text(
           `Verified hair: ${safe(detail.Declared_Length)} in | ${safe(detail.Declared_Color)} | ${safe(detail.Declared_Texture)} | ${safe(detail.Declared_Density)} | ${safe(detail.Declared_Condition)}`,
           margin + 2,
@@ -1506,31 +2134,36 @@ export default function BundlingPage() {
           y + 16,
           { maxWidth: contentWidth - 4 },
         );
-        if (notes !== 'None') {
-          pdf.text(`Notes: ${notes}`, margin + 2, y + 21, { maxWidth: contentWidth - 4 });
+        if (notes !== "None") {
+          pdf.text(`Notes: ${notes}`, margin + 2, y + 21, {
+            maxWidth: contentWidth - 4,
+          });
         }
         y += estimatedHeight;
       });
 
       if (activePrintBundle.notes) {
         addPageIfNeeded(20);
-        pdf.setFont('helvetica', 'bold');
+        pdf.setFont("helvetica", "bold");
         pdf.setFontSize(9);
-        pdf.text('BUNDLE NOTES', margin, y);
+        pdf.text("BUNDLE NOTES", margin, y);
         y += 5;
-        pdf.setFont('helvetica', 'normal');
+        pdf.setFont("helvetica", "normal");
         pdf.setFontSize(8);
-        const noteLines = pdf.splitTextToSize(activePrintBundle.notes, contentWidth);
+        const noteLines = pdf.splitTextToSize(
+          activePrintBundle.notes,
+          contentWidth,
+        );
         pdf.text(noteLines, margin, y);
       }
 
       pdf.setFontSize(8);
       pdf.setTextColor(120);
       pdf.text(
-        'After completion, scan this QR in Upload Wig Stocks to register the physical wig. Do not recreate or replace this code.',
+        "After completion, scan this QR in Upload Wig Stocks to register the physical wig. Do not recreate or replace this code.",
         pageWidth / 2,
         pageHeight - 7,
-        { align: 'center', maxWidth: contentWidth },
+        { align: "center", maxWidth: contentWidth },
       );
 
       pdf.save(`bundle-${activePrintBundle.submissionCode}.pdf`);
@@ -1540,167 +2173,372 @@ export default function BundlingPage() {
   };
 
   const stats = useMemo(() => {
-    const inProduction = activeBundles.filter((b) => String(b.Status || '').toLowerCase() === HAIR_BUNDLE_STATUS.IN_PRODUCTION.toLowerCase()).length;
-    const wigCreated = activeBundles.filter((b) => String(b.Status || '').toLowerCase() === HAIR_BUNDLE_STATUS.WIG_COMPLETED.toLowerCase()).length;
+    const inProduction = activeBundles.filter(
+      (b) =>
+        String(b.Status || "").toLowerCase() ===
+        HAIR_BUNDLE_STATUS.IN_PRODUCTION.toLowerCase(),
+    ).length;
+    const wigCreated = activeBundles.filter(
+      (b) =>
+        String(b.Status || "").toLowerCase() ===
+        HAIR_BUNDLE_STATUS.WIG_COMPLETED.toLowerCase(),
+    ).length;
     return [
-      { id: 'drafts', label: 'Open Drafts', value: drafts.length, Icon: Package, accent: '#b45309', tint: '#fffbeb' },
-      { id: 'inProduction', label: 'In Production', value: inProduction, Icon: ScanLine, accent: primaryColor, tint: withColorAlpha(primaryColor, 0.08) },
-      { id: 'wigCompleted', label: 'Wig Created', value: wigCreated, Icon: CheckCircle2, accent: tertiaryColor, tint: withColorAlpha(tertiaryColor, 0.1) },
-      { id: 'activeDraft', label: 'Hairs in Active Draft', value: scannerBundleMemberCount, Icon: FileText, accent: primaryColor, tint: withColorAlpha(primaryColor, 0.08) },
+      {
+        id: "drafts",
+        label: "Open Drafts",
+        value: drafts.length,
+        Icon: Package,
+        accent: "#b45309",
+        tint: "#fffbeb",
+      },
+      {
+        id: "inProduction",
+        label: "In Production",
+        value: inProduction,
+        Icon: ScanLine,
+        accent: primaryColor,
+        tint: withColorAlpha(primaryColor, 0.08),
+      },
+      {
+        id: "wigCompleted",
+        label: "Wig Created",
+        value: wigCreated,
+        Icon: CheckCircle2,
+        accent: tertiaryColor,
+        tint: withColorAlpha(tertiaryColor, 0.1),
+      },
+      {
+        id: "activeDraft",
+        label: "Hairs in Active Draft",
+        value: scannerBundleMemberCount,
+        Icon: FileText,
+        accent: primaryColor,
+        tint: withColorAlpha(primaryColor, 0.08),
+      },
     ];
-  }, [drafts, activeBundles, scannerBundleMemberCount, primaryColor, tertiaryColor]);
+  }, [
+    drafts,
+    activeBundles,
+    scannerBundleMemberCount,
+    primaryColor,
+    tertiaryColor,
+  ]);
 
   // Highlight where the specialist currently is in the bundling process.
   const currentFlowStep = scannerBundleRow ? (canCloseActiveDraft ? 3 : 2) : 1;
 
   // Master-detail selection resolution.
-  const selectedDraftRow = String(selectedKey).startsWith('draft-')
+  const selectedDraftRow = String(selectedKey).startsWith("draft-")
     ? drafts.find((d) => `draft-${d.Bundle_ID}` === selectedKey) || null
     : null;
-  const selectedBundleRow = String(selectedKey).startsWith('bundle-')
+  const selectedBundleRow = String(selectedKey).startsWith("bundle-")
     ? activeBundles.find((b) => `bundle-${b.Bundle_ID}` === selectedKey) || null
     : null;
-  const showCreatePanel = selectedKey === 'create' || (!selectedDraftRow && !selectedBundleRow);
+  const showCreatePanel =
+    selectedKey === "create" || (!selectedDraftRow && !selectedBundleRow);
   const selectedTargetRow = selectedDraftRow || selectedBundleRow;
-  const selectedTargetSpecification = wigSpecOptions.find(
-    (option) => Number(option.Wig_Specification_ID || 0) === Number(selectedTargetRow?.Wig_Specification_ID || 0),
-  ) || null;
+  const selectedTargetSpecification =
+    wigSpecOptions.find(
+      (option) =>
+        Number(option.Wig_Specification_ID || 0) ===
+        Number(selectedTargetRow?.Wig_Specification_ID || 0),
+    ) || null;
   const rankedAvailableHair = useMemo(() => {
     if (!selectedTargetSpecification) return [];
     return availableCutHair
-      .map((hair) => ({ ...hair, compatibility: compareHairToWig(hair, selectedTargetSpecification) }))
-      .sort((left, right) => (
-        right.compatibility.score - left.compatibility.score
-        || new Date(right.Approved_At || 0) - new Date(left.Approved_At || 0)
-      ));
+      .map((hair) => ({
+        ...hair,
+        compatibility: compareHairToWig(hair, selectedTargetSpecification),
+      }))
+      .sort(
+        (left, right) =>
+          right.compatibility.score - left.compatibility.score ||
+          new Date(right.Approved_At || 0) - new Date(left.Approved_At || 0),
+      );
   }, [availableCutHair, selectedTargetSpecification]);
-  const recommendedAvailableCount = rankedAvailableHair.filter(
-    (hair) => ['recommended', 'compatible'].includes(hair.compatibility.key),
+  const recommendedAvailableCount = rankedAvailableHair.filter((hair) =>
+    ["recommended", "compatible"].includes(hair.compatibility.key),
   ).length;
   const flowSteps = [
-    { id: 1, title: 'Open Draft', detail: 'Pick a wig specification and open a draft bundle.' },
-    { id: 2, title: 'Scan Waybills', detail: 'Scan each donor waybill once with the camera or by typing it.' },
-    { id: 3, title: 'Close at 8-10', detail: `Finalize once the bundle has ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX} hairs.` },
-    { id: 4, title: 'Print Waybill', detail: 'Print and attach the bundle waybill for production.' },
+    {
+      id: 1,
+      title: "Open Draft",
+      detail: "Pick a wig specification and open a draft bundle.",
+    },
+    {
+      id: 2,
+      title: "Scan Waybills",
+      detail: "Scan each donor waybill once with the camera or by typing it.",
+    },
+    {
+      id: 3,
+      title: "Close at 8-10",
+      detail: `Finalize once the bundle has ${BUNDLE_HAIR_COUNT_TARGET_MIN}-${BUNDLE_HAIR_COUNT_TARGET_MAX} hairs.`,
+    },
+    {
+      id: 4,
+      title: "Print Waybill",
+      detail: "Print and attach the bundle waybill for production.",
+    },
   ];
 
   const cameraNoticeStyle = (() => {
-    if (cameraStatus.kind === 'error') return { borderColor: '#fecaca', backgroundColor: '#fef2f2', color: '#b91c1c' };
-    if (cameraStatus.kind === 'warning') return { borderColor: '#fde68a', backgroundColor: '#fffbeb', color: '#b45309' };
-    if (cameraStatus.kind === 'success') return { borderColor: '#a7f3d0', backgroundColor: '#ecfdf5', color: '#047857' };
-    return { borderColor: withColorAlpha(primaryColor, 0.3), backgroundColor: withColorAlpha(primaryColor, 0.08), color: primaryColor };
+    if (cameraStatus.kind === "error")
+      return {
+        borderColor: "#fecaca",
+        backgroundColor: "#fef2f2",
+        color: "#b91c1c",
+      };
+    if (cameraStatus.kind === "warning")
+      return {
+        borderColor: "#fde68a",
+        backgroundColor: "#fffbeb",
+        color: "#b45309",
+      };
+    if (cameraStatus.kind === "success")
+      return {
+        borderColor: "#a7f3d0",
+        backgroundColor: "#ecfdf5",
+        color: "#047857",
+      };
+    return {
+      borderColor: withColorAlpha(primaryColor, 0.3),
+      backgroundColor: withColorAlpha(primaryColor, 0.08),
+      color: primaryColor,
+    };
   })();
 
   const renderPortal = useCallback((node) => {
-    if (typeof document === 'undefined') return node;
+    if (typeof document === "undefined") return node;
     return createPortal(node, document.body);
   }, []);
 
-  const renderBundleHairDetails = useCallback((bundle, { allowRemove = false } = {}) => {
-    const members = bundleMembersByBundleId[Number(bundle.Bundle_ID || 0)] || [];
-    const targetSpecification = wigSpecOptions.find(
-      (option) => Number(option.Wig_Specification_ID || 0) === Number(bundle.Wig_Specification_ID || 0),
-    ) || null;
-    if (!members.length) {
+  const renderBundleHairDetails = useCallback(
+    (bundle, { allowRemove = false } = {}) => {
+      const members =
+        bundleMembersByBundleId[Number(bundle.Bundle_ID || 0)] || [];
+      const targetSpecification =
+        wigSpecOptions.find(
+          (option) =>
+            Number(option.Wig_Specification_ID || 0) ===
+            Number(bundle.Wig_Specification_ID || 0),
+        ) || null;
+      if (!members.length) {
+        return (
+          <div
+            className="rounded-lg border px-3 py-2 text-xs"
+            style={{ borderColor: "#e2e8f0", color: tertiaryTextColor }}
+          >
+            No hairs scanned in this bundle yet.
+          </div>
+        );
+      }
+
       return (
-        <div className="rounded-lg border px-3 py-2 text-xs" style={{ borderColor: '#e2e8f0', color: tertiaryTextColor }}>
-          No hairs scanned in this bundle yet.
+        <div className="space-y-2">
+          {members.map((member) => {
+            const detail = member.detail || {};
+            const compatibility = targetSpecification
+              ? compareHairToWig(member, targetSpecification)
+              : null;
+            return (
+              <div
+                key={`${bundle.Bundle_ID}-${member.submissionId}`}
+                className="rounded-lg border bg-white p-3"
+                style={{ borderColor: "#e2e8f0" }}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p
+                      className="text-[9px] font-bold uppercase tracking-wide"
+                      style={{ color: tertiaryTextColor }}
+                    >
+                      {member.eventAttendeeId
+                        ? "Program attendee waybill"
+                        : "Submission waybill"}
+                    </p>
+                    <p
+                      className="font-mono text-xs font-semibold"
+                      style={{ color: primaryTextColor }}
+                    >
+                      {member.submissionCode}
+                    </p>
+                    <p
+                      className="text-sm font-semibold"
+                      style={{ color: primaryTextColor }}
+                    >
+                      {member.donorName}
+                    </p>
+                    <p className="text-xs" style={{ color: tertiaryTextColor }}>
+                      {member.eventTitle}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    {compatibility ? (
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${COMPATIBILITY_STYLES[compatibility.key]}`}
+                        title={compatibility.reasons.join(". ")}
+                      >
+                        {compatibility.label}
+                      </span>
+                    ) : null}
+                    {allowRemove ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleRemoveDraftMember(bundle.Bundle_ID, member)
+                        }
+                        disabled={isRemovingSubmissionId !== null}
+                        className="inline-flex items-center gap-1 rounded-lg border bg-white px-2 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+                        style={{ borderColor: "#fecaca", color: "#b91c1c" }}
+                      >
+                        {isRemovingSubmissionId === member.submissionId ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <Trash2 size={12} />
+                        )}
+                        {isRemovingSubmissionId === member.submissionId
+                          ? "Removing..."
+                          : "Remove"}
+                      </button>
+                    ) : (
+                      <span
+                        className="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                        style={{
+                          borderColor: "#cbd5e1",
+                          color: secondaryTextColor,
+                          backgroundColor: "#f8fafc",
+                        }}
+                      >
+                        {member.status || "-"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] md:grid-cols-3">
+                  <p style={{ color: secondaryTextColor }}>
+                    Length:{" "}
+                    <span style={{ color: primaryTextColor }}>
+                      {detail.Declared_Length
+                        ? `${detail.Declared_Length} in`
+                        : "-"}
+                    </span>
+                  </p>
+                  <p style={{ color: secondaryTextColor }}>
+                    Color:{" "}
+                    <span style={{ color: primaryTextColor }}>
+                      {detail.Declared_Color || "-"}
+                    </span>
+                  </p>
+                  <p style={{ color: secondaryTextColor }}>
+                    Hair Pattern:{" "}
+                    <span style={{ color: primaryTextColor }}>
+                      {detail.Declared_Texture || "-"}
+                    </span>
+                  </p>
+                  <p style={{ color: secondaryTextColor }}>
+                    Density:{" "}
+                    <span style={{ color: primaryTextColor }}>
+                      {detail.Declared_Density || "-"}
+                    </span>
+                  </p>
+                  <p style={{ color: secondaryTextColor }}>
+                    Condition:{" "}
+                    <span style={{ color: primaryTextColor }}>
+                      {detail.Declared_Condition || "-"}
+                    </span>
+                  </p>
+                  <p style={{ color: secondaryTextColor }}>
+                    Chemically treated:{" "}
+                    <span style={{ color: primaryTextColor }}>
+                      {detail.Is_Chemically_Treated ? "Yes" : "No"}
+                    </span>
+                  </p>
+                  <p style={{ color: secondaryTextColor }}>
+                    Colored:{" "}
+                    <span style={{ color: primaryTextColor }}>
+                      {detail.Is_Colored ? "Yes" : "No"}
+                    </span>
+                  </p>
+                  <p style={{ color: secondaryTextColor }}>
+                    Bleached:{" "}
+                    <span style={{ color: primaryTextColor }}>
+                      {detail.Is_Bleached ? "Yes" : "No"}
+                    </span>
+                  </p>
+                  <p style={{ color: secondaryTextColor }}>
+                    Rebonded:{" "}
+                    <span style={{ color: primaryTextColor }}>
+                      {detail.Is_Rebonded ? "Yes" : "No"}
+                    </span>
+                  </p>
+                </div>
+                {detail.Detail_Notes ? (
+                  <p
+                    className="mt-2 text-[11px]"
+                    style={{ color: secondaryTextColor }}
+                  >
+                    Notes:{" "}
+                    <span style={{ color: primaryTextColor }}>
+                      {detail.Detail_Notes}
+                    </span>
+                  </p>
+                ) : null}
+                <p
+                  className="mt-1 text-[10px]"
+                  style={{ color: tertiaryTextColor }}
+                >
+                  Updated:{" "}
+                  {formatDateTime(member.updatedAt || detail.Updated_At)}
+                </p>
+              </div>
+            );
+          })}
         </div>
       );
-    }
-
-    return (
-      <div className="space-y-2">
-        {members.map((member) => {
-          const detail = member.detail || {};
-          const compatibility = targetSpecification ? compareHairToWig(member, targetSpecification) : null;
-          return (
-            <div key={`${bundle.Bundle_ID}-${member.submissionId}`} className="rounded-lg border bg-white p-3" style={{ borderColor: '#e2e8f0' }}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <p className="text-[9px] font-bold uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{member.eventAttendeeId ? 'Event attendee waybill' : 'Submission waybill'}</p>
-                  <p className="font-mono text-xs font-semibold" style={{ color: primaryTextColor }}>{member.submissionCode}</p>
-                  <p className="text-sm font-semibold" style={{ color: primaryTextColor }}>{member.donorName}</p>
-                  <p className="text-xs" style={{ color: tertiaryTextColor }}>{member.eventTitle}</p>
-                </div>
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                {compatibility ? (
-                  <span
-                    className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${COMPATIBILITY_STYLES[compatibility.key]}`}
-                    title={compatibility.reasons.join('. ')}
-                  >
-                    {compatibility.label}
-                  </span>
-                ) : null}
-                {allowRemove ? (
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveDraftMember(bundle.Bundle_ID, member)}
-                    disabled={isRemovingSubmissionId !== null}
-                    className="inline-flex items-center gap-1 rounded-lg border bg-white px-2 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-60"
-                    style={{ borderColor: '#fecaca', color: '#b91c1c' }}
-                  >
-                    {isRemovingSubmissionId === member.submissionId
-                      ? <Loader2 size={12} className="animate-spin" />
-                      : <Trash2 size={12} />}
-                    {isRemovingSubmissionId === member.submissionId ? 'Removing...' : 'Remove'}
-                  </button>
-                ) : (
-                  <span
-                    className="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-                    style={{ borderColor: '#cbd5e1', color: secondaryTextColor, backgroundColor: '#f8fafc' }}
-                  >
-                    {member.status || '-'}
-                  </span>
-                )}
-                </div>
-              </div>
-
-              <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] md:grid-cols-3">
-                <p style={{ color: secondaryTextColor }}>Length: <span style={{ color: primaryTextColor }}>{detail.Declared_Length ? `${detail.Declared_Length} in` : '-'}</span></p>
-                <p style={{ color: secondaryTextColor }}>Color: <span style={{ color: primaryTextColor }}>{detail.Declared_Color || '-'}</span></p>
-                <p style={{ color: secondaryTextColor }}>Texture: <span style={{ color: primaryTextColor }}>{detail.Declared_Texture || '-'}</span></p>
-                <p style={{ color: secondaryTextColor }}>Density: <span style={{ color: primaryTextColor }}>{detail.Declared_Density || '-'}</span></p>
-                <p style={{ color: secondaryTextColor }}>Condition: <span style={{ color: primaryTextColor }}>{detail.Declared_Condition || '-'}</span></p>
-                <p style={{ color: secondaryTextColor }}>Chemically treated: <span style={{ color: primaryTextColor }}>{detail.Is_Chemically_Treated ? 'Yes' : 'No'}</span></p>
-                <p style={{ color: secondaryTextColor }}>Colored: <span style={{ color: primaryTextColor }}>{detail.Is_Colored ? 'Yes' : 'No'}</span></p>
-                <p style={{ color: secondaryTextColor }}>Bleached: <span style={{ color: primaryTextColor }}>{detail.Is_Bleached ? 'Yes' : 'No'}</span></p>
-                <p style={{ color: secondaryTextColor }}>Rebonded: <span style={{ color: primaryTextColor }}>{detail.Is_Rebonded ? 'Yes' : 'No'}</span></p>
-              </div>
-              {detail.Detail_Notes ? (
-                <p className="mt-2 text-[11px]" style={{ color: secondaryTextColor }}>
-                  Notes: <span style={{ color: primaryTextColor }}>{detail.Detail_Notes}</span>
-                </p>
-              ) : null}
-              <p className="mt-1 text-[10px]" style={{ color: tertiaryTextColor }}>
-                Updated: {formatDateTime(member.updatedAt || detail.Updated_At)}
-              </p>
-            </div>
-          );
-        })}
-      </div>
-    );
-  }, [bundleMembersByBundleId, handleRemoveDraftMember, isRemovingSubmissionId, primaryTextColor, secondaryTextColor, tertiaryTextColor, wigSpecOptions]);
+    },
+    [
+      bundleMembersByBundleId,
+      handleRemoveDraftMember,
+      isRemovingSubmissionId,
+      primaryTextColor,
+      secondaryTextColor,
+      tertiaryTextColor,
+      wigSpecOptions,
+    ],
+  );
 
   const renderTargetWigCard = (bundle) => {
-    const specification = wigSpecOptions.find(
-      (option) => Number(option.Wig_Specification_ID || 0) === Number(bundle?.Wig_Specification_ID || 0),
-    ) || null;
+    const specification =
+      wigSpecOptions.find(
+        (option) =>
+          Number(option.Wig_Specification_ID || 0) ===
+          Number(bundle?.Wig_Specification_ID || 0),
+      ) || null;
     if (!specification) {
       return (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-          This bundle&apos;s wig specification could not be loaded. Refresh the page or verify the catalog record.
+          This bundle&apos;s wig specification could not be loaded. Refresh the
+          page or verify the catalog record.
         </div>
       );
     }
 
-    const imageUrl = specification.imageUrl || getPublicUrl(FILTERS_BUCKET, specification.catalogImagePath);
+    const imageUrl =
+      specification.imageUrl ||
+      getPublicUrl(FILTERS_BUCKET, specification.catalogImagePath);
     return (
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-2.5">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Chosen wig design</p>
-            <p className="text-xs text-slate-500">This target is locked to the draft.</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+              Chosen wig design
+            </p>
+            <p className="text-xs text-slate-500">
+              This target is locked to the draft.
+            </p>
           </div>
           <span className="rounded-full border border-slate-200 bg-white px-2 py-1 font-mono text-[10px] font-semibold text-slate-600">
             Spec #{specification.Wig_Specification_ID}
@@ -1709,7 +2547,11 @@ export default function BundlingPage() {
         <div className="grid gap-4 p-4 sm:grid-cols-[112px,1fr]">
           <div className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
             {imageUrl ? (
-              <img src={imageUrl} alt={specification.wigName || 'Chosen wig'} className="h-full w-full object-contain" />
+              <img
+                src={imageUrl}
+                alt={specification.wigName || "Chosen wig"}
+                className="h-full w-full object-contain"
+              />
             ) : (
               <ImageIcon size={28} className="text-slate-300" />
             )}
@@ -1717,29 +2559,55 @@ export default function BundlingPage() {
           <div className="min-w-0">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div>
-                <h3 className="text-base font-bold text-slate-900">{specification.wigName || 'Unnamed wig'}</h3>
-                <p className="font-mono text-xs font-semibold" style={{ color: primaryColor }}>
+                <h3 className="text-base font-bold text-slate-900">
+                  {specification.wigName || "Unnamed wig"}
+                </h3>
+                <p
+                  className="font-mono text-xs font-semibold"
+                  style={{ color: primaryColor }}
+                >
                   {specification.wigCode || `Wig #${specification.Wig_ID}`}
                 </p>
               </div>
-              <span className="rounded-full px-2.5 py-1 text-[10px] font-bold text-white" style={{ backgroundColor: primaryColor }}>
-                {specification.capSize || 'Cap N/A'} cap
+              <span
+                className="rounded-full px-2.5 py-1 text-[10px] font-bold text-white"
+                style={{ backgroundColor: primaryColor }}
+              >
+                {specification.capSize || "Cap N/A"} cap
               </span>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
               {[
-                ['Length', specification.hairLength ? `${specification.hairLength} in` : 'N/A', Ruler],
-                ['Texture', specification.hairTexture || 'N/A', Sparkles],
-                ['Color', specification.hairColor || 'N/A', Palette],
-                ['Density', specification.hairDensity || 'N/A', Package],
+                [
+                  "Length",
+                  specification.hairLength
+                    ? `${specification.hairLength} in`
+                    : "N/A",
+                  Ruler,
+                ],
+                ["Hair Pattern", specification.hairTexture || "N/A", Sparkles],
+                ["Color", specification.hairColor || "N/A", Palette],
+                ["Density", specification.hairDensity || "N/A", Package],
               ].map(([label, value, Icon]) => (
-                <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2">
-                  <p className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide text-slate-500"><Icon size={10} /> {label}</p>
-                  <p className="mt-1 truncate text-xs font-semibold text-slate-800">{value}</p>
+                <div
+                  key={label}
+                  className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2"
+                >
+                  <p className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide text-slate-500">
+                    <Icon size={10} /> {label}
+                  </p>
+                  <p className="mt-1 truncate text-xs font-semibold text-slate-800">
+                    {value}
+                  </p>
                 </div>
               ))}
             </div>
-            <p className="mt-2 text-[11px] text-slate-500">Style: <span className="font-semibold text-slate-700">{specification.style || 'Not specified'}</span></p>
+            <p className="mt-2 text-[11px] text-slate-500">
+              Style:{" "}
+              <span className="font-semibold text-slate-700">
+                {specification.style || "Not specified"}
+              </span>
+            </p>
           </div>
         </div>
       </div>
@@ -1750,69 +2618,135 @@ export default function BundlingPage() {
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
         <div>
-          <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800"><Sparkles size={15} style={{ color: primaryColor }} /> Suggested cut hairs</h3>
-          <p className="mt-0.5 text-[11px] text-slate-500">Ranked by length first, then texture, color, and density.</p>
+          <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800">
+            <Sparkles size={15} style={{ color: primaryColor }} /> Suggested cut
+            hairs
+          </h3>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            Ranked by length first, then hair pattern, color, and density.
+          </p>
         </div>
         <div className="text-right">
-          <p className="text-lg font-bold text-slate-900">{recommendedAvailableCount}</p>
-          <p className="text-[9px] font-bold uppercase tracking-wide text-slate-500">recommended or usable</p>
+          <p className="text-lg font-bold text-slate-900">
+            {recommendedAvailableCount}
+          </p>
+          <p className="text-[9px] font-bold uppercase tracking-wide text-slate-500">
+            recommended or usable
+          </p>
         </div>
       </div>
       <div className="border-b border-sky-100 bg-sky-50 px-4 py-2 text-[11px] leading-5 text-sky-800">
-        Length below the finished wig target is marked too short. Ideally, use hair at least 2 inches longer for trimming. Cap size still follows the 8–10 approved-hair rule because individual hair weight is not recorded.
+        Length below the finished wig target is marked too short. Ideally, use
+        hair at least 2 inches longer for trimming. Cap size still follows the
+        8–10 approved-hair rule because individual hair weight is not recorded.
       </div>
       <div className="max-h-[390px] space-y-2 overflow-y-auto p-3">
         {!selectedTargetSpecification ? (
-          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-800">No target specification is available for comparison.</p>
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-800">
+            No target specification is available for comparison.
+          </p>
         ) : !rankedAvailableHair.length ? (
-          <p className="rounded-lg border border-dashed border-slate-300 px-3 py-8 text-center text-xs text-slate-500">No unassigned Cut-status hairs are currently available.</p>
-        ) : rankedAvailableHair.slice(0, 20).map((hair) => {
-          const detail = hair.detail || {};
-          const result = hair.compatibility;
-          return (
-            <article key={hair.Inventory_ID || hair.submissionId} className="rounded-lg border border-slate-200 p-3">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">{hair.isEventHair ? 'Event attendee waybill' : 'Submission waybill'}</p>
-                  <p className="mt-0.5 font-mono text-xs font-bold text-slate-900">{hair.waybillCode || (hair.isEventHair ? 'Event waybill unavailable' : buildWaybillCode({ submissionId: hair.submissionId }))}</p>
-                  <p className="mt-0.5 text-[11px] text-slate-500">{hair.donorName}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${COMPATIBILITY_STYLES[result.key]}`}>{result.label}</span>
-                  {hair.waybillCode ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setScannerWaybillCode(hair.waybillCode);
-                        setScanOutcome({
-                          tone: 'info',
-                          title: 'Event waybill selected',
-                          waybill: hair.waybillCode,
-                          subject: hair.donorName,
-                          action: 'Ready to scan into the active draft',
-                          status: 'Selected',
-                          nextStep: 'Verify the same code on the physical QR label, then click Scan',
-                          statusChanges: [],
-                        });
-                        showToast({ type: 'info', title: 'Waybill selected', message: `${hair.waybillCode} is ready. Verify the physical label, then click Scan.` });
-                      }}
-                      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-50"
+          <p className="rounded-lg border border-dashed border-slate-300 px-3 py-8 text-center text-xs text-slate-500">
+            No unassigned Cut-status hairs are currently available.
+          </p>
+        ) : (
+          rankedAvailableHair.slice(0, 20).map((hair) => {
+            const detail = hair.detail || {};
+            const result = hair.compatibility;
+            return (
+              <article
+                key={hair.Inventory_ID || hair.submissionId}
+                className="rounded-lg border border-slate-200 p-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">
+                      {hair.isEventHair
+                        ? "Program attendee waybill"
+                        : "Submission waybill"}
+                    </p>
+                    <p className="mt-0.5 font-mono text-xs font-bold text-slate-900">
+                      {hair.waybillCode ||
+                        (hair.isEventHair
+                          ? "Program waybill unavailable"
+                          : buildWaybillCode({
+                              submissionId: hair.submissionId,
+                            }))}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      {hair.donorName}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${COMPATIBILITY_STYLES[result.key]}`}
                     >
-                      Select
-                    </button>
-                  ) : null}
+                      {result.label}
+                    </span>
+                    {hair.waybillCode ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setScannerWaybillCode(hair.waybillCode);
+                          setScanOutcome({
+                            tone: "info",
+                            title: "Program waybill selected",
+                            waybill: hair.waybillCode,
+                            subject: hair.donorName,
+                            action: "Ready to scan into the active draft",
+                            status: "Selected",
+                            nextStep:
+                              "Verify the same code on the physical QR label, then click Scan",
+                            statusChanges: [],
+                          });
+                          showToast({
+                            type: "info",
+                            title: "Waybill selected",
+                            message: `${hair.waybillCode} is ready. Verify the physical label, then click Scan.`,
+                          });
+                        }}
+                        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-50"
+                      >
+                        Select
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px] sm:grid-cols-4">
-                <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">Length <strong className="text-slate-800">{detail.Declared_Length ? `${detail.Declared_Length} in` : 'N/A'}</strong></span>
-                <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">Texture <strong className="text-slate-800">{detail.Declared_Texture || 'N/A'}</strong></span>
-                <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">Color <strong className="text-slate-800">{detail.Declared_Color || 'N/A'}</strong></span>
-                <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">Density <strong className="text-slate-800">{detail.Declared_Density || 'N/A'}</strong></span>
-              </div>
-              <p className="mt-2 text-[10px] leading-4 text-slate-500">{result.reasons.slice(0, 3).join(' • ')}</p>
-            </article>
-          );
-        })}
+                <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px] sm:grid-cols-4">
+                  <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">
+                    Length{" "}
+                    <strong className="text-slate-800">
+                      {detail.Declared_Length
+                        ? `${detail.Declared_Length} in`
+                        : "N/A"}
+                    </strong>
+                  </span>
+                  <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">
+                    Hair Pattern{" "}
+                    <strong className="text-slate-800">
+                      {detail.Declared_Texture || "N/A"}
+                    </strong>
+                  </span>
+                  <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">
+                    Color{" "}
+                    <strong className="text-slate-800">
+                      {detail.Declared_Color || "N/A"}
+                    </strong>
+                  </span>
+                  <span className="rounded bg-slate-50 px-2 py-1 text-slate-600">
+                    Density{" "}
+                    <strong className="text-slate-800">
+                      {detail.Declared_Density || "N/A"}
+                    </strong>
+                  </span>
+                </div>
+                <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                  {result.reasons.slice(0, 3).join(" • ")}
+                </p>
+              </article>
+            );
+          })
+        )}
       </div>
     </div>
   );
@@ -1821,10 +2755,17 @@ export default function BundlingPage() {
     <div className="space-y-6" style={rootStyle}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-            <h1 className="role-page-title text-2xl font-bold" style={headingStyle}>Bundling</h1>
-            <p className="text-sm" style={{ color: secondaryTextColor }}>
-              Open a draft, scan {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX} donor waybills, then close it to print the bundle waybill.
-            </p>
+          <h1
+            className="role-page-title text-2xl font-bold"
+            style={headingStyle}
+          >
+            Bundling
+          </h1>
+          <p className="text-sm" style={{ color: secondaryTextColor }}>
+            Open a draft, scan {BUNDLE_HAIR_COUNT_TARGET_MIN}-
+            {BUNDLE_HAIR_COUNT_TARGET_MAX} donor waybills, then close it to
+            print the bundle waybill.
+          </p>
         </div>
         <PageHeaderActions
           onHelp={() => setShowHelp(true)}
@@ -1835,63 +2776,121 @@ export default function BundlingPage() {
       </header>
 
       {wishRequests.length > 0 ? (
-      <section className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-3">
-          <div>
-            <h2 className="flex items-center gap-2 text-sm font-bold text-amber-950">
-              <AlertCircle size={16} /> Requested wigs without stock
-            </h2>
-            <p className="mt-0.5 text-xs text-amber-800">Accepted hospital wishes appear here first. Opening a draft locks the request to one production bundle.</p>
-          </div>
-          <span className="rounded-full bg-amber-200 px-2.5 py-1 text-xs font-bold text-amber-950">{wishRequests.length} waiting</span>
-        </div>
-        <div className="grid gap-3 p-4 lg:grid-cols-2">
-            {wishRequests.map((requestRow, requestIndex) => {
-              const specification = requestRow.specification || {};
-              const hasDraft = Boolean(requestRow.Fulfillment_Bundle_ID);
-              return (
-                <article key={requestRow.Req_ID} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="font-mono text-xs font-bold text-slate-900">{requestRow.Request_Code || `WR-${requestRow.Req_ID}`}</p>
-                      <p className="mt-1 text-sm font-semibold text-slate-900">{specification.wigName || `Wig #${requestRow.Requested_Wig_ID}`}</p>
-                      <p className="mt-0.5 text-xs text-slate-600">
-                        {requestRow.patientCode} | Cap {requestRow.Requested_Cap_Size || specification.capSize || 'N/A'}
-                      </p>
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        {specification.style || specification.hairTexture || 'Style N/A'}
-                        {requestRow.medicalCondition ? ` | ${requestRow.medicalCondition}` : ''}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 flex-col items-end gap-1.5">
-                      <span className="rounded-full bg-amber-900 px-2 py-1 text-[10px] font-bold uppercase text-white">Priority #{requestIndex + 1}</span>
-                      <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold uppercase text-amber-800 ring-1 ring-amber-200">
-                        {String(requestRow.Fulfillment_Status || 'awaiting production').replace(/_/g, ' ')}
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleOpenWishRequestDraft(requestRow)}
-                    disabled={hasDraft || openingWishRequestId === requestRow.Req_ID || draftCount >= 3}
-                    className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-white disabled:opacity-55"
-                    style={{ backgroundColor: primaryColor }}
+        <section className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
+          <button
+            type="button"
+            aria-expanded={showWishRequests}
+            aria-controls="requested-wigs-without-stock-list"
+            onClick={() => setShowWishRequests((current) => !current)}
+            className={`flex w-full flex-wrap items-center justify-between gap-3 bg-amber-50 px-4 py-3 text-left transition hover:bg-amber-100/70 ${showWishRequests ? "border-b border-amber-200" : ""}`}
+          >
+            <div>
+              <h2 className="flex items-center gap-2 text-sm font-bold text-amber-950">
+                <AlertCircle size={16} /> Requested wigs without stock
+              </h2>
+              <p className="mt-0.5 text-xs text-amber-800">
+                Accepted hospital wishes appear here first. Opening a draft
+                locks the request to one production bundle.
+              </p>
+            </div>
+            <span className="flex items-center gap-2">
+              <span className="rounded-full bg-amber-200 px-2.5 py-1 text-xs font-bold text-amber-950">
+                {wishRequests.length} waiting
+              </span>
+              <ChevronDown
+                size={18}
+                className={`text-amber-900 transition-transform ${showWishRequests ? "rotate-180" : ""}`}
+              />
+            </span>
+          </button>
+          {showWishRequests ? (
+            <div
+              id="requested-wigs-without-stock-list"
+              className="grid gap-3 p-4 lg:grid-cols-2"
+            >
+              {wishRequests.map((requestRow, requestIndex) => {
+                const specification = requestRow.specification || {};
+                const hasDraft = Boolean(requestRow.Fulfillment_Bundle_ID);
+                return (
+                  <article
+                    key={requestRow.Req_ID}
+                    className="rounded-xl border border-slate-200 bg-slate-50 p-3"
                   >
-                    {openingWishRequestId === requestRow.Req_ID ? <Loader2 size={14} className="animate-spin" /> : <Package size={14} />}
-                    {hasDraft ? `Draft #${requestRow.Fulfillment_Bundle_ID} linked` : 'Open auto-filled draft'}
-                  </button>
-                </article>
-              );
-            })}
-        </div>
-      </section>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-mono text-xs font-bold text-slate-900">
+                          {requestRow.Request_Code || `WR-${requestRow.Req_ID}`}
+                        </p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">
+                          {specification.wigName ||
+                            `Wig #${requestRow.Requested_Wig_ID}`}
+                        </p>
+                        <p className="mt-0.5 text-xs text-slate-600">
+                          {requestRow.patientCode} | Cap{" "}
+                          {requestRow.Requested_Cap_Size ||
+                            specification.capSize ||
+                            "N/A"}
+                        </p>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          {specification.style ||
+                            specification.hairTexture ||
+                            "Style N/A"}
+                          {requestRow.medicalCondition
+                            ? ` | ${requestRow.medicalCondition}`
+                            : ""}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1.5">
+                        <span className="rounded-full bg-amber-900 px-2 py-1 text-[10px] font-bold uppercase text-white">
+                          Priority #{requestIndex + 1}
+                        </span>
+                        <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold uppercase text-amber-800 ring-1 ring-amber-200">
+                          {String(
+                            requestRow.Fulfillment_Status ||
+                              "awaiting production",
+                          ).replace(/_/g, " ")}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleOpenWishRequestDraft(requestRow)
+                      }
+                      disabled={
+                        hasDraft ||
+                        openingWishRequestId === requestRow.Req_ID ||
+                        draftCount >= 3
+                      }
+                      className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-white disabled:opacity-55"
+                      style={{ backgroundColor: primaryColor }}
+                    >
+                      {openingWishRequestId === requestRow.Req_ID ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Package size={14} />
+                      )}
+                      {hasDraft
+                        ? `Draft #${requestRow.Fulfillment_Bundle_ID} linked`
+                        : "Open auto-filled draft"}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          ) : null}
+        </section>
       ) : null}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {stats.map((s) => {
           const StatIcon = s.Icon;
           return (
-            <div key={s.id} className="flex items-center gap-3 rounded-xl border bg-white p-4" style={{ borderColor: '#e2e8f0' }}>
+            <div
+              key={s.id}
+              className="flex items-center gap-3 rounded-xl border bg-white p-4"
+              style={{ borderColor: "#e2e8f0" }}
+            >
               <span
                 className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
                 style={{ backgroundColor: s.tint, color: s.accent }}
@@ -1899,8 +2898,18 @@ export default function BundlingPage() {
                 <StatIcon size={18} />
               </span>
               <div className="min-w-0">
-                <p className="truncate text-[11px] font-semibold uppercase tracking-wide" style={{ color: tertiaryTextColor }}>{s.label}</p>
-                <p className="text-2xl font-bold leading-tight" style={{ color: primaryTextColor }}>{s.value}</p>
+                <p
+                  className="truncate text-[11px] font-semibold uppercase tracking-wide"
+                  style={{ color: tertiaryTextColor }}
+                >
+                  {s.label}
+                </p>
+                <p
+                  className="text-2xl font-bold leading-tight"
+                  style={{ color: primaryTextColor }}
+                >
+                  {s.value}
+                </p>
               </div>
             </div>
           );
@@ -1916,7 +2925,7 @@ export default function BundlingPage() {
             </h2>
             <button
               type="button"
-              onClick={() => setSelectedKey('create')}
+              onClick={() => setSelectedKey("create")}
               className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white"
               style={{ backgroundColor: primaryColor }}
             >
@@ -1925,48 +2934,124 @@ export default function BundlingPage() {
           </div>
           <div className="max-h-[640px] overflow-auto">
             {!drafts.length && !activeBundles.length ? (
-              <div className="px-4 py-10 text-center text-xs" style={{ color: secondaryTextColor }}>
-                No drafts or bundles yet. Click <strong>+ New</strong> to start one.
+              <div
+                className="px-4 py-10 text-center text-xs"
+                style={{ color: secondaryTextColor }}
+              >
+                No drafts or bundles yet. Click <strong>+ New</strong> to start
+                one.
               </div>
             ) : (
               <ul className="divide-y divide-slate-100">
                 {drafts.map((draft) => {
-                  const count = (bundleMembersByBundleId[draft.Bundle_ID] || []).length;
+                  const count = (bundleMembersByBundleId[draft.Bundle_ID] || [])
+                    .length;
                   const active = selectedKey === `draft-${draft.Bundle_ID}`;
                   return (
                     <li key={`d-${draft.Bundle_ID}`}>
                       <button
                         type="button"
-                        onClick={() => { handleContinueDraft(draft, { silent: true }); setSelectedKey(`draft-${draft.Bundle_ID}`); }}
-                        className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition ${active ? '' : 'hover:bg-slate-50'}`}
-                        style={active ? { backgroundColor: withColorAlpha(primaryColor, 0.06), boxShadow: `inset 3px 0 0 ${primaryColor}` } : undefined}
+                        onClick={() => {
+                          handleContinueDraft(draft, { silent: true });
+                          setSelectedKey(`draft-${draft.Bundle_ID}`);
+                        }}
+                        className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition ${active ? "" : "hover:bg-slate-50"}`}
+                        style={
+                          active
+                            ? {
+                                backgroundColor: withColorAlpha(
+                                  primaryColor,
+                                  0.06,
+                                ),
+                                boxShadow: `inset 3px 0 0 ${primaryColor}`,
+                              }
+                            : undefined
+                        }
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono text-sm font-semibold" style={{ color: primaryTextColor }}>Draft #{draft.Bundle_ID}</span>
-                          <span className="rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase" style={{ backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' }}>Draft</span>
+                          <span
+                            className="font-mono text-sm font-semibold"
+                            style={{ color: primaryTextColor }}
+                          >
+                            Draft #{draft.Bundle_ID}
+                          </span>
+                          <span
+                            className="rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase"
+                            style={{
+                              backgroundColor: "#fffbeb",
+                              color: "#b45309",
+                              borderColor: "#fde68a",
+                            }}
+                          >
+                            Draft
+                          </span>
                         </div>
-                        <span className="text-xs" style={{ color: tertiaryTextColor }}>{count} hair{count === 1 ? '' : 's'} - {formatDateTime(draft.Created_At)}</span>
+                        <span
+                          className="text-xs"
+                          style={{ color: tertiaryTextColor }}
+                        >
+                          {count} hair{count === 1 ? "" : "s"} -{" "}
+                          {formatDateTime(draft.Created_At)}
+                        </span>
                       </button>
                     </li>
                   );
                 })}
                 {activeBundles.map((bundle) => {
-                  const count = (bundleMembersByBundleId[bundle.Bundle_ID] || []).length;
+                  const count = (
+                    bundleMembersByBundleId[bundle.Bundle_ID] || []
+                  ).length;
                   const active = selectedKey === `bundle-${bundle.Bundle_ID}`;
-                  const statusKey = String(bundle.Status || '').toLowerCase();
+                  const statusKey = String(bundle.Status || "").toLowerCase();
                   return (
                     <li key={`b-${bundle.Bundle_ID}`}>
                       <button
                         type="button"
-                        onClick={() => setSelectedKey(`bundle-${bundle.Bundle_ID}`)}
-                        className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition ${active ? '' : 'hover:bg-slate-50'}`}
-                        style={active ? { backgroundColor: withColorAlpha(primaryColor, 0.06), boxShadow: `inset 3px 0 0 ${primaryColor}` } : undefined}
+                        onClick={() =>
+                          setSelectedKey(`bundle-${bundle.Bundle_ID}`)
+                        }
+                        className={`flex w-full flex-col gap-1 px-4 py-3 text-left transition ${active ? "" : "hover:bg-slate-50"}`}
+                        style={
+                          active
+                            ? {
+                                backgroundColor: withColorAlpha(
+                                  primaryColor,
+                                  0.06,
+                                ),
+                                boxShadow: `inset 3px 0 0 ${primaryColor}`,
+                              }
+                            : undefined
+                        }
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono text-sm font-semibold" style={{ color: primaryTextColor }}>{bundle.Bundle_Waybill_Code || `WB${String(Number(bundle.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`}</span>
-                          <span className="inline-flex rounded-full border px-1.5 py-0.5 text-[10px] font-semibold" style={bundleStatusStyle(statusKey, primaryColor, tertiaryColor, secondaryTextColor)}>{bundle.Status}</span>
+                          <span
+                            className="font-mono text-sm font-semibold"
+                            style={{ color: primaryTextColor }}
+                          >
+                            {bundle.Bundle_Waybill_Code ||
+                              `WB${String(Number(bundle.Bundle_ID || 0))
+                                .padStart(6, "0")
+                                .slice(-6)}`}
+                          </span>
+                          <span
+                            className="inline-flex rounded-full border px-1.5 py-0.5 text-[10px] font-semibold"
+                            style={bundleStatusStyle(
+                              statusKey,
+                              primaryColor,
+                              tertiaryColor,
+                              secondaryTextColor,
+                            )}
+                          >
+                            {bundle.Status}
+                          </span>
                         </div>
-                        <span className="text-xs" style={{ color: tertiaryTextColor }}>{count} hair{count === 1 ? '' : 's'} - {formatDateTime(bundle.Created_At)}</span>
+                        <span
+                          className="text-xs"
+                          style={{ color: tertiaryTextColor }}
+                        >
+                          {count} hair{count === 1 ? "" : "s"} -{" "}
+                          {formatDateTime(bundle.Created_At)}
+                        </span>
                       </button>
                     </li>
                   );
@@ -1980,13 +3065,22 @@ export default function BundlingPage() {
         <section className="space-y-4">
           {showCreatePanel ? (
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-              <div className="border-b border-slate-200 px-5 py-3.5" style={{ backgroundColor: withColorAlpha(primaryColor, 0.04) }}>
+              <div
+                className="border-b border-slate-200 px-5 py-3.5"
+                style={{ backgroundColor: withColorAlpha(primaryColor, 0.04) }}
+              >
                 <div className="flex items-center gap-2">
                   <ScanLine size={16} style={{ color: primaryColor }} />
-                  <h3 className="text-sm font-bold text-slate-800">Create a Bundle</h3>
+                  <h3 className="text-sm font-bold text-slate-800">
+                    Create a Bundle
+                  </h3>
                 </div>
-                <p className="mt-1 text-xs" style={{ color: tertiaryTextColor }}>
-                  Find the wig style, choose its exact cap size, then open a draft to start scanning.
+                <p
+                  className="mt-1 text-xs"
+                  style={{ color: tertiaryTextColor }}
+                >
+                  Find the wig style, choose its exact cap size, then open a
+                  draft to start scanning.
                 </p>
               </div>
               <div className="space-y-4 px-5 py-4">
@@ -2000,12 +3094,17 @@ export default function BundlingPage() {
                 />
 
                 <div>
-                  <label className="mb-1 block text-xs font-semibold" style={{ color: secondaryTextColor }}>Bundle Notes (optional)</label>
+                  <label
+                    className="mb-1 block text-xs font-semibold"
+                    style={{ color: secondaryTextColor }}
+                  >
+                    Bundle Notes (optional)
+                  </label>
                   <textarea
                     value={scannerNotes}
                     onChange={(event) => setScannerNotes(event.target.value)}
                     rows={2}
-                    placeholder="e.g. Event hair batch for medium cap style"
+                    placeholder="e.g. Program hair batch for medium cap style"
                     className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
                     style={{ color: primaryTextColor }}
                   />
@@ -2015,14 +3114,27 @@ export default function BundlingPage() {
                   <button
                     type="button"
                     onClick={handleOpenDraftBundle}
-                    disabled={isOpeningScannerBundle || draftCount >= 3 || !scannerSpecId}
+                    disabled={
+                      isOpeningScannerBundle ||
+                      draftCount >= 3 ||
+                      !scannerSpecId
+                    }
                     className="inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                     style={{ backgroundColor: primaryColor }}
                   >
-                    {isOpeningScannerBundle ? <Loader2 size={14} className="animate-spin" /> : <Package size={14} />}
+                    {isOpeningScannerBundle ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Package size={14} />
+                    )}
                     Open Draft Bundle
                   </button>
-                  <span className="text-xs" style={{ color: tertiaryTextColor }}>Open drafts: {draftCount}/3</span>
+                  <span
+                    className="text-xs"
+                    style={{ color: tertiaryTextColor }}
+                  >
+                    Open drafts: {draftCount}/3
+                  </span>
                 </div>
               </div>
             </div>
@@ -2031,494 +3143,868 @@ export default function BundlingPage() {
               {renderTargetWigCard(selectedDraftRow)}
               {renderHairRecommendations()}
 
-          {scannerBundleRow ? (
-            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <ScanLine size={16} className="text-slate-500" />
-                  <h3 className="text-sm font-bold text-slate-800">Active Draft #{scannerBundleRow.Bundle_ID}</h3>
-                  <span
-                    className="rounded-full border px-2 py-0.5 text-[11px] font-semibold"
-                    style={canCloseActiveDraft
-                      ? { borderColor: withColorAlpha(tertiaryColor, 0.45), backgroundColor: withColorAlpha(tertiaryColor, 0.12), color: tertiaryColor }
-                      : { borderColor: '#fde68a', backgroundColor: '#fffbeb', color: '#b45309' }}
-                  >
-                    {activeDraftCounterLabel} / target {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleToggleCamera}
-                  disabled={isStartingCamera}
-                  className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition disabled:opacity-60"
-                  style={{ backgroundColor: isCameraOn ? '#dc2626' : tertiaryColor }}
-                >
-                  {isStartingCamera ? <Loader2 size={12} className="animate-spin" /> : isCameraOn ? <CameraOff size={12} /> : <Camera size={12} />}
-                  {isCameraOn ? 'Stop Camera' : 'Start Camera'}
-                </button>
-              </div>
-
-              {/* Progress toward the closeable range. Green once 8-10 hairs. */}
-              <div className="mt-3">
-                <div className="h-2 w-full overflow-hidden rounded-full" style={{ backgroundColor: '#e2e8f0' }}>
-                  <div
-                    className="h-full rounded-full transition-all"
-                    style={{
-                      width: `${Math.min(100, Math.round((scannerBundleMemberCount / BUNDLE_HAIR_COUNT_TARGET_MAX) * 100))}%`,
-                      backgroundColor: canCloseActiveDraft ? tertiaryColor : primaryColor,
-                    }}
-                  />
-                </div>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  {scannerBundleMemberCount} of {BUNDLE_HAIR_COUNT_TARGET_MAX} hairs
-                  {canCloseActiveDraft
-                    ? ' - ready to close'
-                    : scannerBundleMemberCount < BUNDLE_HAIR_COUNT_TARGET_MIN
-                      ? ` - need ${BUNDLE_HAIR_COUNT_TARGET_MIN - scannerBundleMemberCount} more to close`
-                      : ''}
-                </p>
-              </div>
-
-              <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[220px,1fr]">
-                {/* Compact square camera preview */}
-                <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
-                  <div className="relative aspect-square w-full">
-                    <video
-                      ref={videoRef}
-                      className={`h-full w-full object-cover ${isCameraOn ? '' : 'hidden'}`}
-                      autoPlay
-                      playsInline
-                      muted
-                    />
-                    {!isCameraOn ? (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 px-4 text-center text-xs text-slate-300">
-                        <Camera size={20} />
-                        <span>Camera preview</span>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-
-                {/* Controls */}
-                <div className="space-y-2">
-                  <div className="flex items-start gap-1.5 rounded-md border px-3 py-2 text-xs" style={cameraNoticeStyle}>
-                    <AlertCircle size={12} className="mt-0.5 shrink-0" />
-                    <span>{cameraStatus.message}</span>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <input
-                      value={scannerWaybillCode}
-                      onChange={(event) => setScannerWaybillCode(normalizeWaybillCodeInput(event.target.value))}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          void handleScanWaybillIntoBundle(scannerWaybillCode, { fromCamera: false });
+              {scannerBundleRow ? (
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <ScanLine size={16} className="text-slate-500" />
+                      <h3 className="text-sm font-bold text-slate-800">
+                        Active Draft #{scannerBundleRow.Bundle_ID}
+                      </h3>
+                      <span
+                        className="rounded-full border px-2 py-0.5 text-[11px] font-semibold"
+                        style={
+                          canCloseActiveDraft
+                            ? {
+                                borderColor: withColorAlpha(
+                                  tertiaryColor,
+                                  0.45,
+                                ),
+                                backgroundColor: withColorAlpha(
+                                  tertiaryColor,
+                                  0.12,
+                                ),
+                                color: tertiaryColor,
+                              }
+                            : {
+                                borderColor: "#fde68a",
+                                backgroundColor: "#fffbeb",
+                                color: "#b45309",
+                              }
                         }
-                      }}
-                      placeholder="Scan or type waybill (WBXXXXXX)"
-                      maxLength={WAYBILL_CODE_LENGTH}
-                      autoCapitalize="characters"
-                      autoComplete="off"
-                      spellCheck={false}
-                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
-                      style={{ color: primaryTextColor }}
-                    />
+                      >
+                        {activeDraftCounterLabel} / target{" "}
+                        {BUNDLE_HAIR_COUNT_TARGET_MIN}-
+                        {BUNDLE_HAIR_COUNT_TARGET_MAX}
+                      </span>
+                    </div>
                     <button
                       type="button"
-                      onClick={() => void handleScanWaybillIntoBundle(scannerWaybillCode, { fromCamera: false })}
-                      disabled={isScanningWaybill || !isValidWaybillCode(scannerWaybillCode)}
-                      className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+                      onClick={handleToggleCamera}
+                      disabled={isStartingCamera}
+                      className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition disabled:opacity-60"
+                      style={{
+                        backgroundColor: isCameraOn ? "#dc2626" : tertiaryColor,
+                      }}
                     >
-                      {isScanningWaybill ? <Loader2 size={14} className="animate-spin" /> : <ScanLine size={14} />}
-                      Scan
+                      {isStartingCamera ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : isCameraOn ? (
+                        <CameraOff size={12} />
+                      ) : (
+                        <Camera size={12} />
+                      )}
+                      {isCameraOn ? "Stop Camera" : "Start Camera"}
                     </button>
                   </div>
 
-                  <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
-                    <span>Manual entry: WB + 6 letters or numbers</span>
-                    <span className="font-mono">{scannerWaybillCode.length}/{WAYBILL_CODE_LENGTH}</span>
+                  {/* Progress toward the closeable range. Green once 8-10 hairs. */}
+                  <div className="mt-3">
+                    <div
+                      className="h-2 w-full overflow-hidden rounded-full"
+                      style={{ backgroundColor: "#e2e8f0" }}
+                    >
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${Math.min(100, Math.round((scannerBundleMemberCount / BUNDLE_HAIR_COUNT_TARGET_MAX) * 100))}%`,
+                          backgroundColor: canCloseActiveDraft
+                            ? tertiaryColor
+                            : primaryColor,
+                        }}
+                      />
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      {scannerBundleMemberCount} of{" "}
+                      {BUNDLE_HAIR_COUNT_TARGET_MAX} hairs
+                      {canCloseActiveDraft
+                        ? " - ready to close"
+                        : scannerBundleMemberCount <
+                            BUNDLE_HAIR_COUNT_TARGET_MIN
+                          ? ` - need ${BUNDLE_HAIR_COUNT_TARGET_MIN - scannerBundleMemberCount} more to close`
+                          : ""}
+                    </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleCloseScannerBundle}
-                    disabled={isClosingScannerBundle || !canCloseActiveDraft}
-                    className="inline-flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-60"
-                    style={{ backgroundColor: tertiaryColor }}
-                  >
-                    {isClosingScannerBundle ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                    Close Draft &amp; Print Waybill
-                  </button>
+                  <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[220px,1fr]">
+                    {/* Compact square camera preview */}
+                    <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
+                      <div className="relative aspect-square w-full">
+                        <video
+                          ref={videoRef}
+                          className={`h-full w-full object-cover ${isCameraOn ? "" : "hidden"}`}
+                          autoPlay
+                          playsInline
+                          muted
+                        />
+                        {!isCameraOn ? (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 px-4 text-center text-xs text-slate-300">
+                            <Camera size={20} />
+                            <span>Camera preview</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
 
-                  <p className="text-[11px] text-slate-500">
-                    Each scan adds a hair and updates the event&apos;s collected count. The close button unlocks at {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX} hairs.
-                  </p>
+                    {/* Controls */}
+                    <div className="space-y-2">
+                      <div
+                        className="flex items-start gap-1.5 rounded-md border px-3 py-2 text-xs"
+                        style={cameraNoticeStyle}
+                      >
+                        <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                        <span>{cameraStatus.message}</span>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <input
+                          value={scannerWaybillCode}
+                          onChange={(event) =>
+                            setScannerWaybillCode(
+                              normalizeWaybillCodeInput(event.target.value),
+                            )
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void handleScanWaybillIntoBundle(
+                                scannerWaybillCode,
+                                { fromCamera: false },
+                              );
+                            }
+                          }}
+                          placeholder="Scan or type waybill (WBXXXXXX)"
+                          maxLength={WAYBILL_CODE_LENGTH}
+                          autoCapitalize="characters"
+                          autoComplete="off"
+                          spellCheck={false}
+                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+                          style={{ color: primaryTextColor }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void handleScanWaybillIntoBundle(
+                              scannerWaybillCode,
+                              { fromCamera: false },
+                            )
+                          }
+                          disabled={
+                            isScanningWaybill ||
+                            !isValidWaybillCode(scannerWaybillCode)
+                          }
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+                        >
+                          {isScanningWaybill ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <ScanLine size={14} />
+                          )}
+                          Scan
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <span>Manual entry: WB + 6 letters or numbers</span>
+                        <span className="font-mono">
+                          {scannerWaybillCode.length}/{WAYBILL_CODE_LENGTH}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleCloseScannerBundle}
+                        disabled={
+                          isClosingScannerBundle || !canCloseActiveDraft
+                        }
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-60"
+                        style={{ backgroundColor: tertiaryColor }}
+                      >
+                        {isClosingScannerBundle ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <CheckCircle2 size={14} />
+                        )}
+                        Close Draft &amp; Print Waybill
+                      </button>
+
+                      <p className="text-[11px] text-slate-500">
+                        Each scan adds a hair and updates the event&apos;s
+                        collected count. The close button unlocks at{" "}
+                        {BUNDLE_HAIR_COUNT_TARGET_MIN}-
+                        {BUNDLE_HAIR_COUNT_TARGET_MAX} hairs.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-3">
+                    <WaybillScanResult
+                      outcome={scanOutcome}
+                      possibleOutcomes={BUNDLING_SCAN_OUTCOMES}
+                    />
+                  </div>
                 </div>
-              </div>
-
-              <div className="mt-3">
-                <WaybillScanResult outcome={scanOutcome} possibleOutcomes={BUNDLING_SCAN_OUTCOMES} />
-              </div>
-            </div>
-          ) : null}
+              ) : null}
               <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-sm font-bold text-slate-800">Hairs in Draft #{selectedDraftRow.Bundle_ID}</h3>
+                  <h3 className="text-sm font-bold text-slate-800">
+                    Hairs in Draft #{selectedDraftRow.Bundle_ID}
+                  </h3>
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={() => handleFinalizeDraft(selectedDraftRow)}
-                      disabled={isFinalizingDraftId === selectedDraftRow.Bundle_ID}
+                      disabled={
+                        isFinalizingDraftId === selectedDraftRow.Bundle_ID
+                      }
                       className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
                       style={{ backgroundColor: tertiaryColor }}
                     >
-                      {isFinalizingDraftId === selectedDraftRow.Bundle_ID ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+                      {isFinalizingDraftId === selectedDraftRow.Bundle_ID ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <CheckCircle2 size={12} />
+                      )}
                       Finalize
                     </button>
                     <button
                       type="button"
                       onClick={() => handleDeleteDraft(selectedDraftRow)}
-                      disabled={isDeletingDraftId === selectedDraftRow.Bundle_ID}
+                      disabled={
+                        isDeletingDraftId === selectedDraftRow.Bundle_ID
+                      }
                       className="inline-flex items-center gap-1 rounded-md border bg-white px-2.5 py-1.5 text-xs font-semibold disabled:opacity-60"
-                      style={{ borderColor: '#fecaca', color: '#b91c1c' }}
+                      style={{ borderColor: "#fecaca", color: "#b91c1c" }}
                     >
-                      {isDeletingDraftId === selectedDraftRow.Bundle_ID ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      {isDeletingDraftId === selectedDraftRow.Bundle_ID ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={12} />
+                      )}
                       Delete
                     </button>
                   </div>
                 </div>
-                {renderBundleHairDetails(selectedDraftRow, { allowRemove: true })}
+                {renderBundleHairDetails(selectedDraftRow, {
+                  allowRemove: true,
+                })}
               </div>
             </>
           ) : selectedBundleRow ? (
             <>
-            {renderTargetWigCard(selectedBundleRow)}
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-              <div className="h-1.5 w-full" style={{ background: `linear-gradient(90deg, ${primaryColor}, ${primaryColor}99)` }} />
-              <div className="px-5 py-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="font-mono text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      {selectedBundleRow.Bundle_Waybill_Code || `WB${String(Number(selectedBundleRow.Bundle_ID || 0)).padStart(6, '0').slice(-6)}`}
-                    </p>
-                    <span
-                      className="mt-1 inline-flex rounded-full border px-2.5 py-0.5 text-xs font-semibold"
-                      style={bundleStatusStyle(String(selectedBundleRow.Status || '').toLowerCase(), primaryColor, tertiaryColor, secondaryTextColor)}
+              {renderTargetWigCard(selectedBundleRow)}
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div
+                  className="h-1.5 w-full"
+                  style={{
+                    background: `linear-gradient(90deg, ${primaryColor}, ${primaryColor}99)`,
+                  }}
+                />
+                <div className="px-5 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-mono text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        {selectedBundleRow.Bundle_Waybill_Code ||
+                          `WB${String(Number(selectedBundleRow.Bundle_ID || 0))
+                            .padStart(6, "0")
+                            .slice(-6)}`}
+                      </p>
+                      <span
+                        className="mt-1 inline-flex rounded-full border px-2.5 py-0.5 text-xs font-semibold"
+                        style={bundleStatusStyle(
+                          String(selectedBundleRow.Status || "").toLowerCase(),
+                          primaryColor,
+                          tertiaryColor,
+                          secondaryTextColor,
+                        )}
+                      >
+                        {selectedBundleRow.Status}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenPrint(selectedBundleRow)}
+                      className="inline-flex items-center gap-1.5 rounded-md border bg-white px-3 py-1.5 text-sm font-semibold"
+                      style={{
+                        borderColor: withColorAlpha(primaryColor, 0.35),
+                        color: primaryColor,
+                      }}
                     >
-                      {selectedBundleRow.Status}
-                    </span>
+                      <FileText size={14} />
+                      Print Waybill
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleOpenPrint(selectedBundleRow)}
-                    className="inline-flex items-center gap-1.5 rounded-md border bg-white px-3 py-1.5 text-sm font-semibold"
-                    style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-                  >
-                    <FileText size={14} />
-                    Print Waybill
-                  </button>
-                </div>
 
-                <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Hairs</p>
-                    <p className="text-slate-800">{(bundleMembersByBundleId[selectedBundleRow.Bundle_ID] || []).length}</p>
+                  <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        Hairs
+                      </p>
+                      <p className="text-slate-800">
+                        {
+                          (
+                            bundleMembersByBundleId[
+                              selectedBundleRow.Bundle_ID
+                            ] || []
+                          ).length
+                        }
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        Created
+                      </p>
+                      <p className="text-slate-800">
+                        {formatDateTime(selectedBundleRow.Created_At)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        Wig Created
+                      </p>
+                      <p className="text-slate-800">
+                        {selectedBundleRow.Wig_Completed_At
+                          ? formatDateTime(selectedBundleRow.Wig_Completed_At)
+                          : "-"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        Notes
+                      </p>
+                      <p className="text-slate-800">
+                        {selectedBundleRow.Notes || "-"}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Created</p>
-                    <p className="text-slate-800">{formatDateTime(selectedBundleRow.Created_At)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Wig Created</p>
-                    <p className="text-slate-800">{selectedBundleRow.Wig_Completed_At ? formatDateTime(selectedBundleRow.Wig_Completed_At) : '-'}</p>
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Notes</p>
-                    <p className="text-slate-800">{selectedBundleRow.Notes || '-'}</p>
-                  </div>
-                </div>
 
-                <div className="mt-4">
-                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Hairs in this bundle</h4>
-                  {renderBundleHairDetails(selectedBundleRow, { allowRemove: false })}
+                  <div className="mt-4">
+                    <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                      Hairs in this bundle
+                    </h4>
+                    {renderBundleHairDetails(selectedBundleRow, {
+                      allowRemove: false,
+                    })}
+                  </div>
                 </div>
               </div>
-            </div>
             </>
           ) : null}
         </section>
       </div>
 
-      {showHelp ? renderPortal(
-        <div
-          className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-900/60 p-4"
-          onClick={() => setShowHelp(false)}
-        >
-          <div
-            className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl shadow-2xl"
-            style={{ backgroundColor: '#ffffff' }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-3.5">
-              <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800">
-                <HelpCircle size={16} style={{ color: primaryColor }} />
-                How bundling works
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowHelp(false)}
-                className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"
-                aria-label="Close help"
+      {showHelp
+        ? renderPortal(
+            <div
+              className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-900/60 p-4"
+              onClick={() => setShowHelp(false)}
+            >
+              <div
+                className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl shadow-2xl"
+                style={{ backgroundColor: "#ffffff" }}
+                onClick={(event) => event.stopPropagation()}
               >
-                <X size={16} />
-              </button>
-            </div>
-            <ol className="space-y-2 overflow-y-auto px-5 py-4">
-              {flowSteps.map((step) => {
-                const isDone = step.id < currentFlowStep;
-                const isActive = step.id === currentFlowStep;
-                const accent = isDone ? tertiaryColor : isActive ? primaryColor : '#94a3b8';
-                return (
-                  <li
-                    key={step.id}
-                    className="flex items-start gap-3 rounded-xl border p-3"
+                <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-3.5">
+                  <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800">
+                    <HelpCircle size={16} style={{ color: primaryColor }} />
+                    How bundling works
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setShowHelp(false)}
+                    className="rounded-full p-1.5 text-slate-500 hover:bg-slate-100"
+                    aria-label="Close help"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <ol className="space-y-2 overflow-y-auto px-5 py-4">
+                  {flowSteps.map((step) => {
+                    const isDone = step.id < currentFlowStep;
+                    const isActive = step.id === currentFlowStep;
+                    const accent = isDone
+                      ? tertiaryColor
+                      : isActive
+                        ? primaryColor
+                        : "#94a3b8";
+                    return (
+                      <li
+                        key={step.id}
+                        className="flex items-start gap-3 rounded-xl border p-3"
+                        style={{
+                          borderColor: isActive
+                            ? withColorAlpha(primaryColor, 0.55)
+                            : "#e2e8f0",
+                          backgroundColor: isActive
+                            ? withColorAlpha(primaryColor, 0.1)
+                            : isDone
+                              ? withColorAlpha(tertiaryColor, 0.1)
+                              : "#f8fafc",
+                        }}
+                      >
+                        <span
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+                          style={{ backgroundColor: accent }}
+                        >
+                          {isDone ? <CheckCircle2 size={15} /> : step.id}
+                        </span>
+                        <div>
+                          <p
+                            className="text-sm font-semibold"
+                            style={{
+                              color: isActive ? primaryColor : primaryTextColor,
+                            }}
+                          >
+                            {step.title}
+                            {isActive ? (
+                              <span
+                                className="ml-2 text-[10px] font-bold uppercase tracking-wide"
+                                style={{ color: primaryColor }}
+                              >
+                                You are here
+                              </span>
+                            ) : null}
+                          </p>
+                          <p
+                            className="mt-0.5 text-xs leading-snug"
+                            style={{ color: secondaryTextColor }}
+                          >
+                            {step.detail}
+                          </p>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </div>
+            </div>,
+          )
+        : null}
+
+      {confirmModal.isOpen
+        ? renderPortal(
+            <div className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-900/60 p-4">
+              <div
+                className="w-full max-w-md rounded-2xl border p-0 shadow-2xl"
+                style={{ borderColor: "#e2e8f0", backgroundColor: "#ffffff" }}
+              >
+                <div className="px-5 pb-2 pt-5">
+                  <p
+                    className="text-[11px] font-bold uppercase tracking-[0.2em]"
+                    style={
+                      confirmModal.tone === "danger"
+                        ? { color: "#b91c1c" }
+                        : confirmModal.tone === "warning"
+                          ? { color: "#b45309" }
+                          : { color: primaryColor }
+                    }
+                  >
+                    Confirm Action
+                  </p>
+                  <h3
+                    className="mt-1 text-base font-semibold"
+                    style={{ color: primaryTextColor }}
+                  >
+                    {confirmModal.title}
+                  </h3>
+                  <p
+                    className="mt-2 text-sm"
+                    style={{ color: secondaryTextColor }}
+                  >
+                    {confirmModal.message}
+                  </p>
+                </div>
+                <div className="flex justify-end gap-2 px-5 pb-5 pt-3">
+                  <button
+                    type="button"
+                    onClick={closeConfirmModal}
+                    className="rounded-lg border px-3 py-1.5 text-sm font-semibold"
                     style={{
-                      borderColor: isActive ? withColorAlpha(primaryColor, 0.55) : '#e2e8f0',
-                      backgroundColor: isActive ? withColorAlpha(primaryColor, 0.1) : isDone ? withColorAlpha(tertiaryColor, 0.1) : '#f8fafc',
+                      borderColor: "#d1d5db",
+                      color: secondaryTextColor,
+                      backgroundColor: "#fff",
                     }}
                   >
-                    <span
-                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
-                      style={{ backgroundColor: accent }}
-                    >
-                      {isDone ? <CheckCircle2 size={15} /> : step.id}
-                    </span>
-                    <div>
-                      <p className="text-sm font-semibold" style={{ color: isActive ? primaryColor : primaryTextColor }}>
-                        {step.title}
-                        {isActive ? <span className="ml-2 text-[10px] font-bold uppercase tracking-wide" style={{ color: primaryColor }}>You are here</span> : null}
-                      </p>
-                      <p className="mt-0.5 text-xs leading-snug" style={{ color: secondaryTextColor }}>{step.detail}</p>
-                    </div>
-                  </li>
-                );
-              })}
-            </ol>
-          </div>
-        </div>,
-      ) : null}
-
-      {confirmModal.isOpen ? renderPortal(
-        <div className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-900/60 p-4">
-          <div className="w-full max-w-md rounded-2xl border p-0 shadow-2xl" style={{ borderColor: '#e2e8f0', backgroundColor: '#ffffff' }}>
-            <div className="px-5 pb-2 pt-5">
-              <p
-                className="text-[11px] font-bold uppercase tracking-[0.2em]"
-                style={
-                  confirmModal.tone === 'danger'
-                    ? { color: '#b91c1c' }
-                    : confirmModal.tone === 'warning'
-                      ? { color: '#b45309' }
-                      : { color: primaryColor }
-                }
-              >
-                Confirm Action
-              </p>
-              <h3 className="mt-1 text-base font-semibold" style={{ color: primaryTextColor }}>
-                {confirmModal.title}
-              </h3>
-              <p className="mt-2 text-sm" style={{ color: secondaryTextColor }}>
-                {confirmModal.message}
-              </p>
-            </div>
-            <div className="flex justify-end gap-2 px-5 pb-5 pt-3">
-              <button
-                type="button"
-                onClick={closeConfirmModal}
-                className="rounded-lg border px-3 py-1.5 text-sm font-semibold"
-                style={{ borderColor: '#d1d5db', color: secondaryTextColor, backgroundColor: '#fff' }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleConfirmModalSubmit()}
-                className="rounded-lg px-3 py-1.5 text-sm font-semibold text-white"
-                style={confirmModal.tone === 'danger' ? { backgroundColor: '#b91c1c' } : { backgroundColor: primaryColor }}
-              >
-                Continue
-              </button>
-            </div>
-          </div>
-        </div>,
-      ) : null}
-
-      {activePrintBundle ? renderPortal(
-        <div className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-900/70 p-4 print:static print:bg-white print:p-0">
-          <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl shadow-2xl print:max-h-none print:max-w-none print:rounded-none print:shadow-none" style={{ backgroundColor: '#ffffff' }}>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 print:hidden" style={{ borderColor: '#e2e8f0' }}>
-              <div>
-                <h3 className="text-base font-semibold" style={headingStyle}>Bundle Waybill</h3>
-                <p className="text-xs" style={{ color: tertiaryTextColor }}>{activePrintBundle.submissionCode}</p>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleConfirmModalSubmit()}
+                    className="rounded-lg px-3 py-1.5 text-sm font-semibold text-white"
+                    style={
+                      confirmModal.tone === "danger"
+                        ? { backgroundColor: "#b91c1c" }
+                        : { backgroundColor: primaryColor }
+                    }
+                  >
+                    Continue
+                  </button>
+                </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleSavePdf}
-                  disabled={isExportingPdf || !activePrintBundle.qrDataUrl}
-                  className="inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-1.5 text-sm font-semibold disabled:opacity-60"
-                  style={{ borderColor: withColorAlpha(primaryColor, 0.35), color: primaryColor }}
-                >
-                  {isExportingPdf ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                  Save as PDF
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePrint}
-                  className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-semibold text-white"
-                  style={{ backgroundColor: primaryColor }}
-                >
-                  <Printer size={14} />
-                  Print
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActivePrintBundle(null)}
-                  className="rounded-md border p-1.5 text-slate-500 hover:bg-slate-50"
-                  style={{ borderColor: '#e2e8f0' }}
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            </div>
+            </div>,
+          )
+        : null}
 
-            <div className="Donivra-bundle-print-area flex-1 overflow-y-auto bg-slate-100 p-4 print:overflow-visible print:bg-white print:p-0">
-              <article
-                className="mx-auto max-w-3xl rounded-2xl border-2 border-dashed bg-white p-6 text-left shadow-sm print:m-0 print:max-w-none print:rounded-none print:border-2 print:border-solid print:shadow-none"
-                style={{ borderColor: withColorAlpha(primaryColor, 0.5) }}
+      {activePrintBundle
+        ? renderPortal(
+            <div className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-900/70 p-4 print:static print:bg-white print:p-0">
+              <div
+                className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl shadow-2xl print:max-h-none print:max-w-none print:rounded-none print:shadow-none"
+                style={{ backgroundColor: "#ffffff" }}
               >
-                <header className="grid grid-cols-1 gap-5 border-b border-slate-200 pb-5 sm:grid-cols-[1fr,180px]">
+                <div
+                  className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 print:hidden"
+                  style={{ borderColor: "#e2e8f0" }}
+                >
                   <div>
-                    <p className="text-[10px] font-bold uppercase tracking-[0.3em]" style={{ color: primaryColor }}>
-                      Donivra Wig Bundle Traceability Waybill
+                    <h3
+                      className="text-base font-semibold"
+                      style={headingStyle}
+                    >
+                      Bundle Waybill
+                    </h3>
+                    <p className="text-xs" style={{ color: tertiaryTextColor }}>
+                      {activePrintBundle.submissionCode}
                     </p>
-                    <p className="mt-1 text-xs font-semibold" style={{ color: secondaryTextColor }}>
-                      Keep with the physical bundle throughout production
-                    </p>
-                    <p className="mt-5 text-2xl font-bold" style={{ color: primaryTextColor }}>{activePrintBundle.submissionCode}</p>
-                    <dl className="mt-3 grid grid-cols-[auto,1fr] gap-x-3 gap-y-1.5 text-xs">
-                      <dt style={{ color: tertiaryTextColor }}>Bundle ID</dt>
-                      <dd className="font-semibold" style={{ color: primaryTextColor }}>#{activePrintBundle.bundleId}</dd>
-                      <dt style={{ color: tertiaryTextColor }}>Status</dt>
-                      <dd className="font-semibold" style={{ color: primaryTextColor }}>{activePrintBundle.status || 'In Production'}</dd>
-                      <dt style={{ color: tertiaryTextColor }}>Created</dt>
-                      <dd className="font-semibold" style={{ color: primaryTextColor }}>{formatDateTime(activePrintBundle.createdAt)}</dd>
-                      <dt style={{ color: tertiaryTextColor }}>Hair records</dt>
-                      <dd className="font-semibold" style={{ color: primaryTextColor }}>{activePrintBundle.memberCount}</dd>
-                    </dl>
                   </div>
-                  <div className="text-center">
-                    {activePrintBundle.qrDataUrl ? (
-                      <img src={activePrintBundle.qrDataUrl} alt={`QR for ${activePrintBundle.submissionCode}`} className="mx-auto h-40 w-40" />
-                    ) : (
-                      <div className="mx-auto flex h-40 w-40 items-center justify-center text-xs" style={{ color: tertiaryTextColor }}>
-                        <ImageIcon size={24} />
-                        <span className="ml-1">Generating QR...</span>
-                      </div>
-                    )}
-                    <p className="mt-1 text-[10px] font-semibold" style={{ color: tertiaryTextColor }}>Scan only after wig completion</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSavePdf}
+                      disabled={isExportingPdf || !activePrintBundle.qrDataUrl}
+                      className="inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-1.5 text-sm font-semibold disabled:opacity-60"
+                      style={{
+                        borderColor: withColorAlpha(primaryColor, 0.35),
+                        color: primaryColor,
+                      }}
+                    >
+                      {isExportingPdf ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Download size={14} />
+                      )}
+                      Save as PDF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePrint}
+                      className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-semibold text-white"
+                      style={{ backgroundColor: primaryColor }}
+                    >
+                      <Printer size={14} />
+                      Print
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActivePrintBundle(null)}
+                      className="rounded-md border p-1.5 text-slate-500 hover:bg-slate-50"
+                      style={{ borderColor: "#e2e8f0" }}
+                    >
+                      <X size={14} />
+                    </button>
                   </div>
-                </header>
+                </div>
 
-                {activePrintBundle.specification ? (
-                  <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.16em]" style={{ color: primaryColor }}>Target wig specification</p>
-                    <div className="mt-2 flex flex-wrap items-end justify-between gap-2">
+                <div className="Donivra-bundle-print-area flex-1 overflow-y-auto bg-slate-100 p-4 print:overflow-visible print:bg-white print:p-0">
+                  <article
+                    className="mx-auto max-w-3xl rounded-2xl border-2 border-dashed bg-white p-6 text-left shadow-sm print:m-0 print:max-w-none print:rounded-none print:border-2 print:border-solid print:shadow-none"
+                    style={{ borderColor: withColorAlpha(primaryColor, 0.5) }}
+                  >
+                    <header className="grid grid-cols-1 gap-5 border-b border-slate-200 pb-5 sm:grid-cols-[1fr,180px]">
                       <div>
-                        <p className="text-base font-bold" style={{ color: primaryTextColor }}>{activePrintBundle.specification.wigName || 'Unnamed wig'}</p>
-                        <p className="text-xs" style={{ color: tertiaryTextColor }}>
-                          {activePrintBundle.specification.wigCode || 'No wig code'} · Specification #{activePrintBundle.specification.Wig_Specification_ID}
+                        <p
+                          className="text-[10px] font-bold uppercase tracking-[0.3em]"
+                          style={{ color: primaryColor }}
+                        >
+                          Donivra Wig Bundle Traceability Waybill
+                        </p>
+                        <p
+                          className="mt-1 text-xs font-semibold"
+                          style={{ color: secondaryTextColor }}
+                        >
+                          Keep with the physical bundle throughout production
+                        </p>
+                        <p
+                          className="mt-5 text-2xl font-bold"
+                          style={{ color: primaryTextColor }}
+                        >
+                          {activePrintBundle.submissionCode}
+                        </p>
+                        <dl className="mt-3 grid grid-cols-[auto,1fr] gap-x-3 gap-y-1.5 text-xs">
+                          <dt style={{ color: tertiaryTextColor }}>
+                            Bundle ID
+                          </dt>
+                          <dd
+                            className="font-semibold"
+                            style={{ color: primaryTextColor }}
+                          >
+                            #{activePrintBundle.bundleId}
+                          </dd>
+                          <dt style={{ color: tertiaryTextColor }}>Status</dt>
+                          <dd
+                            className="font-semibold"
+                            style={{ color: primaryTextColor }}
+                          >
+                            {activePrintBundle.status || "In Production"}
+                          </dd>
+                          <dt style={{ color: tertiaryTextColor }}>Created</dt>
+                          <dd
+                            className="font-semibold"
+                            style={{ color: primaryTextColor }}
+                          >
+                            {formatDateTime(activePrintBundle.createdAt)}
+                          </dd>
+                          <dt style={{ color: tertiaryTextColor }}>
+                            Hair records
+                          </dt>
+                          <dd
+                            className="font-semibold"
+                            style={{ color: primaryTextColor }}
+                          >
+                            {activePrintBundle.memberCount}
+                          </dd>
+                        </dl>
+                      </div>
+                      <div className="text-center">
+                        {activePrintBundle.qrDataUrl ? (
+                          <img
+                            src={activePrintBundle.qrDataUrl}
+                            alt={`QR for ${activePrintBundle.submissionCode}`}
+                            className="mx-auto h-40 w-40"
+                          />
+                        ) : (
+                          <div
+                            className="mx-auto flex h-40 w-40 items-center justify-center text-xs"
+                            style={{ color: tertiaryTextColor }}
+                          >
+                            <ImageIcon size={24} />
+                            <span className="ml-1">Generating QR...</span>
+                          </div>
+                        )}
+                        <p
+                          className="mt-1 text-[10px] font-semibold"
+                          style={{ color: tertiaryTextColor }}
+                        >
+                          Scan only after wig completion
                         </p>
                       </div>
-                      <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-bold text-slate-700">
-                        Cap {activePrintBundle.specification.capSize || 'N/A'}
-                      </span>
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
-                      {[
-                        ['Style', activePrintBundle.specification.style],
-                        ['Length', activePrintBundle.specification.hairLength ? `${activePrintBundle.specification.hairLength} in` : 'N/A'],
-                        ['Color', activePrintBundle.specification.hairColor],
-                        ['Texture', activePrintBundle.specification.hairTexture],
-                        ['Density', activePrintBundle.specification.hairDensity],
-                      ].map(([label, value]) => (
-                        <div key={label} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
-                          <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">{label}</p>
-                          <p className="mt-0.5 font-semibold text-slate-800">{value || 'N/A'}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
+                    </header>
 
-                <section className="mt-5">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.16em]" style={{ color: primaryColor }}>Contributing verified hair records</p>
-                    <span className="text-xs font-bold text-slate-700">{(activePrintBundle.members || []).length} total</span>
-                  </div>
-                  <div className="mt-2 space-y-2">
-                    {(activePrintBundle.members || []).map((member, index) => {
-                      const detail = member.detail || {};
-                      return (
-                        <div key={`${activePrintBundle.bundleId}-${member.submissionId}`} className="rounded-lg border border-slate-200 p-3 break-inside-avoid">
-                          <div className="flex flex-wrap items-start justify-between gap-2">
-                            <div>
-                              <p className="font-mono text-xs font-bold text-slate-900">{index + 1}. {member.submissionCode} · Submission #{member.submissionId}</p>
-                              <p className="mt-0.5 text-xs font-semibold text-slate-700">{member.donorName}</p>
-                              <p className="text-[10px] text-slate-500">{member.eventTitle}</p>
+                    {activePrintBundle.specification ? (
+                      <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <p
+                          className="text-[10px] font-bold uppercase tracking-[0.16em]"
+                          style={{ color: primaryColor }}
+                        >
+                          Target wig specification
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-end justify-between gap-2">
+                          <div>
+                            <p
+                              className="text-base font-bold"
+                              style={{ color: primaryTextColor }}
+                            >
+                              {activePrintBundle.specification.wigName ||
+                                "Unnamed wig"}
+                            </p>
+                            <p
+                              className="text-xs"
+                              style={{ color: tertiaryTextColor }}
+                            >
+                              {activePrintBundle.specification.wigCode ||
+                                "No wig code"}{" "}
+                              · Specification #
+                              {
+                                activePrintBundle.specification
+                                  .Wig_Specification_ID
+                              }
+                            </p>
+                          </div>
+                          <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-bold text-slate-700">
+                            Cap{" "}
+                            {activePrintBundle.specification.capSize || "N/A"}
+                          </span>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
+                          {[
+                            ["Style", activePrintBundle.specification.style],
+                            [
+                              "Length",
+                              activePrintBundle.specification.hairLength
+                                ? `${activePrintBundle.specification.hairLength} in`
+                                : "N/A",
+                            ],
+                            [
+                              "Color",
+                              activePrintBundle.specification.hairColor,
+                            ],
+                            [
+                              "Hair Pattern",
+                              activePrintBundle.specification.hairTexture,
+                            ],
+                            [
+                              "Density",
+                              activePrintBundle.specification.hairDensity,
+                            ],
+                          ].map(([label, value]) => (
+                            <div
+                              key={label}
+                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-2"
+                            >
+                              <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">
+                                {label}
+                              </p>
+                              <p className="mt-0.5 font-semibold text-slate-800">
+                                {value || "N/A"}
+                              </p>
                             </div>
-                            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">{detail.Status || 'Verified'}</span>
-                          </div>
-                          <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] sm:grid-cols-5">
-                            <p><span className="text-slate-400">Length:</span> <strong>{detail.Declared_Length ? `${detail.Declared_Length} in` : 'N/A'}</strong></p>
-                            <p><span className="text-slate-400">Color:</span> <strong>{detail.Declared_Color || 'N/A'}</strong></p>
-                            <p><span className="text-slate-400">Texture:</span> <strong>{detail.Declared_Texture || 'N/A'}</strong></p>
-                            <p><span className="text-slate-400">Density:</span> <strong>{detail.Declared_Density || 'N/A'}</strong></p>
-                            <p><span className="text-slate-400">Condition:</span> <strong>{detail.Declared_Condition || 'N/A'}</strong></p>
-                          </div>
-                          <p className="mt-2 text-[10px] text-slate-600">
-                            Treatments: Chemical <strong>{detail.Is_Chemically_Treated ? 'Yes' : 'No'}</strong> · Colored <strong>{detail.Is_Colored ? 'Yes' : 'No'}</strong> · Bleached <strong>{detail.Is_Bleached ? 'Yes' : 'No'}</strong> · Rebonded <strong>{detail.Is_Rebonded ? 'Yes' : 'No'}</strong>
-                          </p>
-                          {detail.Detail_Notes ? <p className="mt-1 text-[10px] text-slate-500">Notes: {detail.Detail_Notes}</p> : null}
+                          ))}
                         </div>
-                      );
-                    })}
-                  </div>
-                </section>
+                      </section>
+                    ) : null}
 
-                {activePrintBundle.notes ? (
-                  <section className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                    <strong>Bundle notes:</strong> {activePrintBundle.notes}
-                  </section>
-                ) : null}
+                    <section className="mt-5">
+                      <div className="flex items-center justify-between gap-2">
+                        <p
+                          className="text-[10px] font-bold uppercase tracking-[0.16em]"
+                          style={{ color: primaryColor }}
+                        >
+                          Contributing verified hair records
+                        </p>
+                        <span className="text-xs font-bold text-slate-700">
+                          {(activePrintBundle.members || []).length} total
+                        </span>
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        {(activePrintBundle.members || []).map(
+                          (member, index) => {
+                            const detail = member.detail || {};
+                            return (
+                              <div
+                                key={`${activePrintBundle.bundleId}-${member.submissionId}`}
+                                className="rounded-lg border border-slate-200 p-3 break-inside-avoid"
+                              >
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div>
+                                    <p className="font-mono text-xs font-bold text-slate-900">
+                                      {index + 1}. {member.submissionCode} ·
+                                      Submission #{member.submissionId}
+                                    </p>
+                                    <p className="mt-0.5 text-xs font-semibold text-slate-700">
+                                      {member.donorName}
+                                    </p>
+                                    <p className="text-[10px] text-slate-500">
+                                      {member.eventTitle}
+                                    </p>
+                                  </div>
+                                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                                    {detail.Status || "Verified"}
+                                  </span>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] sm:grid-cols-5">
+                                  <p>
+                                    <span className="text-slate-400">
+                                      Length:
+                                    </span>{" "}
+                                    <strong>
+                                      {detail.Declared_Length
+                                        ? `${detail.Declared_Length} in`
+                                        : "N/A"}
+                                    </strong>
+                                  </p>
+                                  <p>
+                                    <span className="text-slate-400">
+                                      Color:
+                                    </span>{" "}
+                                    <strong>
+                                      {detail.Declared_Color || "N/A"}
+                                    </strong>
+                                  </p>
+                                  <p>
+                                    <span className="text-slate-400">
+                                      Hair Pattern:
+                                    </span>{" "}
+                                    <strong>
+                                      {detail.Declared_Texture || "N/A"}
+                                    </strong>
+                                  </p>
+                                  <p>
+                                    <span className="text-slate-400">
+                                      Density:
+                                    </span>{" "}
+                                    <strong>
+                                      {detail.Declared_Density || "N/A"}
+                                    </strong>
+                                  </p>
+                                  <p>
+                                    <span className="text-slate-400">
+                                      Condition:
+                                    </span>{" "}
+                                    <strong>
+                                      {detail.Declared_Condition || "N/A"}
+                                    </strong>
+                                  </p>
+                                </div>
+                                <p className="mt-2 text-[10px] text-slate-600">
+                                  Treatments: Chemical{" "}
+                                  <strong>
+                                    {detail.Is_Chemically_Treated
+                                      ? "Yes"
+                                      : "No"}
+                                  </strong>{" "}
+                                  · Colored{" "}
+                                  <strong>
+                                    {detail.Is_Colored ? "Yes" : "No"}
+                                  </strong>{" "}
+                                  · Bleached{" "}
+                                  <strong>
+                                    {detail.Is_Bleached ? "Yes" : "No"}
+                                  </strong>{" "}
+                                  · Rebonded{" "}
+                                  <strong>
+                                    {detail.Is_Rebonded ? "Yes" : "No"}
+                                  </strong>
+                                </p>
+                                {detail.Detail_Notes ? (
+                                  <p className="mt-1 text-[10px] text-slate-500">
+                                    Notes: {detail.Detail_Notes}
+                                  </p>
+                                ) : null}
+                              </div>
+                            );
+                          },
+                        )}
+                      </div>
+                    </section>
 
-                <p className="mt-5 border-t border-slate-200 pt-3 text-center text-[10px] leading-snug" style={{ color: tertiaryTextColor }}>
-                  After the wig is completed, scan this QR in Upload Wig Stocks. This code identifies the exact bundle, target specification, and contributing verified hair records.
-                </p>
-              </article>
-            </div>
-          </div>
+                    {activePrintBundle.notes ? (
+                      <section className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        <strong>Bundle notes:</strong> {activePrintBundle.notes}
+                      </section>
+                    ) : null}
 
-          <style>{`
+                    <p
+                      className="mt-5 border-t border-slate-200 pt-3 text-center text-[10px] leading-snug"
+                      style={{ color: tertiaryTextColor }}
+                    >
+                      After the wig is completed, scan this QR in Upload Wig
+                      Stocks. This code identifies the exact bundle, target
+                      specification, and contributing verified hair records.
+                    </p>
+                  </article>
+                </div>
+              </div>
+
+              <style>{`
             @media print {
               body * { visibility: hidden !important; }
               .Donivra-bundle-print-area, .Donivra-bundle-print-area * { visibility: visible !important; }
               .Donivra-bundle-print-area { position: absolute !important; inset: 0 !important; padding: 12mm !important; background: #fff !important; }
             }
           `}</style>
-        </div>,
-      ) : null}
+            </div>,
+          )
+        : null}
     </div>
   );
 }

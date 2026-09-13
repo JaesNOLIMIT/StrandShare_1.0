@@ -165,8 +165,9 @@
 
 /* ── HERO ─────────────────────────────────────────── */
 #hero{
-  position:relative;height:100vh;overflow:hidden;
+  position:relative;min-height:100vh;min-height:100svh;overflow:hidden;
   display:flex;align-items:center;justify-content:center;
+  padding:6.5rem 0 4.5rem;
   background:var(--color-bg,#f5f0e8);
 }
 .landing-stars{
@@ -190,7 +191,7 @@
 }
 .hero-title{
   font-family:var(--font-serif,'Cormorant Garamond',serif);
-  font-size:clamp(3rem,7.6vw,7rem);
+  font-size:clamp(2.75rem,min(7vw,11vh),5.75rem);
   font-weight:300;line-height:1.05;letter-spacing:-.02em;margin-bottom:2rem;
   color:var(--color-text-primary,#0f0d0a);
   padding:0 .4em;
@@ -208,9 +209,9 @@
 .hero-title .line:nth-child(2) .line-inner{transition-delay:.14s}
 .hero-title .line:nth-child(3) .line-inner{transition-delay:.28s}
 .hero-sub{
-  font-size:clamp(1rem,1.8vw,1.15rem);font-weight:400;
+  font-size:clamp(.95rem,1.5vw,1.1rem);font-weight:400;
   color:var(--color-text-secondary,#7a6f61);line-height:1.85;
-  max-width:550px;margin:0 auto 3rem;
+  max-width:590px;margin:0 auto 2.25rem;
   opacity:0;transform:translateY(14px);
   transition:opacity .9s 2.8s var(--ease),transform .9s 2.8s var(--ease);
 }
@@ -656,6 +657,13 @@ footer{
   .nav-links{gap:1.6rem}
   .nav-cta{padding:8px 16px;font-size:.68rem;letter-spacing:.06em}
 }
+@media(max-width:1360px){
+  .landing-scroll-root nav{
+    grid-template-columns:minmax(0,1fr) auto;
+    padding-inline:2rem;
+  }
+  .nav-links{display:none}
+}
 @media(max-width:1024px){
   .nav-login{display:inline-flex}
 }
@@ -694,7 +702,13 @@ footer{
   .req-grid{grid-template-columns:1fr}
 }
 @media(max-width:720px){
+  #hero{padding:6rem 0 3.5rem}
+  .hero-inner{padding:0 1.25rem}
+  .hero-badge{margin-bottom:1.25rem}
+  .hero-title{font-size:clamp(2.65rem,13vw,4.3rem);margin-bottom:1.25rem}
+  .hero-sub{line-height:1.65;margin-bottom:1.75rem}
   .hero-ctas{grid-template-columns:1fr;width:min(100%,330px)}
+  .scroll-hint{display:none}
 }
 @media(max-width:640px){
   .landing-scroll-root nav{padding:0 1rem}
@@ -725,6 +739,15 @@ footer{
   }
   .nav-brand-image{height:30px;max-width:72px}
   .landing-scroll-root nav{gap:.4rem}
+}
+
+@media(max-height:800px) and (min-width:721px){
+  #hero{padding-top:5.5rem;padding-bottom:2.5rem}
+  .hero-badge{margin-bottom:1rem}
+  .hero-title{font-size:clamp(2.8rem,min(6.2vw,9.5vh),4.8rem);margin-bottom:1rem}
+  .hero-sub{line-height:1.55;margin-bottom:1.5rem}
+  .hero-ctas .btn-primary{min-height:44px;padding-block:10px}
+  .scroll-hint{bottom:1rem}
 }
 
 /* Touch devices: keep nav visible (hover reveal is not reliable). */

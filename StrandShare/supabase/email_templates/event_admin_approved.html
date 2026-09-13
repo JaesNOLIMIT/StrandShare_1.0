@@ -15,7 +15,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Event Request Approved</title>
+    <title>Program Request Approved</title>
   </head>
   <body style="margin:0;padding:0;background-color:#111111;">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
@@ -47,7 +47,7 @@
             <tr>
               <td style="padding:28px 24px 20px 24px;font-family:Segoe UI,Arial,Helvetica,sans-serif;">
                 <p style="margin:0 0 10px 0;font-size:12px;line-height:1.4;color:#9ca3af;font-weight:700;letter-spacing:0.7px;text-transform:uppercase;">
-                  Request ER-{{event_request_id}} &middot; {{event_visibility}} Event
+                  Request ER-{{event_request_id}} &middot; {{event_visibility}} Program
                 </p>
                 <h1 style="margin:0 0 12px 0;font-size:26px;line-height:1.25;color:#ffffff;font-weight:800;">
                   Your program is approved and now live
@@ -62,13 +62,13 @@
                   <tr>
                     <td style="background-color:#0a1530;border:1px solid #1e3a8a;border-radius:12px;padding:16px;text-align:center;">
                       <div style="font-size:11px;line-height:1.4;color:#93c5fd;font-weight:700;letter-spacing:0.7px;text-transform:uppercase;margin-bottom:6px;">
-                        Private Event Access Code
+                        Private Program Access Code
                       </div>
                       <div style="font-size:26px;letter-spacing:4px;font-weight:800;color:#ffffff;font-family:Consolas,monospace;">
                         {{private_event_code}}
                       </div>
                       <div style="margin-top:8px;font-size:11px;color:#93c5fd;">
-                        Share this code only with people you want to invite. They will enter it in the Donivra app to unlock your private event.
+                        Share this code only with people you want to invite. They will enter it in the Donivra app to unlock your private program.
                       </div>
                     </td>
                   </tr>
@@ -79,15 +79,15 @@
                   <tr>
                     <td style="background-color:#121212;border:1px solid #2a2a2a;border-radius:12px;padding:16px;">
                       <div style="font-size:11px;line-height:1.4;color:#9ca3af;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">
-                        Approved Event Details
+                        Approved Program Details
                       </div>
                       <div style="font-size:14px;line-height:1.8;color:#ffffff;font-family:Segoe UI,Arial,Helvetica,sans-serif;">
-                        <div><strong>Event:</strong> {{event_name}}</div>
+                        <div><strong>Program:</strong> {{event_name}}</div>
                         {{#start_date}}<div><strong>Start:</strong> {{start_date}}</div>{{/start_date}}
                         {{#end_date}}<div><strong>End:</strong> {{end_date}}</div>{{/end_date}}
                         {{#venue_name}}<div><strong>Venue:</strong> {{venue_name}}</div>{{/venue_name}}
                         <div><strong>Address:</strong> {{street}}{{#barangay}}, {{barangay}}{{/barangay}}{{#city_municipality}}, {{city_municipality}}{{/city_municipality}}{{#province}}, {{province}}{{/province}}{{#region}}, {{region}}{{/region}}{{#country}}, {{country}}{{/country}}</div>
-                        {{#event_by}}<div><strong>Event By:</strong> {{event_by}}</div>{{/event_by}}
+                        {{#event_by}}<div><strong>Program Organizer:</strong> {{event_by}}</div>{{/event_by}}
                         {{#partnered_with}}<div><strong>Partnered With:</strong> {{partnered_with}}</div>{{/partnered_with}}
                         {{#partner_social_media_link}}<div><strong>Partner Social:</strong> {{partner_social_media_link}}</div>{{/partner_social_media_link}}
                       </div>
@@ -96,7 +96,7 @@
                 </table>
 
                 <p style="margin:0 0 6px 0;font-size:12px;line-height:1.7;color:#9ca3af;">
-                  Our team may still contact you using your selected contact method for operational coordination before the event date.
+                  Our team may still contact you using your selected contact method for operational coordination before the program date.
                   This does not affect the program&apos;s published status.
                 </p>
               </td>

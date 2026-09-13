@@ -1,6 +1,6 @@
 <!--
   Template:  event_staff_rejected
-  Subject:   Event Application Update - Not Approved by Staff
+  Subject:   Program Application Update - Not Approved by Staff
   Trigger:   AFTER UPDATE on public."Event_Applications" when staff permanently
              rejects an initial application or an admin-rejected appeal.
   SQL:       150_allow_staff_to_reject_admin_rejected_appeals.sql
@@ -11,11 +11,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Event Application Not Approved</title>
+    <title>Program Application Not Approved</title>
   </head>
   <body style="margin:0;padding:0;background-color:#111111;">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
-      {{#rejected_after_admin_decision}}Your event appeal was rejected permanently by staff.{{/rejected_after_admin_decision}}{{^rejected_after_admin_decision}}Your event application was not approved at the staff review stage.{{/rejected_after_admin_decision}}
+      {{#rejected_after_admin_decision}}Your program appeal was rejected permanently by staff.{{/rejected_after_admin_decision}}{{^rejected_after_admin_decision}}Your program application was not approved at the staff review stage.{{/rejected_after_admin_decision}}
     </div>
 
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#111111;padding:28px 12px;">
@@ -50,7 +50,7 @@
                 </h1>
                 <p style="margin:0 0 16px 0;font-size:14px;line-height:1.7;color:#c9c9c9;">
                   {{#rejected_after_admin_decision}}After reviewing the admin decision and the available appeal, our staff has closed this application instead of resubmitting it to admin.{{/rejected_after_admin_decision}}
-                  {{^rejected_after_admin_decision}}Thank you for submitting your event application. After review, our staff was unable to move it forward.{{/rejected_after_admin_decision}}
+                  {{^rejected_after_admin_decision}}Thank you for submitting your program application. After review, our staff was unable to move it forward.{{/rejected_after_admin_decision}}
                   This application is now permanently closed and cannot be reopened or appealed.
                 </p>
 
@@ -74,7 +74,7 @@
                         Application Snapshot
                       </div>
                       <div style="font-size:14px;line-height:1.8;color:#ffffff;font-family:Segoe UI,Arial,Helvetica,sans-serif;">
-                        <div><strong>Event:</strong> {{event_name}}</div>
+                        <div><strong>Program:</strong> {{event_name}}</div>
                         {{#proposed_start_at}}<div><strong>Proposed Start:</strong> {{proposed_start_at}}</div>{{/proposed_start_at}}
                         {{#proposed_end_at}}<div><strong>Proposed End:</strong> {{proposed_end_at}}</div>{{/proposed_end_at}}
                         {{#venue_address}}<div><strong>Venue:</strong> {{venue_address}}</div>{{/venue_address}}

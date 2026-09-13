@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import { createClient } from '@supabase/supabase-js';
 import { config as loadDotenv } from 'dotenv';
+import { jsPDF } from 'jspdf';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -227,6 +228,9 @@ function buildTemplateContext(row, payload) {
     'admin_reviewed_at',
     'private_event_code_sent_at',
     'reviewed_at',
+    'ended_at',
+    'successful_at',
+    'certificate_issued_at',
   ];
   for (const key of dateKeys) {
     const raw = context[key];
@@ -237,6 +241,136 @@ function buildTemplateContext(row, payload) {
   }
 
   return context;
+}
+
+function safeFilePart(value, fallback = 'certificate') {
+  const cleaned = String(value || '')
+    .normalize('NFKD')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 70);
+  return cleaned || fallback;
+}
+
+function buildCertificateAttachment(row) {
+  const payload = row?.Payload && typeof row.Payload === 'object' ? row.Payload : {};
+  const notificationKey = normalizeKey(row?.Notification_Type);
+  if (!['programsuccessfulapplicant', 'programsuccessfulattendee'].includes(notificationKey)) {
+    return null;
+  }
+
+  const isProgramCertificate = notificationKey === 'programsuccessfulapplicant';
+  const recipientName = String(payload.recipient_name || (isProgramCertificate ? 'Program Applicant' : 'Participant')).trim();
+  const programName = String(payload.program_name || payload.event_name || 'Donivra Program').trim();
+  const recipientRole = String(payload.recipient_role || 'Participant').trim();
+  const staffName = String(payload.assigned_staff_name || 'Assigned Donivra Staff').trim();
+  const certificateId = String(payload.certificate_id || `DONIVRA-${row?.Source_ID || 'CERT'}`).trim();
+  const schedule = [formatDate(payload.start_date), formatDate(payload.end_date)].join(' - ');
+  const venue = [payload.venue_name, payload.venue_address].map((value) => String(value || '').trim()).filter(Boolean).join(' - ') || 'Donivra Program Venue';
+  const issuedAt = formatDate(payload.certificate_issued_at || payload.successful_at || new Date());
+
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4', compress: true });
+  const width = doc.internal.pageSize.getWidth();
+  const height = doc.internal.pageSize.getHeight();
+  const centerX = width / 2;
+
+  doc.setProperties({
+    title: isProgramCertificate ? 'Donivra Program Completion Certificate' : 'Donivra Participation Certificate',
+    subject: programName,
+    author: 'Donivra',
+    creator: 'Donivra SMTP Certificate Service',
+  });
+
+  doc.setFillColor(250, 248, 246);
+  doc.rect(0, 0, width, height, 'F');
+  doc.setDrawColor(91, 11, 22);
+  doc.setLineWidth(5);
+  doc.rect(20, 20, width - 40, height - 40);
+  doc.setDrawColor(184, 134, 74);
+  doc.setLineWidth(1.2);
+  doc.rect(31, 31, width - 62, height - 62);
+
+  doc.setFillColor(91, 11, 22);
+  doc.rect(31, 31, width - 62, 12, 'F');
+  doc.setFillColor(184, 134, 74);
+  doc.circle(66, 69, 13, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12);
+  doc.text('D', 66, 73, { align: 'center' });
+
+  doc.setTextColor(91, 11, 22);
+  doc.setFontSize(21);
+  doc.text('DONIVRA', centerX, 74, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(126, 91, 83);
+  doc.text('WHERE HAIR BECOMES HOPE', centerX, 89, { align: 'center', charSpace: 1.5 });
+
+  doc.setTextColor(55, 65, 81);
+  doc.setFont('times', 'bold');
+  doc.setFontSize(28);
+  doc.text(isProgramCertificate ? 'CERTIFICATE OF PROGRAM COMPLETION' : 'CERTIFICATE OF PARTICIPATION', centerX, 137, { align: 'center' });
+  doc.setDrawColor(184, 134, 74);
+  doc.setLineWidth(1);
+  doc.line(centerX - 150, 148, centerX + 150, 148);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(11);
+  doc.setTextColor(100, 116, 139);
+  doc.text(isProgramCertificate ? 'This certificate is proudly presented to' : 'This certificate recognizes the participation of', centerX, 178, { align: 'center' });
+
+  doc.setFont('times', 'bolditalic');
+  doc.setFontSize(recipientName.length > 42 ? 27 : 34);
+  doc.setTextColor(91, 11, 22);
+  doc.text(doc.splitTextToSize(recipientName, 620), centerX, 220, { align: 'center' });
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(12);
+  doc.setTextColor(71, 85, 105);
+  const recognitionText = isProgramCertificate
+    ? `for the successful completion of the Donivra program "${programName}".`
+    : `for meaningful participation as a ${recipientRole} in the Donivra program "${programName}".`;
+  doc.text(doc.splitTextToSize(recognitionText, 610), centerX, 264, { align: 'center', lineHeightFactor: 1.5 });
+
+  doc.setFillColor(245, 241, 238);
+  doc.roundedRect(112, 309, width - 224, 80, 8, 8, 'F');
+  doc.setFontSize(10);
+  doc.setTextColor(71, 85, 105);
+  doc.text(`Schedule: ${schedule}`, centerX, 332, { align: 'center' });
+  doc.text(doc.splitTextToSize(`Venue: ${venue}`, 560), centerX, 352, { align: 'center' });
+  doc.text(`Successfully completed: ${issuedAt}`, centerX, 376, { align: 'center' });
+
+  doc.setDrawColor(148, 163, 184);
+  doc.line(155, 458, 335, 458);
+  doc.line(width - 335, 458, width - 155, 458);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(55, 65, 81);
+  doc.text(`/s/ ${staffName}`, 245, 449, { align: 'center' });
+  doc.text('DONIVRA', width - 245, 449, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor(100, 116, 139);
+  doc.text('Assigned Staff - Digital Confirmation', 245, 474, { align: 'center' });
+  doc.text('Program Team', width - 245, 474, { align: 'center' });
+
+  doc.setFontSize(8.5);
+  doc.setTextColor(126, 91, 83);
+  doc.text(`Certificate ID: ${certificateId}`, 47, height - 47);
+  doc.text('Generated after final staff confirmation', width - 47, height - 47, { align: 'right' });
+
+  const fileLabel = isProgramCertificate ? 'Program_Completion' : 'Participation';
+  return {
+    filename: `Donivra_${fileLabel}_${safeFilePart(recipientName)}_${safeFilePart(certificateId)}.pdf`,
+    content: Buffer.from(doc.output('arraybuffer')),
+    contentType: 'application/pdf',
+  };
+}
+
+function buildEmailAttachments(row) {
+  const certificate = buildCertificateAttachment(row);
+  return certificate ? [certificate] : [];
 }
 
 function buildEmailContent(row) {
@@ -250,7 +384,7 @@ function buildEmailContent(row) {
         ? 'Private Program Approved and Published - Ready to Join'
         : 'Program Approved and Published - Ready to Join'
     )
-    : (String(row?.Subject || '').trim() || 'Event Application Update');
+    : (String(row?.Subject || '').trim() || 'Program Application Update');
 
   const templateHtml = getTemplateHtml(row?.Template_Key);
   if (templateHtml) {
@@ -264,9 +398,9 @@ function buildEmailContent(row) {
 
   if (notificationKey === 'eventapplicationreceived') {
     lines = [
-      'Your event application was received successfully.',
+      'Your program application was received successfully.',
       '',
-      `Event: ${payload.event_name || 'N/A'}`,
+      `Program: ${payload.event_name || 'N/A'}`,
       `Proposed Start: ${formatDate(payload.proposed_start_at)}`,
       `Proposed End: ${formatDate(payload.proposed_end_at)}`,
       `Expected Attendees: ${payload.expected_attendees ?? 'N/A'}`,
@@ -277,10 +411,10 @@ function buildEmailContent(row) {
   } else if (notificationKey === 'staffrejected') {
     lines = [
       payload.rejected_after_admin_decision
-        ? 'Your event appeal was rejected permanently by staff.'
-        : 'Your event application was not approved by staff.',
+        ? 'Your program appeal was rejected permanently by staff.'
+        : 'Your program application was not approved by staff.',
       '',
-      `Event: ${payload.event_name || 'N/A'}`,
+      `Program: ${payload.event_name || 'N/A'}`,
       `Proposed Start: ${formatDate(payload.proposed_start_at)}`,
       `Proposed End: ${formatDate(payload.proposed_end_at)}`,
       `Expected Attendees: ${payload.expected_attendees ?? 'N/A'}`,
@@ -293,9 +427,9 @@ function buildEmailContent(row) {
     ];
   } else if (notificationKey === 'staffendorsedpendingadmin') {
     lines = [
-      'Your event application passed staff review and is now pending admin decision.',
+      'Your program application passed staff review and is now pending admin decision.',
       '',
-      `Event: ${payload.event_name || 'N/A'}`,
+      `Program: ${payload.event_name || 'N/A'}`,
       `Proposed Start: ${formatDate(payload.proposed_start_at)}`,
       `Proposed End: ${formatDate(payload.proposed_end_at)}`,
       `Expected Attendees: ${payload.expected_attendees ?? 'N/A'}`,
@@ -309,38 +443,38 @@ function buildEmailContent(row) {
     lines = [
       'Your program has been approved by admin and is now live.',
       '',
-      `Event: ${payload.event_name || 'N/A'}`,
-      `Event Type: ${isPrivate ? 'Private' : 'Public'}`,
+      `Program: ${payload.event_name || 'N/A'}`,
+      `Program Visibility: ${isPrivate ? 'Private' : 'Public'}`,
       `Start: ${formatDate(payload.start_date)}`,
       `End: ${formatDate(payload.end_date)}`,
       `Venue Name: ${payload.venue_name || 'N/A'}`,
       `Venue Address: ${toJoinedAddress(payload)}`,
-      `Event By: ${payload.event_by || 'N/A'}`,
+      `Program Organizer: ${payload.event_by || 'N/A'}`,
       `Partnered With: ${payload.partnered_with || 'N/A'}`,
       `Partner Social: ${payload.partner_social_media_link || 'N/A'}`,
       '',
       'The program was automatically published in Donivra after approval.',
       'Participants can now access the program and join it.',
-      'Our team may still contact you for operational coordination before the event date.',
+      'Our team may still contact you for operational coordination before the program date.',
     ];
     if (isPrivate) {
-      lines.push(`Private Event Code: ${payload.private_event_code || 'N/A'}`);
-      lines.push('Keep this code secure. It will be used for private event access in the mobile app.');
+      lines.push(`Private Program Code: ${payload.private_event_code || 'N/A'}`);
+      lines.push('Keep this code secure. It will be used for private program access in the mobile app.');
     }
   } else if (notificationKey === 'adminrejected') {
     lines = [
-      'Your event request was reviewed by admin and was not approved.',
+      'Your program request was reviewed by admin and was not approved.',
       '',
-      `Event: ${payload.event_name || 'N/A'}`,
+      `Program: ${payload.event_name || 'N/A'}`,
       `Reason: ${payload.admin_decision_reason || 'No reason provided'}`,
       '',
-      String(payload.message || 'Your event request was not approved at this time.'),
+      String(payload.message || 'Your program request was not approved at this time.'),
       'Please wait for our staff to contact you about the next steps for an appeal.',
       'You may also email us directly at donivraproject@gmail.com if you need assistance.',
     ];
   } else {
     lines = [
-      'Event application notification.',
+      'Program application notification.',
       '',
       `Type: ${row?.Notification_Type || 'N/A'}`,
       '',
@@ -541,10 +675,11 @@ async function processBatch({
 
     const attemptCount = Number(claimedRow.Attempt_Count || 0) + 1;
     const { subject, text, html } = buildEmailContent(claimedRow);
+    const attachments = buildEmailAttachments(claimedRow);
 
     try {
       if (dryRun) {
-        console.log(`[SMTP][DRY-RUN] Would send to ${claimedRow.Recipient_Email} | ${subject}`);
+        console.log(`[SMTP][DRY-RUN] Would send to ${claimedRow.Recipient_Email} | ${subject} | ${attachments.length} attachment(s)`);
       } else {
         await transporter.sendMail({
           from: fromName ? `"${fromName}" <${fromEmail}>` : fromEmail,
@@ -553,6 +688,7 @@ async function processBatch({
           subject,
           text,
           html,
+          attachments,
         });
       }
 

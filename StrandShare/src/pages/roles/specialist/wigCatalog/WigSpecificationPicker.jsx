@@ -246,7 +246,7 @@ export default function WigSpecificationPicker({
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search wig name, code, style, texture..."
+              placeholder="Search wig name, code, style, hair pattern..."
               className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-8 text-xs"
             />
             {search ? (
@@ -271,7 +271,7 @@ export default function WigSpecificationPicker({
             {styleOptions.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
           <select value={textureFilter} onChange={(event) => setTextureFilter(event.target.value)} className={selectClasses()}>
-            <option value="">All textures</option>
+            <option value="">All hair patterns</option>
             {textureOptions.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
           <select value={colorFilter} onChange={(event) => setColorFilter(event.target.value)} className={selectClasses()}>

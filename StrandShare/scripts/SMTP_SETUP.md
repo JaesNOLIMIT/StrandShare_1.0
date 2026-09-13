@@ -2,6 +2,10 @@
 
 Use this to send queued emails from `public."SMTP_Email_Outbox"`.
 
+The same worker also generates and attaches Donivra PDF certificates for
+successful programs. The PDFs are created in memory; no extra storage or
+certificate environment setting is required.
+
 ## 1) Prepare Gmail sender
 
 1. Use a dedicated Gmail or Google Workspace mailbox for Donivra.

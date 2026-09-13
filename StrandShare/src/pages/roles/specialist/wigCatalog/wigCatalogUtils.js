@@ -71,7 +71,7 @@ export function codePrefix(texture, capSize) {
 
 export function formatWigCodePreview(texture, capSize) {
   const prefix = codePrefix(texture, capSize);
-  return prefix ? `${prefix}••••` : 'Choose texture + cap size';
+  return prefix ? `${prefix}••••` : 'Choose hair pattern + cap size';
 }
 
 export function stockState(row) {

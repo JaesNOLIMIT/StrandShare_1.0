@@ -80,6 +80,7 @@ export default function ProgramScheduleCalendarModal({
   getStartDate = (record) => record?.Start_Date,
   getEndDate = (record) => record?.End_Date,
   getStatus = (record) => record?.Status,
+  getRecordLabel = null,
   statusItems = [],
   showOpenDates = true,
 }) {
@@ -138,6 +139,9 @@ export default function ProgramScheduleCalendarModal({
   }, [monthIndex, year]);
 
   const selectedRecords = selectedDate ? (recordsByDate.get(selectedDate) || []) : [];
+  const selectedRecordLabels = typeof getRecordLabel === 'function'
+    ? [...new Set(selectedRecords.map((record) => String(getRecordLabel(record) || '').trim()).filter(Boolean))]
+    : [];
   const selectedHasReservation = selectedRecords.some((record) => {
     const status = statusByKey.get(normalizeScheduleStatus(getStatus(record)));
     return status?.reserved !== false;
@@ -296,6 +300,20 @@ export default function ProgramScheduleCalendarModal({
                       ? `${selectedRecords.length} ${recordNoun}${selectedRecords.length === 1 ? '' : 's'} on this date${selectedIsOpen ? ' — open for a new application' : ''}`
                       : (selectedIsOpen ? 'Open date — no active program scheduled' : `No ${recordNoun}s scheduled`)}
                   </p>
+                  {selectedRecordLabels.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {selectedRecordLabels.slice(0, 6).map((label) => (
+                        <span key={label} className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[9px] font-semibold text-slate-600">
+                          {label}
+                        </span>
+                      ))}
+                      {selectedRecordLabels.length > 6 && (
+                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-semibold text-slate-500">
+                          +{selectedRecordLabels.length - 6} more
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <button type="button" onClick={() => onSelectDate('')} className="rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-600 hover:bg-slate-50">
                   Clear

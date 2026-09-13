@@ -6,9 +6,10 @@ import {
   Building2,
   CalendarClock,
   CheckCircle2,
-  Clock3,
+  ClipboardList,
   Settings2,
   Users,
+  XCircle,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -35,9 +36,9 @@ const LEGAL_DOCUMENTS_TABLE = 'legal_documents';
 const SUCCESS_COLOR = '#15803d';
 const DANGER_COLOR = '#dc2626';
 const PERFORMANCE_RANGES = {
-  weekly: { label: 'Weekly', days: 7, bucket: 'day' },
-  monthly: { label: 'Monthly', days: 30, bucket: 'day' },
-  threeMonths: { label: '3 Months', days: 91, bucket: 'week' },
+  weekly: { label: 'Weekly' },
+  monthly: { label: 'Monthly' },
+  yearly: { label: 'Yearly' },
 };
 
 function normalizeKey(value) {
@@ -63,11 +64,6 @@ function toManilaParts(value) {
     if (part.type !== 'literal') parts[part.type] = part.value;
     return parts;
   }, {});
-}
-
-function toManilaDayKey(value) {
-  const parts = toManilaParts(value);
-  return parts ? `${parts.year}-${parts.month}-${parts.day}` : '';
 }
 
 function formatShortDate(value) {
@@ -111,75 +107,73 @@ function formatRoleLabel(value) {
   return labels[key] || String(value || 'Other').replace(/[_-]+/g, ' ');
 }
 
-function getRangeStart(rangeId) {
-  const range = PERFORMANCE_RANGES[rangeId] || PERFORMANCE_RANGES.weekly;
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() - (range.days - 1));
-  return start;
+function eventLifecycleDate(row) {
+  const status = normalizeKey(row?.Status);
+  if (status === 'successful') return row?.Successful_At || row?.Updated_At || row?.Created_At;
+  if (status === 'ended') return row?.Ended_At || row?.Updated_At || row?.End_Date || row?.Created_At;
+  return row?.Updated_At || row?.Created_At;
 }
 
-function filterRowsByRange(rows, rangeId) {
-  const startTime = getRangeStart(rangeId).getTime();
-  return rows.filter((row) => {
-    const createdAt = new Date(row?.Created_At || 0).getTime();
-    return Number.isFinite(createdAt) && createdAt >= startTime;
-  });
+function periodKey(rangeId, selectedMonth, selectedYear, value) {
+  const parts = toManilaParts(value);
+  if (!parts) return null;
+  const currentYear = new Date().getFullYear();
+  const year = Number(selectedYear) || currentYear;
+  const [monthYear, month] = String(selectedMonth || '').split('-').map(Number);
+  const partYear = Number(parts.year);
+  const partMonth = Number(parts.month);
+  const partDay = Number(parts.day);
+  if (rangeId === 'weekly') {
+    return partYear === monthYear && partMonth === month
+      ? `${monthYear}-${month}-${Math.floor((partDay - 1) / 7) + 1}`
+      : null;
+  }
+  if (rangeId === 'monthly') return partYear === year ? `${year}-${partMonth}` : null;
+  return partYear >= currentYear - 4 && partYear <= currentYear ? String(partYear) : null;
 }
 
-function buildPerformanceSeries(rangeId, applicationRows, requestRows, hospitalRows) {
-  const range = PERFORMANCE_RANGES[rangeId] || PERFORMANCE_RANGES.weekly;
-  const start = getRangeStart(rangeId);
-  const rows = [];
+function buildPerformanceSeries(rangeId, selectedMonth, selectedYear, applicationRows, requestRows, hospitalRows) {
+  const currentYear = new Date().getFullYear();
+  const year = Number(selectedYear) || currentYear;
+  const [monthYear, month] = String(selectedMonth || '').split('-').map(Number);
+  const createBucket = (label, key) => ({ label, key, applications: 0, approved: 0, rejected: 0, ended: 0, successful: 0, cancelled: 0, hospitalApplications: 0 });
+  let rows;
 
-  if (range.bucket === 'week') {
-    const weekMs = 7 * 24 * 60 * 60 * 1000;
-    for (let index = 0; index < 13; index += 1) {
-      const bucketStart = new Date(start.getTime() + (index * weekMs));
-      rows.push({
-        bucketStart: bucketStart.getTime(),
-        label: formatShortDate(bucketStart),
-        applications: 0,
-        requests: 0,
-        hospitalApplications: 0,
-      });
+  if (rangeId === 'weekly') {
+    const weeks = Math.ceil(new Date(monthYear, month, 0).getDate() / 7);
+    rows = Array.from({ length: weeks }, (_, index) => createBucket(`Week ${index + 1}`, `${monthYear}-${month}-${index + 1}`));
+  } else if (rangeId === 'monthly') {
+    rows = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((label, index) => createBucket(label, `${year}-${index + 1}`));
+  } else {
+    rows = Array.from({ length: 5 }, (_, index) => currentYear - 4 + index).map((item) => createBucket(String(item), String(item)));
+  }
+
+  const byKey = new Map(rows.map((row) => [row.key, row]));
+  const requestApplicationIds = new Set(
+    requestRows.map((row) => safeNumber(row?.Event_Application_ID)).filter(Boolean),
+  );
+  applicationRows.forEach((row) => {
+    const bucket = byKey.get(periodKey(rangeId, selectedMonth, selectedYear, row?.Created_At));
+    if (bucket) bucket.applications += 1;
+
+    const applicationId = safeNumber(row?.Event_Application_ID);
+    const hasLinkedRequest = safeNumber(row?.Linked_Event_Request_ID) > 0 || requestApplicationIds.has(applicationId);
+    const applicationStatus = normalizeKey(row?.Status);
+    if (!hasLinkedRequest && ['rejected', 'cancelled'].includes(applicationStatus)) {
+      const outcomeBucket = byKey.get(periodKey(rangeId, selectedMonth, selectedYear, row?.Updated_At || row?.Created_At));
+      if (outcomeBucket) outcomeBucket[applicationStatus] += 1;
     }
-
-    const addToWeeklyBucket = (sourceRows, key) => {
-      sourceRows.forEach((row) => {
-        const timestamp = new Date(row?.Created_At || 0).getTime();
-        const index = Math.floor((timestamp - start.getTime()) / weekMs);
-        if (index >= 0 && index < rows.length) rows[index][key] += 1;
-      });
-    };
-    addToWeeklyBucket(applicationRows, 'applications');
-    addToWeeklyBucket(requestRows, 'requests');
-    addToWeeklyBucket(hospitalRows, 'hospitalApplications');
-    return rows;
-  }
-
-  for (let offset = 0; offset < range.days; offset += 1) {
-    const date = new Date(start);
-    date.setDate(start.getDate() + offset);
-    rows.push({
-      dayKey: toManilaDayKey(date),
-      label: formatShortDate(date),
-      applications: 0,
-      requests: 0,
-      hospitalApplications: 0,
-    });
-  }
-
-  const byDay = new Map(rows.map((row) => [row.dayKey, row]));
-  const addToDailyBucket = (sourceRows, key) => {
-    sourceRows.forEach((row) => {
-      const bucket = byDay.get(toManilaDayKey(row?.Created_At));
-      if (bucket) bucket[key] += 1;
-    });
-  };
-  addToDailyBucket(applicationRows, 'applications');
-  addToDailyBucket(requestRows, 'requests');
-  addToDailyBucket(hospitalRows, 'hospitalApplications');
+  });
+  requestRows.forEach((row) => {
+    const status = normalizeKey(row?.Status);
+    if (!['approved', 'rejected', 'ended', 'successful', 'cancelled'].includes(status)) return;
+    const bucket = byKey.get(periodKey(rangeId, selectedMonth, selectedYear, eventLifecycleDate(row)));
+    if (bucket) bucket[status] += 1;
+  });
+  hospitalRows.forEach((row) => {
+    const bucket = byKey.get(periodKey(rangeId, selectedMonth, selectedYear, row?.Created_At));
+    if (bucket) bucket.hospitalApplications += 1;
+  });
   return rows;
 }
 
@@ -339,11 +333,19 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
   const [warnings, setWarnings] = useState([]);
   const [activePerformanceTab, setActivePerformanceTab] = useState('events');
   const [performanceRange, setPerformanceRange] = useState('weekly');
+  const [performanceMonth, setPerformanceMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [performanceYear, setPerformanceYear] = useState(() => String(new Date().getFullYear()));
   const [dashboard, setDashboard] = useState({
     kpis: {
       pendingAdminDecision: 0,
       pendingHospitalApplications: 0,
       approvedRequests: 0,
+      acceptedRequests: 0,
+      totalEventApplications: 0,
+      rejectedRequests: 0,
+      cancelledRequests: 0,
+      endedRequests: 0,
+      successfulRequests: 0,
       approvedWithoutAssignedStaff: 0,
       pendingStaffReview: 0,
       appealedApplications: 0,
@@ -383,12 +385,12 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
       const settled = await Promise.allSettled([
         supabase
           .from(EVENT_REQUESTS_TABLE)
-          .select('Event_Request_ID,Event_Application_ID,Event_Name,Status,Created_At,Updated_At,Start_Date,End_Date,Assigned_Staff_User_ID,Event_Visibility')
+          .select('Event_Request_ID,Event_Application_ID,Event_Name,Status,Created_At,Updated_At,Start_Date,End_Date,Ended_At,Successful_At,Assigned_Staff_User_ID,Event_Visibility')
           .order('Updated_At', { ascending: false })
           .limit(1000),
         supabase
           .from(EVENT_APPLICATIONS_TABLE)
-          .select('Event_Application_ID,Event_Name,Status,Created_At,Updated_At,Applicant_First_Name,Applicant_Middle_Name,Applicant_Last_Name,Proposed_Start_At')
+          .select('Event_Application_ID,Linked_Event_Request_ID,Event_Name,Status,Created_At,Updated_At,Applicant_First_Name,Applicant_Middle_Name,Applicant_Last_Name,Proposed_Start_At')
           .order('Created_At', { ascending: false })
           .limit(1000),
         supabase
@@ -488,10 +490,23 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
         approved: 0,
         rejected: 0,
         cancelled: 0,
+        ended: 0,
+        successful: 0,
       };
       requestRows.forEach((row) => {
         const status = normalizeKey(row.Status);
         if (status in statusBreakdown) statusBreakdown[status] += 1;
+      });
+      const requestApplicationIds = new Set(
+        requestRows.map((row) => safeNumber(row.Event_Application_ID)).filter(Boolean),
+      );
+      applicationRows.forEach((row) => {
+        const applicationId = safeNumber(row.Event_Application_ID);
+        const hasLinkedRequest = safeNumber(row.Linked_Event_Request_ID) > 0 || requestApplicationIds.has(applicationId);
+        const status = normalizeKey(row.Status);
+        if (!hasLinkedRequest && ['rejected', 'cancelled'].includes(status)) {
+          statusBreakdown[status] += 1;
+        }
       });
 
       const activeLegalRow = legalResult.data.find((row) => Boolean(row.is_active)) || null;
@@ -505,9 +520,9 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
       const actionItems = [];
       if (pendingAdminRows.length > 0) {
         actionItems.push({
-          title: 'Event requests waiting for admin decision',
+          title: 'Program requests waiting for admin decision',
           count: pendingAdminRows.length,
-          detail: 'Approve or reject pending event requests.',
+          detail: 'Approve or reject pending program requests.',
           page: 'manage-event-applications',
         });
       }
@@ -521,10 +536,18 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
       }
       if (approvedWithoutAssignedStaff.length > 0) {
         actionItems.push({
-          title: 'Approved events without assigned staff',
+          title: 'Approved programs without assigned staff',
           count: approvedWithoutAssignedStaff.length,
-          detail: 'Assign one staff per approved event request.',
+          detail: 'Assign one staff member per approved program request.',
           page: 'manage-event-applications',
+        });
+      }
+      if (statusBreakdown.ended > 0) {
+        actionItems.push({
+          title: 'Ended programs awaiting staff confirmation',
+          count: statusBreakdown.ended,
+          detail: 'Assigned staff must finish pending hair reviews and mark each program successful.',
+          page: 'reports',
         });
       }
       if (!systemChecks.wigRequirementsReady || !systemChecks.logisticsReady || !systemChecks.legalReady) {
@@ -554,6 +577,12 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
           pendingAdminDecision: pendingAdminRows.length,
           pendingHospitalApplications: pendingHospitalRows.length,
           approvedRequests: statusBreakdown.approved,
+          acceptedRequests: statusBreakdown.approved + statusBreakdown.ended + statusBreakdown.successful,
+          totalEventApplications: applicationRows.length,
+          rejectedRequests: statusBreakdown.rejected,
+          cancelledRequests: statusBreakdown.cancelled,
+          endedRequests: statusBreakdown.ended,
+          successfulRequests: statusBreakdown.successful,
           approvedWithoutAssignedStaff: approvedWithoutAssignedStaff.length,
           pendingStaffReview: pendingStaffReviewRows.length,
           appealedApplications: appealedRows.length,
@@ -590,55 +619,82 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
     loadDashboard();
   }, [loadDashboard]);
 
+  const chartSecondaryColor = rotateHue(primaryColor, 165, secondaryColor);
+  const chartTertiaryColor = rotateHue(primaryColor, 215, secondaryColor);
+
   const topMetrics = useMemo(() => ([
     {
-      key: 'pendingAdmin',
-      label: 'Pending Admin',
-      value: dashboard.kpis.pendingAdminDecision,
-      accentColor: secondaryColor,
-      helper: 'Requests waiting',
+      key: 'applications',
+      label: 'Applications',
+      value: dashboard.kpis.totalEventApplications,
+      accentColor: primaryColor,
+      helper: 'All submitted',
       page: 'manage-event-applications',
-      icon: Clock3,
+      icon: ClipboardList,
     },
     {
       key: 'approved',
-      label: 'Approved Events',
+      label: 'Approved Programs',
       value: dashboard.kpis.approvedRequests,
-      accentColor: SUCCESS_COLOR,
-      helper: 'Approved requests',
+      accentColor: '#2563eb',
+      helper: 'Currently approved',
       page: 'manage-event-applications',
       icon: BadgeCheck,
     },
     {
-      key: 'hospitals',
-      label: 'Hospital Apps',
-      value: dashboard.kpis.pendingHospitalApplications,
-      accentColor: primaryColor,
-      helper: 'Pending review',
-      page: 'manage-hospital-accounts',
-      icon: Building2,
+      key: 'rejected',
+      label: 'Rejected Applications',
+      value: dashboard.kpis.rejectedRequests,
+      accentColor: DANGER_COLOR,
+      helper: 'Across staff and admin review',
+      page: 'reports',
+      icon: XCircle,
     },
     {
-      key: 'alerts',
-      label: 'System Alerts',
-      value: dashboard.kpis.systemAlerts,
-      accentColor: DANGER_COLOR,
-      helper: 'Items needing attention',
-      page: 'manage-requirements',
-      icon: AlertTriangle,
+      key: 'ended',
+      label: 'Ended Programs',
+      value: dashboard.kpis.endedRequests,
+      accentColor: secondaryColor,
+      helper: 'Awaiting finalization',
+      page: 'reports',
+      icon: CalendarClock,
+    },
+    {
+      key: 'successful',
+      label: 'Successful Programs',
+      value: dashboard.kpis.successfulRequests,
+      accentColor: '#0d9488',
+      helper: 'Finalized by Staff',
+      page: 'reports',
+      icon: CheckCircle2,
     },
   ]), [dashboard.kpis, primaryColor, secondaryColor]);
 
   const overviewData = useMemo(() => {
-    const filteredRequests = filterRowsByRange(dashboard.sourceRows.requests, performanceRange);
-    const filteredApplications = filterRowsByRange(dashboard.sourceRows.applications, performanceRange);
-    const filteredHospitals = filterRowsByRange(dashboard.sourceRows.hospitals, performanceRange);
-    const requestCounts = { pendingadminapproval: 0, approved: 0, rejected: 0, cancelled: 0 };
+    const filteredRequests = dashboard.sourceRows.requests.filter((row) => periodKey(performanceRange, performanceMonth, performanceYear, eventLifecycleDate(row)));
+    const filteredApplications = dashboard.sourceRows.applications.filter((row) => periodKey(performanceRange, performanceMonth, performanceYear, row?.Created_At));
+    const filteredHospitals = dashboard.sourceRows.hospitals.filter((row) => periodKey(performanceRange, performanceMonth, performanceYear, row?.Created_At));
+    const requestCounts = { pendingadminapproval: 0, approved: 0, rejected: 0, cancelled: 0, ended: 0, successful: 0 };
     const hospitalCounts = { pending: 0, approved: 0, rejected: 0 };
 
     filteredRequests.forEach((row) => {
       const status = normalizeKey(row.Status);
       if (status in requestCounts) requestCounts[status] += 1;
+    });
+    const requestApplicationIds = new Set(
+      dashboard.sourceRows.requests.map((row) => safeNumber(row.Event_Application_ID)).filter(Boolean),
+    );
+    dashboard.sourceRows.applications.forEach((row) => {
+      const applicationId = safeNumber(row.Event_Application_ID);
+      const hasLinkedRequest = safeNumber(row.Linked_Event_Request_ID) > 0 || requestApplicationIds.has(applicationId);
+      const status = normalizeKey(row.Status);
+      if (
+        !hasLinkedRequest
+        && ['rejected', 'cancelled'].includes(status)
+        && periodKey(performanceRange, performanceMonth, performanceYear, row.Updated_At || row.Created_At)
+      ) {
+        requestCounts[status] += 1;
+      }
     });
     filteredHospitals.forEach((row) => {
       const status = formatHospitalStatus(row);
@@ -648,15 +704,19 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
     return {
       trendData: buildPerformanceSeries(
         performanceRange,
-        filteredApplications,
-        filteredRequests,
-        filteredHospitals,
+        performanceMonth,
+        performanceYear,
+        dashboard.sourceRows.applications,
+        dashboard.sourceRows.requests,
+        dashboard.sourceRows.hospitals,
       ),
-      requestStatusData: [
-        { name: 'Pending Admin', value: requestCounts.pendingadminapproval, color: secondaryColor },
-        { name: 'Approved', value: requestCounts.approved, color: SUCCESS_COLOR },
-        { name: 'Rejected', value: requestCounts.rejected, color: DANGER_COLOR },
-        { name: 'Cancelled', value: requestCounts.cancelled, color: tertiaryTextColor },
+      eventLifecycleData: [
+        { name: 'Applications', key: 'applications', value: filteredApplications.length, color: primaryColor },
+        { name: 'Approved', key: 'approved', value: requestCounts.approved, color: '#2563eb' },
+        { name: 'Rejected', key: 'rejected', value: requestCounts.rejected, color: '#dc2626' },
+        { name: 'Ended', key: 'ended', value: requestCounts.ended, color: '#64748b' },
+        { name: 'Successful', key: 'successful', value: requestCounts.successful, color: '#059669' },
+        { name: 'Cancelled', key: 'cancelled', value: requestCounts.cancelled, color: '#f59e0b' },
       ],
       hospitalStatusData: [
         { name: 'Pending', value: hospitalCounts.pending, color: secondaryColor },
@@ -664,11 +724,16 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
         { name: 'Rejected', value: hospitalCounts.rejected, color: DANGER_COLOR },
       ],
     };
-  }, [dashboard.sourceRows, performanceRange, secondaryColor, tertiaryTextColor]);
+  }, [dashboard.sourceRows, performanceMonth, performanceRange, performanceYear, primaryColor, secondaryColor]);
 
-  const totalRequests = useMemo(
-    () => overviewData.requestStatusData.reduce((sum, entry) => sum + safeNumber(entry.value), 0),
-    [overviewData.requestStatusData],
+  const performanceYears = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return Array.from({ length: 10 }, (_, index) => String(currentYear - index));
+  }, []);
+
+  const totalEventApplications = useMemo(
+    () => overviewData.eventLifecycleData.find((entry) => entry.key === 'applications')?.value || 0,
+    [overviewData.eventLifecycleData],
   );
 
   const totalHospitals = useMemo(
@@ -693,11 +758,8 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
 
   const noticeColor = notice.kind === 'error' ? DANGER_COLOR : SUCCESS_COLOR;
   const healthySystemChecks = systemHealthItems.filter((item) => item.ready).length;
-  const chartPrimaryColor = primaryColor;
-  const chartSecondaryColor = rotateHue(primaryColor, 165, secondaryColor);
-  const chartTertiaryColor = rotateHue(primaryColor, 215, secondaryColor);
   const performanceTabs = [
-    { id: 'events', label: 'Events' },
+    { id: 'events', label: 'Programs' },
     { id: 'hospitals', label: 'Hospital Applications' },
     { id: 'users', label: 'Users' },
     { id: 'health', label: 'System Health' },
@@ -749,7 +811,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
             helpTitle="About the Admin Dashboard"
             helpContent={(
               <>
-                <p>Metrics summarize event, hospital, user, and configuration records. Green means approved or healthy; red means rejected, missing, or requiring attention.</p>
+                <p>Metrics summarize program, hospital, user, and configuration records. Green means approved or healthy; red means rejected, missing, or requiring attention.</p>
                 <p>Use the Performance Overview tabs to compare each operational area.</p>
               </>
             )}
@@ -757,7 +819,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
         </div>
       </div>
 
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         {topMetrics.map(({ key, ...metric }) => (
           <MetricTile
             key={key}
@@ -778,23 +840,32 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
           </div>
           <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
             {(activePerformanceTab === 'events' || activePerformanceTab === 'hospitals') && (
-              <div className="flex gap-1 rounded-lg border p-1" style={{ backgroundColor: palette.surface, borderColor: palette.divider }} aria-label="Performance date range">
-                {Object.entries(PERFORMANCE_RANGES).map(([rangeId, range]) => {
-                  const isActive = performanceRange === rangeId;
-                  return (
-                    <button
-                      key={rangeId}
-                      type="button"
-                      aria-pressed={isActive}
-                      onClick={() => setPerformanceRange(rangeId)}
-                      className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[10px] font-semibold transition"
-                      style={{ backgroundColor: isActive ? withAlpha(primaryColor, 0.12) : 'transparent', color: isActive ? primaryColor : palette.bodyText }}
-                    >
-                      {range.label}
-                    </button>
-                  );
-                })}
-              </div>
+              <>
+                <div className="flex gap-1 rounded-lg border p-1" style={{ backgroundColor: palette.surface, borderColor: palette.divider }} aria-label="Performance date range">
+                  {Object.entries(PERFORMANCE_RANGES).map(([rangeId, range]) => {
+                    const isActive = performanceRange === rangeId;
+                    return (
+                      <button
+                        key={rangeId}
+                        type="button"
+                        aria-pressed={isActive}
+                        onClick={() => setPerformanceRange(rangeId)}
+                        className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[10px] font-semibold transition"
+                        style={{ backgroundColor: isActive ? withAlpha(primaryColor, 0.12) : 'transparent', color: isActive ? primaryColor : palette.bodyText }}
+                      >
+                        {range.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {performanceRange === 'weekly' && <input type="month" value={performanceMonth} onChange={(event) => setPerformanceMonth(event.target.value)} className="rounded-lg border bg-white px-2.5 py-1.5 text-[10px]" style={{ borderColor: palette.divider, color: palette.bodyText }} />}
+                {performanceRange === 'monthly' && (
+                  <select value={performanceYear} onChange={(event) => setPerformanceYear(event.target.value)} className="rounded-lg border bg-white px-2.5 py-1.5 text-[10px]" style={{ borderColor: palette.divider, color: palette.bodyText }}>
+                    {performanceYears.map((year) => <option key={year} value={year}>{year}</option>)}
+                  </select>
+                )}
+                {performanceRange === 'yearly' && <span className="rounded-lg px-2.5 py-1.5 text-[10px] font-semibold" style={{ backgroundColor: palette.subtleSurface, color: palette.bodyText }}>Past 5 years</span>}
+              </>
             )}
             <div className="flex max-w-full gap-1 overflow-x-auto rounded-lg p-1" style={{ backgroundColor: palette.subtleSurface }} role="tablist" aria-label="Performance views">
               {performanceTabs.map((tab) => {
@@ -823,34 +894,32 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
 
         {activePerformanceTab === 'events' && (
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,1fr)]">
-            <div className="border-b p-4 xl:border-b-0 xl:border-r" style={{ borderColor: palette.divider }}>
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <h3 className="text-xs font-bold" style={{ color: palette.heading }}>{PERFORMANCE_RANGES[performanceRange].label} event activity</h3>
-                  <p className="text-[10px]" style={{ color: palette.mutedText }}>Applications and requests created {PERFORMANCE_RANGES[performanceRange].bucket === 'week' ? 'weekly' : 'daily'}</p>
-                </div>
-                <div className="flex items-center gap-3 text-[10px]" style={{ color: palette.bodyText }}>
-                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm" style={{ backgroundColor: chartSecondaryColor }} />Applications</span>
-                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm" style={{ backgroundColor: chartPrimaryColor }} />Requests</span>
-                </div>
+            <div className="flex min-h-[260px] flex-col border-b p-4 xl:border-b-0 xl:border-r" style={{ borderColor: palette.divider }}>
+              <div>
+                <h3 className="text-xs font-bold" style={{ color: palette.heading }}>{PERFORMANCE_RANGES[performanceRange].label} program lifecycle</h3>
+                <p className="text-[10px]" style={{ color: palette.mutedText }}>{performanceRange === 'weekly' ? 'All weeks in the selected month' : performanceRange === 'monthly' ? 'All months in the selected year' : 'Annual totals for the past five years'}</p>
               </div>
-              <div className="mt-2 h-36">
+              <div className="mt-2 min-h-[190px] flex-1">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={overviewData.trendData} margin={{ top: 8, right: 12, left: -24, bottom: 0 }} barGap={4}>
+                  <BarChart data={overviewData.trendData} margin={{ top: 8, right: 12, left: -24, bottom: 4 }} barGap={2}>
                     <CartesianGrid strokeDasharray="3 3" stroke={palette.divider} vertical={false} />
-                    <XAxis dataKey="label" interval={performanceRange === 'monthly' ? 4 : performanceRange === 'threeMonths' ? 1 : 0} minTickGap={12} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
+                    <XAxis dataKey="label" interval={0} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
                     <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
-                    <Tooltip contentStyle={{ backgroundColor: palette.surface, borderColor: palette.border, borderRadius: 8, color: palette.heading, fontSize: 11 }} />
-                    <Bar dataKey="applications" name="Applications" fill={chartSecondaryColor} radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="requests" name="Requests" fill={chartPrimaryColor} radius={[4, 4, 0, 0]} />
+                    <Tooltip cursor={{ fill: withAlpha(secondaryColor, 0.08) }} contentStyle={{ backgroundColor: palette.surface, borderColor: palette.border, borderRadius: 8, color: palette.heading, fontSize: 11 }} />
+                    <Bar dataKey="applications" name="Applications" fill={primaryColor} radius={[4, 4, 0, 0]} maxBarSize={34} />
+                    <Bar dataKey="approved" name="Approved" fill="#2563eb" radius={[4, 4, 0, 0]} maxBarSize={34} />
+                    <Bar dataKey="rejected" name="Rejected" fill="#dc2626" radius={[4, 4, 0, 0]} maxBarSize={34} />
+                    <Bar dataKey="ended" name="Ended" fill="#64748b" radius={[4, 4, 0, 0]} maxBarSize={34} />
+                    <Bar dataKey="successful" name="Successful" fill="#059669" radius={[4, 4, 0, 0]} maxBarSize={34} />
+                    <Bar dataKey="cancelled" name="Cancelled" fill="#d97706" radius={[4, 4, 0, 0]} maxBarSize={34} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
             <div className="p-4">
-              <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Event Status</h3>
-              <p className="mb-3 text-[10px]" style={{ color: palette.mutedText }}>Share of all event requests</p>
-              <StatusTable data={overviewData.requestStatusData} total={totalRequests} palette={palette} />
+              <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Program Counts</h3>
+              <p className="mb-2 text-[10px]" style={{ color: palette.mutedText }}>Percentages are based on all applications in this period</p>
+              <StatusTable data={overviewData.eventLifecycleData} total={totalEventApplications} palette={palette} />
             </div>
           </div>
         )}
@@ -859,12 +928,12 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,1fr)]">
             <div className="border-b p-4 xl:border-b-0 xl:border-r" style={{ borderColor: palette.divider }}>
               <h3 className="text-xs font-bold" style={{ color: palette.heading }}>{PERFORMANCE_RANGES[performanceRange].label} hospital applications</h3>
-              <p className="text-[10px]" style={{ color: palette.mutedText }}>New partnership applications created {PERFORMANCE_RANGES[performanceRange].bucket === 'week' ? 'weekly' : 'daily'}</p>
+              <p className="text-[10px]" style={{ color: palette.mutedText }}>{performanceRange === 'weekly' ? 'All weeks in the selected month' : performanceRange === 'monthly' ? 'All months in the selected year' : 'Annual totals for the past five years'}</p>
               <div className="mt-2 h-36">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={overviewData.trendData} margin={{ top: 8, right: 12, left: -24, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={palette.divider} vertical={false} />
-                    <XAxis dataKey="label" interval={performanceRange === 'monthly' ? 4 : performanceRange === 'threeMonths' ? 1 : 0} minTickGap={12} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
+                    <XAxis dataKey="label" interval={0} minTickGap={12} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
                     <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
                     <Tooltip contentStyle={{ backgroundColor: palette.surface, borderColor: palette.border, borderRadius: 8, color: palette.heading, fontSize: 11 }} />
                     <Line type="monotone" dataKey="hospitalApplications" name="Hospital Applications" stroke={chartSecondaryColor} strokeWidth={2.75} dot={{ r: 3, fill: palette.surface, strokeWidth: 2 }} activeDot={{ r: 4 }} />
@@ -1042,7 +1111,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
                       <CalendarClock size={13} />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[11px] font-semibold" style={{ color: palette.heading }}>{row.Event_Name || 'Untitled Event'}</span>
+                      <span className="block truncate text-[11px] font-semibold" style={{ color: palette.heading }}>{row.Event_Name || 'Untitled Program'}</span>
                       <span className="block truncate text-[10px]" style={{ color: palette.bodyText }}>
                         ER-{row.Event_Request_ID} | {applicantName(row.application)}
                       </span>
@@ -1162,7 +1231,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
                   <p className="text-[8px] font-bold uppercase tracking-wide" style={{ color: palette.bodyText }}>Needs Staff</p>
                   <div className="flex items-end justify-between gap-2">
                     <p className="text-lg font-bold leading-tight" style={{ color: palette.heading }}>{dashboard.kpis.approvedWithoutAssignedStaff}</p>
-                    <p className="truncate text-[8px]" style={{ color: palette.mutedText }}>Approved events unassigned</p>
+                    <p className="truncate text-[8px]" style={{ color: palette.mutedText }}>Approved programs unassigned</p>
                   </div>
                 </div>
               </div>

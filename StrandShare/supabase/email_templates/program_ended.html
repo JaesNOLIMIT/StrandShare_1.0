@@ -1,0 +1,33 @@
+<!-- Template: program_ended | Sent to the applicant and every non-cancelled registered attendee. -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Program Ended</title></head>
+<body style="margin:0;background:#f5f3f1;color:#1f2937;font-family:Segoe UI,Arial,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">{{program_name}} has ended. Final review is now in progress.</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 12px;background:#f5f3f1;"><tr><td align="center">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;overflow:hidden;border:1px solid #e5ddd8;border-radius:18px;background:#ffffff;box-shadow:0 10px 30px rgba(66,15,22,.08);">
+      <tr><td style="height:7px;background:#5b0b16;"></td></tr>
+      <tr><td style="padding:24px 28px;border-bottom:1px solid #eee7e3;">
+        <div style="font-size:22px;font-weight:800;color:#5b0b16;">Donivra</div>
+        <div style="margin-top:3px;font-size:12px;color:#9a6a62;">Where Hair Becomes Hope</div>
+      </td></tr>
+      <tr><td style="padding:30px 28px;">
+        <div style="display:inline-block;padding:6px 10px;border-radius:999px;background:#f1f5f9;color:#475569;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;">Program ended</div>
+        <h1 style="margin:16px 0 10px;font-size:27px;line-height:1.25;color:#1f2937;">Thank you, {{recipient_name}}</h1>
+        <p style="margin:0 0 20px;font-size:15px;line-height:1.7;color:#64748b;">The scheduled program has ended. Donivra staff will finish the remaining reviews before the program is formally marked successful.</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #e7e1dd;border-radius:12px;background:#faf9f8;">
+          <tr><td style="padding:17px 18px;font-size:14px;line-height:1.8;color:#374151;">
+            <div><strong>Program:</strong> {{program_name}}</div>
+            <div><strong>Schedule:</strong> {{start_date}} – {{end_date}}</div>
+            {{#venue_name}}<div><strong>Venue:</strong> {{venue_name}}</div>{{/venue_name}}
+            {{#venue_address}}<div><strong>Address:</strong> {{venue_address}}</div>{{/venue_address}}
+            <div><strong>Your role:</strong> {{recipient_role}}</div>
+          </td></tr>
+        </table>
+        <p style="margin:20px 0 0;font-size:13px;line-height:1.7;color:#64748b;">Certificates are released only after the assigned staff member confirms the program as successful. You will receive a separate email when that happens.</p>
+      </td></tr>
+      <tr><td style="padding:16px 28px;border-top:1px solid #eee7e3;background:#faf9f8;font-size:11px;color:#94a3b8;">Automated program update from Donivra · Reference ER-{{event_request_id}}</td></tr>
+    </table>
+  </td></tr></table>
+</body>
+</html>

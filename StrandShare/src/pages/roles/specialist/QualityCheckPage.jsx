@@ -35,8 +35,8 @@ const PROFILE_PICTURES_BUCKET = 'profile_pictures';
 const HAIR_SUBMISSIONS_BUCKET = 'hair-submissions';
 const SCAN_DEBOUNCE_MS = 2500;
 const QUALITY_SCAN_OUTCOMES = [
-  'Received non-event hair: submission details load and await Approve or Reject.',
-  'Approved: the non-event submission becomes Available for specialist Bundling.',
+  'Received independent hair donation: submission details load and await Approve or Reject.',
+  'Approved: the independent donation becomes Available for specialist Bundling.',
   'Rejected: the quality result is Rejected; it is not recorded as a donor cancellation.',
   'Already approved or rejected: the final locked result is shown without changing it.',
   'Only Hair_Submissions.Waybill_Code is accepted on this page.',
@@ -740,11 +740,11 @@ export default function QualityCheckPage() {
       if (submission.From_Event !== false) {
         setCameraStatus({
           tone: 'warning',
-          message: `Waybill ${compact} is not a non-event Hair_Submissions waybill.`,
+          message: `Waybill ${compact} is not an independent donation waybill.`,
         });
         setScanOutcome({
           tone: 'warning', title: 'Unsupported waybill', waybill: compact,
-          action: 'No specialist quality change', status: 'Use event workflow', nextStep: 'Use Staff Assigned Event Operations',
+          action: 'No specialist quality change', status: 'Use program workflow', nextStep: 'Use Staff Assigned Program Operations',
         });
         return;
       }
@@ -986,7 +986,7 @@ export default function QualityCheckPage() {
           { label: 'Cut inventory', before: 'Not available', after: 'Cut / Available' },
         ],
       });
-      setNotice({ kind: 'success', text: 'Quality review approved. The non-event hair is now Available for bundling.' });
+      setNotice({ kind: 'success', text: 'Quality review approved. The independent hair donation is now Available for bundling.' });
       await loadQueue();
       await loadDetail(activeQueueRow.submissionId);
     } catch (error) {
@@ -1408,7 +1408,7 @@ export default function QualityCheckPage() {
                         </label>
 
                         <label className="block text-sm font-medium text-slate-700">
-                          Hair texture
+                          Hair pattern
                           <input
                             value={detailDraft.declaredTexture}
                             onChange={(event) => setDetailField('declaredTexture', event.target.value)}
@@ -1512,7 +1512,7 @@ export default function QualityCheckPage() {
                           {[
                             ['Length', `${activeAiScreening.Estimated_Length ?? 'N/A'} in`, detailDraft.declaredLength ? `${detailDraft.declaredLength} in` : 'Not provided', 'length'],
                             ['Color', activeAiScreening.Detected_Color, detailDraft.declaredColor || 'Not provided', 'color'],
-                            ['Texture', activeAiScreening.Detected_Texture, detailDraft.declaredTexture || 'Not provided', 'texture'],
+                            ['Hair Pattern', activeAiScreening.Detected_Texture, detailDraft.declaredTexture || 'Not provided', 'texture'],
                             ['Density', activeAiScreening.Detected_Density, detailDraft.declaredDensity || 'Not provided', 'density'],
                             ['Condition', activeAiScreening.Detected_Condition, detailDraft.declaredCondition || 'Not provided', 'condition'],
                           ].map(([label, aiValue, humanValue, field]) => {
@@ -1610,7 +1610,7 @@ export default function QualityCheckPage() {
               Clear groups separate work awaiting review from final quality decisions and cancellations.
             </p>
           </div>
-          <span className="text-xs" style={{ color: tertiaryTextColor }}>{queue.length} non-event submissions</span>
+          <span className="text-xs" style={{ color: tertiaryTextColor }}>{queue.length} independent donations</span>
         </div>
 
         {!queue.length && !isLoadingQueue ? (
@@ -1696,7 +1696,7 @@ export default function QualityCheckPage() {
                 <p className="mt-1 text-sm leading-6 text-slate-600">
                   Waybill <span className="font-mono font-semibold text-slate-800">{decisionConfirmation.submissionCode}</span>
                   {decisionConfirmation.decision === 'Approved'
-                    ? ' will be marked Approved and its non-event submission status will become Available for Bundling.'
+                    ? ' will be marked Approved and its independent donation status will become Available for Bundling.'
                     : ' will be marked Rejected. It will not be treated as Cancelled and cannot enter Bundling.'}
                 </p>
               </div>

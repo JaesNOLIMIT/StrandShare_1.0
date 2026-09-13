@@ -74,7 +74,7 @@ export default function HairstyleMakingPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1" style={labelStyle}>Texture</label>
+            <label className="block text-sm font-medium mb-1" style={labelStyle}>Hair Pattern</label>
             <select
               value={texture}
               onChange={(event) => setTexture(event.target.value)}

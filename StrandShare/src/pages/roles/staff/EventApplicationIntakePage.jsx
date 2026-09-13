@@ -628,7 +628,7 @@ function MapPreview({ latitude, longitude, label }) {
         </div>
       </div>
       <iframe
-        title={label || 'Event venue map'}
+        title={label || 'Program venue map'}
         src={embedSrc}
         className="block w-full"
         style={{ height: '280px', border: 0 }}
@@ -1409,6 +1409,10 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
       || selectedRow.Applicant_Valid_ID_Path
       || selectedRow.Applicant_ID_Document_Number,
     );
+    const attendeeRoster = Array.isArray(selectedRow.Expected_Attendee_Details)
+      ? selectedRow.Expected_Attendee_Details
+      : [];
+    const attendeeListPdfUrl = String(selectedRow.Expected_Attendee_List_URL || '').trim();
 
     return (
       <div className="space-y-10 p-6 md:p-8">
@@ -1448,9 +1452,20 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                 <InfoItem icon={FileText} label="Program Name" span={2}>{selectedRow.Event_Name || 'Untitled program'}</InfoItem>
                 <InfoItem icon={Info} label="Program Type">{normalizeEventVisibility(selectedRow.Event_Visibility)}</InfoItem>
                 <InfoItem icon={Users} label="Expected Attendees">
-                  {String(selectedRow.Expected_Attendees ?? '').trim()
-                    ? Number(selectedRow.Expected_Attendees).toLocaleString('en-PH')
-                    : 'Not provided'}
+                  <div>
+                    <p>
+                      {String(selectedRow.Expected_Attendees ?? '').trim()
+                        ? Number(selectedRow.Expected_Attendees).toLocaleString('en-PH')
+                        : 'Not provided'}
+                    </p>
+                    {attendeeListPdfUrl ? (
+                      <a href={attendeeListPdfUrl} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1.5 text-xs font-bold text-teal-700 hover:underline">
+                        <FileText size={13} /> View attendee name list <ExternalLink size={11} />
+                      </a>
+                    ) : attendeeRoster.length ? (
+                      <span className="mt-1 block text-xs text-slate-500">{attendeeRoster.length} names included</span>
+                    ) : null}
+                  </div>
                 </InfoItem>
                 <InfoItem icon={FileText} label="Program Overview" span={2}>{selectedRow.Event_Overview || 'Not provided'}</InfoItem>
                 <InfoItem icon={Globe2} label="Organization / Social Page">{selectedRow.Social_Page_Name || 'Not provided'}</InfoItem>
@@ -1490,6 +1505,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
         <DetailSection icon={CheckCircle2} title="Requirements" subtitle="Required information supplied with this application" theme={theme}>
           <div className="grid grid-cols-1 gap-x-10 gap-y-5 sm:grid-cols-2">
             <RequirementItem complete={hasValidId} label="Valid ID" />
+            <RequirementItem complete={Boolean(attendeeListPdfUrl || attendeeRoster.length)} label="Attendee list" />
             <RequirementItem complete={Boolean(selectedRow.Event_Poster_Photo_URL)} label="Program poster" />
             <RequirementItem complete={hasContactDetails} label="Contact details" />
             <RequirementItem
@@ -1731,7 +1747,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
               </div>
             )}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
             {isLoading && visibleRows.length === 0 ? (
               <div className="flex items-center gap-2 px-4 py-5 text-sm text-slate-600"><Loader2 size={15} className="animate-spin" />Loading...</div>
             ) : visibleRows.length === 0 ? (
@@ -1812,7 +1828,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
           </div>
         </section>
 
-        <section className="min-h-0 space-y-4 overflow-y-auto pr-1">
+        <section className="space-y-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           {!selectedRow ? (
             <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white px-6 py-20 text-center shadow-sm">
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-400">
@@ -2177,7 +2193,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
           <Modal
             open={showSubmitModal}
             onClose={() => !isSaving && setShowSubmitModal(false)}
-            title={canAppealRejectedRequest ? 'Submit Appeal to Admin' : 'Submit Event Request to Admin'}
+            title={canAppealRejectedRequest ? 'Submit Appeal to Admin' : 'Submit Program Request to Admin'}
             description={`Step ${submitStep} of ${STEPS.length} | ${STEPS[submitStep - 1].label}`}
             icon={Send}
             accentColor={primaryColor}
@@ -2266,12 +2282,12 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                 <div className="intake-fade-in space-y-3">
                   <div className="flex items-start gap-2.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-sm text-sky-800">
                     <Info size={16} className="mt-0.5 flex-none" />
-                    <span>Review the core event details. Event name, schedule, and visibility are required.</span>
+                    <span>Review the core program details. Program name, schedule, and visibility are required.</span>
                   </div>
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                     <label className={`${fieldLabel} md:col-span-2`}>
-                      <span className="text-xs font-semibold text-slate-700">Event Name <span className="text-rose-600">*</span></span>
-                      <input value={requestDraft.eventName} onChange={updateRequestDraftField('eventName')} placeholder="Event name" className={inputClass} />
+                      <span className="text-xs font-semibold text-slate-700">Program Name <span className="text-rose-600">*</span></span>
+                      <input value={requestDraft.eventName} onChange={updateRequestDraftField('eventName')} placeholder="Program name" className={inputClass} />
                     </label>
                     <label className={fieldLabel}>
                       <span className="text-xs font-semibold text-slate-700">Start Date & Time <span className="text-rose-600">*</span></span>
@@ -2282,15 +2298,15 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                       <input type="datetime-local" value={requestDraft.endDate} onChange={updateRequestDraftField('endDate')} className={inputClass} />
                     </label>
                     <label className={fieldLabel}>
-                      <span className="text-xs font-semibold text-slate-700">Event Type</span>
+                      <span className="text-xs font-semibold text-slate-700">Program Type</span>
                       <select value={normalizeEventVisibility(requestDraft.eventVisibility)} onChange={updateRequestDraftField('eventVisibility')} className={inputClass}>
                         <option value="Public">Public</option>
                         <option value="Private">Private</option>
                       </select>
                     </label>
                     <label className={fieldLabel}>
-                      <span className="text-xs font-semibold text-slate-700">Event By</span>
-                      <input value={requestDraft.eventBy} onChange={updateRequestDraftField('eventBy')} placeholder="Event by" className={inputClass} />
+                      <span className="text-xs font-semibold text-slate-700">Program By</span>
+                      <input value={requestDraft.eventBy} onChange={updateRequestDraftField('eventBy')} placeholder="Program organizer" className={inputClass} />
                     </label>
                   </div>
                 </div>
@@ -2337,7 +2353,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                     <MapPreview
                       latitude={requestDraft.latitude}
                       longitude={requestDraft.longitude}
-                      label={requestDraft.venueName || requestDraft.eventName || 'Event venue'}
+                      label={requestDraft.venueName || requestDraft.eventName || 'Program venue'}
                     />
                   </div>
                 </div>
@@ -2347,11 +2363,11 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                 <div className="intake-fade-in space-y-3">
                   <div className="flex items-start gap-2.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-sm text-sky-800">
                     <ImageIcon size={16} className="mt-0.5 flex-none" />
-                    <span>The event poster is required. Review the poster and add partner info if applicable.</span>
+                    <span>The program poster is required. Review the poster and add partner information if applicable.</span>
                   </div>
                   <div>
                     <p className="text-xs font-semibold text-slate-700">
-                      Event Poster Preview <span className="text-rose-600">*</span>
+                      Program Poster Preview <span className="text-rose-600">*</span>
                     </p>
                     <div className="mt-1.5 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
                       {requestDraft.eventPhotoUrl ? (
@@ -2364,7 +2380,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                           <div className="flex items-center justify-center bg-slate-100" style={{ maxHeight: '320px' }}>
                             <img
                               src={requestDraft.eventPhotoUrl}
-                              alt="Event poster preview"
+                              alt="Program poster preview"
                               className="max-h-[320px] w-auto max-w-full object-contain transition group-hover:opacity-95"
                               onError={(event) => {
                                 event.currentTarget.style.display = 'none';
@@ -2373,7 +2389,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                             />
                           </div>
                           <div className="flex items-center justify-between gap-2 border-t border-slate-200 bg-white px-3 py-2">
-                            <span className="text-xs font-semibold text-slate-700">Event Poster</span>
+                            <span className="text-xs font-semibold text-slate-700">Program Poster</span>
                             <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal-700 group-hover:underline">
                               Open full size <ExternalLink size={11} />
                             </span>
@@ -2383,7 +2399,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                         <div className="flex flex-col items-center justify-center px-4 py-10 text-center">
                           <ImageIcon size={22} className="text-slate-400" />
                           <p className="mt-2 text-sm font-semibold text-slate-700">No poster uploaded</p>
-                          <p className="mt-0.5 text-xs text-slate-500">An event poster image is required before submitting to admin.</p>
+                          <p className="mt-0.5 text-xs text-slate-500">A program poster image is required before submitting to admin.</p>
                         </div>
                       )}
                     </div>
@@ -2470,15 +2486,15 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
 
                    <div className="overflow-hidden rounded-lg border border-slate-200">
                     <div className="border-b border-slate-200 bg-slate-50 px-4 py-2">
-                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600">Event Details</p>
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600">Program Details</p>
                     </div>
                     <div className="grid grid-cols-1 gap-3 px-4 py-3 text-sm md:grid-cols-2">
                       <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Event Name</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Program Name</p>
                         <p className="text-slate-900">{requestDraft.eventName || <span className="text-slate-400">-</span>}</p>
                       </div>
                       <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Event Type</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Program Type</p>
                         <p className="text-slate-900">{normalizeEventVisibility(requestDraft.eventVisibility)}</p>
                       </div>
                       <div>
@@ -2490,7 +2506,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                         <p className="text-slate-900">{requestDraft.endDate ? formatDateTime(requestDraft.endDate) : <span className="text-slate-400">-</span>}</p>
                       </div>
                       <div className="md:col-span-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Event By</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Program By</p>
                         <p className="text-slate-900">{requestDraft.eventBy || <span className="text-slate-400">-</span>}</p>
                       </div>
                     </div>
@@ -2516,7 +2532,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                       <MapPreview
                         latitude={requestDraft.latitude}
                         longitude={requestDraft.longitude}
-                        label={requestDraft.venueName || requestDraft.eventName || 'Event venue'}
+                        label={requestDraft.venueName || requestDraft.eventName || 'Program venue'}
                       />
                     </div>
                   </div>
@@ -2531,18 +2547,18 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                           <div className="flex items-center justify-center bg-slate-100" style={{ maxHeight: '220px' }}>
                             <img
                               src={requestDraft.eventPhotoUrl}
-                              alt="Event poster"
+                              alt="Program poster"
                               className="max-h-[220px] w-auto max-w-full object-contain"
                               onError={(event) => { event.currentTarget.style.display = 'none'; }}
                             />
                           </div>
                           <div className="border-t border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700">
-                            Event Poster
+                            Program Poster
                           </div>
                         </div>
                       ) : (
                         <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-rose-700">
-                          Event poster is missing. Go back to Step 3 to add it.
+                          Program poster is missing. Go back to Step 3 to add it.
                         </p>
                       )}
                       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">

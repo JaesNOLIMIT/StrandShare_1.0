@@ -294,6 +294,10 @@ function AdminRequestDetails({ row, privateIdUrl, assignedStaffLabel, staffRevie
   const placePhotoUrl = application.Event_Place_Photo_URL || '';
   const hasContact = Boolean(email || phone || preferredFallback);
   const hasValidId = Boolean(idUrl || application.Applicant_Valid_ID_Path || application.Applicant_ID_Document_Number);
+  const attendeeRoster = Array.isArray(application.Expected_Attendee_Details)
+    ? application.Expected_Attendee_Details
+    : [];
+  const attendeeListPdfUrl = String(application.Expected_Attendee_List_URL || '').trim();
 
   return (
     <div className="space-y-10 p-6 md:p-8">
@@ -329,7 +333,16 @@ function AdminRequestDetails({ row, privateIdUrl, assignedStaffLabel, staffRevie
             <InfoItem icon={FileText} label="Program Name" span={2}>{row.Event_Name || application.Event_Name || 'Untitled program'}</InfoItem>
             <InfoItem icon={Info} label="Program Type">{eventVisibilityLabel(row.Event_Visibility || application.Event_Visibility)}</InfoItem>
             <InfoItem icon={Users} label="Expected Attendees">
-              {String(application.Expected_Attendees ?? '').trim() ? Number(application.Expected_Attendees).toLocaleString('en-PH') : 'Not provided'}
+              <div>
+                <p>{String(application.Expected_Attendees ?? '').trim() ? Number(application.Expected_Attendees).toLocaleString('en-PH') : 'Not provided'}</p>
+                {attendeeListPdfUrl ? (
+                  <a href={attendeeListPdfUrl} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1.5 text-xs font-bold text-[var(--color-primary)] hover:underline">
+                    <FileText size={13} /> View attendee name list <ExternalLink size={11} />
+                  </a>
+                ) : attendeeRoster.length ? (
+                  <span className="mt-1 block text-xs text-slate-500">{attendeeRoster.length} names included</span>
+                ) : null}
+              </div>
             </InfoItem>
             <InfoItem icon={User} label="Program Organizer">{row.Event_By || applicantFullName(application)}</InfoItem>
             <InfoItem icon={FileText} label="Program Overview" span={2}>{application.Event_Overview || 'Not provided'}</InfoItem>
@@ -366,6 +379,7 @@ function AdminRequestDetails({ row, privateIdUrl, assignedStaffLabel, staffRevie
       <DetailSection icon={CheckCircle2} title="Requirements" subtitle="Required information supplied with this application" theme={theme}>
         <div className="grid grid-cols-1 gap-x-10 gap-y-5 sm:grid-cols-2">
           <RequirementItem complete={hasValidId} label="Valid ID" />
+          <RequirementItem complete={Boolean(attendeeListPdfUrl || attendeeRoster.length)} label="Attendee list" />
           <RequirementItem complete={Boolean(posterUrl)} label="Program poster" />
           <RequirementItem complete={hasContact} label="Contact details" />
           <RequirementItem complete={Boolean(socialName || safeSocialUrl)} label={socialName || safeSocialUrl ? 'Social page' : 'Social page not provided'} />
@@ -529,7 +543,7 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
     } catch (error) {
       if (!silent) {
         setRows([]);
-        setNotice({ kind: 'error', text: error.message || 'Unable to load event requests.' });
+        setNotice({ kind: 'error', text: error.message || 'Unable to load program requests.' });
       }
     } finally {
       if (!silent) setIsLoading(false);
@@ -879,7 +893,7 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
           text: 'Appealed approval is blocked by older DB workflow logic. Apply migration 136_allow_appealed_application_to_sync_approved.sql, then retry.',
         });
       } else {
-        setNotice({ kind: 'error', text: raw || 'Unable to approve event request.' });
+        setNotice({ kind: 'error', text: raw || 'Unable to approve program request.' });
       }
     } finally {
       setIsSaving(false);
@@ -935,7 +949,7 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
       setSelectedId(null);
       setIsResultModalOpen(true);
     } catch (error) {
-      setNotice({ kind: 'error', text: error.message || 'Unable to reject event request.' });
+      setNotice({ kind: 'error', text: error.message || 'Unable to reject program request.' });
     } finally {
       setIsSaving(false);
     }

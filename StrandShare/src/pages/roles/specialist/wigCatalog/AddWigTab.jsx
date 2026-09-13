@@ -202,7 +202,7 @@ function WigDetailsForm({
       </FieldShell>
 
       <FieldShell
-        label="Hair texture"
+        label="Hair pattern"
         required={requireAllDetails}
         suggestion={suggestions.hairTexture}
         onApplySuggestion={() => setField('hairTexture', suggestions.hairTexture?.value || '')}
@@ -213,7 +213,7 @@ function WigDetailsForm({
           onChange={(event) => setField('hairTexture', event.target.value)}
           className={fieldClass}
         >
-          <option value="">Select texture</option>
+          <option value="">Select hair pattern</option>
           {TEXTURE_OPTIONS.map((option) => <option key={option}>{option}</option>)}
         </select>
       </FieldShell>

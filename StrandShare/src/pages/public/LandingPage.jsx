@@ -5,7 +5,6 @@ import {
 } from 'lucide-react';
 import { motion, useAnimation, useScroll, useSpring, useTransform } from 'framer-motion';
 import { useTheme } from '../../context/ThemeContext';
-import { TransitionFlipExit } from '../../components/transitions/TransitionFlip';
 import { isSupabaseConfigured, supabase } from '../../lib/supabaseClient';
 import './landing-scroll.css';
 
@@ -207,7 +206,16 @@ export default function LandingPage() {
   const ctaCanvasRef  = useRef(null);
 
   /* state */
-  const [heroVis,    setHeroVis]    = useState(false);
+  const [skipLandingIntro] = useState(() => {
+    try {
+      const shouldSkip = sessionStorage.getItem('Donivra:skip-landing-intro') === 'true';
+      if (shouldSkip) sessionStorage.removeItem('Donivra:skip-landing-intro');
+      return shouldSkip;
+    } catch {
+      return false;
+    }
+  });
+  const [heroVis,    setHeroVis]    = useState(skipLandingIntro);
   const [navScrolled, setNavScrolled] = useState(false);
   const [navMinimized, setNavMinimized] = useState(false);
   const [topHoverActive, setTopHoverActive] = useState(false);
@@ -224,8 +232,7 @@ export default function LandingPage() {
   const lastScrollYRef = useRef(0);
 
   /* transitions */
-  const [exitTransition, setExitTransition] = useState(null); // 'login' | 'apply' | null
-  const pendingPathRef = useRef(null);
+  const [exitTransition, setExitTransition] = useState(null); // 'login' | null
   const fadeControls = useAnimation();
 
   /* re-entry from login (back-to-landing) starts faded/zoomed */
@@ -276,7 +283,6 @@ export default function LandingPage() {
   const handleNavigate = useCallback((path) => {
     if (exitTransition) return;
     if (path === '/login') {
-      pendingPathRef.current = path;
       setExitTransition('login');
       fadeControls.start({
         opacity: 0,
@@ -286,21 +292,10 @@ export default function LandingPage() {
         sessionStorage.setItem('Donivra:incoming-transition', 'login');
         goToHard(path);
       });
-    } else if (path === '/apply-partnership' || path === '/apply-event') {
-      pendingPathRef.current = path;
-      setExitTransition('apply');
     } else {
       goToHard(path);
     }
   }, [exitTransition, fadeControls]);
-
-  const handleTransitionDone = useCallback(() => {
-    const path = pendingPathRef.current;
-    if (path) {
-      sessionStorage.setItem('Donivra:incoming-transition', exitTransition || '');
-      goToHard(path);
-    }
-  }, [exitTransition]);
 
   /* scroll-driven Apple-style effects */
   const { scrollY, scrollYProgress } = useScroll();
@@ -350,9 +345,10 @@ export default function LandingPage() {
 
   /* hero reveal */
   useEffect(() => {
+    if (skipLandingIntro) return undefined;
     const t = setTimeout(() => setHeroVis(true), 200);
     return () => clearTimeout(t);
-  }, []);
+  }, [skipLandingIntro]);
 
   /* reveal minimized nav when cursor reaches top edge */
   useEffect(() => {
@@ -552,10 +548,6 @@ export default function LandingPage() {
         <ChevronUp size={18} />
       </button>
 
-    <TransitionFlipExit
-      trigger={exitTransition === 'apply'}
-      onComplete={handleTransitionDone}
-    >
     <motion.div
       initial={isReturningFromLogin ? { opacity: 0, scale: 1.04 } : { opacity: 1, scale: 1 }}
       animate={fadeControls}
@@ -902,7 +894,6 @@ export default function LandingPage() {
         </div>
       </footer>
     </motion.div>
-    </TransitionFlipExit>
     </div>
   );
 }

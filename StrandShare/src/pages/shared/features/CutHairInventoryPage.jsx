@@ -266,7 +266,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
     rows.forEach((row) => {
       const eventId = Number(row.Event_Request_ID || 0);
       if (eventId) {
-        events.set(eventId, row.event?.Event_Name || `Event #${eventId}`);
+        events.set(eventId, row.event?.Event_Name || `Program #${eventId}`);
       }
     });
     return [...events.entries()]
@@ -349,7 +349,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
           helpContent={(
             <>
               <p>Review quality-approved hair and follow each item from available stock through bundling, wig production, and completion.</p>
-              <p>Use the status, event, date, and search filters to find a specific inventory item or waybill.</p>
+              <p>Use the status, program, date, and search filters to find a specific inventory item or waybill.</p>
             </>
           )}
         />
@@ -404,10 +404,10 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
             </label>
 
             <label className="space-y-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Source event</span>
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Source program</span>
               <select value={eventFilter} onChange={(event) => setEventFilter(event.target.value)} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700">
-                <option value="all">All events and sources</option>
-                <option value="non-event">Non-event donations</option>
+                <option value="all">All programs and sources</option>
+                <option value="non-event">Independent donations</option>
                 {eventOptions.map((event) => (
                   <option key={event.id} value={event.id}>{event.name} (ER-{event.id})</option>
                 ))}
@@ -418,7 +418,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
               <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Search</span>
               <div className="relative">
                 <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Waybill, donor, event, submission, bundle, or wig" className="w-full rounded-md border border-slate-300 py-2 pl-8 pr-3 text-xs" />
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Waybill, donor, program, submission, bundle, or wig" className="w-full rounded-md border border-slate-300 py-2 pl-8 pr-3 text-xs" />
               </div>
             </label>
           </div>
@@ -493,12 +493,12 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
                     </td>
                     <td className="px-4 py-3">
                       <p className="font-semibold text-slate-900">{fullName(row.donor)}</p>
-                      <p className="text-xs text-slate-500">{row.Source_Type === 'Non-Event' ? 'Non-event donation' : 'Event donation'}</p>
+                      <p className="text-xs text-slate-500">{row.Source_Type === 'Non-Event' ? 'Independent donation' : 'Program donation'}</p>
                       {row.event && <p className="mt-1 inline-flex items-center gap-1 text-xs text-slate-600"><CalendarDays size={11} />{row.event.Event_Name} (ER-{row.Event_Request_ID})</p>}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-700">
                       <p>{row.detail?.Declared_Length ?? 'N/A'} in · {row.detail?.Declared_Color || 'No color'}</p>
-                      <p>{row.detail?.Declared_Texture || 'No texture'} · {row.detail?.Declared_Density || 'No density'}</p>
+                      <p>{row.detail?.Declared_Texture || 'No hair pattern'} · {row.detail?.Declared_Density || 'No density'}</p>
                       <p className="text-slate-500">{row.detail?.Declared_Condition || 'No condition'}</p>
                     </td>
                     <td className="px-4 py-3">

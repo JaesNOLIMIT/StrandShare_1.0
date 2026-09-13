@@ -1,4 +1,4 @@
-import React, { lazy } from 'react';
+import React, { lazy } from "react";
 import {
   LayoutDashboard,
   Boxes,
@@ -6,39 +6,56 @@ import {
   Package,
   Wand2,
   FileBarChart2,
+  SlidersHorizontal,
   Settings,
-} from 'lucide-react';
-import RoleDashboardShell from '../../shared/RoleDashboardShell';
+} from "lucide-react";
+import RoleDashboardShell from "../../shared/RoleDashboardShell";
 
-const DashboardPage = lazy(() => import('./DashboardPage'));
-const QualityCheckPage = lazy(() => import('./QualityCheckPage'));
-const BundlingPage = lazy(() => import('./BundlingPage'));
-const WigCatalogStudioPage = lazy(() => import('./WigCatalogStudioPage'));
-const GenerateReportsPage = lazy(() => import('./GenerateReportsPage'));
-const SettingsPage = lazy(() => import('./SettingsPage'));
-const CutHairInventoryPage = lazy(() => import('../../shared/features/CutHairInventoryPage'));
+const DashboardPage = lazy(() => import("./DashboardPage"));
+const QualityCheckPage = lazy(() => import("./QualityCheckPage"));
+const BundlingPage = lazy(() => import("./BundlingPage"));
+const WigCatalogStudioPage = lazy(() => import("./WigCatalogStudioPage"));
+const GenerateReportsPage = lazy(() => import("./GenerateReportsPage"));
+const SettingsPage = lazy(() => import("./SettingsPage"));
+const ManageRequirementsPage = lazy(
+  () => import("../../shared/features/ManageRequirementsPage"),
+);
+const CutHairInventoryPage = lazy(
+  () => import("../../shared/features/CutHairInventoryPage"),
+);
 
 const specialistNavItems = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'quality-check', label: 'Quality Check', icon: ScanLine },
-  { id: 'cut-hair-inventory', label: 'Cut Hair Inventory', icon: Boxes },
-  { id: 'bundling', label: 'Bundling', icon: Package },
-  { id: 'wig-ai-studio', label: 'Wig Catalog Studio', icon: Wand2 },
-  { id: 'reports', label: 'Reports', icon: FileBarChart2 },
-  { id: 'settings', label: 'Settings', icon: Settings },
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "quality-check", label: "Quality Check", icon: ScanLine },
+  { id: "cut-hair-inventory", label: "Cut Hair Inventory", icon: Boxes },
+  { id: "bundling", label: "Bundling", icon: Package },
+  { id: "wig-ai-studio", label: "Wig Catalog Studio", icon: Wand2 },
+  {
+    id: "manage-requirements",
+    label: "Manage Requirements",
+    icon: SlidersHorizontal,
+  },
+  { id: "reports", label: "Reports", icon: FileBarChart2 },
+  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 const specialistPageComponents = {
   dashboard: DashboardPage,
-  'quality-check': QualityCheckPage,
-  'cut-hair-inventory': CutHairInventoryPage,
+  "quality-check": QualityCheckPage,
+  "cut-hair-inventory": CutHairInventoryPage,
   bundling: BundlingPage,
-  'wig-ai-studio': WigCatalogStudioPage,
+  "wig-ai-studio": WigCatalogStudioPage,
+  "manage-requirements": ManageRequirementsPage,
   reports: GenerateReportsPage,
   settings: SettingsPage,
 };
 
-export default function SpecialistRole({ onSignOut, userProfile, initialPage = 'dashboard', onInitialDashboardReady }) {
+export default function SpecialistRole({
+  onSignOut,
+  userProfile,
+  initialPage = "dashboard",
+  onInitialDashboardReady,
+}) {
   return (
     <RoleDashboardShell
       onSignOut={onSignOut}

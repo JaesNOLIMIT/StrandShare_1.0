@@ -354,7 +354,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
               <button type="button" disabled={isStartingCamera} onClick={() => void toggleCamera()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"><Camera size={16} />{isStartingCamera ? 'Starting…' : isCameraOn ? 'Stop scanner' : 'Scan QR'}</button>
             </div>
           </div>
-          <p className="max-w-xs text-xs leading-relaxed text-slate-400">Non-event courier and drop-off donations only. Event receiving stays in Assigned Events.</p>
+          <p className="max-w-xs text-xs leading-relaxed text-slate-400">Independent courier and drop-off donations only. Program receiving stays in Assigned Programs.</p>
         </div>
       </section>
       <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">{[

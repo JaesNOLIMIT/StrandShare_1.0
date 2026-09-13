@@ -46,4 +46,5 @@ process.on('SIGTERM', () => shutdown(0));
 
 run('web', 'npm', ['run', 'start:web'], { required: true });
 run('smtp-trigger', 'npm', ['run', 'smtp:trigger:server'], { required: false });
+run('smtp-worker', 'npm', ['run', 'smtp:worker:loop'], { required: false });
 run('wig-catalog-local-ai', 'npm', ['run', 'ai:start'], { required: false });

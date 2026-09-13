@@ -21,6 +21,16 @@ import {
 } from 'lucide-react';
 import jsQR from 'jsqr';
 import QRCode from 'qrcode';
+import {
+  Bar,
+  BarChart,
+  Cell,
+  LabelList,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { supabase, isSupabaseConfigured } from '../../../lib/supabaseClient';
 import { useTheme } from '../../../context/ThemeContext';
 import { useToast } from '../../../context/ToastContext';
@@ -30,6 +40,7 @@ import ProgramScheduleCalendarModal, {
 } from '../../../components/events/ProgramScheduleCalendarModal';
 import WaybillScanResult from '../../../components/scanning/WaybillScanResult';
 import PageHeaderActions from '../../../components/PageHeaderActions';
+import { triggerSmtpNow } from '../../../lib/smtpTriggerClient';
 import {
   WAYBILL_CODE_LENGTH,
   isValidWaybillCode,
@@ -45,26 +56,28 @@ const USER_DETAILS_TABLE = 'user_details';
 const PROFILE_PICTURES_BUCKET = 'profile_pictures';
 const SCAN_DEBOUNCE_MS = 2500;
 const EVENT_FILTERS = [
-  { id: 'all_active', label: 'All active events' },
+  { id: 'all', label: 'All' },
   { id: 'today', label: 'Today' },
   { id: 'this_week', label: 'Next 7 days' },
-  { id: 'upcoming', label: 'Later events' },
-  { id: 'ended', label: 'Ended events' },
+  { id: 'upcoming', label: 'Upcoming' },
+  { id: 'ended', label: 'Ended' },
+  { id: 'successful', label: 'Successful' },
 ];
 const HAIR_COLOR_OPTIONS = ['Black', 'Dark Brown', 'Brown', 'Light Brown', 'Blonde', 'Gray', 'Red / Auburn', 'Other'];
 const HAIR_TEXTURE_OPTIONS = ['Straight', 'Wavy', 'Curly', 'Coily'];
 const HAIR_DENSITY_OPTIONS = ['Thin', 'Medium', 'Thick'];
 const HAIR_CONDITION_OPTIONS = ['Healthy', 'Slightly Dry', 'Dry', 'Damaged'];
+const AI_LENGTH_ALLOWANCE_INCHES = 4;
 const MANILA_OFFSET_MINUTES = 8 * 60;
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const EVENT_SCAN_OUTCOMES = [
-  'RSVP donor: attendance becomes Present; next step is Hair Intake & Review.',
-  'RSVP voluntary attendee: attendance becomes Present; their event process is complete.',
-  'Hair Intake donor: attendee and submitted hair details open for the final staff decision.',
-  'Hair Intake voluntary attendee: no hair review is required and no submission is created.',
+  'RSVP donor: attendance becomes Present; next step is Hair Outcome Review.',
+  'RSVP visitor: attendance becomes Present; their program process is complete.',
+  'Hair Outcome donor: attendee and submitted hair details open for the final human decision.',
+  'Hair Outcome visitor: no hair review is required and no submission is created.',
   'Approved hair: submission becomes Cut and appears in Cut Hair Inventory for bundling.',
   'Rejected or Rejected Cut hair: submission becomes Cancelled and cannot enter bundling.',
-  'Cancelled, duplicate, wrong-event, or unknown waybill: no record changes; the reason is shown.',
+  'Cancelled, duplicate, wrong-program, or unknown waybill: no record changes; the reason is shown.',
 ];
 
 function getManilaSqlTimestamp(dateValue = new Date()) {
@@ -196,18 +209,120 @@ function normalizeFlowStatusKey(value) {
 }
 
 function isEventEnded(eventRow) {
-  if (normalizeFlowStatusKey(eventRow?.Status) === 'ended') return true;
+  if (['ended', 'successful'].includes(normalizeFlowStatusKey(eventRow?.Status))) return true;
   if (!eventRow?.End_Date) return false;
   const endTime = new Date(eventRow.End_Date).getTime();
   return Number.isFinite(endTime) && endTime <= Date.now();
 }
 
 function getEffectiveEventStatus(eventRow) {
+  if (normalizeFlowStatusKey(eventRow?.Status) === 'successful') return 'Successful';
   return isEventEnded(eventRow) ? 'Ended' : (eventRow?.Status || 'Approved');
 }
 
+function matchesProgramTimeFilter(row, filterId, todayStart) {
+  if (filterId === 'all') return true;
+  const ended = isEventEnded(row);
+  const successful = normalizeFlowStatusKey(row?.Status) === 'successful';
+  if (filterId === 'successful') return successful;
+  if (filterId === 'ended') return ended && !successful;
+  if (ended) return false;
+
+  const programDay = toManilaDayStartMs(row?.Start_Date || row?.Created_At || new Date());
+  const weekEnd = todayStart + (6 * DAY_IN_MS);
+  if (filterId === 'today') return programDay === todayStart;
+  if (filterId === 'this_week') return programDay >= todayStart && programDay <= weekEnd;
+  if (filterId === 'upcoming') return programDay > weekEnd;
+  return true;
+}
+
 function normalizeAttendeeType(value) {
-  return normalizeFlowStatusKey(value) === 'voluntary' ? 'Voluntary' : 'Donor';
+  return ['visitor', 'voluntary'].includes(normalizeFlowStatusKey(value)) ? 'Visitor' : 'Donor';
+}
+
+function hairIntakeBadgeClasses(attendee) {
+  const labelKey = normalizeFlowStatusKey(attendee?.Hair_Intake_Label);
+  if (labelKey.includes('rejectedbutcut') || labelKey.includes('rejectedcut')) return 'border-amber-200 bg-amber-50 text-amber-700';
+  if (labelKey.includes('rejected')) return 'border-rose-200 bg-rose-50 text-rose-700';
+  if (labelKey.includes('approved')) return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (attendee?.Hair_Intake_State === 'pending') return 'border-amber-200 bg-amber-50 text-amber-700';
+  if (attendee?.Hair_Intake_State === 'not_required') return 'border-blue-200 bg-blue-50 text-blue-700';
+  return 'border-slate-200 bg-slate-100 text-slate-600';
+}
+
+function SummaryBreakdownTable({ rows, valueSuffix = '' }) {
+  return (
+    <div className="mt-2 overflow-hidden rounded-lg border border-slate-200">
+      <table className="w-full text-left text-[10px]">
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.name} className="border-t border-slate-100 first:border-t-0 even:bg-slate-50/70">
+              <th className="px-2.5 py-1.5 font-medium text-slate-600">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: row.color }} />
+                  {row.name}
+                </span>
+              </th>
+              <td className="px-2.5 py-1.5 text-right font-bold text-slate-800">{row.value}{row.suffix ?? valueSuffix}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SummaryMetricBarChart({ rows, className = 'mt-2 h-24' }) {
+  return (
+    <div className={className}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={rows} margin={{ top: 14, right: 4, left: -28, bottom: 0 }}>
+          <XAxis
+            dataKey="shortName"
+            tick={{ fontSize: 8, fill: '#64748b' }}
+            tickLine={false}
+            axisLine={false}
+            interval={0}
+          />
+          <YAxis
+            allowDecimals={false}
+            tick={{ fontSize: 8, fill: '#64748b' }}
+            tickLine={false}
+            axisLine={false}
+          />
+          <Tooltip
+            cursor={{ fill: '#f1f5f9' }}
+            formatter={(value) => [value, 'Count']}
+            labelFormatter={(_, payload) => payload?.[0]?.payload?.name || ''}
+          />
+          <Bar dataKey="value" radius={[5, 5, 0, 0]} maxBarSize={48}>
+            {rows.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+            <LabelList dataKey="value" position="top" fill="#475569" fontSize={9} />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function AiHumanSplitBar({ aiPercent = 0 }) {
+  const ai = Math.min(100, Math.max(0, Number(aiPercent || 0)));
+  const human = Math.max(0, 100 - ai);
+  const displayPercent = (value) => Number(value.toFixed(1));
+  return (
+    <div className="mt-3">
+      <div className="mb-1.5 flex items-center justify-between gap-3 text-[10px] font-semibold">
+        <span className="inline-flex items-center gap-1.5 text-blue-700"><span className="h-2 w-2 rounded-full bg-blue-600" />AI correct <strong>{displayPercent(ai)}%</strong></span>
+        <span className="inline-flex items-center gap-1.5 text-amber-700"><strong>{displayPercent(human)}%</strong> Human changes<span className="h-2 w-2 rounded-full bg-amber-600" /></span>
+      </div>
+      <div className="relative flex h-3 overflow-hidden rounded-full bg-slate-200 ring-1 ring-inset ring-slate-200">
+        <div className="h-full bg-blue-600" style={{ width: `${ai}%` }} />
+        <div className="h-full flex-1 bg-amber-600" />
+        <span className="pointer-events-none absolute left-1/2 top-0 h-full w-px bg-white/90" />
+      </div>
+      <div className="relative mt-0.5 h-3 text-[8px] font-semibold text-slate-400"><span className="absolute left-1/2 -translate-x-1/2">50%</span></div>
+    </div>
+  );
 }
 
 function isFinalHairDetailStatus(status) {
@@ -216,7 +331,7 @@ function isFinalHairDetailStatus(status) {
 }
 
 function getAttendeeHairIntakeMeta(attendee, submission, details = []) {
-  if (normalizeAttendeeType(attendee?.Attendee_Type) === 'Voluntary') {
+  if (normalizeAttendeeType(attendee?.Attendee_Type) === 'Visitor') {
     return { state: 'not_required', label: 'Not required' };
   }
 
@@ -279,7 +394,8 @@ function findChangedAiHairFields(screening, draft) {
   if (!screening || !draft) return [];
   const comparisons = [
     ['length', screening.Estimated_Length, draft.declaredLength, (aiValue, staffValue) => (
-      String(staffValue ?? '').trim() !== '' && Number(aiValue) === Number(staffValue)
+      String(staffValue ?? '').trim() !== ''
+      && Math.abs(Number(aiValue) - Number(staffValue)) <= AI_LENGTH_ALLOWANCE_INCHES
     )],
     ['color', screening.Detected_Color, draft.declaredColor],
     ['texture', screening.Detected_Texture, draft.declaredTexture],
@@ -353,7 +469,8 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   const [notice, setNotice] = useState({ kind: '', text: '' });
 
   const [events, setEvents] = useState([]);
-  const [eventTimeFilter, setEventTimeFilter] = useState('all_active');
+  const [eventTimeFilter, setEventTimeFilter] = useState('all');
+  const [programSearch, setProgramSearch] = useState('');
   const [selectedCalendarDate, setSelectedCalendarDate] = useState('');
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [selectedRequestId, setSelectedRequestId] = useState(null);
@@ -376,6 +493,8 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   const [isSavingDetail, setIsSavingDetail] = useState(false);
   const [eventSummary, setEventSummary] = useState(null);
   const [isLoadingSummary, setIsLoadingSummary] = useState(false);
+  const [showSuccessfulConfirmation, setShowSuccessfulConfirmation] = useState(false);
+  const [isMarkingSuccessful, setIsMarkingSuccessful] = useState(false);
   const [scanOutcome, setScanOutcome] = useState(null);
 
   const videoRef = useRef(null);
@@ -452,7 +571,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       const nextEvents = result.data || [];
       setEvents(nextEvents);
     } catch (error) {
-      setNotice({ kind: 'error', text: error.message || 'Unable to load assigned events.' });
+      setNotice({ kind: 'error', text: error.message || 'Unable to load assigned programs.' });
       if (!silent) setEvents([]);
     } finally {
       setIsLoadingEvents(false);
@@ -599,39 +718,71 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     loadEvents();
   }, [loadEvents]);
 
-  const filteredEvents = useMemo(() => {
-    if (selectedCalendarDate) {
-      return events.filter((row) => (
-        toScheduleDateKey(row.Start_Date) === selectedCalendarDate
-      ));
-    }
-
+  const eventFilterCounts = useMemo(() => {
     const todayStart = toManilaDayStartMs(new Date());
-    const weekEnd = todayStart + (6 * DAY_IN_MS);
+    return EVENT_FILTERS.reduce((counts, filterItem) => ({
+      ...counts,
+      [filterItem.id]: events.filter((row) => matchesProgramTimeFilter(row, filterItem.id, todayStart)).length,
+    }), {});
+  }, [events]);
 
+  const filteredEvents = useMemo(() => {
+    const todayStart = toManilaDayStartMs(new Date());
+    const term = programSearch.trim().toLowerCase();
     return events.filter((row) => {
-      const ended = isEventEnded(row);
-      if (eventTimeFilter === 'ended') return ended;
-      if (ended) return false;
-      if (eventTimeFilter === 'all_active') return true;
-      const eventDay = toManilaDayStartMs(row?.Start_Date || row?.Created_At || new Date());
-      if (eventTimeFilter === 'today') {
-        return eventDay === todayStart;
-      }
-      if (eventTimeFilter === 'this_week') {
-        return eventDay >= todayStart && eventDay <= weekEnd;
-      }
-      if (eventTimeFilter === 'upcoming') {
-        return eventDay > weekEnd;
-      }
-      return true;
+      if (selectedCalendarDate && toScheduleDateKey(row.Start_Date) !== selectedCalendarDate) return false;
+      if (!matchesProgramTimeFilter(row, eventTimeFilter, todayStart)) return false;
+      if (!term) return true;
+      return [
+        `er-${row.Event_Request_ID}`,
+        row.Event_Name,
+        row.Venue_Name,
+        buildAddress(row),
+        getEffectiveEventStatus(row),
+      ].some((value) => String(value || '').toLowerCase().includes(term));
     });
-  }, [events, eventTimeFilter, selectedCalendarDate]);
+  }, [events, eventTimeFilter, programSearch, selectedCalendarDate]);
 
   const selectedEvent = useMemo(() => (
     events.find((row) => Number(row.Event_Request_ID || 0) === Number(selectedRequestId || 0)) || null
   ), [events, selectedRequestId]);
   const selectedEventEnded = useMemo(() => isEventEnded(selectedEvent), [selectedEvent]);
+  const selectedEventSuccessful = useMemo(
+    () => normalizeFlowStatusKey(selectedEvent?.Status) === 'successful',
+    [selectedEvent],
+  );
+  const endedAttendanceChart = useMemo(() => ([
+    { name: 'Registered', shortName: 'Registered', value: Number(eventSummary?.registered || 0), color: '#64748b' },
+    { name: 'Present', shortName: 'Present', value: Number(eventSummary?.present || 0), color: '#0f766e' },
+    { name: 'No-show', shortName: 'No-show', value: Number(eventSummary?.no_show || 0), color: '#dc2626' },
+    { name: 'Donors', shortName: 'Donors', value: Number(eventSummary?.donors || 0), color: primaryColor },
+    { name: 'Visitors', shortName: 'Visitors', value: Number(eventSummary?.visitors || 0), color: '#2563eb' },
+  ]), [eventSummary, primaryColor]);
+  const endedAttendanceTable = endedAttendanceChart;
+  const endedHairOutcomeChart = useMemo(() => ([
+    { name: 'Accepted', shortName: 'Accepted', value: Number(eventSummary?.accepted || 0), color: '#059669' },
+    { name: 'Rejected', shortName: 'Rejected', value: Number(eventSummary?.rejected || 0), color: '#dc2626' },
+    { name: 'Rejected but cut', shortName: 'Cut', value: Number(eventSummary?.rejected_cut || 0), color: '#d97706' },
+    { name: 'Pending', shortName: 'Pending', value: Number(eventSummary?.pending || 0), color: '#64748b' },
+    { name: 'Added to inventory', shortName: 'Inventory', value: Number(eventSummary?.inventory_added || 0), color: primaryColor },
+  ]), [eventSummary, primaryColor]);
+  const endedHairOutcomeTable = endedHairOutcomeChart;
+  const endedAiAccuracy = useMemo(() => {
+    const ai = Number(eventSummary?.ai_accuracy_percent || 0);
+    return [
+      { name: 'AI correct', value: ai, color: '#2563eb' },
+      { name: 'Human changes', value: Math.max(0, 100 - ai), color: '#d97706' },
+    ];
+  }, [eventSummary]);
+  const endedAiDecisionChart = useMemo(() => ([
+    { name: 'Approved donations', shortName: 'Approved', value: Number(eventSummary?.accepted || 0), color: '#059669' },
+    { name: 'Rejected donations', shortName: 'Rejected', value: Number(eventSummary?.rejected || 0), color: '#dc2626' },
+    { name: 'Rejected cut donations', shortName: 'Rejected cut', value: Number(eventSummary?.rejected_cut || 0), color: '#d97706' },
+  ]), [eventSummary]);
+  const endedAiTable = useMemo(() => ([
+    { name: 'Compared', value: Number(eventSummary?.ai_reviews || 0), color: '#64748b' },
+    ...endedAiAccuracy.map((entry) => ({ ...entry, suffix: '%' })),
+  ]), [endedAiAccuracy, eventSummary]);
 
   // Auto-select first event when nothing is selected yet
   useEffect(() => {
@@ -663,6 +814,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     setDetailDraft(createDetailDraft(null));
     setEventSummary(null);
     setScanOutcome(null);
+    setShowSuccessfulConfirmation(false);
     lastScanRef.current = { raw: '', at: 0, mode: '', locked: false };
   }, [selectedEvent?.Event_Request_ID, loadAttendees]);
 
@@ -678,7 +830,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     }).then(({ data, error }) => {
       if (!active) return;
       if (error) {
-        setNotice({ kind: 'error', text: error.message || 'Unable to load ended event summary.' });
+        setNotice({ kind: 'error', text: error.message || 'Unable to load ended program summary.' });
         setEventSummary(null);
       } else {
         setEventSummary(data || {});
@@ -792,15 +944,18 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
 
     stopCamera();
     setIsCameraOn(false);
+    if (selectedEventSuccessful) setActiveReview(null);
     setManualWaybillCode('');
     setScanMode(selectedEventEnded ? 'hair_review' : 'rsvp');
     setCameraStatus({
       kind: 'info',
-      message: selectedEventEnded
-        ? 'This event has ended. RSVP is closed, but pending Hair Intake & Review scans remain available.'
+      message: selectedEventSuccessful
+        ? 'This program is successful and finalized. All scanning is closed.'
+        : selectedEventEnded
+        ? 'This program has ended. RSVP is closed, but pending Hair Outcome reviews remain available.'
         : 'RSVP Check-in selected. Scan or enter an attendee waybill to mark attendance.',
     });
-  }, [selectedEvent?.Event_Request_ID, selectedEventEnded, stopCamera]);
+  }, [selectedEvent?.Event_Request_ID, selectedEventEnded, selectedEventSuccessful, stopCamera]);
 
   const startCameraScanner = useCallback(async () => {
     if (isCameraOn || isStartingCamera) return;
@@ -832,7 +987,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       setCameraStatus({
         kind: 'success',
         message: scanMode === 'hair_review'
-          ? 'Hair Intake & Review scanner is running. Scan a checked-in donor QR.'
+          ? 'Hair Outcome Review scanner is running. Scan a checked-in donor QR.'
           : 'RSVP Check-in scanner is running. Point the camera at an attendee QR.',
       });
     } catch (error) {
@@ -913,20 +1068,22 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   }, [activeReview?.attendee?.Photo_Path]);
 
   const aiStaffComparisonRows = useMemo(() => {
-    if (!activeAiScreening) return [];
     const definitions = [
-      { key: 'length', label: 'Length', ai: activeAiScreening.Estimated_Length, staff: detailDraft.declaredLength, suffix: ' in', numeric: true },
-      { key: 'color', label: 'Color', ai: activeAiScreening.Detected_Color, staff: detailDraft.declaredColor },
-      { key: 'texture', label: 'Texture', ai: activeAiScreening.Detected_Texture, staff: detailDraft.declaredTexture },
-      { key: 'density', label: 'Density', ai: activeAiScreening.Detected_Density, staff: detailDraft.declaredDensity },
-      { key: 'condition', label: 'Condition', ai: activeAiScreening.Detected_Condition, staff: detailDraft.declaredCondition },
+      { key: 'length', label: 'Length', ai: activeAiScreening?.Estimated_Length, staff: detailDraft.declaredLength, suffix: ' in', numeric: true },
+      { key: 'color', label: 'Color', ai: activeAiScreening?.Detected_Color, staff: detailDraft.declaredColor },
+      { key: 'pattern', label: 'Hair Pattern', ai: activeAiScreening?.Detected_Texture, staff: detailDraft.declaredTexture },
+      { key: 'density', label: 'Density', ai: activeAiScreening?.Detected_Density, staff: detailDraft.declaredDensity },
+      { key: 'condition', label: 'Condition', ai: activeAiScreening?.Detected_Condition, staff: detailDraft.declaredCondition },
     ];
 
     return definitions.map((row) => {
       const comparable = row.ai != null && String(row.ai).trim() !== '';
       const hasStaffValue = row.staff != null && String(row.staff).trim() !== '';
+      const difference = row.numeric && comparable && hasStaffValue
+        ? Math.abs(Number(row.ai) - Number(row.staff))
+        : null;
       const matches = comparable && hasStaffValue && (row.numeric
-        ? Number(row.ai) === Number(row.staff)
+        ? difference <= AI_LENGTH_ALLOWANCE_INCHES
         : normalizeFlowStatusKey(row.ai) === normalizeFlowStatusKey(row.staff));
       const formatValue = (value) => {
         if (value == null || String(value).trim() === '') return 'Not provided';
@@ -937,6 +1094,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         comparable,
         hasStaffValue,
         matches,
+        difference,
         aiDisplay: formatValue(row.ai),
         staffDisplay: formatValue(row.staff),
       };
@@ -964,7 +1122,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
 
       const eventRequestId = Number(selectedEvent?.Event_Request_ID || 0);
       if (!eventRequestId) {
-        throw new Error('Selected event has no Event_Request_ID.');
+        throw new Error('Selected program has no request ID.');
       }
 
       const scannedAttendee = attendees.find((row) => (
@@ -972,30 +1130,30 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         || (scan.waybillCode && String(row.Waybill_Code || '').trim().toUpperCase() === String(scan.waybillCode).trim().toUpperCase())
         || (scan.userId && Number(row.User_ID) === Number(scan.userId))
       )) || null;
-      if (scanMode === 'hair_review' && normalizeAttendeeType(scannedAttendee?.Attendee_Type) === 'Voluntary') {
+      if (scanMode === 'hair_review' && normalizeAttendeeType(scannedAttendee?.Attendee_Type) === 'Visitor') {
         const waybillCode = String(scannedAttendee?.Waybill_Code || scan.waybillCode || '').trim();
         setActiveReview({
           attendee: scannedAttendee,
           submission: null,
           details: [],
           waybillCode,
-          attendeeType: 'Voluntary',
-          voluntaryOnly: true,
+          attendeeType: 'Visitor',
+          visitorOnly: true,
         });
         setQualityReason('');
         setDetailDraft(createDetailDraft(null));
         setCameraStatus({
           kind: 'info',
-          message: `${scannedAttendee?.Full_Name || waybillCode || 'This attendee'} is voluntary. RSVP check-in is their only required step.`,
+          message: `${scannedAttendee?.Full_Name || waybillCode || 'This visitor'} is a visitor. RSVP check-in is their only required step.`,
         });
         setScanOutcome({
           tone: 'info',
-          title: 'Voluntary attendee identified',
+          title: 'Visitor identified',
           waybill: waybillCode,
-          subject: scannedAttendee?.Full_Name || 'Voluntary attendee',
-          action: 'Verified attendee type; no hair intake was opened',
+          subject: scannedAttendee?.Full_Name || 'Visitor',
+          action: 'Verified attendee type; no hair outcome review was opened',
           status: 'RSVP only',
-          nextStep: scannedAttendee?.RSVP_Scanned_At ? 'No further event scan required' : 'Complete RSVP Check-in',
+          nextStep: scannedAttendee?.RSVP_Scanned_At ? 'No further program scan required' : 'Complete RSVP Check-in',
           statusChanges: [],
         });
         return true;
@@ -1085,25 +1243,25 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       setNotice({
         kind: 'success',
         text: requiresHairReview
-          ? `Hair intake loaded for ${attendeeLabel}. Double-check the AI details and record the final decision.`
-          : `RSVP check-in complete for ${attendeeLabel}. Donors may now use Hair Intake & Review.`,
+          ? `Hair outcome review loaded for ${attendeeLabel}. Double-check the AI details and record the final decision.`
+          : `RSVP check-in complete for ${attendeeLabel}. Donors may now use Hair Outcome Review.`,
       });
       setCameraStatus({
         kind: 'success',
         message: requiresHairReview
-          ? `Hair intake opened.${submissionStatus ? ` Submission: ${submissionStatus}.` : ''} Review the details below.`
+          ? `Hair outcome review opened.${submissionStatus ? ` Submission: ${submissionStatus}.` : ''} Review the details below.`
           : `RSVP success: ${attendeeLabel} marked Present.`,
       });
       setScanOutcome({
         tone: 'success',
-        title: requiresHairReview ? 'Hair intake opened' : 'RSVP check-in completed',
+        title: requiresHairReview ? 'Hair outcome review opened' : 'RSVP check-in completed',
         waybill: resolvedWaybillCode,
         subject: attendeeLabel,
         action: requiresHairReview ? 'Loaded donor submission and hair details' : 'Marked attendance as Present',
         status: requiresHairReview ? 'Awaiting decision' : 'Present',
         nextStep: requiresHairReview
           ? 'Review the hair and choose Approve, Reject, or Rejected Cut'
-          : attendeeType === 'Voluntary' ? 'Process complete' : 'Use Hair Intake & Review when hair is received',
+          : attendeeType === 'Visitor' ? 'Process complete' : 'Use Hair Outcome Review when hair is received',
         statusChanges: requiresHairReview ? [] : [{
           label: 'Attendance',
           before: existingAttendee?.Attendance_Status || 'Not Marked',
@@ -1354,7 +1512,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       setManualWaybillCode('');
       setCameraStatus({
         kind: 'info',
-        message: 'Decision saved. Hair Intake & Review is restarting for the next donor...',
+        message: 'Decision saved. Hair Outcome Review is restarting for the next donor...',
       });
       await loadAttendees(eventRequestId);
       if (selectedEventEnded) {
@@ -1396,6 +1554,55 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     await startCameraScanner();
   };
 
+  const handleMarkEventSuccessful = useCallback(async () => {
+    const eventRequestId = Number(selectedEvent?.Event_Request_ID || 0);
+    if (!supabase || !eventRequestId || isMarkingSuccessful) return;
+
+    setIsMarkingSuccessful(true);
+    try {
+      const result = await supabase.rpc('mark_event_successful', {
+        p_event_request_id: eventRequestId,
+      });
+      if (result.error) throw result.error;
+
+      stopCamera();
+      setIsCameraOn(false);
+      setShowSuccessfulConfirmation(false);
+      setEvents((current) => current.map((event) => (
+        Number(event.Event_Request_ID) === eventRequestId
+          ? {
+            ...event,
+            Status: 'Successful',
+            Successful_At: result.data?.successful_at || new Date().toISOString(),
+            Successful_By_User_ID: result.data?.successful_by_user_id || staffUserId,
+          }
+          : event
+      )));
+
+      const summaryResult = await supabase.rpc('get_event_operations_summary', {
+        p_event_request_id: eventRequestId,
+      });
+      if (!summaryResult.error) setEventSummary(summaryResult.data || {});
+      const smtpKickResult = await triggerSmtpNow('program_marked_successful');
+      if (!smtpKickResult.ok) {
+        console.warn('[SMTP] Successful-program certificates remain queued:', smtpKickResult.message || smtpKickResult);
+      }
+      showToast({
+        type: 'success',
+        title: 'Program marked successful',
+        message: 'The program is finalized, QR scanning is closed, and certificate emails are queued.',
+      });
+      await loadEvents({ silent: true });
+    } catch (error) {
+      setNotice({
+        kind: 'error',
+        text: error.message || 'Unable to mark this program successful.',
+      });
+    } finally {
+      setIsMarkingSuccessful(false);
+    }
+  }, [isMarkingSuccessful, loadEvents, selectedEvent, showToast, staffUserId, stopCamera]);
+
   const handleManualScanLookup = async () => {
     const value = normalizeWaybillCodeInput(manualWaybillCode);
     if (!value) return;
@@ -1422,7 +1629,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       return;
     }
     if (nextMode === 'rsvp' && selectedEventEnded) {
-      setNotice({ kind: 'warning', text: 'RSVP check-in is closed because this event has ended.' });
+      setNotice({ kind: 'warning', text: 'RSVP check-in is closed because this program has ended.' });
       return;
     }
     stopCamera();
@@ -1433,7 +1640,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     setCameraStatus({
       kind: 'info',
       message: nextMode === 'hair_review'
-        ? 'Hair Intake & Review selected. Scan only donors who already completed RSVP check-in.'
+        ? 'Hair Outcome Review selected. Scan only donors who already completed RSVP check-in.'
         : 'RSVP Check-in selected. This scan only records attendance.',
     });
   };
@@ -1594,8 +1801,8 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
               </div>
             </div>
 
-            <h2>Event Details</h2>
-            <div class="line"><strong>Event:</strong> ${selectedEvent.Event_Name || 'N/A'}</div>
+            <h2>Program Details</h2>
+            <div class="line"><strong>Program:</strong> ${selectedEvent.Event_Name || 'N/A'}</div>
             <div class="line"><strong>Venue:</strong> ${selectedEvent.Venue_Name || buildAddress(selectedEvent) || 'N/A'}</div>
             <div class="line"><strong>Schedule:</strong> ${formatDateTime(selectedEvent.Start_Date)} - ${formatDateTime(selectedEvent.End_Date)}</div>
 
@@ -1675,7 +1882,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
 
     const targetRows = attendees.filter((row) => Number(row?.Event_Attendee_ID || 0) > 0);
     if (!targetRows.length) {
-      setNotice({ kind: 'warning', text: 'No attendees to print in this event.' });
+      setNotice({ kind: 'warning', text: 'No attendees to print in this program.' });
       return;
     }
 
@@ -1754,8 +1961,8 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                 <div class="qr-caption">Scan this QR for RSVP / waybill lookup</div>
               </div>
             </div>
-            <h2>Event Details</h2>
-            <div class="line"><strong>Event:</strong> ${escapeHtml(selectedEvent.Event_Name || 'N/A')}</div>
+            <h2>Program Details</h2>
+            <div class="line"><strong>Program:</strong> ${escapeHtml(selectedEvent.Event_Name || 'N/A')}</div>
             <div class="line"><strong>Venue:</strong> ${escapeHtml(selectedEvent.Venue_Name || buildAddress(selectedEvent) || 'N/A')}</div>
             <div class="line"><strong>Schedule:</strong> ${escapeHtml(`${formatDateTime(selectedEvent.Start_Date)} - ${formatDateTime(selectedEvent.End_Date)}`)}</div>
             <h2>Attendee Details</h2>
@@ -1836,28 +2043,28 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   }, [attendees, resolveStaffUserId, selectedEvent]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden">
+    <div className="flex flex-col gap-5 lg:h-full lg:min-h-0 lg:overflow-hidden">
       <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Assigned Events</h1>
-          <p className="text-sm text-slate-600">View events admin assigned to you, search attendees, and print waybills.</p>
+          <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Assigned Programs</h1>
+          <p className="text-sm text-slate-600">View programs assigned to you, search attendees, and print waybills.</p>
         </div>
 
         <PageHeaderActions
           onHelp={() => setShowHowToModal(true)}
-          helpTitle="Assigned Events workflow guide"
+          helpTitle="Assigned Programs workflow guide"
           onRefresh={() => { void handleRefreshAll(); }}
           refreshLoading={isLoadingEvents || isLoadingAttendees || isSaving}
         />
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(220px,35%),minmax(0,1fr)] gap-4 overflow-hidden lg:grid-cols-[340px,minmax(0,1fr)] lg:grid-rows-1">
+      <div className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px,minmax(0,1fr)] lg:grid-rows-1 lg:overflow-hidden">
         <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="shrink-0 border-b border-slate-200 px-4 py-3">
             <div className="flex items-center justify-between">
               <h2 className="flex items-center gap-2 text-sm font-bold text-slate-800">
                 <Inbox size={14} />
-                Assigned Events
+                Assigned Programs
               </h2>
               <div className="flex items-center gap-1.5">
                 <button
@@ -1877,23 +2084,47 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                 </span>
               </div>
             </div>
-            <div className="mt-3">
-              <label htmlFor="assigned-event-time-filter" className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                Show events
-              </label>
-              <select
-                id="assigned-event-time-filter"
-                value={eventTimeFilter}
-                onChange={(event) => {
-                  setEventTimeFilter(event.target.value);
-                  setSelectedCalendarDate('');
-                }}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
-              >
-                {EVENT_FILTERS.map((filterItem) => (
-                  <option key={filterItem.id} value={filterItem.id}>{filterItem.label}</option>
-                ))}
-              </select>
+            <div className="relative mt-3">
+              <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={programSearch}
+                onChange={(event) => setProgramSearch(event.target.value)}
+                placeholder="Search program, venue, status, or ID..."
+                className="w-full rounded-lg border border-slate-300 bg-white py-1.5 pl-8 pr-8 text-sm placeholder:text-slate-400 transition focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100"
+              />
+              {programSearch && (
+                <button
+                  type="button"
+                  onClick={() => setProgramSearch('')}
+                  className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Clear program search"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {EVENT_FILTERS.map((filterItem) => {
+                const active = eventTimeFilter === filterItem.id;
+                return (
+                  <button
+                    key={filterItem.id}
+                    type="button"
+                    onClick={() => {
+                      setEventTimeFilter(filterItem.id);
+                      setSelectedCalendarDate('');
+                    }}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${active ? 'border-transparent text-white shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+                    style={active ? { backgroundColor: primaryColor } : undefined}
+                  >
+                    {filterItem.label}
+                    <span className={`rounded-full px-1.5 py-px text-[10px] ${active ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                      {eventFilterCounts[filterItem.id] || 0}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
             {selectedCalendarDate && (
               <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
@@ -1914,7 +2145,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
               </div>
             )}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
+          <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-y-contain">
             {isLoadingEvents && filteredEvents.length === 0 ? (
               <div className="flex items-center gap-2 px-4 py-5 text-sm text-slate-600">
                 <Loader2 size={15} className="animate-spin" />Loading...
@@ -1924,12 +2155,25 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                 <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-400">
                   <Inbox size={20} />
                 </div>
-                <p className="mt-2.5 text-sm font-semibold text-slate-700">No events in this filter</p>
+                <p className="mt-2.5 text-sm font-semibold text-slate-700">No programs match these filters</p>
                 <p className="text-xs text-slate-500">
                   {selectedCalendarDate
-                    ? 'No assigned events are scheduled on the selected date.'
-                    : 'Try another filter (Today, This Week, Upcoming, Ended).'}
+                    ? 'No assigned programs are scheduled on the selected date.'
+                    : 'Try another filter or clear the search.'}
                 </p>
+                {(programSearch || selectedCalendarDate || eventTimeFilter !== 'all') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProgramSearch('');
+                      setSelectedCalendarDate('');
+                      setEventTimeFilter('all');
+                    }}
+                    className="mt-3 rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                  >
+                    Clear filters
+                  </button>
+                )}
               </div>
             ) : (
               <ul className="divide-y divide-slate-100">
@@ -1950,7 +2194,9 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                             ER-{row.Event_Request_ID}
                           </span>
                           <span className={`rounded-full border px-1.5 py-0.5 text-[10px] font-semibold ${
-                            isEventEnded(row)
+                            normalizeFlowStatusKey(getEffectiveEventStatus(row)) === 'successful'
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              : isEventEnded(row)
                               ? 'border-slate-300 bg-slate-100 text-slate-700'
                               : 'border-emerald-200 bg-emerald-50 text-emerald-700'
                           }`}>
@@ -1958,7 +2204,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                           </span>
                         </div>
                         <p className="truncate text-sm font-semibold text-slate-900">
-                          {row.Event_Name || 'Untitled Event'}
+                          {row.Event_Name || 'Untitled Program'}
                         </p>
                         <p className="truncate text-xs text-slate-600">
                           {row.Venue_Name || buildAddress(row) || 'No venue yet'}
@@ -1975,15 +2221,15 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
           </div>
         </section>
 
-        <section className="min-h-0 space-y-4 overflow-y-auto overscroll-y-contain pr-1">
+        <section className="space-y-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:pr-1">
           {!selectedEvent ? (
             <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white px-6 py-20 text-center shadow-sm">
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-400">
                 <Inbox size={26} />
               </div>
-              <h2 className="mt-4 text-base font-bold text-slate-800">Select an assigned event</h2>
+              <h2 className="mt-4 text-base font-bold text-slate-800">Select an assigned program</h2>
               <p className="mt-1 max-w-sm text-sm text-slate-500">
-                Pick an event from the list to view its attendees and print waybills.
+                Pick a program from the list to view its attendees and print waybills.
               </p>
             </div>
           ) : (
@@ -1998,11 +2244,13 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                         ER-{selectedEvent.Event_Request_ID}
                       </p>
                       <h2 className="mt-0.5 text-xl font-bold text-slate-900">
-                        {selectedEvent.Event_Name || 'Untitled Event'}
+                        {selectedEvent.Event_Name || 'Untitled Program'}
                       </h2>
                     </div>
                     <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${
-                      selectedEventEnded
+                      selectedEventSuccessful
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : selectedEventEnded
                         ? 'border-slate-300 bg-slate-100 text-slate-700'
                         : 'border-emerald-200 bg-emerald-50 text-emerald-700'
                     }`}>
@@ -2041,49 +2289,67 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
               </div>
 
               {selectedEventEnded && (
-                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="flex items-center justify-between gap-3">
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Ended event summary</p>
-                      <h3 className="mt-0.5 text-sm font-bold text-slate-900">Final attendance, hair intake, and AI review results</h3>
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        {selectedEventSuccessful ? 'Successful program summary' : 'Ended program summary'}
+                      </p>
+                      <h3 className="mt-0.5 text-sm font-bold text-slate-900">Final attendance, hair outcomes, and AI review results</h3>
                     </div>
-                    {isLoadingSummary && <Loader2 size={15} className="animate-spin text-slate-500" />}
+                    <div className="flex items-center gap-2">
+                      {isLoadingSummary && <Loader2 size={15} className="animate-spin text-slate-500" />}
+                      {selectedEventSuccessful ? (
+                        <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">
+                          <CheckCircle2 size={13} /> Finalized
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setShowSuccessfulConfirmation(true)}
+                          disabled={isLoadingSummary || !eventSummary || Number(eventSummary?.pending || 0) > 0}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                          <CheckCircle2 size={14} /> Mark as Successful
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
-                    {[
-                      ['Registered', eventSummary?.registered],
-                      ['Present', eventSummary?.present],
-                      ['No-show', eventSummary?.no_show],
-                      ['Donors', eventSummary?.donors],
-                      ['Voluntary', eventSummary?.voluntary],
-                      ['Approved cut', eventSummary?.approved_cut],
-                      ['Rejected', eventSummary?.rejected],
-                      ['Rejected cut', eventSummary?.rejected_cut],
-                      ['Pending review', eventSummary?.pending],
-                      ['Inventory added', eventSummary?.inventory_added],
-                      ['Corrected AI fields', eventSummary?.ai_corrections],
-                      ['AI correct', eventSummary?.ai_accuracy_percent == null ? 'N/A' : `${eventSummary.ai_accuracy_percent}%`],
-                      ['Human changes', eventSummary?.ai_accuracy_percent == null ? 'N/A' : `${Math.max(0, 100 - Number(eventSummary.ai_accuracy_percent || 0))}%`],
-                    ].map(([label, value]) => (
-                      <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-                        <p className="mt-0.5 text-lg font-bold text-slate-900">{value ?? 0}</p>
-                      </div>
-                    ))}
+                  <div className="mt-3 grid items-start gap-3 xl:grid-cols-3">
+                    <section className="flex flex-col rounded-xl border border-slate-200 bg-slate-50/40 p-3">
+                      <div className="flex items-center justify-between"><h4 className="text-xs font-bold text-slate-800">Attendance</h4><span className="text-[10px] text-slate-500">{eventSummary?.registered ?? 0} registered</span></div>
+                      <SummaryMetricBarChart rows={endedAttendanceChart} />
+                      <SummaryBreakdownTable rows={endedAttendanceTable} />
+                    </section>
+                    <section className="flex flex-col rounded-xl border border-slate-200 bg-slate-50/40 p-3">
+                      <div className="flex items-center justify-between"><h4 className="text-xs font-bold text-slate-800">Hair outcomes</h4><span className="text-[10px] text-slate-500">{eventSummary?.inventory_added ?? 0} added to inventory</span></div>
+                      <SummaryMetricBarChart rows={endedHairOutcomeChart} />
+                      <SummaryBreakdownTable rows={endedHairOutcomeTable} />
+                    </section>
+                    <section className="flex flex-col rounded-xl border border-slate-200 bg-slate-50/40 p-3">
+                      <div className="flex items-center justify-between"><h4 className="text-xs font-bold text-slate-800">AI vs Human</h4><span className="text-[10px] text-slate-500">{eventSummary?.ai_reviews ?? 0} comparisons</span></div>
+                      <AiHumanSplitBar aiPercent={eventSummary?.ai_accuracy_percent} />
+                      <SummaryMetricBarChart rows={endedAiDecisionChart} className="mt-1 h-24" />
+                      <SummaryBreakdownTable rows={endedAiTable} />
+                    </section>
                   </div>
-                  <p className="mt-3 text-xs text-slate-500">
-                    New RSVP check-ins are closed. Pending donor hair reviews can still be completed below.
+                  <p className={`mt-3 rounded-lg border px-3 py-2 text-xs ${selectedEventSuccessful ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : Number(eventSummary?.pending || 0) > 0 ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-sky-200 bg-sky-50 text-sky-700'}`}>
+                    {selectedEventSuccessful
+                      ? 'This program is finalized. RSVP and hair-review scanning are permanently closed.'
+                      : Number(eventSummary?.pending || 0) > 0
+                        ? `${eventSummary.pending} donor review(s) must be completed before this program can be marked successful.`
+                        : 'All required reviews are complete. Use Mark as Successful to finalize this program.'}
                   </p>
                 </div>
               )}
 
               {/* Event scanner */}
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className={`${selectedEventSuccessful ? 'hidden' : ''} rounded-xl border border-slate-200 bg-white p-5 shadow-sm`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <ScanLine size={16} className="text-slate-500" />
                     <h3 className="text-sm font-bold text-slate-800">
-                      {scanMode === 'hair_review' ? 'Hair Intake & Review Scanner' : 'RSVP Check-in Scanner'}
+                      {scanMode === 'hair_review' ? 'Hair Outcome Review Scanner' : 'RSVP Check-in Scanner'}
                     </h3>
                   </div>
                   <button
@@ -2122,7 +2388,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                         : 'border-slate-200 bg-white hover:bg-slate-50'
                     }`}
                   >
-                    <span className="block text-xs font-bold text-slate-900">2. Hair Intake &amp; Review</span>
+                    <span className="block text-xs font-bold text-slate-900">2. Hair Outcome Review</span>
                     <span className="mt-0.5 block text-[11px] text-slate-600">Checked-in donors only. Opens AI details for staff review.</span>
                   </button>
                 </div>
@@ -2195,7 +2461,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                     <p className="text-[11px] text-slate-500">
                       {scanMode === 'hair_review'
                         ? 'This scan does not change attendance. It opens a checked-in donor for the final hair decision.'
-                        : 'This scan only marks attendance as Present. Donors use the second mode for hair review; voluntary attendees are finished after check-in.'}
+                        : 'This scan only marks attendance as Present. Donors use the second mode for hair review; visitors are finished after check-in.'}
                     </p>
                   </div>
                 </div>
@@ -2204,7 +2470,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
               <WaybillScanResult outcome={scanOutcome} possibleOutcomes={EVENT_SCAN_OUTCOMES} />
 
               {/* Hair Quality Review */}
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className={`${selectedEventSuccessful ? 'hidden' : ''} rounded-xl border border-slate-200 bg-white p-5 shadow-sm`}>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-sm font-bold text-slate-800">Hair Quality Review</h3>
                   <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
@@ -2212,12 +2478,12 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                   </span>
                 </div>
 
-                {activeReview?.voluntaryOnly ? (
+                {activeReview?.visitorOnly ? (
                   <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-4 text-sm text-sky-800">
                     <div className="flex items-start gap-2">
                       <CheckCircle2 size={17} className="mt-0.5 shrink-0" />
                       <div>
-                        <p className="font-bold">Voluntary attendee — no hair review required</p>
+                        <p className="font-bold">Visitor — no hair review required</p>
                         <p className="mt-1 text-xs leading-5">
                           {activeReview?.attendee?.Full_Name || activeReview?.waybillCode || 'This attendee'} only needs RSVP check-in and does not submit hair for quality review.
                         </p>
@@ -2227,7 +2493,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                   </div>
                 ) : !activeReview?.submission?.Submission_ID ? (
                   <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-xs text-slate-600">
-                    Select <strong>Hair Intake &amp; Review</strong>, then scan a donor who already completed RSVP Check-in.
+                    Select <strong>Hair Outcome Review</strong>, then scan a donor who already completed RSVP Check-in.
                   </div>
                 ) : (
                   <div className="mt-3 space-y-3">
@@ -2299,7 +2565,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                       </section>
                     </div>
 
-                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="hidden" aria-hidden="true">
                       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                         <p className="text-xs font-semibold text-slate-800">Editable Hair Details</p>
                         <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
@@ -2337,14 +2603,14 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                           </select>
                         </label>
                         <label className="text-xs text-slate-700">
-                          Texture
+                          Hair Pattern
                           <select
                             value={detailDraft.declaredTexture}
                             onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredTexture: event.target.value }))}
                             disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
                             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs"
                           >
-                            <option value="">Select texture</option>
+                            <option value="">Select hair pattern</option>
                             {detailDraft.declaredTexture && !HAIR_TEXTURE_OPTIONS.includes(detailDraft.declaredTexture) && (
                               <option value={detailDraft.declaredTexture}>{detailDraft.declaredTexture} (existing)</option>
                             )}
@@ -2445,14 +2711,14 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                       </div>
                     </div>
 
-                    {activeAiScreening ? (
+                    {(
                       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
                         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
                           <div className="flex items-start gap-2">
                             <Sparkles size={16} className="mt-0.5 shrink-0" style={{ color: primaryColor }} />
                             <div>
-                              <h4 className="text-sm font-bold text-slate-900">AI vs Staff Comparison</h4>
-                              <p className="mt-0.5 text-[11px] text-slate-500">Staff values update live as you edit the hair details above.</p>
+                              <h4 className="text-sm font-bold text-slate-900">AI vs Human Comparison</h4>
+                              <p className="mt-0.5 text-[11px] text-slate-500">Compare the original AI result with the final human review. AI values remain unchanged.</p>
                             </div>
                           </div>
                           <div className="flex flex-wrap gap-2">
@@ -2460,7 +2726,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                               {liveAiAccuracy.comparable - changedAiHairFields.length}/{liveAiAccuracy.comparable} match
                             </span>
                             <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${changedAiHairFields.length ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
-                              {changedAiHairFields.length ? `${changedAiHairFields.length} staff change${changedAiHairFields.length === 1 ? '' : 's'}` : 'No staff changes'}
+                              {changedAiHairFields.length ? `${changedAiHairFields.length} human change${changedAiHairFields.length === 1 ? '' : 's'}` : 'No human changes'}
                             </span>
                           </div>
                         </div>
@@ -2470,12 +2736,18 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                             <span>Field</span>
                             <span>Original AI</span>
                             <span />
-                            <span>Staff review</span>
+                            <span>Human review</span>
                             <span className="text-right">Result</span>
                           </div>
                           <div className="space-y-2">
                             {aiStaffComparisonRows.map((row) => {
-                              const resultLabel = !row.comparable ? 'Not compared' : !row.hasStaffValue ? 'Needs value' : row.matches ? 'Match' : 'Changed';
+                              const resultLabel = !row.comparable
+                                ? 'No AI value'
+                                : !row.hasStaffValue
+                                  ? 'Needs value'
+                                  : row.key === 'length' && row.matches && Number(row.difference || 0) > 0
+                                    ? 'Within allowance'
+                                    : row.matches ? 'Match' : 'Changed';
                               const resultClass = !row.comparable
                                 ? 'border-slate-200 bg-slate-100 text-slate-600'
                                 : !row.hasStaffValue
@@ -2491,9 +2763,19 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                                     <p className="text-xs font-semibold text-slate-700">{row.aiDisplay}</p>
                                   </div>
                                   <ArrowRight size={14} className="hidden justify-self-center text-slate-400 md:block" />
-                                  <div className={`rounded-md border px-2.5 py-2 ${row.matches ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-200 bg-amber-50/60'}`}>
-                                    <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400 md:hidden">Staff review</p>
-                                    <p className="text-xs font-semibold text-slate-900">{row.staffDisplay}</p>
+                                  <div className={`rounded-md border p-1.5 ${row.matches ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-200 bg-amber-50/60'}`}>
+                                    <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400 md:hidden">Human review</p>
+                                    {row.key === 'length' ? (
+                                      <input type="number" min="0" step="0.01" value={detailDraft.declaredLength} onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredLength: event.target.value }))} disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail} aria-label="Staff final hair length in inches" className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-semibold text-slate-900" />
+                                    ) : row.key === 'color' ? (
+                                      <select value={detailDraft.declaredColor} onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredColor: event.target.value }))} disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail} aria-label="Staff final hair color" className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-semibold text-slate-900"><option value="">Select color</option>{detailDraft.declaredColor && !HAIR_COLOR_OPTIONS.includes(detailDraft.declaredColor) && <option value={detailDraft.declaredColor}>{detailDraft.declaredColor} (existing)</option>}{HAIR_COLOR_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
+                                    ) : row.key === 'pattern' ? (
+                                      <select value={detailDraft.declaredTexture} onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredTexture: event.target.value }))} disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail} aria-label="Staff final hair pattern" className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-semibold text-slate-900"><option value="">Select hair pattern</option>{detailDraft.declaredTexture && !HAIR_TEXTURE_OPTIONS.includes(detailDraft.declaredTexture) && <option value={detailDraft.declaredTexture}>{detailDraft.declaredTexture} (existing)</option>}{HAIR_TEXTURE_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
+                                    ) : row.key === 'density' ? (
+                                      <select value={detailDraft.declaredDensity} onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredDensity: event.target.value }))} disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail} aria-label="Staff final hair density" className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-semibold text-slate-900"><option value="">Select density</option>{detailDraft.declaredDensity && !HAIR_DENSITY_OPTIONS.includes(detailDraft.declaredDensity) && <option value={detailDraft.declaredDensity}>{detailDraft.declaredDensity} (existing)</option>}{HAIR_DENSITY_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
+                                    ) : (
+                                      <select value={detailDraft.declaredCondition} onChange={(event) => setDetailDraft((prev) => ({ ...prev, declaredCondition: event.target.value }))} disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail} aria-label="Staff final hair condition" className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-semibold text-slate-900"><option value="">Select condition</option>{detailDraft.declaredCondition && !HAIR_CONDITION_OPTIONS.includes(detailDraft.declaredCondition) && <option value={detailDraft.declaredCondition}>{detailDraft.declaredCondition} (existing)</option>}{HAIR_CONDITION_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
+                                    )}
                                   </div>
                                   <span className={`justify-self-start rounded-full border px-2 py-1 text-[10px] font-bold md:justify-self-end ${resultClass}`}>
                                     {resultLabel}
@@ -2502,9 +2784,26 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                               );
                             })}
                           </div>
+                          <p className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] text-sky-700">
+                            Length uses a 2–{AI_LENGTH_ALLOWANCE_INCHES}-inch estimation allowance. Staff measurements do not overwrite the original AI result.
+                          </p>
+                          <div className="mt-3 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:grid-cols-[1fr_1.35fr_auto] lg:items-end">
+                            <fieldset>
+                              <legend className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Treatment history</legend>
+                              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+                                {[['isChemicallyTreated', 'Chemically treated'], ['isColored', 'Colored'], ['isBleached', 'Bleached'], ['isRebonded', 'Rebonded']].map(([key, label]) => (
+                                  <label key={key} className="inline-flex items-center gap-1.5 text-xs text-slate-700"><input type="checkbox" checked={Boolean(detailDraft[key])} onChange={(event) => setDetailDraft((prev) => ({ ...prev, [key]: event.target.checked }))} disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail} />{label}</label>
+                                ))}
+                              </div>
+                            </fieldset>
+                            <label className="text-xs font-semibold text-slate-700">Staff notes
+                              <textarea value={detailDraft.detailNotes} onChange={(event) => setDetailDraft((prev) => ({ ...prev, detailNotes: event.target.value }))} disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail} rows={2} placeholder="Add measurement or quality-review notes…" className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-normal" />
+                            </label>
+                            <button type="button" onClick={() => { void handleSaveDetailEdits(); }} disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-60">{(isSaving || isSavingDetail) ? <Loader2 size={12} className="animate-spin" /> : null}Save Staff Review</button>
+                          </div>
                         </div>
                       </section>
-                    ) : null}
+                    )}
 
                     <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
                       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
@@ -2516,7 +2815,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                           <div className="flex flex-wrap items-center justify-end gap-2">
                             <span className={`rounded-full border px-2.5 py-1 text-[11px] font-bold ${changedAiHairFields.length ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-emerald-300 bg-emerald-50 text-emerald-700'}`}>
                               {liveAiAccuracy.comparable > 0
-                                ? `AI ${Number(liveAiAccuracy.aiPercent.toFixed(1))}% · Human ${Number(liveAiAccuracy.humanPercent.toFixed(1))}%${changedAiHairFields.length ? ` · Changed: ${changedAiHairFields.join(', ')}` : ''}`
+                                ? `AI ${Number(liveAiAccuracy.aiPercent.toFixed(1))}% · Human ${Number(liveAiAccuracy.humanPercent.toFixed(1))}%${changedAiHairFields.length ? ` · Changed: ${changedAiHairFields.map((field) => field === 'texture' ? 'hair pattern' : field).join(', ')}` : ''}`
                                 : 'No comparable AI fields'}
                             </span>
                             <span className="rounded-full border px-2.5 py-1 text-[11px] font-bold" style={{ borderColor: `${primaryColor}40`, color: primaryColor, backgroundColor: `${primaryColor}0D` }}>
@@ -2699,7 +2998,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                       <Users size={20} />
                     </div>
                     <p className="mt-2.5 text-sm font-semibold text-slate-700">No attendees yet</p>
-                    <p className="text-xs text-slate-500">Attendees register through the public event flow.</p>
+                    <p className="text-xs text-slate-500">Attendees register through the public program flow.</p>
                   </div>
                 ) : filteredAttendees.length === 0 ? (
                   <div className="flex flex-col items-center px-5 py-10 text-center">
@@ -2726,25 +3025,28 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                           <th className="px-5 py-3 font-semibold text-slate-700">Waybill</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Attendance</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">RSVP Scanned</th>
-                          <th className="px-5 py-3 font-semibold text-slate-700">Hair Intake</th>
+                          <th className="px-5 py-3 font-semibold text-slate-700">Hair Outcome</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Printed At</th>
                           <th className="px-5 py-3 font-semibold text-slate-700">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         {filteredAttendees.map((attendee) => (
-                          <tr key={attendee.Event_Attendee_ID} className="border-t border-slate-200 transition hover:bg-slate-50/50">
+                          <tr
+                            key={attendee.Event_Attendee_ID}
+                            className="border-l-2 border-t border-slate-200 bg-white transition even:bg-slate-50/45 hover:bg-slate-50"
+                            style={{ borderLeftColor: normalizeAttendeeType(attendee.Attendee_Type) === 'Visitor' ? '#2563eb' : primaryColor }}
+                          >
                             <td className="px-5 py-3 align-top">
                               <p className="font-semibold text-slate-900">{attendee.Full_Name || 'N/A'}</p>
                               <p className="text-xs text-slate-600">{attendee.Email || 'No email'}</p>
                               <p className="text-xs text-slate-600">{attendee.Contact_Number || 'No contact'}</p>
                             </td>
                             <td className="px-5 py-3 align-top">
-                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${
-                                normalizeAttendeeType(attendee.Attendee_Type) === 'Voluntary'
-                                  ? 'border-sky-200 bg-sky-50 text-sky-700'
-                                  : 'border-violet-200 bg-violet-50 text-violet-700'
-                              }`}>
+                              <span
+                                className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${normalizeAttendeeType(attendee.Attendee_Type) === 'Visitor' ? 'border-blue-200 bg-blue-50 text-blue-700' : ''}`}
+                                style={normalizeAttendeeType(attendee.Attendee_Type) === 'Donor' ? { borderColor: `${primaryColor}35`, backgroundColor: `${primaryColor}0D`, color: primaryColor } : undefined}
+                              >
                                 {normalizeAttendeeType(attendee.Attendee_Type)}
                               </span>
                             </td>
@@ -2773,21 +3075,13 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                               )}
                             </td>
                             <td className="px-5 py-3 align-top">
-                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${
-                                attendee.Hair_Intake_State === 'done'
-                                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                  : attendee.Hair_Intake_State === 'pending'
-                                    ? 'border-amber-200 bg-amber-50 text-amber-700'
-                                    : attendee.Hair_Intake_State === 'not_required'
-                                      ? 'border-sky-200 bg-sky-50 text-sky-700'
-                                      : 'border-slate-200 bg-slate-100 text-slate-600'
-                              }`}>
+                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${hairIntakeBadgeClasses(attendee)}`}>
                                 {attendee.Hair_Intake_Label || 'Not started'}
                               </span>
                             </td>
                             <td className="px-5 py-3 align-top text-xs text-slate-600">
                               {attendee.Waybill_Printed_At ? (
-                                <span className="inline-flex items-center gap-1 text-emerald-700">
+                                <span className="inline-flex items-center gap-1 text-slate-600">
                                   <CheckCircle2 size={11} />
                                   {formatDateTime(attendee.Waybill_Printed_At)}
                                 </span>
@@ -2823,11 +3117,14 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         onClose={() => setShowCalendarModal(false)}
         records={events}
         selectedDate={selectedCalendarDate}
-        onSelectDate={setSelectedCalendarDate}
+        onSelectDate={(date) => {
+          setSelectedCalendarDate(date);
+          setEventTimeFilter('all');
+        }}
         primaryColor={primaryColor}
-        title="Assigned Event Calendar"
-        description="Choose a date to view the events assigned to you."
-        recordNoun="event"
+        title="Assigned Program Calendar"
+        description="Choose a date to view the programs assigned to you."
+        recordNoun="program"
         resultCount={filteredEvents.length}
         getStartDate={(row) => row.Start_Date}
         getEndDate={(row) => row.Start_Date}
@@ -2837,11 +3134,36 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
           { key: 'appealed', label: 'Appealed', dotClass: 'bg-violet-500', reserved: true },
           { key: 'approved', label: 'Assigned / Approved', dotClass: 'bg-emerald-500', reserved: true },
           { key: 'ended', label: 'Ended', dotClass: 'bg-slate-500', reserved: false },
+          { key: 'successful', label: 'Successful', dotClass: 'bg-emerald-600', reserved: false },
           { key: 'rejected', label: 'Rejected', dotClass: 'bg-rose-500', reserved: false },
           { key: 'cancelled', label: 'Cancelled', dotClass: 'bg-slate-400', reserved: false },
         ]}
         showOpenDates={false}
       />
+
+      {showSuccessfulConfirmation && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
+          <section role="dialog" aria-modal="true" aria-labelledby="successful-confirmation-title" className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="border-b border-slate-200 bg-white px-6 py-5">
+              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+                <CheckCircle2 size={22} />
+              </div>
+              <h3 id="successful-confirmation-title" className="mt-3 text-xl font-bold text-slate-900">Finalize this program as successful?</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                <strong>{selectedEvent?.Event_Name || 'This program'}</strong> will be finalized. RSVP and hair-review QR scanning will close permanently.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 bg-white px-6 py-4">
+              <button type="button" onClick={() => setShowSuccessfulConfirmation(false)} disabled={isMarkingSuccessful} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">Cancel</button>
+              <button type="button" onClick={() => { void handleMarkEventSuccessful(); }} disabled={isMarkingSuccessful} className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800 disabled:opacity-60">
+                {isMarkingSuccessful ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}
+                Yes, mark successful
+              </button>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
 
       {showHowToModal && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4">
@@ -2850,7 +3172,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
             <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-white px-6 py-5">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Guide</p>
-                <h3 id="assigned-events-guide-title" className="text-xl font-bold text-slate-900">Manage Assigned Events Workflow</h3>
+                <h3 id="assigned-events-guide-title" className="text-xl font-bold text-slate-900">Manage Assigned Programs Workflow</h3>
               </div>
               <button
                 type="button"
@@ -2863,13 +3185,13 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
             </div>
             <div className="bg-white p-6 text-sm text-slate-700">
               <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
-                Always print all waybills before going to the event.
+                Always print all waybills before going to the program.
               </p>
               <div className="mt-3 space-y-2 text-slate-700">
-                <p>1. Pick an event using the left panel filters: <strong>Today</strong>, <strong>This Week</strong>, <strong>Upcoming</strong>, or <strong>Ended</strong>.</p>
-                <p>2. Click <strong>Print All Waybills</strong> to print every attendee waybill with QR before event deployment.</p>
+                <p>1. Find a program using search, calendar, or the status filters on the left.</p>
+                <p>2. Click <strong>Print All Waybills</strong> to print every attendee waybill with QR before program deployment.</p>
                 <p>3. Use <strong>RSVP Check-in</strong> first. It only records attendance and marks the attendee Present.</p>
-                <p>4. For donors, switch to <strong>Hair Intake &amp; Review</strong> and scan the same QR again. Double-check the AI details, make corrections, then choose <strong>Approve</strong>, <strong>Reject</strong>, or <strong>Rejected Cut</strong>.</p>
+                <p>4. For donors, switch to <strong>Hair Outcome Review</strong> and scan the same QR again. Double-check the AI details, make corrections, then choose <strong>Approve</strong>, <strong>Reject</strong>, or <strong>Rejected Cut</strong>.</p>
                 <p>5. Use <strong>Refresh</strong> anytime if you want an immediate sync; live updates are already active.</p>
               </div>
             </div>

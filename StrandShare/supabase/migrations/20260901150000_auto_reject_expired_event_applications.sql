@@ -43,7 +43,7 @@ begin
       'off'
     ) <> 'on'
   then
-    raise exception 'This application was automatically rejected because its proposed event date passed before staff review.';
+    raise exception 'This application was automatically rejected because its proposed program date passed before staff review.';
   end if;
 
   if tg_op = 'DELETE' then

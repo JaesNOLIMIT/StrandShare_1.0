@@ -5,9 +5,10 @@ import {
   ArrowRightLeft,
   Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   FileText,
   Loader2,
-  Plus,
   PauseCircle,
   PlayCircle,
   RefreshCw,
@@ -42,6 +43,13 @@ const PATIENT_ASSETS_BUCKET = 'patient_assets';
 const PH_MOBILE_REGEX = /^\+63 9\d{2} \d{3} \d{4}$/;
 const PST_TIMEZONE = 'Asia/Manila';
 const PST_OFFSET = '+08:00';
+
+const ADD_PATIENT_STEPS = [
+  { id: 1, title: 'Files', description: 'Photo and medical document' },
+  { id: 2, title: 'Patient', description: 'Account and identity' },
+  { id: 3, title: 'Clinical', description: 'Condition and treatment' },
+  { id: 4, title: 'Safety', description: 'Checklist and contacts' },
+];
 
 const EMPTY_FORM = {
   email: '',
@@ -591,8 +599,10 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
   const { theme } = useTheme();
   const submitLockRef = useRef(false);
   const errorToastIdRef = useRef(0);
+  const errorToastTimersRef = useRef(new Map());
   const documentAutofillRunRef = useRef(0);
   const formRef = useRef({ ...EMPTY_FORM });
+  const patientFieldRefs = useRef({});
 
   const [hospitalId, setHospitalId] = useState(null);
   const [hospitalName, setHospitalName] = useState('');
@@ -613,6 +623,8 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
   const [medicalDocumentFile, setMedicalDocumentFile] = useState(null);
   const [patientPicturePreviewUrl, setPatientPicturePreviewUrl] = useState('');
   const [medicalDocumentPreviewUrl, setMedicalDocumentPreviewUrl] = useState('');
+  const [addPatientStep, setAddPatientStep] = useState(1);
+  const [patientFieldErrors, setPatientFieldErrors] = useState({});
   const [documentAutofill, setDocumentAutofill] = useState({
     status: 'idle',
     message: '',
@@ -669,12 +681,42 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
       text: notice.text,
     };
 
-    setErrorToasts((previous) => [...previous, errorToast].slice(-5));
+    setErrorToasts((previous) => {
+      const nextToasts = [
+        ...previous.filter((toast) => toast.text !== errorToast.text),
+        errorToast,
+      ].slice(-3);
+      const visibleToastIds = new Set(nextToasts.map((toast) => toast.id));
+
+      previous.forEach((toast) => {
+        if (!visibleToastIds.has(toast.id)) {
+          const timerId = errorToastTimersRef.current.get(toast.id);
+          if (timerId) window.clearTimeout(timerId);
+          errorToastTimersRef.current.delete(toast.id);
+        }
+      });
+
+      return nextToasts;
+    });
+
+    const timerId = window.setTimeout(() => {
+      errorToastTimersRef.current.delete(errorToast.id);
+      setErrorToasts((previous) => previous.filter((toast) => toast.id !== errorToast.id));
+    }, 5000);
+    errorToastTimersRef.current.set(errorToast.id, timerId);
     setNotice({ kind: '', text: '' });
   }, [notice.kind, notice.text]);
 
   const dismissErrorToast = useCallback((toastId) => {
+    const timerId = errorToastTimersRef.current.get(toastId);
+    if (timerId) window.clearTimeout(timerId);
+    errorToastTimersRef.current.delete(toastId);
     setErrorToasts((previous) => previous.filter((toast) => toast.id !== toastId));
+  }, []);
+
+  useEffect(() => () => {
+    errorToastTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    errorToastTimersRef.current.clear();
   }, []);
 
   const patientUsersById = useMemo(() => {
@@ -697,6 +739,34 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
   }), [form.firstName, form.middleName, form.lastName, form.suffix]);
   const nowLocalDateTimeValue = useMemo(() => formatDateForInput(new Date()), []);
   const todayDateValue = useMemo(() => formatDateForInput(new Date()).slice(0, 10), []);
+
+  const setPatientFieldRef = useCallback((fieldName) => (node) => {
+    if (node) patientFieldRefs.current[fieldName] = node;
+    else delete patientFieldRefs.current[fieldName];
+  }, []);
+
+  const focusPatientField = useCallback((fieldName) => {
+    window.setTimeout(() => {
+      const node = patientFieldRefs.current[fieldName];
+      if (!node) return;
+      node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (typeof node.focus === 'function') node.focus({ preventScroll: true });
+    }, 80);
+  }, []);
+
+  const patientInputClassName = useCallback((fieldName, extra = '') => (
+    `w-full rounded-lg border bg-white px-3 py-2 outline-none transition focus:ring-2 ${
+      patientFieldErrors[fieldName]
+        ? 'border-red-500 bg-red-50/40 ring-2 ring-red-100 focus:border-red-500 focus:ring-red-200'
+        : 'border-gray-300 focus:border-transparent'
+    } ${extra}`
+  ), [patientFieldErrors]);
+
+  const patientFieldError = useCallback((fieldName) => (
+    patientFieldErrors[fieldName]
+      ? <p role="alert" className="mt-1 text-xs font-semibold text-red-600">{patientFieldErrors[fieldName]}</p>
+      : null
+  ), [patientFieldErrors]);
 
   const isMedicalDocumentImage = useMemo(
     () => String(medicalDocumentFile?.type || '').toLowerCase().startsWith('image/'),
@@ -1058,12 +1128,21 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
     setForm(emptyForm);
     setPatientPictureFile(null);
     setMedicalDocumentFile(null);
+    setAddPatientStep(1);
+    setPatientFieldErrors({});
     setConfirmationOpen(false);
     setDocumentAutofill({ status: 'idle', message: '', fieldNames: [], progress: 0 });
   }, []);
 
   const handleInputChange = useCallback((event) => {
     const { name, value, type, checked } = event.target;
+
+    setPatientFieldErrors((previous) => {
+      if (!previous[name]) return previous;
+      const next = { ...previous };
+      delete next[name];
+      return next;
+    });
 
     if (name === 'guardianContactNumber' || name === 'secondaryGuardianContactNumber') {
       const formattedContactNumber = formatPhilippineMobileInput(value);
@@ -1075,6 +1154,14 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
     }
 
     if (name === 'conditionCategory') {
+      setPatientFieldErrors((previous) => {
+        const next = { ...previous };
+        delete next.conditionCategory;
+        delete next.otherHairLossDisease;
+        delete next.conditionStage;
+        delete next.customConditionStage;
+        return next;
+      });
       setForm((previous) => ({
         ...previous,
         conditionCategory: value,
@@ -1348,7 +1435,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
         .insert({
           auth_user_id: authUserId,
           email,
-          role: 'tentative',
+          role: 'patient',
           access_start: accessStartIso,
           access_end: accessEndIso,
           is_active: true,
@@ -1369,8 +1456,8 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
       updatePayload.auth_user_id = authUserId;
     }
 
-    if (normalizeText(publicUserRow.role) !== 'tentative') {
-      updatePayload.role = 'tentative';
+    if (normalizeText(publicUserRow.role) !== 'patient') {
+      updatePayload.role = 'patient';
     }
 
     if (publicUserRow.is_active !== true) {
@@ -1870,6 +1957,86 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
     }
   };
 
+  const getPatientStepErrors = useCallback((stepNumber) => {
+    const errors = {};
+    const add = (field, message) => { if (!errors[field]) errors[field] = message; };
+    const email = String(form.email || '').trim();
+    const guardianContactNumber = String(form.guardianContactNumber || '').trim();
+    const secondaryGuardianContactNumber = String(form.secondaryGuardianContactNumber || '').trim();
+    const accessStart = String(form.accessStart || '').trim();
+    const accessEnd = String(form.accessEnd || '').trim();
+    const accessStartIso = toIsoOrNull(accessStart);
+    const accessEndIso = toIsoOrNull(accessEnd);
+
+    if (stepNumber === 2) {
+      if (!email) add('email', 'Patient email is required.');
+      else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) add('email', 'Enter a valid patient email address.');
+      if (!String(form.firstName || '').trim()) add('firstName', 'First name is required.');
+      if (!String(form.lastName || '').trim()) add('lastName', 'Last name is required.');
+      if (!String(form.birthdate || '').trim()) add('birthdate', 'Birthdate is required.');
+      else if (new Date(form.birthdate) > new Date()) add('birthdate', 'Birthdate cannot be in the future.');
+      if (!normalizePatientGender(form.gender)) add('gender', 'Gender is required.');
+      if (accessStart && !accessEnd) add('accessEnd', 'Add an access end time or clear the start time.');
+      if (!accessStart && accessEnd) add('accessStart', 'Add an access start time or clear the end time.');
+      if (accessStart && !accessStartIso) add('accessStart', 'Enter a valid access start time.');
+      if (accessEnd && !accessEndIso) add('accessEnd', 'Enter a valid access end time.');
+      if (accessStartIso && new Date(accessStartIso) < new Date(getPstTimestamp())) add('accessStart', 'Access start cannot be in the past.');
+      if (accessStartIso && accessEndIso && new Date(accessEndIso) <= new Date(accessStartIso)) add('accessEnd', 'Access end must be later than access start.');
+    }
+
+    if (stepNumber === 3) {
+      if (!CONDITION_OPTIONS.includes(String(form.conditionCategory || '').trim())) add('conditionCategory', 'Select the patient clinical condition.');
+      if (form.conditionCategory === 'Other Hair-Loss Disease' && !String(form.otherHairLossDisease || '').trim()) add('otherHairLossDisease', 'Enter the hair-loss disease.');
+      if (CONDITION_STAGE_OPTIONS[form.conditionCategory] && !String(form.conditionStage || '').trim()) add('conditionStage', 'Select a stage or severity.');
+      if (form.conditionStage === 'Custom' && !String(form.customConditionStage || '').trim()) add('customConditionStage', 'Enter the custom stage or severity.');
+      if (String(form.dateOfDiagnosis || '').trim() && new Date(form.dateOfDiagnosis) > new Date()) add('dateOfDiagnosis', 'Date of diagnosis cannot be in the future.');
+    }
+
+    if (stepNumber === 4) {
+      if (form.hasKnownAllergies === 'yes' && !String(form.allergyDetails || '').trim()) add('allergyDetails', 'Allergy details are required when the answer is Yes.');
+      if (form.hasMedicalRestriction === 'yes' && !String(form.medicalRestrictionDetails || '').trim()) add('medicalRestrictionDetails', 'Medical restriction details are required when the answer is Yes.');
+      if (!form.informationConfirmed) add('informationConfirmed', 'Confirm that the safety information was reviewed.');
+      if (!String(form.guardian || '').trim()) add('guardian', 'Guardian name is required.');
+      if (!String(form.guardianRelationship || '').trim()) add('guardianRelationship', 'Guardian relationship is required.');
+      if (!guardianContactNumber) add('guardianContactNumber', 'Guardian mobile number is required.');
+      else if (!isValidPhilippineMobileNumber(guardianContactNumber)) add('guardianContactNumber', 'Use the +63 912 345 6789 format.');
+
+      const hasSecondaryGuardian = [form.secondaryGuardian, form.secondaryGuardianRelationship, secondaryGuardianContactNumber]
+        .some((value) => String(value || '').trim());
+      if (hasSecondaryGuardian) {
+        if (!String(form.secondaryGuardian || '').trim()) add('secondaryGuardian', 'Complete the alternate contact name.');
+        if (!String(form.secondaryGuardianRelationship || '').trim()) add('secondaryGuardianRelationship', 'Complete the alternate relationship.');
+        if (!secondaryGuardianContactNumber) add('secondaryGuardianContactNumber', 'Complete the alternate mobile number.');
+      }
+      if (secondaryGuardianContactNumber && !isValidPhilippineMobileNumber(secondaryGuardianContactNumber)) add('secondaryGuardianContactNumber', 'Use the +63 912 345 6789 format.');
+      if (secondaryGuardianContactNumber && secondaryGuardianContactNumber === guardianContactNumber) add('secondaryGuardianContactNumber', 'Use a different number from the primary contact.');
+    }
+
+    return errors;
+  }, [form]);
+
+  const showPatientFieldErrors = useCallback((stepNumber, errors) => {
+    setAddPatientStep(stepNumber);
+    setPatientFieldErrors(errors);
+    const firstField = Object.keys(errors)[0];
+    if (firstField) focusPatientField(firstField);
+  }, [focusPatientField]);
+
+  const goToNextPatientStep = useCallback(() => {
+    if (addPatientStep === 1 && documentAutofill.status === 'processing') {
+      setNotice({ kind: 'error', text: 'Please wait until the medical document has finished processing.' });
+      return;
+    }
+    const errors = getPatientStepErrors(addPatientStep);
+    if (Object.keys(errors).length) {
+      showPatientFieldErrors(addPatientStep, errors);
+      return;
+    }
+    setPatientFieldErrors({});
+    setAddPatientStep((previous) => Math.min(ADD_PATIENT_STEPS.length, previous + 1));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [addPatientStep, documentAutofill.status, getPatientStepErrors, showPatientFieldErrors]);
+
   const validatePatientFormForConfirmation = useCallback(() => {
     if (!isSupabaseConfigured || !supabase) {
       return 'Supabase is not configured. Set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY.';
@@ -1950,12 +2117,22 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
     event.preventDefault();
     if (submitLockRef.current || isSaving) return;
 
+    for (let stepNumber = 2; stepNumber <= ADD_PATIENT_STEPS.length; stepNumber += 1) {
+      const stepErrors = getPatientStepErrors(stepNumber);
+      if (Object.keys(stepErrors).length) {
+        showPatientFieldErrors(stepNumber, stepErrors);
+        setNotice({ kind: 'error', text: 'Complete the highlighted required fields before continuing.' });
+        return;
+      }
+    }
+
     const validationError = validatePatientFormForConfirmation();
     if (validationError) {
       setNotice({ kind: 'error', text: validationError });
       return;
     }
 
+    setPatientFieldErrors({});
     setConfirmationOpen(true);
   };
 
@@ -2072,7 +2249,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
         <div>
           <h1 className="role-page-title text-3xl font-bold text-gray-900">Manage Patients</h1>
           <p className="mt-1 text-sm text-gray-600">
-            View accepted patients and manage the existing hospital-transfer process.
+            Add patients, review accepted applications, and manage hospital transfers.
           </p>
         </div>
 
@@ -2111,6 +2288,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
         <nav className="-mb-px flex flex-wrap gap-1">
           {[
             { id: 'directory', label: 'Patient Directory', icon: Users },
+            { id: 'add', label: 'Add Patient', icon: UserPlus },
             { id: 'transfers', label: 'Hospital Transfers', icon: ArrowRightLeft },
           ].map((tab) => {
             const isActive = activeTab === tab.id;
@@ -2383,16 +2561,45 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
       )}
 
       {activeTab === 'add' && (
-        <section className="rounded-xl border border-gray-200 bg-white p-4 md:p-6">
-          <div className="mb-5">
-            <h2 className="text-lg font-semibold text-gray-900">Create Patient Account and Record</h2>
-            <p className="mt-1 text-xs text-gray-500">
-              Upload available files first, then review and complete the patient details before submitting.
-            </p>
-          </div>
+        <section className="rounded-2xl border border-gray-200 bg-gray-100/70 px-3 py-5 sm:px-5 md:py-7">
+          <div className="mx-auto max-w-4xl overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+            <header className="border-b border-gray-200 px-5 py-5 sm:px-7">
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em]" style={{ color: theme.primaryColor }}>Patient Registration</p>
+              <h2 className="mt-1 text-xl font-bold text-gray-900">Create Patient Account and Record</h2>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-gray-500">
+                Complete one section at a time. Uploaded medical records can fill recognized fields, but every detail must still be reviewed.
+              </p>
+            </header>
 
-          <form noValidate onSubmit={handleSubmit} className="space-y-5" style={{ '--tw-ring-color': theme.primaryColor }}>
-            <div className="space-y-4 rounded-xl border border-gray-200 bg-gray-50/60 p-4">
+            <nav aria-label="Patient form progress" className="border-b border-gray-200 bg-gray-50 px-4 py-4 sm:px-7">
+              <ol className="grid grid-cols-4 gap-2">
+                {ADD_PATIENT_STEPS.map((step) => {
+                  const isActive = addPatientStep === step.id;
+                  const isComplete = addPatientStep > step.id;
+                  return (
+                    <li key={step.id} aria-current={isActive ? 'step' : undefined}>
+                      <div className={`h-1.5 rounded-full ${isActive || isComplete ? '' : 'bg-gray-200'}`} style={isActive || isComplete ? { backgroundColor: theme.primaryColor } : undefined} />
+                      <div className="mt-2 flex min-w-0 items-center gap-2">
+                        <span
+                          className={`inline-flex h-6 w-6 flex-none items-center justify-center rounded-full border text-[11px] font-bold ${isActive || isComplete ? 'text-white' : 'border-gray-300 bg-white text-gray-500'}`}
+                          style={isActive || isComplete ? { backgroundColor: theme.primaryColor, borderColor: theme.primaryColor } : undefined}
+                        >
+                          {isComplete ? <Check size={13} /> : step.id}
+                        </span>
+                        <span className="min-w-0">
+                          <span className={`block truncate text-xs font-bold ${isActive ? 'text-gray-900' : 'text-gray-500'}`}>{step.title}</span>
+                          <span className="hidden truncate text-[10px] text-gray-400 sm:block">{step.description}</span>
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            </nav>
+
+          <form noValidate onSubmit={handleSubmit} className="space-y-5 px-5 py-5 sm:px-7 sm:py-6" style={{ '--tw-ring-color': theme.primaryColor }}>
+            {addPatientStep === 1 && (
+            <div className="space-y-4">
               <div>
                 <h3 className="text-sm font-semibold text-gray-900">Attachments</h3>
                 <p className="text-xs text-gray-500">
@@ -2400,7 +2607,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
                 <div>
                   <label className="mb-1 block text-sm font-medium text-gray-700">Patient Picture</label>
                   <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-gray-300 bg-white px-3 py-2 hover:bg-gray-50">
@@ -2416,11 +2623,11 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                   <p className="mt-1 break-all text-xs text-gray-500">{patientPictureFile?.name || 'No file selected.'}</p>
 
                   {patientPicturePreviewUrl && (
-                    <div className="mt-2 overflow-hidden rounded-lg border border-gray-200 bg-white">
+                    <div className="mt-3 flex justify-center rounded-xl border border-gray-200 bg-gray-50 p-3">
                       <img
                         src={patientPicturePreviewUrl}
                         alt="Patient preview"
-                        className="h-36 w-full object-cover"
+                        className="aspect-square h-36 w-36 rounded-xl border border-gray-200 bg-white object-cover shadow-sm"
                       />
                     </div>
                   )}
@@ -2480,11 +2687,11 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                   )}
 
                   {medicalDocumentPreviewUrl && isMedicalDocumentImage && (
-                    <div className="mt-2 overflow-hidden rounded-lg border border-gray-200 bg-white">
+                    <div className="mt-3 overflow-hidden rounded-xl border border-gray-200 bg-gray-50 p-2">
                       <img
                         src={medicalDocumentPreviewUrl}
                         alt="Medical document preview"
-                        className="h-36 w-full object-cover"
+                        className="h-64 w-full rounded-lg bg-white object-contain"
                       />
                     </div>
                   )}
@@ -2494,7 +2701,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                       <iframe
                         title="Medical document PDF preview"
                         src={medicalDocumentPreviewUrl}
-                        className="h-40 w-full rounded border border-gray-100"
+                        className="h-72 w-full rounded border border-gray-100 bg-white"
                       />
                       <a
                         href={medicalDocumentPreviewUrl}
@@ -2509,8 +2716,9 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                 </div>
               </div>
             </div>
+            )}
 
-            {(
+            {addPatientStep === 2 && (
               <div className="space-y-4">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-900">Account Setup</h3>
@@ -2521,46 +2729,52 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                   <div className="md:col-span-2">
                     <label className="mb-1 block text-sm font-medium text-gray-700">Patient Email (required)</label>
                     <input
+                      ref={setPatientFieldRef('email')}
                       type="email"
                       name="email"
                       autoComplete="email"
                       value={form.email}
                       onChange={handleInputChange}
                       required
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('email')}
                       placeholder="patient@example.com"
                     />
+                    {patientFieldError('email')}
                   </div>
 
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Access Start (optional)</label>
                     <input
+                      ref={setPatientFieldRef('accessStart')}
                       type="datetime-local"
                       name="accessStart"
                       value={form.accessStart}
                       onChange={handleInputChange}
                       min={nowLocalDateTimeValue}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('accessStart')}
                     />
+                    {patientFieldError('accessStart')}
                   </div>
 
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Access End (optional)</label>
                     <input
+                      ref={setPatientFieldRef('accessEnd')}
                       type="datetime-local"
                       name="accessEnd"
                       value={form.accessEnd}
                       onChange={handleInputChange}
                       min={form.accessStart || nowLocalDateTimeValue}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('accessEnd')}
                     />
+                    {patientFieldError('accessEnd')}
                     <p className="mt-1 text-[11px] text-gray-500">Set both Access Start and Access End, or leave both empty.</p>
                   </div>
                 </div>
               </div>
             )}
 
-            {(
+            {addPatientStep === 2 && (
               <div className="space-y-4">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-900">Identity Details</h3>
@@ -2571,14 +2785,16 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">First Name (required)</label>
                     <input
+                      ref={setPatientFieldRef('firstName')}
                       name="firstName"
                       autoComplete="given-name"
                       value={form.firstName}
                       onChange={handleInputChange}
                       required
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('firstName')}
                       placeholder="First name"
                     />
+                    {patientFieldError('firstName')}
                   </div>
 
                   <div>
@@ -2596,14 +2812,16 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Last Name (required)</label>
                     <input
+                      ref={setPatientFieldRef('lastName')}
                       name="lastName"
                       autoComplete="family-name"
                       value={form.lastName}
                       onChange={handleInputChange}
                       required
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('lastName')}
                       placeholder="Last name"
                     />
+                    {patientFieldError('lastName')}
                   </div>
 
                   <div>
@@ -2624,6 +2842,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Birthdate (required)</label>
                     <input
+                      ref={setPatientFieldRef('birthdate')}
                       type="date"
                       name="birthdate"
                       autoComplete="bday"
@@ -2631,25 +2850,28 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                       onChange={handleInputChange}
                       max={todayDateValue}
                       required
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('birthdate')}
                     />
+                    {patientFieldError('birthdate')}
                   </div>
 
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Gender (required)</label>
                     <select
+                      ref={setPatientFieldRef('gender')}
                       name="gender"
                       autoComplete="sex"
                       value={form.gender}
                       onChange={handleInputChange}
                       required
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('gender')}
                     >
                       <option value="">Select gender</option>
                       {GENDER_OPTIONS.map((option) => (
                         <option key={option.id} value={option.id}>{option.label}</option>
                       ))}
                     </select>
+                    {patientFieldError('gender')}
                   </div>
 
                   <div>
@@ -2666,7 +2888,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
               </div>
             )}
 
-            {(
+            {addPatientStep === 3 && (
               <div className="space-y-4">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-900">Clinical Information</h3>
@@ -2676,46 +2898,52 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Condition (required)</label>
-                    <select name="conditionCategory" value={form.conditionCategory} onChange={handleInputChange} required className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2">
+                    <select ref={setPatientFieldRef('conditionCategory')} name="conditionCategory" value={form.conditionCategory} onChange={handleInputChange} required className={patientInputClassName('conditionCategory')}>
                       <option value="">Select condition</option>
                       {CONDITION_OPTIONS.map((condition) => <option key={condition} value={condition}>{condition}</option>)}
                     </select>
+                    {patientFieldError('conditionCategory')}
                   </div>
 
                   {form.conditionCategory === 'Other Hair-Loss Disease' ? (
                     <div>
                       <label className="mb-1 block text-sm font-medium text-gray-700">Disease Name (required)</label>
-                      <input name="otherHairLossDisease" value={form.otherHairLossDisease} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Specify the hair-loss disease" />
+                      <input ref={setPatientFieldRef('otherHairLossDisease')} name="otherHairLossDisease" value={form.otherHairLossDisease} onChange={handleInputChange} className={patientInputClassName('otherHairLossDisease')} placeholder="Specify the hair-loss disease" />
+                      {patientFieldError('otherHairLossDisease')}
                     </div>
                   ) : null}
 
                   {CONDITION_STAGE_OPTIONS[form.conditionCategory] ? (
                     <div>
                       <label className="mb-1 block text-sm font-medium text-gray-700">{form.conditionCategory} Stage / Severity (required)</label>
-                      <select name="conditionStage" value={form.conditionStage} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2">
+                      <select ref={setPatientFieldRef('conditionStage')} name="conditionStage" value={form.conditionStage} onChange={handleInputChange} className={patientInputClassName('conditionStage')}>
                         <option value="">Select stage or severity</option>
                         {CONDITION_STAGE_OPTIONS[form.conditionCategory].map((stage) => <option key={stage} value={stage}>{stage}</option>)}
                       </select>
+                      {patientFieldError('conditionStage')}
                     </div>
                   ) : null}
 
                   {form.conditionStage === 'Custom' ? (
                     <div>
                       <label className="mb-1 block text-sm font-medium text-gray-700">Custom Stage / Severity (required)</label>
-                      <input name="customConditionStage" value={form.customConditionStage} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Enter the documented stage or severity" />
+                      <input ref={setPatientFieldRef('customConditionStage')} name="customConditionStage" value={form.customConditionStage} onChange={handleInputChange} className={patientInputClassName('customConditionStage')} placeholder="Enter the documented stage or severity" />
+                      {patientFieldError('customConditionStage')}
                     </div>
                   ) : null}
 
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Date of Diagnosis</label>
                     <input
+                      ref={setPatientFieldRef('dateOfDiagnosis')}
                       name="dateOfDiagnosis"
                       value={form.dateOfDiagnosis}
                       onChange={handleInputChange}
                       type="date"
                       max={todayDateValue}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('dateOfDiagnosis')}
                     />
+                    {patientFieldError('dateOfDiagnosis')}
                   </div>
 
                   <div>
@@ -2765,7 +2993,11 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                     <textarea name="clinicalSpecialNote" value={form.clinicalSpecialNote} onChange={handleInputChange} rows={3} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Other important clinical information" />
                   </div>
                 </div>
+              </div>
+            )}
 
+            {addPatientStep === 4 && (
+              <div className="space-y-4">
                 <div className="border-t border-gray-200 pt-4">
                   <h3 className="text-sm font-semibold text-gray-900">Wig Safety Checklist</h3>
                   <p className="text-xs text-gray-500">
@@ -2803,31 +3035,36 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                       Allergy Details {form.hasKnownAllergies === 'yes' ? <span className="text-red-600">*</span> : '(optional)'}
                     </label>
                     <textarea
+                      ref={setPatientFieldRef('allergyDetails')}
                       name="allergyDetails"
                       value={form.allergyDetails}
                       onChange={handleInputChange}
                       rows={3}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('allergyDetails')}
                       placeholder="Allergen, reaction, medicine, or wig material to avoid"
                     />
+                    {patientFieldError('allergyDetails')}
                   </div>
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">
                       Medical Restriction Details {form.hasMedicalRestriction === 'yes' ? <span className="text-red-600">*</span> : '(optional)'}
                     </label>
                     <textarea
+                      ref={setPatientFieldRef('medicalRestrictionDetails')}
                       name="medicalRestrictionDetails"
                       value={form.medicalRestrictionDetails}
                       onChange={handleInputChange}
                       rows={3}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('medicalRestrictionDetails')}
                       placeholder="Required clearance, restriction, or care instructions"
                     />
+                    {patientFieldError('medicalRestrictionDetails')}
                   </div>
                 </div>
 
-                <label className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                <label className={`flex items-start gap-3 rounded-lg border px-4 py-3 text-sm ${patientFieldErrors.informationConfirmed ? 'border-red-500 bg-red-50 text-red-900 ring-2 ring-red-100' : 'border-blue-200 bg-blue-50 text-blue-900'}`}>
                   <input
+                    ref={setPatientFieldRef('informationConfirmed')}
                     type="checkbox"
                     name="informationConfirmed"
                     checked={form.informationConfirmed}
@@ -2838,6 +3075,7 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                     I confirm that this safety information was reviewed with the patient or guardian and is accurate. <span className="font-bold text-red-600">*</span>
                   </span>
                 </label>
+                {patientFieldError('informationConfirmed')}
 
                 <div className="border-t border-gray-200 pt-4">
                   <h3 className="text-sm font-semibold text-gray-900">Primary Guardian / Emergency Contact</h3>
@@ -2849,38 +3087,44 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Name (required)</label>
                     <input
+                      ref={setPatientFieldRef('guardian')}
                       name="guardian"
                       value={form.guardian}
                       onChange={handleInputChange}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('guardian')}
                       placeholder="Guardian full name"
                     />
+                    {patientFieldError('guardian')}
                   </div>
 
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Relationship (required)</label>
                     <input
+                      ref={setPatientFieldRef('guardianRelationship')}
                       name="guardianRelationship"
                       value={form.guardianRelationship}
                       onChange={handleInputChange}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('guardianRelationship')}
                       placeholder="e.g., Mother"
                     />
+                    {patientFieldError('guardianRelationship')}
                   </div>
 
                   <div>
                     <label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number (required)</label>
                     <input
+                      ref={setPatientFieldRef('guardianContactNumber')}
                       name="guardianContactNumber"
                       type="tel"
                       inputMode="numeric"
                       autoComplete="tel"
                       value={form.guardianContactNumber}
                       onChange={handleInputChange}
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2"
+                      className={patientInputClassName('guardianContactNumber')}
                       placeholder="+63 912 345 6789"
                       maxLength={16}
                     />
+                    {patientFieldError('guardianContactNumber')}
                   </div>
                 </div>
 
@@ -2890,14 +3134,14 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Name</label><input name="secondaryGuardian" value={form.secondaryGuardian} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="Alternate contact name" /></div>
-                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Relationship</label><input name="secondaryGuardianRelationship" value={form.secondaryGuardianRelationship} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="e.g., Father" /></div>
-                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number</label><input type="tel" inputMode="numeric" name="secondaryGuardianContactNumber" value={form.secondaryGuardianContactNumber} onChange={handleInputChange} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2" placeholder="+63 912 345 6789" maxLength={16} /></div>
+                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Name</label><input ref={setPatientFieldRef('secondaryGuardian')} name="secondaryGuardian" value={form.secondaryGuardian} onChange={handleInputChange} className={patientInputClassName('secondaryGuardian')} placeholder="Alternate contact name" />{patientFieldError('secondaryGuardian')}</div>
+                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Relationship</label><input ref={setPatientFieldRef('secondaryGuardianRelationship')} name="secondaryGuardianRelationship" value={form.secondaryGuardianRelationship} onChange={handleInputChange} className={patientInputClassName('secondaryGuardianRelationship')} placeholder="e.g., Father" />{patientFieldError('secondaryGuardianRelationship')}</div>
+                  <div><label className="mb-1 block text-sm font-medium text-gray-700">Mobile Number</label><input ref={setPatientFieldRef('secondaryGuardianContactNumber')} type="tel" inputMode="numeric" name="secondaryGuardianContactNumber" value={form.secondaryGuardianContactNumber} onChange={handleInputChange} className={patientInputClassName('secondaryGuardianContactNumber')} placeholder="+63 912 345 6789" maxLength={16} />{patientFieldError('secondaryGuardianContactNumber')}</div>
                 </div>
               </div>
             )}
 
-            <div className="flex flex-col-reverse gap-2 border-t border-gray-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col-reverse gap-3 border-t border-gray-200 pt-5 sm:flex-row sm:items-center sm:justify-between">
               <button
                 type="button"
                 onClick={resetForm}
@@ -2907,26 +3151,53 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                 Clear All
               </button>
 
-              <button
-                type="submit"
-                disabled={isSaving || !hospitalId || documentAutofill.status === 'processing'}
-                className="inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
-                style={{ backgroundColor: theme.primaryColor }}
-              >
-                {isSaving || documentAutofill.status === 'processing' ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                {isSaving
-                  ? 'Creating Patient...'
-                  : documentAutofill.status === 'processing'
-                    ? 'Reading Document...'
-                    : 'Create Patient Account'}
-              </button>
+              <div className="flex flex-col-reverse gap-2 sm:flex-row">
+                {addPatientStep > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPatientFieldErrors({});
+                      setAddPatientStep((previous) => Math.max(1, previous - 1));
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    disabled={isSaving}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                  >
+                    <ChevronLeft size={16} /> Previous
+                  </button>
+                )}
+
+                {addPatientStep < ADD_PATIENT_STEPS.length ? (
+                  <button
+                    type="button"
+                    onClick={goToNextPatientStep}
+                    disabled={isSaving || documentAutofill.status === 'processing'}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+                    style={{ backgroundColor: theme.primaryColor }}
+                  >
+                    {documentAutofill.status === 'processing' ? <Loader2 size={16} className="animate-spin" /> : null}
+                    {documentAutofill.status === 'processing' ? 'Reading Document...' : 'Next Step'}
+                    {documentAutofill.status !== 'processing' ? <ChevronRight size={16} /> : null}
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={isSaving || !hospitalId}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+                    style={{ backgroundColor: theme.primaryColor }}
+                  >
+                    <CheckCircle2 size={16} /> Review Patient Record
+                  </button>
+                )}
+              </div>
             </div>
           </form>
+          </div>
         </section>
       )}
 
-      {confirmationOpen && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/55 px-4 py-6 backdrop-blur-[1px]">
+      {confirmationOpen && typeof document !== 'undefined' ? createPortal(
+        <div className="fixed inset-0 z-[10010] m-0 flex h-[100dvh] w-screen items-center justify-center bg-black/55 px-4 py-6 backdrop-blur-[1px]">
           <button
             type="button"
             aria-label="Close patient account confirmation"
@@ -2975,6 +3246,27 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
                 <DrawerRow label="Medical document" value={medicalDocumentFile?.name || 'Not attached'} />
               </dl>
 
+              {(patientPicturePreviewUrl || medicalDocumentPreviewUrl) && (
+                <div className="grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)]">
+                  {patientPicturePreviewUrl ? (
+                    <figure className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                      <figcaption className="mb-2 text-[11px] font-bold uppercase tracking-wide text-gray-500">Profile picture</figcaption>
+                      <img src={patientPicturePreviewUrl} alt="Patient profile preview" className="aspect-square w-full rounded-lg border border-gray-200 bg-white object-cover" />
+                    </figure>
+                  ) : null}
+                  {medicalDocumentPreviewUrl ? (
+                    <figure className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                      <figcaption className="mb-2 text-[11px] font-bold uppercase tracking-wide text-gray-500">Medical document</figcaption>
+                      {isMedicalDocumentImage ? (
+                        <img src={medicalDocumentPreviewUrl} alt="Medical document preview" className="h-52 w-full rounded-lg border border-gray-200 bg-white object-contain" />
+                      ) : isMedicalDocumentPdf ? (
+                        <iframe title="Medical document confirmation preview" src={medicalDocumentPreviewUrl} className="h-52 w-full rounded-lg border border-gray-200 bg-white" />
+                      ) : null}
+                    </figure>
+                  ) : null}
+                </div>
+              )}
+
               <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
                 <h4 className="text-sm font-bold text-slate-900">Wig Safety Checklist</h4>
                 <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -3019,8 +3311,9 @@ export default function ManagePatientsPage({ userProfile, isActivePage = true })
               </button>
             </div>
           </section>
-        </div>
-      )}
+        </div>,
+        document.body,
+      ) : null}
 
       {selectedPatient && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-slate-950/65 p-3 backdrop-blur-sm sm:p-6">
