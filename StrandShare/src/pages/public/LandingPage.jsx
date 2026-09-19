@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowRight, Building2, CalendarDays, ChevronUp, HeartPulse, Mail, MapPin,
-  Phone,
+  ArrowRight, Building2, CalendarDays, ChevronUp, Download, HeartPulse, Mail, MapPin,
+  Phone, Smartphone,
 } from 'lucide-react';
 import { motion, useAnimation, useScroll, useSpring, useTransform } from 'framer-motion';
 import { useTheme } from '../../context/ThemeContext';
@@ -44,6 +44,8 @@ function parseRgbChannels(hex, fallback = [184, 149, 90]) {
 }
 
 function goToHard(path) { window.location.assign(path); }
+
+const MOBILE_APP_APK_URL = String(process.env.REACT_APP_MOBILE_APP_APK_URL || '/downloads/donivra.apk').trim();
 
 /*  canvas helpers  */
 function setupHeroCanvas(canvas, getThemeRgb) {
@@ -586,16 +588,27 @@ export default function LandingPage() {
             qualified hair donations into dignified patient support.
           </p>
 
-          <div className={`hero-ctas${heroVis ? ' vis' : ''}`}>
-            <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-event')}>
-              Apply for a Program <ArrowRight size={15} />
-            </button>
-            <button type="button" className="btn-primary" onClick={() => handleNavigate('/partner-hospitals')}>
-              Become a Donivra Patient <ArrowRight size={15} />
-            </button>
-            <button type="button" className="btn-primary" onClick={() => handleNavigate('/apply-partnership')}>
-              Become a Partner <ArrowRight size={15} />
-            </button>
+          <div className="hero-action-stack">
+            <a className={`hero-app-download${heroVis ? ' vis' : ''}`} href={MOBILE_APP_APK_URL} download>
+              <span className="hero-app-icon"><Smartphone size={18} /></span>
+              <span>
+                <strong>Download the Donivra mobile app</strong>
+                <small>Register as a donor and join approved programs</small>
+              </span>
+              <Download size={17} />
+            </a>
+
+            <div className={`hero-ctas${heroVis ? ' vis' : ''}`}>
+              <button type="button" className="btn-primary event-apply-cta" onClick={() => handleNavigate('/apply-event')}>
+                Apply for a Program <ArrowRight size={15} />
+              </button>
+              <button type="button" className="btn-primary" onClick={() => handleNavigate('/partner-hospitals')}>
+                Become a Donivra Patient <ArrowRight size={15} />
+              </button>
+              <button type="button" className="btn-primary" onClick={() => handleNavigate('/apply-partnership')}>
+                Become a Partner <ArrowRight size={15} />
+              </button>
+            </div>
           </div>
         </motion.div>
 

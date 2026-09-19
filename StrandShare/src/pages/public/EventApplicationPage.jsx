@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, CalendarDays, Camera, CheckCircle2, ChevronLeft, ChevronRight, FileText, Loader2, MailCheck, Ruler, Search, ShieldCheck, Upload, Users, X } from 'lucide-react';
+import { ArrowLeft, CalendarDays, Camera, CheckCircle2, ChevronLeft, ChevronRight, Download, FileText, Loader2, MailCheck, Ruler, Search, ShieldCheck, Smartphone, Upload, Users, X } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import maplibregl from 'maplibre-gl';
 import { isSupabaseConfigured, supabase } from '../../lib/supabaseClient';
@@ -22,6 +22,7 @@ const PROGRAM_DATE_AVAILABILITY_CHANNEL = 'program-date-availability';
 // Realtime broadcasts and the final submit-time availability check provide the
 // fast path. Keep a low-frequency polling fallback for missed broadcasts.
 const PROGRAM_DATE_REFRESH_INTERVAL_MS = 60 * 1000;
+const MOBILE_APP_APK_URL = String(process.env.REACT_APP_MOBILE_APP_APK_URL || '/downloads/donivra.apk').trim();
 let isolatedAuthClient = null;
 
 const DEFAULT_COUNTRY = 'PHILIPPINES';
@@ -411,7 +412,7 @@ function getAttendeeListFileKind(file) {
   if (!file) return '';
   const mimeType = String(file.type || '').trim().toLowerCase();
   const fileName = String(file.name || '').trim().toLowerCase();
-  if (mimeType === 'application/pdf' || fileName.endsWith('.pdf')) return 'pdf';
+  if (mimeType === 'text/csv' || mimeType === 'application/csv' || fileName.endsWith('.csv')) return 'csv';
   if (mimeType.startsWith('image/') || /\.(?:jpe?g|png|webp|heic|heif)$/i.test(fileName)) return 'image';
   return '';
 }
@@ -919,6 +920,7 @@ export default function EventApplicationPage() {
   const [isLoadingProgramDates, setIsLoadingProgramDates] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [applicationStage, setApplicationStage] = useState('about');
+  const [aboutPanel, setAboutPanel] = useState('checklist');
   const [hasAcceptedTerms, setHasAcceptedTerms] = useState(false);
   const [hasConfirmedTerms, setHasConfirmedTerms] = useState(false);
   const [isSubmitConfirmationOpen, setIsSubmitConfirmationOpen] = useState(false);
@@ -1358,7 +1360,7 @@ export default function EventApplicationPage() {
           `Expected attendees cannot be below the required ${minimumExpectedAttendees} donors for a program.`,
         );
       }
-      if (!attendeeListPdfFile) return issue('attendeeListPdf', 'Upload the attendee list as a PDF or clear photo.');
+      if (!attendeeListPdfFile) return issue('attendeeListPdf', 'Upload the attendee list as a CSV file or clear image.');
       if (!form.proposedDate.trim()) return issue('proposedDate', 'Choose an available program date.');
       if (!form.proposedStartTime.trim()) return issue('proposedStartTime', 'Start time is required.');
       if (!form.proposedEndTime.trim()) return issue('proposedEndTime', 'End time is required.');
@@ -1441,7 +1443,7 @@ export default function EventApplicationPage() {
       } else if (Number(form.expectedAttendees) > MAX_EXPECTED_ATTENDEES) {
         add('expectedAttendees', `Expected attendees cannot exceed ${MAX_EXPECTED_ATTENDEES}.`);
       }
-      if (!attendeeListPdfFile) add('attendeeListPdf', 'Upload a PDF or clear photo containing each attendee’s full name and age.');
+      if (!attendeeListPdfFile) add('attendeeListPdf', 'Upload a CSV file or clear image containing each attendee’s full name and age.');
       if (!form.proposedDate.trim()) add('proposedDate', 'Choose an available program date.');
       if (!form.proposedStartTime.trim()) add('proposedStartTime', 'Start time is required.');
       if (!form.proposedEndTime.trim()) add('proposedEndTime', 'End time is required.');
@@ -1804,7 +1806,7 @@ export default function EventApplicationPage() {
     if (file) {
       if (!getAttendeeListFileKind(file)) {
         setAttendeeListPdfFile(null);
-        markFieldError('attendeeListPdf', 'The attendee list must be a PDF or image file.');
+        markFieldError('attendeeListPdf', 'The attendee list must be a CSV or image file.');
         event.target.value = '';
         return;
       }
@@ -2402,7 +2404,6 @@ export default function EventApplicationPage() {
         Resubmission_Count: 0,
         Terms_Document_ID: eventTerms.document.legal_document_id,
         Terms_Version: eventTerms.document.version,
-        Terms_Accepted_At: new Date().toISOString(),
       };
 
       await insertEventApplicationIntake(payload);
@@ -2446,66 +2447,74 @@ export default function EventApplicationPage() {
   if (applicationStage === 'about') {
     return (
       <React.Fragment>
-        <div className="flex min-h-screen justify-center bg-slate-50 px-4 py-6 md:px-8">
-          <main className="my-auto w-full max-w-5xl overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-xl shadow-slate-900/10">
-            <div className="grid lg:grid-cols-[1.08fr_0.92fr]">
-              <section className="p-7 sm:p-10 lg:p-14">
+        <div className="flex min-h-screen justify-center bg-slate-50 px-4 py-5 md:px-8">
+          <main className="my-auto w-full max-w-5xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl shadow-slate-900/10">
+            <div className="grid lg:grid-cols-2">
+              <section className="bg-white p-7 sm:p-9 lg:p-10">
                 <button
                   type="button"
                   onClick={returnToHome}
-                  className="mb-10 inline-flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
+                  className="mb-7 inline-flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
                 >
                   <ArrowLeft size={16} />
                   Back to Home
                 </button>
 
                 <p className="text-xs font-bold uppercase tracking-[0.18em]" style={{ color: primaryColor }}>Program Application</p>
-                <h1 className="mt-4 max-w-xl text-4xl font-bold leading-[1.08] text-slate-900 sm:text-5xl">
-                  Apply to host a hair<br className="hidden sm:block" /> donation program
+                <h1 className="mt-3 max-w-lg text-3xl font-bold leading-[1.12] text-slate-900">
+                  Host a Hair Donation Program
                 </h1>
-                <p className="mt-6 max-w-lg text-base leading-7 text-slate-600">
+                <p className="mt-4 max-w-md text-[15px] leading-6 text-slate-600">
                   Organize a verified hair donation program with Donivra in your community.
                 </p>
 
-                <div className="mt-14 grid max-w-lg gap-x-10 gap-y-9 sm:grid-cols-2">
-                  <section>
-                    <h2 className="text-sm font-bold text-slate-900">Who can apply</h2>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">
-                      Individuals, schools, companies, community groups, and organizations.
-                    </p>
+                <div className="mt-8 grid max-w-lg gap-x-8 gap-y-7 sm:grid-cols-2">
+                  <section className="border-t border-slate-200 pt-4">
+                    <div className="flex items-center gap-3"><Users size={19} style={{ color: primaryColor }} /><h2 className="text-base font-bold text-slate-900">Who can apply</h2></div>
+                    <ul className="mt-3 list-disc space-y-1.5 pl-5 text-[15px] leading-5 text-slate-600 marker:text-slate-400">
+                      <li>Individuals and community groups</li><li>Schools and companies</li><li>Organizations</li>
+                    </ul>
                   </section>
-                  <section>
-                    <h2 className="text-sm font-bold text-slate-900">What you need</h2>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">
-                      Contact details, schedule, venue, attendee list, photos, and location.
-                    </p>
+                  <section className="border-t border-slate-200 pt-4">
+                    <div className="flex items-center gap-3"><FileText size={19} style={{ color: primaryColor }} /><h2 className="text-base font-bold text-slate-900">What you need</h2></div>
+                    <ul className="mt-3 list-disc space-y-1.5 pl-5 text-[15px] leading-5 text-slate-600 marker:text-slate-400">
+                      <li>Contact and identity details</li><li>Schedule, venue, and location</li><li>Attendee list and photos</li>
+                    </ul>
                   </section>
-                  <section>
-                    <h2 className="text-sm font-bold text-slate-900">Your responsibility</h2>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">
-                      Provide accurate information, prepare a safe venue, and coordinate with Donivra during the review.
-                    </p>
+                  <section className="border-t border-slate-200 pt-4">
+                    <div className="flex items-center gap-3"><ShieldCheck size={19} style={{ color: primaryColor }} /><h2 className="text-base font-bold text-slate-900">Your responsibility</h2></div>
+                    <ul className="mt-3 list-disc space-y-1.5 pl-5 text-[15px] leading-5 text-slate-600 marker:text-slate-400">
+                      <li>Provide accurate information</li><li>Prepare a safe venue</li><li>Coordinate with Donivra staff</li>
+                    </ul>
                   </section>
-                  <section>
-                    <h2 className="text-sm font-bold text-slate-900">What happens next</h2>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">
-                      Staff reviews your application, an admin decides, and an assigned staff member coordinates approved programs.
-                    </p>
+                  <section className="border-t border-slate-200 pt-4">
+                    <div className="flex items-center gap-3"><CalendarDays size={19} style={{ color: primaryColor }} /><h2 className="text-base font-bold text-slate-900">What happens next</h2></div>
+                    <ul className="mt-3 list-disc space-y-1.5 pl-5 text-[15px] leading-5 text-slate-600 marker:text-slate-400">
+                      <li>Staff checks the application</li><li>An administrator decides</li><li>Approved programs receive staff support</li>
+                    </ul>
                   </section>
                 </div>
               </section>
 
-              <aside className="flex flex-col border-t border-slate-200 bg-[#fbf7f5] p-7 text-slate-900 sm:p-10 lg:border-l lg:border-t-0 lg:p-12">
+              <aside className="flex flex-col border-t border-[#eadbd6] bg-[#fbf7f5] p-7 text-slate-900 sm:p-9 lg:border-l lg:border-t-0 lg:p-10">
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.18em]" style={{ color: primaryColor }}>Before you begin</p>
-                  <h2 className="mt-3 text-2xl font-bold text-slate-900">Prepare these details</h2>
-                  <ul className="mt-6 space-y-3.5 text-sm leading-5 text-slate-700">
+                  <p className="text-xs font-bold uppercase tracking-[0.18em]" style={{ color: primaryColor }}>Program essentials</p>
+                  <h2 className="mt-2 text-2xl font-bold text-slate-900">Know before you apply</h2>
+
+                  <div className="mt-5 grid grid-cols-2 rounded-xl bg-white/70 p-1" role="tablist" aria-label="Program application information">
+                    <button type="button" role="tab" aria-selected={aboutPanel === 'checklist'} onClick={() => setAboutPanel('checklist')} className={`rounded-lg px-3 py-2.5 text-sm font-bold transition-colors ${aboutPanel === 'checklist' ? 'text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`} style={aboutPanel === 'checklist' ? { backgroundColor: primaryColor } : undefined}>Before you begin</button>
+                    <button type="button" role="tab" aria-selected={aboutPanel === 'requirements'} onClick={() => setAboutPanel('requirements')} className={`rounded-lg px-3 py-2.5 text-sm font-bold transition-colors ${aboutPanel === 'requirements' ? 'text-white shadow-sm' : 'text-slate-600 hover:text-slate-900'}`} style={aboutPanel === 'requirements' ? { backgroundColor: primaryColor } : undefined}>Donation rules</button>
+                  </div>
+
+                  {aboutPanel === 'checklist' ? (
+                    <div role="tabpanel">
+                  <ul className="mt-6 space-y-3.5 text-[15px] leading-5 text-slate-800">
                     {[
                       'Valid government ID',
                       'Verified email address',
                       'Program date, time, and venue',
                       'Clear venue photo',
-                      'Attendee list with names and ages (PDF or photo)',
+                      'Attendee list with names and ages (CSV preferred, or image)',
                     ].map((text) => (
                       <li key={text} className="flex items-start gap-3">
                         <CheckCircle2 size={16} className="mt-0.5 flex-none" style={{ color: primaryColor }} />
@@ -2513,40 +2522,56 @@ export default function EventApplicationPage() {
                       </li>
                     ))}
                   </ul>
-                </div>
 
-                <section className="mt-9 border-t border-slate-200 pt-8">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.16em]" style={{ color: primaryColor }}>Donation requirements</p>
+                  <div className="mt-6 rounded-xl border border-white/80 bg-white/65 p-4">
+                    <div className="flex items-start gap-3">
+                      <Smartphone size={19} className="mt-0.5 flex-none" style={{ color: primaryColor }} />
+                      <div>
+                        <h3 className="text-[15px] font-bold text-slate-900">Want to donate too?</h3>
+                        <p className="mt-1.5 text-sm leading-5 text-slate-700">
+                          A host application does not register you as a donor. After approval, register separately in the Donivra mobile app. Join public programs from the Events list; use the private code for private programs.
+                        </p>
+                        <a href={MOBILE_APP_APK_URL} download className="mt-3 inline-flex items-center gap-2 text-sm font-bold hover:underline" style={{ color: primaryColor }}>
+                          <Download size={14} /> Download the Donivra app
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                    </div>
+                  ) : (
+                <section className="mt-6" role="tabpanel">
+                  <p className="text-xs font-bold uppercase tracking-[0.16em]" style={{ color: primaryColor }}>Eligibility requirements</p>
+                  <h3 className="mt-2 text-xl font-bold text-slate-900">Donation rules</h3>
 
                   {isLoadingWigRequirements ? (
-                    <p className="mt-4 flex items-center gap-2 text-xs text-slate-500">
+                    <p className="mt-4 flex items-center gap-2 text-sm text-slate-500">
                       <Loader2 size={14} className="animate-spin" /> Loading current requirements...
                     </p>
                   ) : wigRequirementsError || !wigRequirements ? (
-                    <p className="mt-4 text-xs leading-5 text-rose-700">{wigRequirementsError || 'Current hair requirements are unavailable.'}</p>
+                    <p className="mt-4 text-sm leading-5 text-rose-700">{wigRequirementsError || 'Current hair requirements are unavailable.'}</p>
                   ) : (
                     <div className="mt-5 space-y-6">
-                      <dl className="grid grid-cols-2 gap-8">
-                        <div>
-                          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Minimum hair length</dt>
+                      <dl className="grid grid-cols-2 divide-x divide-slate-200">
+                        <div className="pr-6">
+                          <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Minimum hair length</dt>
                           <dd className="mt-1 text-lg font-bold text-slate-900">
                             {wigRequirements.Minimum_Hair_Length == null
                               ? 'Not specified'
                               : `${Number(wigRequirements.Minimum_Hair_Length).toLocaleString()} ${Number(wigRequirements.Minimum_Hair_Length) === 1 ? 'inch' : 'inches'}`}
                           </dd>
                         </div>
-                        <div>
-                          <dt className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Required donors</dt>
+                        <div className="pl-6">
+                          <dt className="text-xs font-bold uppercase tracking-wide text-slate-500">Required donors</dt>
                           <dd className="mt-1 text-lg font-bold text-slate-900">{minimumRequiredDonors || 'Not specified'}</dd>
-                          <p className="mt-1 text-[10px] text-slate-500">Minimum needed for a program</p>
+                          <p className="mt-1 text-xs text-slate-500">Minimum needed for a program</p>
                         </div>
                       </dl>
 
                       <div>
-                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Not accepted</p>
+                        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Not accepted</p>
                         <div className="mt-2 flex flex-wrap gap-2">
                           {HAIR_TREATMENT_REQUIREMENTS.filter((requirement) => !wigRequirements[requirement.key]).map((requirement) => (
-                            <span key={requirement.key} className="inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-700">
+                            <span key={requirement.key} className="inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700">
                               <X size={11} /> {requirement.label}
                             </span>
                           ))}
@@ -2557,19 +2582,21 @@ export default function EventApplicationPage() {
                       </div>
 
                       <div>
-                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Accepted hair patterns</p>
-                        <p className="mt-1.5 text-sm leading-5 text-slate-700">{wigRequirements.Hair_Texture_Status || 'No restriction'}</p>
+                        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Accepted hair patterns</p>
+                        <p className="mt-1.5 text-[15px] leading-5 text-slate-700">{wigRequirements.Hair_Texture_Status || 'No restriction'}</p>
                       </div>
                     </div>
                   )}
                 </section>
+                  )}
+                </div>
 
-                <div className="mt-10 border-t border-slate-200 pt-7 lg:mt-auto">
-                  <div className="mb-4 flex items-center justify-between gap-3 text-xs text-slate-500">
-                    <span>Step 1 of {APPLICATION_STEPS.length}</span>
-                    <span>About the application</span>
+                <div className="mt-7 border-t border-[#e5d3cd] pt-6 lg:mt-auto">
+                  <div className="mb-3 flex items-end justify-between gap-3">
+                    <div><p className="text-sm font-bold text-slate-900">Step 1 of {APPLICATION_STEPS.length}</p><p className="mt-0.5 text-sm text-slate-600">Application overview</p></div>
+                    <span className="text-sm font-bold" style={{ color: primaryColor }}>{Math.round(100 / APPLICATION_STEPS.length)}%</span>
                   </div>
-                  <div className="mb-5 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                  <div className="mb-5 h-2.5 overflow-hidden rounded-full bg-slate-200">
                     <div className="h-full rounded-full" style={{ width: `${100 / APPLICATION_STEPS.length}%`, backgroundColor: primaryColor }} />
                   </div>
                   <button
@@ -2597,21 +2624,54 @@ export default function EventApplicationPage() {
   if (applicationStage === 'terms') {
     return (
       <React.Fragment>
-        <div className="min-h-screen bg-gradient-to-b from-slate-100 to-slate-50 px-4 py-8 md:px-8">
-          <div className="mx-auto max-w-4xl rounded-3xl border border-slate-200 bg-white/95 p-6 shadow-lg backdrop-blur md:p-8">
+        <div className="flex min-h-screen justify-center bg-slate-50 px-4 py-5 md:px-8">
+          <main className="my-auto w-full max-w-5xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl shadow-slate-900/10">
+            <div className="grid lg:grid-cols-[0.38fr_0.62fr]">
+              <section className="flex flex-col border-b border-[#eadbd6] bg-[#fbf7f5] p-7 sm:p-9 lg:border-b-0 lg:border-r lg:p-10">
             <button
               type="button"
               onClick={handleDeclineTerms}
-              className="mb-5 inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
+              className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-slate-600 hover:text-slate-900"
             >
               <ArrowLeft size={16} />
               About This Application
             </button>
 
-            <p className="mb-4 text-xs font-bold uppercase tracking-[0.16em] text-slate-500">
+            <p className="mt-10 text-xs font-bold uppercase tracking-[0.18em]" style={{ color: primaryColor }}>
               Step 2 of {APPLICATION_STEPS.length} · Terms & Conditions
             </p>
+            <h1 className="mt-3 text-3xl font-bold leading-tight text-slate-900">Terms &amp; Conditions</h1>
+            <p className="mt-4 text-[15px] leading-6 text-slate-600">Review the official program terms before entering your application details.</p>
 
+            <div className="mt-8 border-t border-[#e5d3cd] pt-6">
+              <h2 className="text-base font-bold text-slate-900">Three quick steps</h2>
+              <ol className="mt-4 space-y-4 text-[15px] leading-5 text-slate-700">
+                {['Read the complete PDF', 'Confirm your agreement', 'Continue to applicant details'].map((item, index) => (
+                  <li key={item} className="flex items-center gap-3">
+                    <span className="inline-flex h-7 w-7 flex-none items-center justify-center rounded-full text-xs font-bold text-white" style={{ backgroundColor: primaryColor }}>{index + 1}</span>
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            <div className="mt-8 lg:mt-auto lg:pt-8">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-semibold text-slate-700">Application progress</span>
+                <span className="font-bold" style={{ color: primaryColor }}>{Math.round((2 / APPLICATION_STEPS.length) * 100)}%</span>
+              </div>
+              <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-white">
+                <div className="h-full rounded-full" style={{ width: `${(2 / APPLICATION_STEPS.length) * 100}%`, backgroundColor: primaryColor }} />
+              </div>
+            </div>
+          </section>
+
+          <section className="p-7 sm:p-9 lg:p-10">
+            <p className="text-xs font-bold uppercase tracking-[0.18em]" style={{ color: primaryColor }}>Official document</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">Program application terms</h2>
+            <p className="mt-2 text-[15px] leading-6 text-slate-600">Read all pages, then confirm your agreement below.</p>
+
+            <div className="mt-5">
             <LegalTermsGate
               title="Program Application Terms and Conditions"
               description="Review the active Program Application Terms PDF before entering your application details."
@@ -2623,7 +2683,10 @@ export default function EventApplicationPage() {
               }}
               onReload={eventTerms.reload}
               accentColor={primaryColor}
+              showHeader={false}
+              previewClassName="h-[min(48vh,430px)] min-h-[300px]"
             />
+            </div>
 
             {errorMessage ? (
               <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
@@ -2631,24 +2694,27 @@ export default function EventApplicationPage() {
               </div>
             ) : null}
 
-            <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
               <button
                 type="button"
                 onClick={handleDeclineTerms}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
               >
                 Back
               </button>
               <button
                 type="button"
                 onClick={handleAcceptTerms}
-                className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white"
+                className="inline-flex items-center gap-2 rounded-xl px-5 py-3 text-sm font-bold text-white shadow-sm hover:brightness-95"
                 style={{ backgroundColor: primaryColor }}
               >
                 Accept and Continue
+                <ChevronRight size={17} />
               </button>
             </div>
-          </div>
+          </section>
+            </div>
+          </main>
         </div>
       </React.Fragment>
     );
@@ -3240,17 +3306,20 @@ export default function EventApplicationPage() {
                       <FileText size={18} />
                     </span>
                     <div>
-                      <p className="text-sm font-bold text-slate-900">Attendee name list *</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-bold text-slate-900">Attendee name list *</p>
+                        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">CSV recommended</span>
+                      </div>
                       <p className="mt-1 text-xs leading-5 text-slate-500">
-                        Provide one clear PDF or photo listing every expected attendee's full name and age. Maximum file size: 8 MB.
+                        Upload a CSV listing every expected attendee's full name and age. A clear image is also accepted. Maximum file size: 8 MB.
                       </p>
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
                     <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white" style={{ backgroundColor: primaryColor }}>
                       <Upload size={15} />
-                      {attendeeListPdfFile ? 'Replace file' : 'Upload file'}
-                      <input type="file" accept="application/pdf,.pdf,image/*" onChange={handleAttendeeListPdfFileChange} className="sr-only" />
+                      {attendeeListPdfFile ? 'Replace file' : 'Upload CSV'}
+                      <input type="file" accept=".csv,text/csv,application/csv,image/*" onChange={handleAttendeeListPdfFileChange} className="sr-only" />
                     </label>
                     <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700">
                       <Camera size={15} />
@@ -3272,8 +3341,11 @@ export default function EventApplicationPage() {
                     {attendeeListPreviewUrl && getAttendeeListFileKind(attendeeListPdfFile) === 'image' && (
                       <img src={attendeeListPreviewUrl} alt="Attendee name list preview" className="max-h-80 w-full bg-slate-100 object-contain" />
                     )}
-                    {attendeeListPreviewUrl && getAttendeeListFileKind(attendeeListPdfFile) === 'pdf' && (
-                      <iframe title="Attendee name list PDF preview" src={attendeeListPreviewUrl} className="h-80 w-full border-0 bg-white" />
+                    {attendeeListPreviewUrl && getAttendeeListFileKind(attendeeListPdfFile) === 'csv' && (
+                      <div className="flex items-center justify-between gap-3 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                        <span>CSV selected — recommended format</span>
+                        <a href={attendeeListPreviewUrl} target="_blank" rel="noreferrer" className="font-bold hover:underline" style={{ color: primaryColor }}>Preview CSV</a>
+                      </div>
                     )}
                   </div>
                 )}
@@ -3843,6 +3915,14 @@ export default function EventApplicationPage() {
                   </article>
                 </div>
               </section>
+
+              <div className="flex items-start gap-3 rounded-xl bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-700">
+                <Smartphone size={18} className="mt-0.5 flex-none" style={{ color: primaryColor }} />
+                <p>
+                  <span className="font-bold text-slate-900">Donating is a separate registration.</span>{' '}
+                  If you want to donate, use the Donivra mobile app after approval. Join a public program from the Events list or enter the private code for a private program.
+                </p>
+              </div>
 
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-900">
                 Nothing has been submitted yet. Review the information above, then submit the application when everything is correct.

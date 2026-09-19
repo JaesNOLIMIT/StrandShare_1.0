@@ -6,6 +6,7 @@ import {
 import { isSupabaseConfigured, supabase } from '../../lib/supabaseClient';
 import { triggerSmtpNow } from '../../lib/smtpTriggerClient';
 import { formatPhilippineMobile, PERSON_SUFFIX_OPTIONS } from '../../lib/personIdentity';
+import { formatManilaDateTime } from '../../lib/manilaTime';
 import philippineAddressOptions from '../../data/philippineAddressOptions.json';
 
 const CONDITIONS = ['Cancer', 'Alopecia', 'Other Hair-Loss Disease'];
@@ -377,6 +378,7 @@ export default function PatientApplicationPage() {
                 <div className="grid gap-4">
                   <article className="rounded-xl border border-[#e7cbc6] bg-white p-4">
                     <div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-wide text-[#7a1020]">Donivra policy</p><h2 className="mt-1 font-bold text-slate-800">Terms and conditions</h2></div><ShieldCheck className="shrink-0 text-[#7a1020]" size={21} /></div>
+                    {terms ? <p className="mt-2 text-xs text-[#b28578]">Effective {formatManilaDateTime(terms.effective_at)} (UTC+8){terms.created_at ? ` · Uploaded ${formatManilaDateTime(terms.created_at)} (UTC+8)` : ''}</p> : null}
                     {terms ? <><p className="mt-2 text-xs text-[#b28578]">{terms.title} · Version {terms.version}</p>{termsUrl ? <iframe title={terms.title || 'Donivra patient application terms'} src={`${termsUrl}#toolbar=1&navpanes=1&view=FitH`} className="mt-4 h-[500px] w-full rounded-xl border border-[#e7cbc6] bg-slate-100" /> : <div className="mt-3 max-h-80 overflow-y-auto whitespace-pre-line rounded-xl bg-slate-50 p-4 text-sm leading-6 text-slate-600">{terms.content}</div>}{termsUrl && <p className="mt-2 text-xs text-[#b28578]">If the preview does not load, <a href={termsUrl} target="_blank" rel="noreferrer" className="font-bold text-[#7a1020] underline">open the PDF in a new tab</a>.</p>}</> : <p className="mt-3 text-sm font-medium text-rose-700">No active patient application terms are published.</p>}
                   </article>
 

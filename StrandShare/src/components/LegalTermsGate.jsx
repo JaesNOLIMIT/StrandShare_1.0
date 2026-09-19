@@ -1,28 +1,25 @@
 import React from 'react';
 import { FileText, Loader2 } from 'lucide-react';
+import { formatManilaDateTime } from '../lib/manilaTime';
 
 export default function LegalTermsGate({
-  title,
-  description,
-  document,
-  previewUrl,
-  isLoading,
-  error,
-  checked,
-  onCheckedChange,
-  accentColor = '#0f766e',
+  title, description, document, previewUrl, isLoading, error, checked,
+  onCheckedChange, accentColor = '#0f766e', showHeader = true,
+  previewClassName = 'h-[60vh]',
 }) {
   const canAccept = Boolean(document?.legal_document_id && previewUrl && !isLoading && !error);
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900 md:text-3xl">{title}</h1>
-        <p className="mt-2 text-sm text-slate-600">{description}</p>
-      </div>
+      {showHeader ? (
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 md:text-3xl">{title}</h1>
+          <p className="mt-2 text-sm text-slate-600">{description}</p>
+        </div>
+      ) : null}
 
       {isLoading ? (
-        <div className="flex h-[60vh] items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-sm text-slate-600">
+        <div className={`flex items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-sm text-slate-600 ${previewClassName}`}>
           <Loader2 size={18} className="mr-2 animate-spin" /> Loading the active PDF...
         </div>
       ) : error ? (
@@ -37,10 +34,12 @@ export default function LegalTermsGate({
       ) : (
         <>
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
-            <iframe title={`${document.title} PDF preview`} src={previewUrl} className="h-[60vh] w-full bg-white" />
+            <iframe title={`${document.title} PDF preview`} src={previewUrl} className={`w-full bg-white ${previewClassName}`} />
           </div>
           <p className="text-xs text-slate-500">
-            {document.title} · Version {document.version}. If the preview does not load,{' '}
+            {document.title} · Version {document.version}
+            {' · '}Effective {formatManilaDateTime(document.effective_at)} (UTC+8)
+            {document.created_at ? ` · Uploaded ${formatManilaDateTime(document.created_at)} (UTC+8)` : ''}. If the preview does not load,{' '}
             <a href={previewUrl} target="_blank" rel="noreferrer" className="font-semibold underline">open the PDF in a new tab</a>.
           </p>
         </>

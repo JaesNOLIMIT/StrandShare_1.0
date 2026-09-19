@@ -9,6 +9,12 @@ import {
 import { useTheme } from '../../../context/ThemeContext';
 import { useToast } from '../../../context/ToastContext';
 import { logAuditAction } from '../../../lib/auditLogger';
+import {
+  formatManilaDateTime,
+  isPastManilaDateTimeInput,
+  toManilaDatabaseTimestamp,
+  toManilaDateTimeInput,
+} from '../../../lib/manilaTime';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 
 const LEGAL_DOCUMENTS_TABLE = 'legal_documents';
@@ -33,33 +39,11 @@ function normalizeRoleKey(value) {
 }
 
 function formatDateTime(value) {
-  if (!value) return 'N/A';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return 'N/A';
-  return parsed.toLocaleString('en-PH', {
-    timeZone: 'Asia/Manila',
-    year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatManilaDateTime(value);
 }
 
 function formatDateForInput(value) {
-  if (!value) return '';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '';
-  const pad = (part) => String(part).padStart(2, '0');
-  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
-}
-
-function toIsoOrNow(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return new Date().toISOString();
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return new Date().toISOString();
-  return parsed.toISOString();
+  return toManilaDateTimeInput(value);
 }
 
 function toSafeFileName(fileName) {
@@ -176,7 +160,7 @@ export default function LegalDocumentsPage({ userProfile }) {
     () => DOCUMENT_TYPES.find((option) => option.value === selectedDocumentType) || DOCUMENT_TYPES[0],
     [selectedDocumentType],
   );
-  const nowLocalDateTimeValue = useMemo(() => formatDateForInput(new Date()), []);
+  const nowLocalDateTimeValue = useMemo(() => toManilaDateTimeInput(), []);
 
   const selectedPdfPath = useMemo(
     () => String(selectedDocument?.file_path || activeDocument?.file_path || '').trim(),
@@ -275,8 +259,7 @@ export default function LegalDocumentsPage({ userProfile }) {
     }
 
     if (form.effectiveAt) {
-      const selectedEffectiveAt = new Date(form.effectiveAt);
-      if (Number.isNaN(selectedEffectiveAt.getTime()) || selectedEffectiveAt.getTime() < Date.now()) {
+      if (isPastManilaDateTimeInput(form.effectiveAt)) {
         setNotice({ kind: 'error', text: 'Effective At cannot be set to a past date/time.' });
         return;
       }
@@ -324,7 +307,7 @@ export default function LegalDocumentsPage({ userProfile }) {
           title: selectedTypeDefinition.label,
           content: `Uploaded legal PDF: ${pdfFile.name}`,
           is_active: true,
-          effective_at: toIsoOrNow(form.effectiveAt),
+          effective_at: toManilaDatabaseTimestamp(form.effectiveAt || new Date()),
           file_path: storagePath,
         })
         .select('legal_document_id')
@@ -434,7 +417,7 @@ export default function LegalDocumentsPage({ userProfile }) {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-gray-700">Effective At</label>
+          <label className="mb-1 block text-sm font-medium text-gray-700">Effective At (Philippine time, UTC+8)</label>
           <input
             type="datetime-local"
             value={form.effectiveAt}
@@ -536,7 +519,8 @@ export default function LegalDocumentsPage({ userProfile }) {
                   <tr>
                     <th className="px-3 py-2 text-left font-semibold text-gray-700">Version</th>
                     <th className="px-3 py-2 text-left font-semibold text-gray-700">Status</th>
-                    <th className="px-3 py-2 text-left font-semibold text-gray-700">Effective</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-700">Effective (UTC+8)</th>
+                    <th className="px-3 py-2 text-left font-semibold text-gray-700">Uploaded (UTC+8)</th>
                     <th className="px-3 py-2 text-right font-semibold text-gray-700">Actions</th>
                   </tr>
                 </thead>
@@ -560,6 +544,7 @@ export default function LegalDocumentsPage({ userProfile }) {
                           )}
                         </td>
                         <td className="px-3 py-2 text-xs text-gray-600">{formatDateTime(row.effective_at)}</td>
+                        <td className="px-3 py-2 text-xs text-gray-600">{formatDateTime(row.created_at)}</td>
                         <td className="px-3 py-2 text-right">
                           <div className="inline-flex items-center gap-2">
                             <button
@@ -612,6 +597,12 @@ export default function LegalDocumentsPage({ userProfile }) {
               No PDF available for preview yet.
             </div>
           )}
+          {!localPreviewUrl && (selectedDocument || activeDocument) ? (
+            <p className="mt-3 text-xs text-gray-500">
+              Effective {formatDateTime((selectedDocument || activeDocument).effective_at)} (UTC+8)
+              {' · '}Uploaded {formatDateTime((selectedDocument || activeDocument).created_at)} (UTC+8)
+            </p>
+          ) : null}
         </section>
       </div>
 

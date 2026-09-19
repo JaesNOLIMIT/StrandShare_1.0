@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, CalendarDays, CheckCircle2, Info, Loader2, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
+import { AlertTriangle, CalendarDays, CheckCircle2, Flame, Info, Loader2, RefreshCw, Search, SlidersHorizontal, X } from 'lucide-react';
 import { logAuditAction } from '../../../lib/auditLogger';
 import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
+import { compareWigRequestPriority, getWigRequestPriorityDetails } from '../../../lib/wigRequestPriority';
 import PageHeaderActions from '../../../components/PageHeaderActions';
 import WigReleaseAftercarePanel from '../../../components/WigReleaseAftercarePanel';
 import BundleCompletionScanner from '../specialist/wigCatalog/BundleCompletionScanner';
@@ -318,6 +319,15 @@ function parseManilaDate(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function priorityClass(priorityDetails) {
+  if (priorityDetails?.urgent) return 'border-red-200 bg-red-100 text-red-800';
+  if (priorityDetails?.automaticPriority === 1) return 'border-rose-200 bg-rose-50 text-rose-800';
+  if (priorityDetails?.automaticPriority === 2) return 'border-orange-200 bg-orange-50 text-orange-800';
+  if (priorityDetails?.automaticPriority === 3) return 'border-amber-200 bg-amber-50 text-amber-800';
+  if (priorityDetails?.automaticPriority === 4) return 'border-yellow-200 bg-yellow-50 text-yellow-800';
+  return 'border-slate-200 bg-slate-100 text-slate-700';
+}
+
 function formatDateTime(value) {
   if (!value) {
     return 'N/A';
@@ -599,6 +609,8 @@ function buildSearchBlob(row) {
     row.patientName,
     row.patientCode,
     row.medicalCondition,
+    row.priorityDetails?.displayLabel,
+    row.priorityDetails?.reason,
     row.statusLabel,
     row.releaseWorkflowLabel,
     row.specStyle,
@@ -636,6 +648,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
   const [requestDateTo, setRequestDateTo] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isApplyingAction, setIsApplyingAction] = useState(false);
+  const [isUpdatingUrgency, setIsUpdatingUrgency] = useState(false);
   const [isManualRefreshing, setIsManualRefreshing] = useState(false);
   const [childRefreshToken, setChildRefreshToken] = useState(0);
   const [isReleaseWorkflowAvailable, setIsReleaseWorkflowAvailable] = useState(true);
@@ -957,6 +970,15 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
 
         const statusRaw = requestRow.Status || REQUEST_STATUS.pending;
         const statusKey = getCanonicalStatusKey(statusRaw);
+        const medicalCondition = String(patient?.Medical_Condition || requestRow.Medical_Condition || '').trim() || 'N/A';
+        const conditionCategory = String(patient?.Condition_Category || '').trim() || 'N/A';
+        const priorityDetails = getWigRequestPriorityDetails({
+          hospitalId,
+          medicalCondition,
+          conditionCategory,
+          statusKey,
+          isUrgent: Boolean(requestRow.Is_Urgent),
+        });
 
         const releaseWorkflowRaw = schedule?.Hospital_Decision
           ? String(schedule.Hospital_Decision).trim()
@@ -971,8 +993,8 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           hospitalName: String(hospital?.Hospital_Name || 'N/A'),
           patientName: getPatientFullName(patient, linkedPatientUser),
           patientCode: String(patient?.Patient_Code || ''),
-          medicalCondition: String(patient?.Medical_Condition || requestRow.Medical_Condition || '').trim() || 'N/A',
-          conditionCategory: String(patient?.Condition_Category || '').trim() || 'N/A',
+          medicalCondition,
+          conditionCategory,
           conditionStage: String(patient?.Condition_Stage_Severity || '').trim() || 'N/A',
           patientEmail: String(linkedPatientUser?.email || '').trim() || 'N/A',
           patientBirthdate: String(linkedPatientDetails?.birthdate || '').trim() || 'N/A',
@@ -1001,6 +1023,9 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
           status: statusRaw,
           statusKey,
           statusLabel: getStatusLabel(statusRaw),
+          isUrgent: priorityDetails.urgent,
+          urgentSetAt: requestRow.Urgent_Set_At || null,
+          priorityDetails,
           fulfillmentStatus: String(requestRow.Fulfillment_Status || '').trim(),
           statusReason: rawStatusReason.startsWith('SSMETA:') ? '' : rawStatusReason,
           previewPdfUrl: String(requestRow.Pdf_Url || requestRow.Preview_Pdf_Url || '').trim(),
@@ -1254,6 +1279,37 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
     loadReviewRows();
   }, [loadReviewRows]);
 
+  const handleUrgencyChange = async () => {
+    if (!selectedRow?.reqId || selectedRow.priorityDetails?.terminal || isUpdatingUrgency) return;
+    const nextUrgent = !selectedRow.isUrgent;
+
+    try {
+      setIsUpdatingUrgency(true);
+      const result = await supabase.rpc('set_wig_request_urgent', {
+        p_req_id: selectedRow.reqId,
+        p_is_urgent: nextUrgent,
+      });
+      if (result.error) throw result.error;
+
+      await logAuditAction({
+        action: nextUrgent ? 'wig_requests.mark_urgent' : 'wig_requests.remove_urgent',
+        description: `${selectedRow.requestId}: ${nextUrgent ? 'marked urgent' : 'urgent status removed'}`,
+        resource: WIG_REQUESTS_TABLE,
+        status: 'success',
+        userProfile,
+      });
+      setNotice({
+        kind: 'success',
+        text: `${selectedRow.requestId} ${nextUrgent ? 'is now Urgent' : 'returned to automatic priority'}.`,
+      });
+      await loadReviewRows(selectedRow.reqId);
+    } catch (error) {
+      setNotice({ kind: 'error', text: error?.message || 'Unable to change request urgency.' });
+    } finally {
+      setIsUpdatingUrgency(false);
+    }
+  };
+
   useRealtimeRefresh({
     channelName: 'staff-wig-requests-live',
     tables: [WIG_REQUESTS_TABLE, WIGS_TABLE, WIG_SPECS_TABLE, WIG_FILTERS_TABLE, PATIENTS_TABLE,
@@ -1285,7 +1341,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
         return false;
       }
       return !query || buildSearchBlob(row).includes(query);
-    });
+    }).sort(compareWigRequestPriority);
   }, [rows, activeStatusFilter, searchTerm, requestDateFrom, requestDateTo]);
 
   const hasActiveRequestFilters = activeStatusFilter !== 'all'
@@ -1804,6 +1860,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
               <thead className="bg-slate-50">
                 <tr>
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">Request ID</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Priority</th>
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">Hospital</th>
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">Patient</th>
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">Wig Model</th>
@@ -1824,6 +1881,19 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                     className="cursor-pointer border-t border-slate-200 hover:bg-slate-50"
                   >
                     <td className="px-4 py-3 font-semibold text-slate-800">{row.requestId}</td>
+                    <td className="px-4 py-3">
+                      {row.priorityDetails.terminal ? (
+                        <span className="text-xs text-slate-400">Not prioritized</span>
+                      ) : (
+                        <div>
+                          <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-bold ${priorityClass(row.priorityDetails)}`}>
+                            {row.isUrgent ? <Flame size={12} /> : null}
+                            {row.priorityDetails.displayLabel}
+                          </span>
+                          <p className="mt-1 max-w-44 text-[10px] leading-4 text-slate-500">{row.priorityDetails.reason}</p>
+                        </div>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-slate-700">{row.hospitalName}</td>
                     <td className="px-4 py-3 text-slate-700">
                       <p className="font-semibold text-slate-800">{row.patientName}</p>
@@ -1902,6 +1972,17 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                 </p>
               </div>
               <div className="flex items-center gap-3">
+                {!selectedRow.priorityDetails.terminal ? (
+                  <button
+                    type="button"
+                    onClick={handleUrgencyChange}
+                    disabled={isUpdatingUrgency}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold disabled:opacity-60 ${selectedRow.isUrgent ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+                  >
+                    {isUpdatingUrgency ? <Loader2 size={14} className="animate-spin" /> : <Flame size={14} />}
+                    {selectedRow.isUrgent ? 'Remove Urgent' : 'Mark Urgent'}
+                  </button>
+                ) : null}
                 <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass(selectedRow.status)}`}>{selectedRow.statusLabel}</span>
                 <button type="button" onClick={() => { setReleaseConfirmationStep(''); setSelectedRow(null); }} className="text-slate-400 hover:text-red-500">
                   <X size={22} />
@@ -1928,6 +2009,18 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                     {selectedRow.statusLabel}
                   </span>
                 </div>
+                {!selectedRow.priorityDetails.terminal ? (
+                  <div className="mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                    <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-bold ${priorityClass(selectedRow.priorityDetails)}`}>
+                      {selectedRow.isUrgent ? <Flame size={13} /> : null}
+                      {selectedRow.priorityDetails.displayLabel}
+                    </span>
+                    <p className="text-xs text-slate-600">
+                      Automatic: Priority {selectedRow.priorityDetails.automaticPriority} — {selectedRow.priorityDetails.reason}.
+                      {selectedRow.isUrgent ? ' Staff Urgent override is active.' : ''}
+                    </p>
+                  </div>
+                ) : null}
                 <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
                   <section>
                     <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Personal Information</p>

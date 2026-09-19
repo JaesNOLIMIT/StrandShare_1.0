@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
+import { toManilaDatabaseTimestamp } from '../lib/manilaTime';
 
 const LEGAL_DOCUMENTS_BUCKET = 'legal-documents';
 
@@ -21,10 +22,10 @@ export default function useActiveLegalDocument(documentType) {
     setIsLoading(true);
     setError('');
     try {
-      const now = new Date().toISOString();
+      const now = toManilaDatabaseTimestamp();
       const result = await supabase
         .from('legal_documents')
-        .select('legal_document_id,document_type,version,title,effective_at,file_path')
+        .select('legal_document_id,document_type,version,title,effective_at,created_at,file_path')
         .eq('document_type', documentType)
         .eq('is_active', true)
         .lte('effective_at', now)
@@ -62,4 +63,3 @@ export default function useActiveLegalDocument(documentType) {
 
   return { document, previewUrl, isLoading, error, reload };
 }
-

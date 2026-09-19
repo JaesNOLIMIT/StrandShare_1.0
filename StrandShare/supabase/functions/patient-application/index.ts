@@ -10,6 +10,13 @@ const PATIENT_PICTURE_MAX_BYTES = 5 * 1024 * 1024;
 const PH_MOBILE_PATTERN = /^\+63 9\d{2} \d{3} \d{4}$/;
 const CONDITION_CATEGORIES = new Set(['Cancer', 'Alopecia', 'Other Hair-Loss Disease']);
 
+function parseManilaWallClock(value: unknown) {
+  const raw = String(value || '').trim().replace(' ', 'T');
+  if (!raw) return new Date(Number.NaN);
+  const hasOffset = /(?:z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  return new Date(hasOffset ? raw : `${raw}+08:00`);
+}
+
 function getAllowedOrigin(request: Request) {
   const origin = request.headers.get('Origin');
   if (!origin) return null;
@@ -397,7 +404,7 @@ Deno.serve(async (request) => {
         .eq('legal_document_id', termsId).eq('document_type', 'patient_application_terms')
         .eq('version', termsVersion).eq('is_active', true).maybeSingle();
       if (termsResult.error) throw termsResult.error;
-      if (!termsResult.data || new Date(termsResult.data.effective_at).getTime() > Date.now()) {
+      if (!termsResult.data || parseManilaWallClock(termsResult.data.effective_at).getTime() > Date.now()) {
         return jsonResponse({ error: 'Donivra terms changed. Return to the terms page and review the current version.' }, 409, allowedOrigin || null);
       }
       if (body.acceptDonivraTerms !== true || body.acceptHospitalConditions !== true) {
