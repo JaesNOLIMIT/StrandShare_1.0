@@ -1,0 +1,26 @@
+<!-- Template: program_cancelled_attendee | Sent to every registered attendee with a valid account email. -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Program Cancelled</title></head>
+<body style="margin:0;background:#f5f3f1;color:#1f2937;font-family:Segoe UI,Arial,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">A program for which you registered has been cancelled by Donivra.</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 12px;background:#f5f3f1;"><tr><td align="center">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;overflow:hidden;border:1px solid #ead7da;border-radius:18px;background:#ffffff;box-shadow:0 10px 30px rgba(66,15,22,.08);">
+      <tr><td style="height:7px;background:#5b0b16;"></td></tr>
+      <tr><td style="padding:24px 28px;border-bottom:1px solid #eee7e3;"><div style="font-size:22px;font-weight:800;color:#5b0b16;">Donivra</div><div style="margin-top:3px;font-size:12px;color:#9a6a62;">Where Hair Becomes Hope</div></td></tr>
+      <tr><td style="padding:30px 28px;">
+        <div style="display:inline-block;padding:6px 10px;border-radius:999px;background:#fee2e2;color:#991b1b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;">Cancelled by Donivra</div>
+        <h1 style="margin:16px 0 10px;font-size:27px;line-height:1.25;color:#1f2937;">The program has been cancelled</h1>
+        <p style="margin:0 0 20px;font-size:15px;line-height:1.7;color:#64748b;">Hello {{recipient_name}}, the program for which you registered will no longer proceed.</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #ead7da;border-radius:12px;background:#fff7f7;"><tr><td style="padding:17px 18px;font-size:14px;line-height:1.8;color:#374151;">
+          <div><strong>Program:</strong> {{program_name}}</div><div><strong>Original schedule:</strong> {{start_date}} - {{end_date}}</div>
+          {{#venue_name}}<div><strong>Venue:</strong> {{venue_name}}</div>{{/venue_name}}
+          <div><strong>Reason:</strong> {{cancellation_category}}</div><div><strong>Explanation:</strong> {{cancellation_explanation}}</div><div><strong>Cancelled at:</strong> {{cancelled_at}} (UTC+8 Manila)</div>
+        </td></tr></table>
+        <p style="margin:20px 0 0;font-size:14px;line-height:1.7;color:#475569;">Please apply again if you wish for rescheduling.</p>
+      </td></tr>
+      <tr><td style="padding:16px 28px;border-top:1px solid #eee7e3;background:#faf9f8;font-size:11px;color:#94a3b8;">Official cancellation notice from Donivra · Reference ER-{{event_request_id}}</td></tr>
+    </table>
+  </td></tr></table>
+</body>
+</html>

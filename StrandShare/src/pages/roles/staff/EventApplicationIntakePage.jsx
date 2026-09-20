@@ -806,7 +806,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
       if (linkedRequestIds.length > 0) {
         const requestResult = await supabase
           .from(EVENT_REQUESTS_TABLE)
-          .select('Event_Request_ID, Status, Admin_Decision_Reason, Cancellation_Reason, Auto_Cancelled_At, Admin_Reviewed_At, Updated_At')
+          .select('Event_Request_ID, Status, Admin_Decision_Reason, Cancellation_Reason, Cancellation_Category, Cancellation_Explanation, Cancelled_At, Cancelled_By_Role, Auto_Cancelled_At, Admin_Reviewed_At, Updated_At')
           .in('Event_Request_ID', linkedRequestIds);
 
         if (requestResult.error) throw requestResult.error;
@@ -943,6 +943,8 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
   const applicationStatusKey = normalizeStatus(selectedRow?.Status);
   const isAutomaticallyCancelledApplication = applicationStatusKey === 'cancelled'
     && Boolean(selectedRow?.Auto_Cancelled_At);
+  const isAdminCancelledProgram = linkedRequestStatusKey === 'cancelled'
+    && Boolean(selectedLinkedRequest?.Cancelled_At);
   const isStaffRejectedApplication = applicationStatusKey === 'rejected'
     && Number(selectedRow?.Staff_Rejected_By_User_ID || 0) > 0;
   const isCancelledApplication = applicationStatusKey === 'cancelled';
@@ -1872,11 +1874,13 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                           ? `Reviewed by administrator • ${formatDateTime(selectedLinkedRequest?.Admin_Reviewed_At)}`
                           : linkedRequestStatusKey === 'rejected'
                             ? `Rejected by administrator • ${formatDateTime(selectedLinkedRequest?.Admin_Reviewed_At)}`
-                            : applicationStatusKey === 'cancelled'
-                              ? `Cancelled automatically • ${formatDateTime(selectedRow.Auto_Cancelled_At)}`
-                            : selectedRow.Staff_Reviewed_At
-                              ? `Reviewed by staff • ${formatDateTime(selectedRow.Staff_Reviewed_At)}`
-                              : `Submitted ${formatDateTime(selectedRow.Created_At)}`}
+                            : isAdminCancelledProgram
+                              ? `Cancelled by Donivra • ${formatDateTime(selectedLinkedRequest.Cancelled_At)}`
+                              : applicationStatusKey === 'cancelled'
+                                ? `Cancelled automatically • ${formatDateTime(selectedRow.Auto_Cancelled_At)}`
+                                : selectedRow.Staff_Reviewed_At
+                                  ? `Reviewed by staff • ${formatDateTime(selectedRow.Staff_Reviewed_At)}`
+                                  : `Submitted ${formatDateTime(selectedRow.Created_At)}`}
                       </p>
                     </div>
                   </div>
@@ -1892,6 +1896,16 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
               </div>
 
               {/* Status banner */}
+              {isAdminCancelledProgram && (
+                <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-900">
+                  <XCircle size={20} className="mt-0.5 flex-none" />
+                  <div>
+                    <p className="font-bold">Program cancelled by Donivra</p>
+                    <p className="mt-1">{selectedLinkedRequest.Cancellation_Category || 'Cancellation'}: {selectedLinkedRequest.Cancellation_Explanation || selectedLinkedRequest.Cancellation_Reason || 'No explanation recorded.'}</p>
+                    <p className="mt-1 text-xs text-rose-700">Cancelled {formatDateTime(selectedLinkedRequest.Cancelled_At)} (UTC+8). Please apply again if rescheduling is requested.</p>
+                  </div>
+                </div>
+              )}
               {isAutomaticallyCancelledApplication && (
                 <div className="flex items-start gap-3 rounded-xl border border-slate-300 bg-slate-100 px-4 py-4 text-sm text-slate-700">
                   <Clock3 size={20} className="mt-0.5 flex-none" />

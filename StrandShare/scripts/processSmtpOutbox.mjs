@@ -230,6 +230,7 @@ function buildTemplateContext(row, payload) {
     'reviewed_at',
     'ended_at',
     'successful_at',
+    'cancelled_at',
     'certificate_issued_at',
   ];
   for (const key of dateKeys) {

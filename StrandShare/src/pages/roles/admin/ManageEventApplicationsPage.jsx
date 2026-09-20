@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
+  Ban,
   Calendar,
   CheckCircle2,
   Clock3,
@@ -32,6 +33,7 @@ import ProgramScheduleCalendarModal, {
   formatScheduleDateLabel,
   toScheduleDateKey,
 } from '../../../components/events/ProgramScheduleCalendarModal';
+import StaffScheduleCalendar, { getStaffScheduleConflict } from '../../../components/staff/StaffScheduleCalendar';
 
 const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_APPLICATIONS_TABLE = 'Event_Applications';
@@ -39,6 +41,16 @@ const USERS_TABLE = 'users';
 const SMTP_OUTBOX_TABLE = 'SMTP_Email_Outbox';
 const PRIVATE_ID_BUCKET = 'event_application_private_ids';
 const LEGACY_EVENT_ASSETS_BUCKET = 'event_application_assets';
+const CANCELLATION_REASONS = [
+  'Severe Weather or Natural Disaster',
+  'Venue Unavailable',
+  'Safety or Security Concern',
+  'Insufficient Participants',
+  'Organizer Request',
+  'Operational or Staffing Issue',
+  'Government or Local Authority Order',
+  'Other',
+];
 
 function normalizePrivateIdObjectPath(value) {
   const raw = String(value || '').trim().replace(/^\/+/, '');
@@ -179,6 +191,15 @@ function InfoItem({ icon: Icon, label, children, span }) {
       </div>
     </div>
   );
+}
+
+function isFutureManilaDateTime(value) {
+  if (!value) return false;
+  const raw = String(value).trim();
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const withZone = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(normalized) ? normalized : `${normalized}+08:00`;
+  const parsed = new Date(withZone);
+  return !Number.isNaN(parsed.getTime()) && parsed.getTime() > Date.now();
 }
 
 function ContactLink({ type, value }) {
@@ -469,6 +490,7 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
   const [rows, setRows] = useState([]);
   const [staffOptions, setStaffOptions] = useState([]);
   const [staffDirectory, setStaffDirectory] = useState([]);
+  const [staffUnavailability, setStaffUnavailability] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [privateIdUrl, setPrivateIdUrl] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -479,9 +501,15 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
 
   const [isApproveModalOpen, setIsApproveModalOpen] = useState(false);
   const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
+  const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
   const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   const [assignedStaffId, setAssignedStaffId] = useState('');
   const [rejectReason, setRejectReason] = useState('');
+  const [cancelStep, setCancelStep] = useState(1);
+  const [cancellationCategory, setCancellationCategory] = useState('');
+  const [cancellationExplanation, setCancellationExplanation] = useState('');
+  const [cancellationConfirmation, setCancellationConfirmation] = useState('');
+  const [cancellationDelivery, setCancellationDelivery] = useState(null);
   const [resultModalData, setResultModalData] = useState({ title: '', lines: [] });
 
   const reviewerName = useMemo(() => [
@@ -558,19 +586,29 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
 
     setIsLoadingStaff(true);
     try {
-      const staffResult = await supabase
-        .from(USERS_TABLE)
-        .select('user_id, email, role, is_active, user_details:user_details(first_name, middle_name, last_name, suffix)')
-        .order('user_id', { ascending: true });
+      const [staffResult, availabilityResult] = await Promise.all([
+        supabase
+          .from(USERS_TABLE)
+          .select('user_id, email, role, is_active, user_details:user_details(first_name, middle_name, last_name, suffix)')
+          .order('user_id', { ascending: true }),
+        supabase
+          .from('Staff_Unavailability')
+          .select('*')
+          .eq('Is_Active', true)
+          .order('Created_At', { ascending: false }),
+      ]);
 
       if (staffResult.error) throw staffResult.error;
+      if (availabilityResult.error) throw availabilityResult.error;
 
       setStaffDirectory(staffResult.data || []);
+      setStaffUnavailability(availabilityResult.data || []);
       const options = (staffResult.data || []).filter((row) => normalizeRole(row.role) === 'staff' && row.is_active !== false);
       setStaffOptions(options);
     } catch (error) {
       setStaffDirectory([]);
       setStaffOptions([]);
+      setStaffUnavailability([]);
       setNotice({ kind: 'error', text: error.message || 'Unable to load staff accounts for assignment.' });
     } finally {
       setIsLoadingStaff(false);
@@ -578,19 +616,28 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
   }, []);
 
   useEffect(() => {
+    if (!isActivePage) return;
     loadRows();
     loadStaffOptions();
-  }, [loadRows, loadStaffOptions]);
+  }, [isActivePage, loadRows, loadStaffOptions]);
 
   useEffect(() => {
     if (!isActivePage || !isSupabaseConfigured || !supabase) return undefined;
 
     let refreshTimer = null;
+    let staffRefreshTimer = null;
     const scheduleRealtimeRefresh = () => {
       if (refreshTimer) window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => {
         loadRows({ silent: true });
         refreshTimer = null;
+      }, 120);
+    };
+    const scheduleStaffRefresh = () => {
+      if (staffRefreshTimer) window.clearTimeout(staffRefreshTimer);
+      staffRefreshTimer = window.setTimeout(() => {
+        loadStaffOptions();
+        staffRefreshTimer = null;
       }, 120);
     };
 
@@ -612,12 +659,33 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
       )
       .subscribe();
 
+    const availabilityChannel = supabase
+      .channel('admin-event-staff-availability-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'Staff_Unavailability' },
+        scheduleStaffRefresh,
+      )
+      .subscribe();
+
+    const staffAccountsChannel = supabase
+      .channel('admin-event-staff-accounts-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: USERS_TABLE },
+        scheduleStaffRefresh,
+      )
+      .subscribe();
+
     return () => {
       if (refreshTimer) window.clearTimeout(refreshTimer);
+      if (staffRefreshTimer) window.clearTimeout(staffRefreshTimer);
       supabase.removeChannel(requestsChannel);
       supabase.removeChannel(applicationsChannel);
+      supabase.removeChannel(availabilityChannel);
+      supabase.removeChannel(staffAccountsChannel);
     };
-  }, [isActivePage, loadRows]);
+  }, [isActivePage, loadRows, loadStaffOptions]);
 
   const queueRows = useMemo(() => {
     return rows.filter((row) => {
@@ -690,6 +758,7 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
       setPrivateIdUrl('');
       setIsApproveModalOpen(false);
       setIsRejectModalOpen(false);
+      setIsCancelModalOpen(false);
       setIsResultModalOpen(false);
       setIsWorkflowModalOpen(false);
       setIsCalendarModalOpen(false);
@@ -734,6 +803,7 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
 
   const selectedStatusKey = useMemo(() => normalizeStatus(selectedRow?.Status), [selectedRow]);
   const canDecide = selectedStatusKey === 'pendingadminapproval' || selectedStatusKey === 'appealed';
+  const canCancel = selectedStatusKey === 'approved' && isFutureManilaDateTime(selectedRow?.Start_Date);
 
   const assignedStaffLabel = useMemo(() => {
     const id = Number(selectedRow?.Assigned_Staff_User_ID || 0);
@@ -741,6 +811,18 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
     const row = staffOptions.find((staff) => Number(staff.user_id || 0) === id);
     return row ? staffLabel(row) : 'Assigned staff account';
   }, [selectedRow, staffOptions]);
+
+  const staffScheduleConflicts = useMemo(() => new Map(staffOptions.map((staff) => [
+    Number(staff.user_id),
+    getStaffScheduleConflict({
+      staffUserId: staff.user_id,
+      startAt: selectedRow?.Start_Date,
+      endAt: selectedRow?.End_Date || selectedRow?.Start_Date,
+      events: rows,
+      unavailability: staffUnavailability,
+      excludeEventRequestId: selectedRow?.Event_Request_ID,
+    }),
+  ])), [rows, selectedRow, staffOptions, staffUnavailability]);
 
   const staffReviewedLabel = useMemo(() => {
     const reviewerId = Number(
@@ -751,6 +833,13 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
     if (reviewerId <= 0) return 'Not recorded';
     const reviewer = staffDirectory.find((staff) => Number(staff.user_id || 0) === reviewerId);
     return reviewer ? staffLabel(reviewer) : `Staff account #${reviewerId}`;
+  }, [selectedRow, staffDirectory]);
+
+  const cancelledByLabel = useMemo(() => {
+    const actorId = Number(selectedRow?.Cancelled_By_User_ID || 0);
+    if (!actorId) return 'Donivra';
+    const actor = staffDirectory.find((account) => Number(account.user_id || 0) === actorId);
+    return actor ? staffLabel(actor) : `Internal account #${actorId}`;
   }, [selectedRow, staffDirectory]);
 
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -807,12 +896,48 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
     }
   }, []);
 
-  const openApproveModal = () => {
+  const loadCancellationDelivery = useCallback(async (requestId) => {
+    if (!supabase || !requestId) {
+      setCancellationDelivery(null);
+      return null;
+    }
+    const { data, error } = await supabase
+      .from(SMTP_OUTBOX_TABLE)
+      .select('SMTP_Email_Outbox_ID, Status, Recipient_Email, Notification_Type, Sent_At, Last_Error')
+      .eq('Source_Table', EVENT_REQUESTS_TABLE)
+      .eq('Source_ID', requestId)
+      .in('Notification_Type', ['program_cancelled_applicant', 'program_cancelled_attendee']);
+    if (error) {
+      setCancellationDelivery(null);
+      return null;
+    }
+    const report = (data || []).reduce((acc, item) => {
+      const key = normalizeStatus(item.Status);
+      acc.total += 1;
+      if (key === 'sent') acc.sent += 1;
+      else if (key === 'failed') acc.failed += 1;
+      else acc.pending += 1;
+      return acc;
+    }, { total: 0, sent: 0, failed: 0, pending: 0, rows: data || [] });
+    setCancellationDelivery(report);
+    return report;
+  }, []);
+
+  useEffect(() => {
+    if (selectedStatusKey === 'cancelled' && selectedRow?.Cancelled_At) {
+      void loadCancellationDelivery(selectedRow.Event_Request_ID);
+    } else {
+      setCancellationDelivery(null);
+    }
+  }, [loadCancellationDelivery, selectedRow?.Cancelled_At, selectedRow?.Event_Request_ID, selectedStatusKey]);
+
+  const openApproveModal = async () => {
     if (!selectedRow) return;
     if (!canDecide) {
       setNotice({ kind: 'error', text: 'Only pending or appealed requests can be approved.' });
       return;
     }
+    await loadStaffOptions();
     setAssignedStaffId(String(selectedRow.Assigned_Staff_User_ID || ''));
     setIsApproveModalOpen(true);
   };
@@ -827,10 +952,23 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
     setIsRejectModalOpen(true);
   };
 
+  const openCancelModal = () => {
+    if (!canCancel) {
+      setNotice({ kind: 'error', text: 'Only an approved program that has not started can be cancelled.' });
+      return;
+    }
+    setCancelStep(1);
+    setCancellationCategory('');
+    setCancellationExplanation('');
+    setCancellationConfirmation('');
+    setIsCancelModalOpen(true);
+  };
+
   const closeAllModals = () => {
     if (isSaving) return;
     setIsApproveModalOpen(false);
     setIsRejectModalOpen(false);
+    setIsCancelModalOpen(false);
     setIsResultModalOpen(false);
   };
 
@@ -843,31 +981,26 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
       return;
     }
 
+    const conflict = staffScheduleConflicts.get(staffIdNumber);
+    if (conflict) {
+      setNotice({ kind: 'error', text: conflict.type === 'event'
+        ? `This Staff member is already assigned to "${conflict.label}" during the requested schedule.`
+        : `This Staff member is unavailable during the requested schedule: ${conflict.label}.` });
+      return;
+    }
+
     setIsSaving(true);
     setNotice({ kind: '', text: '' });
 
     try {
-      const payload = {
-        Status: 'Approved',
-        Assigned_Staff_User_ID: staffIdNumber,
-        Admin_Decision_Reason: null,
-      };
-
-      const result = await supabase
-        .from(EVENT_REQUESTS_TABLE)
-        .update(payload)
-        .eq('Event_Request_ID', selectedRow.Event_Request_ID)
-        .select('*')
-        .single();
+      const result = await supabase.rpc('admin_approve_event_request', {
+        p_event_request_id: selectedRow.Event_Request_ID,
+        p_staff_user_id: staffIdNumber,
+      });
 
       if (result.error) throw result.error;
 
-      const updated = result.data;
-      setRows((current) => current.map((row) => (
-        Number(row.Event_Request_ID || 0) === Number(updated.Event_Request_ID || 0)
-          ? { ...updated, Application: row.Application || null }
-          : row
-      )));
+      const updated = result.data || { Event_Request_ID: selectedRow.Event_Request_ID };
       await loadRows({ silent: true });
 
       const smtpKickResult = await triggerSmtpNow('admin_approved_event_request');
@@ -950,6 +1083,65 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
       setIsResultModalOpen(true);
     } catch (error) {
       setNotice({ kind: 'error', text: error.message || 'Unable to reject program request.' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const applyCancellation = async () => {
+    if (!selectedRow?.Event_Request_ID) return;
+    if (cancellationConfirmation.trim() !== 'CANCEL') {
+      setNotice({ kind: 'error', text: 'Type CANCEL exactly to confirm permanent cancellation.' });
+      return;
+    }
+    setIsSaving(true);
+    setNotice({ kind: '', text: '' });
+    try {
+      const { data, error } = await supabase.rpc('admin_cancel_approved_event', {
+        p_event_request_id: selectedRow.Event_Request_ID,
+        p_reason_category: cancellationCategory,
+        p_explanation: cancellationExplanation.trim(),
+        p_confirmation_text: cancellationConfirmation.trim(),
+      });
+      if (error) throw error;
+      await loadRows({ silent: true });
+      const smtpKickResult = await triggerSmtpNow('admin_cancelled_event');
+      if (!smtpKickResult.ok) console.warn('[SMTP] Cancellation delivery trigger failed:', smtpKickResult.message || smtpKickResult);
+      await wait(1000);
+      const delivery = await loadCancellationDelivery(selectedRow.Event_Request_ID);
+      setResultModalData({
+        title: 'Program Cancelled',
+        lines: [
+          'The cancellation is permanent and the assigned Staff member was released.',
+          `Reason: ${cancellationCategory} — ${cancellationExplanation.trim()}`,
+          `Emails: ${delivery?.sent || 0} sent, ${delivery?.pending ?? data?.queued_count ?? 0} pending, ${delivery?.failed || 0} failed, ${data?.skipped_attendees || 0} attendee(s) skipped.`,
+          'Please apply again if you wish for rescheduling.',
+        ],
+      });
+      setIsCancelModalOpen(false);
+      setIsResultModalOpen(true);
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to cancel this program.' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const retryCancellationEmails = async () => {
+    if (!selectedRow?.Event_Request_ID) return;
+    setIsSaving(true);
+    setNotice({ kind: '', text: '' });
+    try {
+      const { data, error } = await supabase.rpc('admin_retry_event_cancellation_emails', {
+        p_event_request_id: selectedRow.Event_Request_ID,
+      });
+      if (error) throw error;
+      if (Number(data?.retried_count || 0) > 0) await triggerSmtpNow('retry_cancelled_event_emails');
+      setNotice({ kind: 'success', text: `${Number(data?.retried_count || 0)} failed cancellation email(s) queued for retry.` });
+      await wait(800);
+      await loadCancellationDelivery(selectedRow.Event_Request_ID);
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to retry cancellation emails.' });
     } finally {
       setIsSaving(false);
     }
@@ -1174,8 +1366,10 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
                           : selectedStatusKey === 'rejected'
                             ? `Rejected by ${reviewerName} • ${formatDateTime(selectedRow.Admin_Reviewed_At)}`
                             : selectedStatusKey === 'cancelled'
-                              ? `Cancelled automatically • ${formatDateTime(selectedRow.Auto_Cancelled_At)}`
-                            : `Submitted ${formatDateTime(selectedRow.Application?.Created_At || selectedRow.Created_At)}`}
+                              ? selectedRow.Cancelled_At
+                                ? `Cancelled by Donivra • ${formatDateTime(selectedRow.Cancelled_At)}`
+                                : `Cancelled automatically • ${formatDateTime(selectedRow.Auto_Cancelled_At)}`
+                              : `Submitted ${formatDateTime(selectedRow.Application?.Created_At || selectedRow.Created_At)}`}
                       </p>
                     </div>
                   </div>
@@ -1207,6 +1401,27 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
                 theme={theme}
               />
 
+              {selectedStatusKey === 'cancelled' && selectedRow.Cancelled_At && (
+                <div className="mx-6 rounded-xl border border-slate-300 bg-slate-50 px-5 py-4 shadow-sm md:mx-8">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="flex items-center gap-2 font-bold text-slate-900"><Ban size={17} /> Cancellation record</h3>
+                      <p className="mt-2 text-sm text-slate-700"><span className="font-semibold">Reason:</span> {selectedRow.Cancellation_Category || 'Not recorded'}</p>
+                      <p className="mt-1 text-sm text-slate-700"><span className="font-semibold">Explanation:</span> {selectedRow.Cancellation_Explanation || selectedRow.Cancellation_Reason || 'Not recorded'}</p>
+                      <p className="mt-2 text-xs text-slate-500">Cancelled by {cancelledByLabel} ({selectedRow.Cancelled_By_Role || 'Admin'}) - {formatDateTime(selectedRow.Cancelled_At)} UTC+8</p>
+                      <p className="mt-1 text-xs text-slate-500">Released Staff account: {selectedRow.Cancelled_Assigned_Staff_User_ID || 'None recorded'}</p>
+                    </div>
+                    <div className="text-right text-xs text-slate-600">
+                      <p>{cancellationDelivery ? `${cancellationDelivery.sent} sent / ${cancellationDelivery.pending} pending / ${cancellationDelivery.failed} failed` : 'Loading email delivery...'}</p>
+                      <p className="mt-1">{Number(selectedRow.Cancellation_Emails_Skipped || 0)} skipped (missing or invalid email)</p>
+                      {cancellationDelivery?.failed > 0 && (
+                        <button type="button" onClick={() => void retryCancellationEmails()} disabled={isSaving} className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-60">Retry failed only</button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {canDecide && (
                 <div className="mx-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm md:mx-8">
                   <p className="text-sm font-semibold" style={{ color: secondaryTextColor }}>Review the information above, then record your final decision.</p>
@@ -1231,6 +1446,16 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
                       Approve
                     </button>
                   </div>
+                </div>
+              )}
+
+              {selectedStatusKey === 'approved' && (
+                <div className="mx-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 shadow-sm md:mx-8">
+                  <div>
+                    <p className="text-sm font-bold text-rose-900">Permanent program cancellation</p>
+                    <p className="mt-1 text-xs text-rose-700">Available only before the program starts. This releases the assigned Staff member and emails the applicant and registered attendees.</p>
+                  </div>
+                  <button type="button" onClick={openCancelModal} disabled={isSaving || !canCancel} className="inline-flex items-center gap-2 rounded-lg bg-rose-700 px-4 py-2 text-sm font-bold text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:opacity-50"><Ban size={15} />{canCancel ? 'Cancel Program' : 'Program already started'}</button>
                 </div>
               )}
             </div>
@@ -1310,7 +1535,7 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
       </PortalModal>
 
       <PortalModal open={isApproveModalOpen}>
-          <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 opacity-100 shadow-2xl">
+          <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 opacity-100 shadow-2xl">
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-slate-900">Approve Program</h3>
               <button type="button" onClick={closeAllModals} className="rounded-md p-1 text-slate-500 hover:bg-slate-100">
@@ -1318,8 +1543,28 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
               </button>
             </div>
             <p className="text-sm text-slate-600">
-              Assign one staff member before approving this program.
+              Review all Staff schedules, then assign an available Staff member before approving this program.
             </p>
+
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Program being scheduled</p>
+              <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-700">
+                <strong className="text-slate-900">{selectedRow?.Event_Name || 'Untitled Program'}</strong>
+                <span>{formatDateTime(selectedRow?.Start_Date)}{selectedRow?.End_Date ? ` – ${formatDateTime(selectedRow.End_Date)}` : ''}</span>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <StaffScheduleCalendar
+                staffUsers={staffOptions}
+                events={rows}
+                unavailability={staffUnavailability}
+                initialDate={selectedRow?.Start_Date}
+                title="Monthly Staff Schedule"
+                description="Approved programs and active days off for every Staff member. Select an entry to see its details."
+                compact
+              />
+            </div>
 
             <label className="mt-4 flex flex-col gap-1">
               <span className="text-sm font-semibold text-slate-700">Assigned Staff *</span>
@@ -1330,18 +1575,42 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
                 disabled={isLoadingStaff}
               >
                 <option value="">{isLoadingStaff ? 'Loading staff...' : 'Select one staff'}</option>
-                {staffOptions.map((staff) => (
-                  <option key={staff.user_id} value={staff.user_id}>{staffLabel(staff)}</option>
-                ))}
+                {staffOptions.map((staff) => {
+                  const conflict = staffScheduleConflicts.get(Number(staff.user_id));
+                  return <option key={staff.user_id} value={staff.user_id} disabled={Boolean(conflict)}>{staffLabel(staff)}{conflict ? ` — Unavailable (${conflict.label})` : ' — Available'}</option>;
+                })}
               </select>
             </label>
+
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {staffOptions.map((staff) => {
+                const id = Number(staff.user_id);
+                const conflict = staffScheduleConflicts.get(id);
+                const isSelected = Number(assignedStaffId || 0) === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    disabled={Boolean(conflict) || isLoadingStaff}
+                    onClick={() => setAssignedStaffId(String(id))}
+                    className={`rounded-xl border p-3 text-left transition ${conflict ? 'cursor-not-allowed border-slate-200 bg-slate-100 opacity-65' : isSelected ? 'text-white shadow-sm' : 'border-slate-200 bg-white hover:border-slate-400'}`}
+                    style={isSelected && !conflict ? { backgroundColor: primaryColor, borderColor: primaryColor } : undefined}
+                  >
+                    <span className="block truncate text-sm font-bold">{staffLabel(staff)}</span>
+                    <span className={`mt-1 block text-xs ${isSelected && !conflict ? 'text-white/85' : conflict ? 'text-rose-700' : 'text-emerald-700'}`}>
+                      {conflict ? (conflict.type === 'event' ? `Assigned: ${conflict.label}` : `Day off: ${conflict.label}`) : 'Available for this program'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
 
             <div className="mt-5 flex justify-end gap-2">
               <button type="button" onClick={closeAllModals} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Cancel</button>
               <button
                 type="button"
                 onClick={applyApproveDecision}
-                disabled={isSaving}
+                disabled={isSaving || !assignedStaffId || Boolean(staffScheduleConflicts.get(Number(assignedStaffId)))}
                 className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                 style={{ backgroundColor: primaryColor }}
               >
@@ -1390,6 +1659,48 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
               </button>
             </div>
           </div>
+      </PortalModal>
+
+      <PortalModal open={isCancelModalOpen}>
+        <section role="dialog" aria-modal="true" aria-labelledby="cancel-program-title" className="w-full max-w-xl overflow-hidden rounded-2xl border border-rose-200 bg-white shadow-2xl">
+          <header className="flex items-start justify-between gap-4 border-b border-rose-100 bg-rose-50 px-6 py-5">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.15em] text-rose-600">Confirmation {cancelStep} of 2</p>
+              <h2 id="cancel-program-title" className="mt-1 text-xl font-bold text-rose-950">Permanently cancel program</h2>
+            </div>
+            <button type="button" onClick={closeAllModals} disabled={isSaving} className="rounded-lg p-2 text-rose-700 hover:bg-rose-100"><X size={18} /></button>
+          </header>
+          {cancelStep === 1 ? (
+            <div className="space-y-4 p-6">
+              <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm leading-6 text-rose-900">This cannot be undone. Registration, RSVP, check-in, attendance editing, waybill generation, and event operations will close. Completed donation records remain unchanged.</div>
+              <label className="block text-sm font-semibold text-slate-700">Cancellation reason *
+                <select value={cancellationCategory} onChange={(event) => setCancellationCategory(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-normal">
+                  <option value="">Select a reason</option>
+                  {CANCELLATION_REASONS.map((reason) => <option key={reason}>{reason}</option>)}
+                </select>
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">Detailed explanation *
+                <textarea rows={4} value={cancellationExplanation} onChange={(event) => setCancellationExplanation(event.target.value)} placeholder="Explain why Donivra is cancelling this program" className="mt-1 w-full resize-y rounded-lg border border-slate-300 px-3 py-2 font-normal" />
+              </label>
+              <p className="text-xs text-slate-500">External emails say “Cancelled by Donivra” and ask recipients to apply again if they wish to reschedule.</p>
+              <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
+                <button type="button" onClick={closeAllModals} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Keep Program</button>
+                <button type="button" disabled={!cancellationCategory || cancellationExplanation.trim().length < 10} onClick={() => setCancelStep(2)} className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Continue</button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4 p-6">
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><p className="font-bold">Final confirmation</p><p className="mt-1">You are cancelling <strong>{selectedRow?.Event_Name || 'this program'}</strong>. The cancellation takes effect even if some emails fail.</p></div>
+              <label className="block text-sm font-semibold text-slate-700">Type CANCEL exactly *
+                <input autoFocus value={cancellationConfirmation} onChange={(event) => setCancellationConfirmation(event.target.value)} placeholder="CANCEL" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono font-bold tracking-widest" />
+              </label>
+              <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
+                <button type="button" onClick={() => setCancelStep(1)} disabled={isSaving} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Back</button>
+                <button type="button" onClick={() => void applyCancellation()} disabled={isSaving || cancellationConfirmation !== 'CANCEL'} className="inline-flex items-center gap-2 rounded-lg bg-rose-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{isSaving ? <Loader2 size={15} className="animate-spin" /> : <Ban size={15} />}Cancel permanently</button>
+              </div>
+            </div>
+          )}
+        </section>
       </PortalModal>
 
       <PortalModal open={isResultModalOpen}>

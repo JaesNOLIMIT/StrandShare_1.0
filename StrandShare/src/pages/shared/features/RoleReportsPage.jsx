@@ -59,7 +59,9 @@ function normalizeKey(value) {
 
 function formatDateTime(value) {
   if (!value) return 'N/A';
-  const parsed = new Date(value);
+  const raw = String(value).trim();
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const parsed = new Date(/(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(normalized) ? normalized : `${normalized}+08:00`);
   if (Number.isNaN(parsed.getTime())) return 'N/A';
   return parsed.toLocaleString('en-PH', {
     timeZone: 'Asia/Manila',
@@ -73,7 +75,9 @@ function formatDateTime(value) {
 
 function formatShortDate(value) {
   if (!value) return 'N/A';
-  const parsed = new Date(value);
+  const raw = String(value).trim();
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const parsed = new Date(/(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(normalized) ? normalized : `${normalized}+08:00`);
   if (Number.isNaN(parsed.getTime())) return 'N/A';
   return parsed.toLocaleDateString('en-PH', {
     timeZone: 'Asia/Manila',
@@ -441,6 +445,9 @@ function templateCatalogForRole(roleKey, theme) {
         { key: 'eventVisibility', label: 'Visibility' },
         { key: 'assignedStaff', label: 'Assigned Staff' },
         { key: 'schedule', label: 'Schedule' },
+        { key: 'cancellationReason', label: 'Cancellation Reason' },
+        { key: 'cancelledAtLabel', label: 'Cancelled At (UTC+8)' },
+        { key: 'cancelledBy', label: 'Cancelled By (Internal)' },
         { key: 'createdAtLabel', label: 'Created At' },
       ],
     },
@@ -672,7 +679,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
         let resolvedStaffId = null;
         let query = supabase
           .from(EVENT_REQUESTS_TABLE)
-          .select('Event_Request_ID,Event_Application_ID,Event_Name,Status,Event_Visibility,Assigned_Staff_User_ID,Start_Date,End_Date,Ended_At,Successful_At,Created_At,Updated_At')
+          .select('Event_Request_ID,Event_Application_ID,Event_Name,Status,Event_Visibility,Assigned_Staff_User_ID,Start_Date,End_Date,Ended_At,Successful_At,Cancellation_Category,Cancellation_Explanation,Cancelled_At,Cancelled_By_User_ID,Cancelled_By_Role,Created_At,Updated_At')
           .order('Created_At', { ascending: false })
           .limit(2000);
 
@@ -730,6 +737,13 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
             eventVisibility: visibility,
             assignedStaff: row.Assigned_Staff_User_ID ? `User #${row.Assigned_Staff_User_ID}` : 'Not assigned',
             schedule: `${formatShortDate(row.Start_Date)} - ${formatShortDate(row.End_Date)}`,
+            cancellationReason: row.Cancellation_Category
+              ? `${row.Cancellation_Category}: ${row.Cancellation_Explanation || 'No explanation recorded'}`
+              : 'N/A',
+            cancelledAtLabel: formatDateTime(row.Cancelled_At),
+            cancelledBy: row.Cancelled_By_User_ID
+              ? `${row.Cancelled_By_Role || 'Admin'} - User #${row.Cancelled_By_User_ID}`
+              : 'N/A',
             createdAt: row.Created_At || null,
             filterDate: lifecycleAt,
             updatedAt: row.Updated_At || null,
@@ -765,6 +779,9 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               eventVisibility: visibility,
               assignedStaff: row.Staff_Reviewer_User_ID ? `Reviewed by User #${row.Staff_Reviewer_User_ID}` : 'Rejected during intake',
               schedule: `${formatShortDate(row.Proposed_Start_At)} - ${formatShortDate(row.Proposed_End_At)}`,
+              cancellationReason: 'N/A',
+              cancelledAtLabel: 'N/A',
+              cancelledBy: 'N/A',
               createdAt: row.Created_At || null,
               filterDate: lifecycleAt,
               updatedAt: row.Updated_At || null,

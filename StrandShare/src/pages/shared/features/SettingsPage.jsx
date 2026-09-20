@@ -18,6 +18,7 @@ import {
 import { HexColorPicker } from "react-colorful";
 import { isSupabaseConfigured, supabase } from "../../../lib/supabaseClient";
 import { logAuditAction } from "../../../lib/auditLogger";
+import StaffAvailabilityPanel from "../../../components/staff/StaffAvailabilityPanel";
 import {
   PERSON_SUFFIX_OPTIONS,
   formatPhilippineMobile,
@@ -30,6 +31,7 @@ import {
 const TAB_ITEMS = [
   { id: "profile", label: "Profile" },
   { id: "security", label: "Security" },
+  { id: "availability", label: "My Availability" },
   { id: "branding", label: "Branding" },
 ];
 
@@ -676,8 +678,12 @@ export default function SettingsPage() {
 
   const presetHighlightColor = theme.primaryColor || "#0275d8";
   const visibleTabs = useMemo(
-    () => TAB_ITEMS.filter((tab) => tab.id !== "branding" || canManageBranding),
-    [canManageBranding],
+    () => TAB_ITEMS.filter((tab) => {
+      if (tab.id === "branding") return canManageBranding;
+      if (tab.id === "availability") return lowerCaseRoleKey(profile.role) === "staff";
+      return true;
+    }),
+    [canManageBranding, profile.role],
   );
 
   const themePresetCards = useMemo(() => {
@@ -2546,6 +2552,23 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
+        )}
+
+        {activeTab === "availability" && lowerCaseRoleKey(profile.role) === "staff" && (
+          <StaffAvailabilityPanel
+            readOnly
+            staffUserId={userId}
+            allUsers={[{
+              id: userId,
+              role: profile.role,
+              email: profile.email,
+              firstName: profile.firstName,
+              middleName: profile.middleName,
+              lastName: profile.lastName,
+              suffix: profile.suffix,
+              status: "Active",
+            }]}
+          />
         )}
 
         {activeTab === "security" && (

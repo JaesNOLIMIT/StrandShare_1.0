@@ -119,7 +119,7 @@ export default function Header({
   };
 
   return (
-    <div className="h-20 bg-white border-b border-gray-200 px-8 flex items-center justify-between">
+    <div className="h-20 flex-none bg-white border-b border-gray-200 px-8 flex items-center justify-between">
       {/* Left - Search Bar */}
       <div className="flex-1 max-w-md">
         <div className="relative">

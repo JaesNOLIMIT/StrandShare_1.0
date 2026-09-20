@@ -31,6 +31,7 @@ import {
 } from '../../../lib/personIdentity';
 import UserAccountDetailsModal from './UserAccountDetailsModal';
 import { invokeAdminAccountManagement } from '../../../lib/adminAccountManagement';
+import StaffAvailabilityPanel from '../../../components/staff/StaffAvailabilityPanel';
 
 const DEFAULT_ROLES = ['admin', 'staff', 'specialist', 'h_representative'];
 const ADMIN_CREATABLE_ROLES = ['staff', 'specialist'];
@@ -220,6 +221,7 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [pageTab, setPageTab] = useState('accounts');
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
@@ -852,6 +854,40 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
     }),
   };
 
+  const accountTabs = (
+    <div className="flex gap-6 border-b border-slate-200">
+      {[
+        { id: 'accounts', label: 'User Accounts' },
+        { id: 'availability', label: 'Staff Availability' },
+      ].map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          onClick={() => setPageTab(tab.id)}
+          className="border-b-2 px-1 pb-3 text-sm font-bold transition"
+          style={pageTab === tab.id
+            ? { color: theme.primaryColor, borderBottomColor: theme.primaryColor }
+            : { color: '#64748b', borderBottomColor: 'transparent' }}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (pageTab === 'availability') {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="role-page-title text-3xl font-bold text-gray-900">Manage User Accounts</h1>
+          <p className="mt-1 text-sm text-gray-600">Manage accounts and Staff all-day availability.</p>
+        </div>
+        {accountTabs}
+        <StaffAvailabilityPanel allUsers={users} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -868,6 +904,8 @@ export default function ManageUserAccountsPage({ isActivePage = true }) {
           <span>Add User</span>
         </button>
       </div>
+
+      {accountTabs}
 
       <section>
         <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">

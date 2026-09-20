@@ -56,7 +56,7 @@ export default function RoleDashboardShell({
   );
 
   const hasSettingsPage = Boolean(pageComponents.settings) || navItems.some((item) => item.id === 'settings');
-  const pageWrapperClass = 'relative min-h-0 flex-1 overflow-hidden bg-slate-50 p-6 md:p-8';
+  const pageWrapperClass = 'relative min-h-0 min-w-0 flex-1 overflow-hidden bg-slate-50 p-6 md:p-8';
 
   useEffect(() => {
     try {
@@ -67,7 +67,7 @@ export default function RoleDashboardShell({
   }, [isSidebarCollapsed]);
 
   return (
-    <div className="flex h-screen bg-slate-50">
+    <div className="flex h-screen min-h-0 overflow-hidden bg-slate-50" style={{ height: '100dvh' }}>
       <Sidebar
         currentPage={currentPage}
         onNavigate={navigateToPage}
@@ -75,7 +75,7 @@ export default function RoleDashboardShell({
         isCollapsed={isSidebarCollapsed}
         onToggleSidebar={() => setIsSidebarCollapsed((previous) => !previous)}
       />
-      <div className="min-w-0 flex-1 flex flex-col overflow-hidden">
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <Header
           onSignOut={onSignOut}
           onOpenSettings={hasSettingsPage ? () => navigateToPage('settings') : undefined}
