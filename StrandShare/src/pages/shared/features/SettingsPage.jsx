@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "../../../context/ThemeContext";
 import {
   Camera,
@@ -12,6 +12,7 @@ import {
   Save,
   ShieldCheck,
   Trash2,
+  Type,
   User,
   X,
 } from "lucide-react";
@@ -19,6 +20,11 @@ import { HexColorPicker } from "react-colorful";
 import { isSupabaseConfigured, supabase } from "../../../lib/supabaseClient";
 import { logAuditAction } from "../../../lib/auditLogger";
 import StaffAvailabilityPanel from "../../../components/staff/StaffAvailabilityPanel";
+import {
+  FONT_SIZE_OPTIONS,
+  normalizeFontSizePreference,
+  previewFontSizePreference,
+} from "../../../lib/fontSizePreference";
 import {
   PERSON_SUFFIX_OPTIONS,
   formatPhilippineMobile,
@@ -30,6 +36,7 @@ import {
 
 const TAB_ITEMS = [
   { id: "profile", label: "Profile" },
+  { id: "accessibility", label: "Accessibility" },
   { id: "security", label: "Security" },
   { id: "availability", label: "My Availability" },
   { id: "branding", label: "Branding" },
@@ -335,7 +342,7 @@ function ColorPickerPanel({ color, onColorChange, onEnter }) {
   );
 }
 
-export default function SettingsPage() {
+export default function SettingsPage({ isActivePage = true }) {
   const {
     theme,
     saveThemeGlobally,
@@ -390,6 +397,17 @@ export default function SettingsPage() {
   const [authUserId, setAuthUserId] = useState("");
   const [userId, setUserId] = useState(null);
   const [authEmail, setAuthEmail] = useState("");
+  const cachedFontSizePreference = normalizeFontSizePreference(
+    readCachedProfile()?.font_size_preference,
+  );
+  const [savedFontSizePreference, setSavedFontSizePreference] = useState(
+    cachedFontSizePreference,
+  );
+  const [fontSizePreference, setFontSizePreference] = useState(
+    cachedFontSizePreference,
+  );
+  const [isSavingFontSize, setIsSavingFontSize] = useState(false);
+  const savedFontSizePreferenceRef = useRef(cachedFontSizePreference);
   const [isOtpSent, setIsOtpSent] = useState(false);
   const [isVerifyingPasswordOtp, setIsVerifyingPasswordOtp] = useState(false);
   const [passwordMfaRequired, setPasswordMfaRequired] = useState(false);
@@ -787,6 +805,55 @@ export default function SettingsPage() {
     setTimeout(() => setToast(""), 2200);
   }, []);
 
+  useEffect(() => {
+    savedFontSizePreferenceRef.current = savedFontSizePreference;
+  }, [savedFontSizePreference]);
+
+  useEffect(() => {
+    if (!isActivePage && fontSizePreference !== savedFontSizePreferenceRef.current) {
+      setFontSizePreference(savedFontSizePreferenceRef.current);
+      previewFontSizePreference(savedFontSizePreferenceRef.current);
+    }
+  }, [fontSizePreference, isActivePage]);
+
+  const handleFontSizePreview = (value) => {
+    const normalized = normalizeFontSizePreference(value);
+    setFontSizePreference(normalized);
+    previewFontSizePreference(normalized);
+  };
+
+  const handleResetFontSizePreview = () => {
+    setFontSizePreference(savedFontSizePreference);
+    previewFontSizePreference(savedFontSizePreference);
+  };
+
+  const handleSaveFontSize = async () => {
+    if (!isSupabaseConfigured || !supabase || !userId) {
+      showToast("Your account is still loading. Please try again.");
+      return;
+    }
+
+    setIsSavingFontSize(true);
+    try {
+      const normalized = normalizeFontSizePreference(fontSizePreference);
+      const { error } = await supabase.rpc("update_my_font_size_preference", {
+        p_font_size_preference: normalized,
+      });
+
+      if (error) throw error;
+
+      setSavedFontSizePreference(normalized);
+      savedFontSizePreferenceRef.current = normalized;
+      pushUserProfileToShell({ font_size_preference: normalized });
+      previewFontSizePreference(normalized);
+      showToast("Text size saved to your account.");
+    } catch (error) {
+      showToast(error?.message || "Unable to save your text size.");
+    } finally {
+      setIsSavingFontSize(false);
+    }
+  };
+
   const pushUserProfileToShell = (nextProfile) => {
     try {
       const raw = localStorage.getItem(USER_PROFILE_STORAGE_KEY);
@@ -818,7 +885,7 @@ export default function SettingsPage() {
     const { data: userRow, error: userError } = await supabase
       .from("users")
       .select(
-        "user_id, role, email, access_start, access_end, is_active, created_at, updated_at",
+        "user_id, role, email, access_start, access_end, is_active, created_at, updated_at, font_size_preference",
       )
       .eq("auth_user_id", nextAuthUserId)
       .maybeSingle();
@@ -829,6 +896,14 @@ export default function SettingsPage() {
 
     const resolvedUserId = userRow?.user_id || null;
     setUserId(resolvedUserId);
+
+    const resolvedFontSize = normalizeFontSizePreference(
+      userRow?.font_size_preference,
+    );
+    setSavedFontSizePreference(resolvedFontSize);
+    savedFontSizePreferenceRef.current = resolvedFontSize;
+    setFontSizePreference(resolvedFontSize);
+    previewFontSizePreference(resolvedFontSize);
 
     const nextRole = userRow?.role || profile.role;
     const nextResolvedEmail = userRow?.email || nextEmail || "";
@@ -903,6 +978,7 @@ export default function SettingsPage() {
       photo_path: resolvedDetails?.photo_path || avatarStoragePath || null,
       role: nextRole,
       email: nextResolvedEmail,
+      font_size_preference: resolvedFontSize,
     });
   };
 
@@ -2551,6 +2627,122 @@ export default function SettingsPage() {
                 </button>
               </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === "accessibility" && (
+          <div className="space-y-5">
+            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+              <div className="flex items-start gap-3">
+                <div
+                  className="flex h-10 w-10 flex-none items-center justify-center rounded-xl text-white"
+                  style={{ backgroundColor: theme.primaryColor }}
+                >
+                  <Type size={20} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">Text size</h3>
+                  <p className="mt-1 text-sm leading-6 text-slate-500">
+                    Choose how large text and interface controls appear in your signed-in workspace.
+                    Selecting an option previews it immediately.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {FONT_SIZE_OPTIONS.map((option) => {
+                  const isSelected = fontSizePreference === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => handleFontSizePreview(option.value)}
+                      className={`rounded-xl border p-4 text-left transition ${
+                        isSelected
+                          ? "shadow-sm"
+                          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                      }`}
+                      style={
+                        isSelected
+                          ? {
+                              borderColor: theme.primaryColor,
+                              backgroundColor: `${theme.primaryColor}0d`,
+                            }
+                          : undefined
+                      }
+                      aria-pressed={isSelected}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-bold text-slate-900">{option.label}</span>
+                        <span
+                          className={`flex h-5 w-5 items-center justify-center rounded-full border ${
+                            isSelected ? "text-white" : "border-slate-300 text-transparent"
+                          }`}
+                          style={
+                            isSelected
+                              ? {
+                                  borderColor: theme.primaryColor,
+                                  backgroundColor: theme.primaryColor,
+                                }
+                              : undefined
+                          }
+                        >
+                          <Check size={12} strokeWidth={3} />
+                        </span>
+                      </div>
+                      <div
+                        className="mt-4 font-bold leading-none text-slate-800"
+                        style={{ fontSize: `${option.rootPixels}px` }}
+                      >
+                        Aa
+                      </div>
+                      <p className="mt-3 text-sm leading-5 text-slate-500">
+                        {option.description}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-5">
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Live preview
+                </p>
+                <p className="mt-2 text-lg font-bold text-slate-900">
+                  Donivra should be comfortable to read.
+                </p>
+                <p className="mt-1 text-sm leading-6 text-slate-600">
+                  This preview applies across your sidebar, header, forms, tables, calendars,
+                  cards, and modals. It does not change public pages or another user&apos;s account.
+                </p>
+              </div>
+
+              <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-5">
+                <p className="text-sm text-slate-500">
+                  Saved size: {FONT_SIZE_OPTIONS.find((option) => option.value === savedFontSizePreference)?.label || "Default"}
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={handleResetFontSizePreview}
+                    disabled={fontSizePreference === savedFontSizePreference || isSavingFontSize}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Cancel preview
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveFontSize}
+                    disabled={fontSizePreference === savedFontSizePreference || isSavingFontSize}
+                    className="inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    style={{ backgroundColor: theme.primaryColor }}
+                  >
+                    <Save size={15} />
+                    {isSavingFontSize ? "Saving..." : "Save text size"}
+                  </button>
+                </div>
+              </div>
+            </section>
           </div>
         )}
 

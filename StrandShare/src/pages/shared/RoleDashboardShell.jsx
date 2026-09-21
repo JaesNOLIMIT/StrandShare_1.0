@@ -2,6 +2,11 @@ import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'reac
 import Sidebar from '../../components/Sidebar';
 import Header from '../../components/Header';
 import { PageActivityProvider } from '../../context/PageActivityContext';
+import {
+  FONT_SIZE_PREVIEW_EVENT,
+  getFontSizeRootPixels,
+  normalizeFontSizePreference,
+} from '../../lib/fontSizePreference';
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'Donivra.sidebar.collapsed';
 
@@ -29,6 +34,32 @@ export default function RoleDashboardShell({
   const [currentPage, setCurrentPage] = useState(initialPage);
   const [visitedPages, setVisitedPages] = useState(() => new Set([initialPage]));
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(getInitialSidebarCollapsed);
+  const [fontSizePreference, setFontSizePreference] = useState(() =>
+    normalizeFontSizePreference(userProfile?.font_size_preference),
+  );
+
+  useEffect(() => {
+    setFontSizePreference(normalizeFontSizePreference(userProfile?.font_size_preference));
+  }, [userProfile?.font_size_preference]);
+
+  useEffect(() => {
+    const handlePreview = (event) => {
+      setFontSizePreference(normalizeFontSizePreference(event?.detail?.value));
+    };
+
+    window.addEventListener(FONT_SIZE_PREVIEW_EVENT, handlePreview);
+    return () => window.removeEventListener(FONT_SIZE_PREVIEW_EVENT, handlePreview);
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const previousFontSize = root.style.fontSize;
+    root.style.fontSize = `${getFontSizeRootPixels(fontSizePreference)}px`;
+
+    return () => {
+      root.style.fontSize = previousFontSize;
+    };
+  }, [fontSizePreference]);
 
   const navigateToPage = useCallback((pageId) => {
     const nextPage = pageId || 'dashboard';

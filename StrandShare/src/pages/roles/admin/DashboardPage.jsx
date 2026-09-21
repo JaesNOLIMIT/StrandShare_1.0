@@ -107,13 +107,6 @@ function formatRoleLabel(value) {
   return labels[key] || String(value || 'Other').replace(/[_-]+/g, ' ');
 }
 
-function eventLifecycleDate(row) {
-  const status = normalizeKey(row?.Status);
-  if (status === 'successful') return row?.Successful_At || row?.Updated_At || row?.Created_At;
-  if (status === 'ended') return row?.Ended_At || row?.Updated_At || row?.End_Date || row?.Created_At;
-  return row?.Updated_At || row?.Created_At;
-}
-
 function periodKey(rangeId, selectedMonth, selectedYear, value) {
   const parts = toManilaParts(value);
   if (!parts) return null;
@@ -132,11 +125,39 @@ function periodKey(rangeId, selectedMonth, selectedYear, value) {
   return partYear >= currentYear - 4 && partYear <= currentYear ? String(partYear) : null;
 }
 
+function addLifecycleMilestones(counts, status) {
+  const currentStatus = normalizeKey(status);
+  if (currentStatus === 'successful') {
+    counts.approved += 1;
+    counts.ended += 1;
+    counts.successful += 1;
+    return;
+  }
+  if (currentStatus === 'ended') {
+    counts.approved += 1;
+    counts.ended += 1;
+    return;
+  }
+  if (currentStatus === 'approved') {
+    counts.approved += 1;
+    return;
+  }
+  if (currentStatus === 'rejected') {
+    counts.rejected += 1;
+    return;
+  }
+  if (currentStatus === 'cancelled') {
+    counts.cancelled += 1;
+    return;
+  }
+  counts.pending += 1;
+}
+
 function buildPerformanceSeries(rangeId, selectedMonth, selectedYear, applicationRows, requestRows, hospitalRows) {
   const currentYear = new Date().getFullYear();
   const year = Number(selectedYear) || currentYear;
   const [monthYear, month] = String(selectedMonth || '').split('-').map(Number);
-  const createBucket = (label, key) => ({ label, key, applications: 0, approved: 0, rejected: 0, ended: 0, successful: 0, cancelled: 0, hospitalApplications: 0 });
+  const createBucket = (label, key) => ({ label, key, applications: 0, pending: 0, approved: 0, rejected: 0, ended: 0, successful: 0, cancelled: 0, hospitalApplications: 0 });
   let rows;
 
   if (rangeId === 'weekly') {
@@ -149,26 +170,20 @@ function buildPerformanceSeries(rangeId, selectedMonth, selectedYear, applicatio
   }
 
   const byKey = new Map(rows.map((row) => [row.key, row]));
-  const requestApplicationIds = new Set(
-    requestRows.map((row) => safeNumber(row?.Event_Application_ID)).filter(Boolean),
+  const requestByApplicationId = new Map(
+    requestRows
+      .map((row) => [safeNumber(row?.Event_Application_ID), row])
+      .filter(([applicationId]) => applicationId > 0),
   );
   applicationRows.forEach((row) => {
     const bucket = byKey.get(periodKey(rangeId, selectedMonth, selectedYear, row?.Created_At));
-    if (bucket) bucket.applications += 1;
-
     const applicationId = safeNumber(row?.Event_Application_ID);
-    const hasLinkedRequest = safeNumber(row?.Linked_Event_Request_ID) > 0 || requestApplicationIds.has(applicationId);
-    const applicationStatus = normalizeKey(row?.Status);
-    if (!hasLinkedRequest && ['rejected', 'cancelled'].includes(applicationStatus)) {
-      const outcomeBucket = byKey.get(periodKey(rangeId, selectedMonth, selectedYear, row?.Updated_At || row?.Created_At));
-      if (outcomeBucket) outcomeBucket[applicationStatus] += 1;
+    const request = requestByApplicationId.get(applicationId);
+    const currentStatus = normalizeKey(request?.Status || row?.Status);
+    if (bucket) {
+      bucket.applications += 1;
+      addLifecycleMilestones(bucket, currentStatus);
     }
-  });
-  requestRows.forEach((row) => {
-    const status = normalizeKey(row?.Status);
-    if (!['approved', 'rejected', 'ended', 'successful', 'cancelled'].includes(status)) return;
-    const bucket = byKey.get(periodKey(rangeId, selectedMonth, selectedYear, eventLifecycleDate(row)));
-    if (bucket) bucket[status] += 1;
   });
   hospitalRows.forEach((row) => {
     const bucket = byKey.get(periodKey(rangeId, selectedMonth, selectedYear, row?.Created_At));
@@ -508,7 +523,6 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
           statusBreakdown[status] += 1;
         }
       });
-
       const activeLegalRow = legalResult.data.find((row) => Boolean(row.is_active)) || null;
       const systemChecks = {
         wigRequirementsReady: wigResult.data.length > 0,
@@ -576,12 +590,12 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
         kpis: {
           pendingAdminDecision: pendingAdminRows.length,
           pendingHospitalApplications: pendingHospitalRows.length,
-          approvedRequests: statusBreakdown.approved,
+          approvedRequests: statusBreakdown.approved + statusBreakdown.ended + statusBreakdown.successful,
           acceptedRequests: statusBreakdown.approved + statusBreakdown.ended + statusBreakdown.successful,
           totalEventApplications: applicationRows.length,
           rejectedRequests: statusBreakdown.rejected,
           cancelledRequests: statusBreakdown.cancelled,
-          endedRequests: statusBreakdown.ended,
+          endedRequests: statusBreakdown.ended + statusBreakdown.successful,
           successfulRequests: statusBreakdown.successful,
           approvedWithoutAssignedStaff: approvedWithoutAssignedStaff.length,
           pendingStaffReview: pendingStaffReviewRows.length,
@@ -637,7 +651,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
       label: 'Approved Programs',
       value: dashboard.kpis.approvedRequests,
       accentColor: '#2563eb',
-      helper: 'Currently approved',
+      helper: 'Reached approval',
       page: 'manage-event-applications',
       icon: BadgeCheck,
     },
@@ -655,7 +669,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
       label: 'Ended Programs',
       value: dashboard.kpis.endedRequests,
       accentColor: secondaryColor,
-      helper: 'Awaiting finalization',
+      helper: 'Reached program end',
       page: 'reports',
       icon: CalendarClock,
     },
@@ -671,30 +685,21 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
   ]), [dashboard.kpis, primaryColor, secondaryColor]);
 
   const overviewData = useMemo(() => {
-    const filteredRequests = dashboard.sourceRows.requests.filter((row) => periodKey(performanceRange, performanceMonth, performanceYear, eventLifecycleDate(row)));
     const filteredApplications = dashboard.sourceRows.applications.filter((row) => periodKey(performanceRange, performanceMonth, performanceYear, row?.Created_At));
     const filteredHospitals = dashboard.sourceRows.hospitals.filter((row) => periodKey(performanceRange, performanceMonth, performanceYear, row?.Created_At));
-    const requestCounts = { pendingadminapproval: 0, approved: 0, rejected: 0, cancelled: 0, ended: 0, successful: 0 };
+    const requestCounts = { pending: 0, approved: 0, rejected: 0, cancelled: 0, ended: 0, successful: 0 };
     const hospitalCounts = { pending: 0, approved: 0, rejected: 0 };
 
-    filteredRequests.forEach((row) => {
-      const status = normalizeKey(row.Status);
-      if (status in requestCounts) requestCounts[status] += 1;
-    });
-    const requestApplicationIds = new Set(
-      dashboard.sourceRows.requests.map((row) => safeNumber(row.Event_Application_ID)).filter(Boolean),
-    );
-    dashboard.sourceRows.applications.forEach((row) => {
+    const requestByApplicationId = new Map();
+    dashboard.sourceRows.requests.forEach((row) => {
       const applicationId = safeNumber(row.Event_Application_ID);
-      const hasLinkedRequest = safeNumber(row.Linked_Event_Request_ID) > 0 || requestApplicationIds.has(applicationId);
-      const status = normalizeKey(row.Status);
-      if (
-        !hasLinkedRequest
-        && ['rejected', 'cancelled'].includes(status)
-        && periodKey(performanceRange, performanceMonth, performanceYear, row.Updated_At || row.Created_At)
-      ) {
-        requestCounts[status] += 1;
-      }
+      if (applicationId > 0) requestByApplicationId.set(applicationId, row);
+    });
+    filteredApplications.forEach((row) => {
+      const applicationId = safeNumber(row.Event_Application_ID);
+      const request = requestByApplicationId.get(applicationId);
+      const currentStatus = normalizeKey(request?.Status || row.Status);
+      addLifecycleMilestones(requestCounts, currentStatus);
     });
     filteredHospitals.forEach((row) => {
       const status = formatHospitalStatus(row);
@@ -711,7 +716,8 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
         dashboard.sourceRows.hospitals,
       ),
       eventLifecycleData: [
-        { name: 'Applications', key: 'applications', value: filteredApplications.length, color: primaryColor },
+        { name: 'Total Applications', key: 'applications', value: filteredApplications.length, color: primaryColor },
+        { name: 'Pending', key: 'pending', value: requestCounts.pending, color: '#d97706' },
         { name: 'Approved', key: 'approved', value: requestCounts.approved, color: '#2563eb' },
         { name: 'Rejected', key: 'rejected', value: requestCounts.rejected, color: '#dc2626' },
         { name: 'Ended', key: 'ended', value: requestCounts.ended, color: '#64748b' },
@@ -897,7 +903,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
             <div className="flex min-h-[260px] flex-col border-b p-4 xl:border-b-0 xl:border-r" style={{ borderColor: palette.divider }}>
               <div>
                 <h3 className="text-xs font-bold" style={{ color: palette.heading }}>{PERFORMANCE_RANGES[performanceRange].label} program lifecycle</h3>
-                <p className="text-[10px]" style={{ color: palette.mutedText }}>{performanceRange === 'weekly' ? 'All weeks in the selected month' : performanceRange === 'monthly' ? 'All months in the selected year' : 'Annual totals for the past five years'}</p>
+                <p className="text-[10px]" style={{ color: palette.mutedText }}>{performanceRange === 'weekly' ? 'Cumulative milestones for applications submitted each week' : performanceRange === 'monthly' ? 'Cumulative milestones for applications submitted each month' : 'Cumulative milestones for applications submitted each year'}</p>
               </div>
               <div className="mt-2 min-h-[190px] flex-1">
                 <ResponsiveContainer width="100%" height="100%">
@@ -906,7 +912,8 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
                     <XAxis dataKey="label" interval={0} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
                     <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: palette.bodyText }} tickLine={false} axisLine={false} />
                     <Tooltip cursor={{ fill: withAlpha(secondaryColor, 0.08) }} contentStyle={{ backgroundColor: palette.surface, borderColor: palette.border, borderRadius: 8, color: palette.heading, fontSize: 11 }} />
-                    <Bar dataKey="applications" name="Applications" fill={primaryColor} radius={[4, 4, 0, 0]} maxBarSize={34} />
+                    <Bar dataKey="applications" name="Total Applications" fill={primaryColor} radius={[4, 4, 0, 0]} maxBarSize={34} />
+                    <Bar dataKey="pending" name="Pending" fill="#d97706" radius={[4, 4, 0, 0]} maxBarSize={34} />
                     <Bar dataKey="approved" name="Approved" fill="#2563eb" radius={[4, 4, 0, 0]} maxBarSize={34} />
                     <Bar dataKey="rejected" name="Rejected" fill="#dc2626" radius={[4, 4, 0, 0]} maxBarSize={34} />
                     <Bar dataKey="ended" name="Ended" fill="#64748b" radius={[4, 4, 0, 0]} maxBarSize={34} />
@@ -918,7 +925,7 @@ export default function DashboardPage({ onNavigate, onInitialDataReady }) {
             </div>
             <div className="p-4">
               <h3 className="text-xs font-bold" style={{ color: palette.heading }}>Program Counts</h3>
-              <p className="mb-2 text-[10px]" style={{ color: palette.mutedText }}>Percentages are based on all applications in this period</p>
+              <p className="mb-2 text-[10px]" style={{ color: palette.mutedText }}>Milestones are cumulative; successful programs also remain counted as approved and ended.</p>
               <StatusTable data={overviewData.eventLifecycleData} total={totalEventApplications} palette={palette} />
             </div>
           </div>

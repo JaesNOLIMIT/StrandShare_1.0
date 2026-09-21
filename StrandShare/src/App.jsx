@@ -119,7 +119,7 @@ export default function App() {
 
     const { data: userRow, error: userError } = await supabase
       .from('users')
-      .select('user_id, auth_user_id, role, email')
+      .select('user_id, auth_user_id, role, email, font_size_preference')
       .eq('auth_user_id', authUserId)
       .maybeSingle();
 
@@ -140,6 +140,7 @@ export default function App() {
         auth_user_id: userRow.auth_user_id,
         role: userRow.role,
         email: userRow.email,
+        font_size_preference: userRow.font_size_preference || 'default',
       };
     }
 
@@ -149,6 +150,7 @@ export default function App() {
       auth_user_id: userRow.auth_user_id,
       role: userRow.role,
       email: userRow.email,
+      font_size_preference: userRow.font_size_preference || 'default',
       first_name: detailsRow?.first_name || '',
       middle_name: detailsRow?.middle_name || '',
       last_name: detailsRow?.last_name || '',

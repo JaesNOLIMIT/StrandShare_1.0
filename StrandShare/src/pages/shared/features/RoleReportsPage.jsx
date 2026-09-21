@@ -6,7 +6,6 @@ import {
   Calendar,
   CheckCircle2,
   ClipboardList,
-  Clock3,
   Download,
   FileText,
   Loader2,
@@ -15,7 +14,6 @@ import {
   ScanLine,
   Send,
   Users,
-  XCircle,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import {
@@ -46,6 +44,7 @@ const WIG_REQUESTS_TABLE = 'Wig_Requests';
 const USERS_TABLE = 'users';
 const EVENT_LIFECYCLE_COLORS = {
   applications: '#6b1010',
+  pending: '#d97706',
   approved: '#2563eb',
   rejected: '#dc2626',
   ended: '#64748b',
@@ -239,12 +238,40 @@ function emptyLifecycleBucket(label, key) {
     label,
     key,
     applications: 0,
+    pending: 0,
     approved: 0,
     rejected: 0,
     ended: 0,
     successful: 0,
     cancelled: 0,
   };
+}
+
+function addLifecycleMilestones(counts, statusKey) {
+  if (statusKey === 'successful') {
+    counts.approved += 1;
+    counts.ended += 1;
+    counts.successful += 1;
+    return;
+  }
+  if (statusKey === 'ended') {
+    counts.approved += 1;
+    counts.ended += 1;
+    return;
+  }
+  if (statusKey === 'approved') {
+    counts.approved += 1;
+    return;
+  }
+  if (statusKey === 'rejected') {
+    counts.rejected += 1;
+    return;
+  }
+  if (statusKey === 'cancelled') {
+    counts.cancelled += 1;
+    return;
+  }
+  counts.pending += 1;
 }
 
 function buildEventLifecyclePeriodSeries(grouping, selectedMonth, selectedYear, applications, requests) {
@@ -275,21 +302,21 @@ function buildEventLifecyclePeriodSeries(grouping, selectedMonth, selectedYear, 
   }
 
   const byKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+  const requestByApplicationId = new Map(
+    requests
+      .map((row) => [Number(row.applicationId || 0), row])
+      .filter(([applicationId]) => applicationId > 0),
+  );
   applications.forEach((row) => {
     const bucket = byKey.get(bucketKeyForParts(manilaDateParts(row.createdAt)));
-    if (bucket) bucket.applications += 1;
-  });
-  requests.forEach((row) => {
-    if (!Object.prototype.hasOwnProperty.call(EVENT_LIFECYCLE_COLORS, row.statusKey) || row.statusKey === 'applications') return;
-    const bucket = byKey.get(bucketKeyForParts(manilaDateParts(row.filterDate || row.createdAt)));
-    if (bucket) bucket[row.statusKey] += 1;
+    const request = requestByApplicationId.get(Number(row.applicationId || 0));
+    const currentStatus = request?.statusKey || row.statusKey;
+    if (bucket) {
+      bucket.applications += 1;
+      addLifecycleMilestones(bucket, currentStatus);
+    }
   });
   return buckets;
-}
-
-function cancelledLikeStatus(statusKey) {
-  if (!statusKey) return false;
-  return statusKey.includes('cancelled') || statusKey.includes('canceled') || statusKey.includes('noshow');
 }
 
 function calculateAiReviewAccuracy(screening, staffValues) {
@@ -713,24 +740,23 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           linkedRequestId: Number(row.Linked_Event_Request_ID || 0) || null,
           statusKey: normalizeKey(row.Status),
           createdAt: row.Created_At,
-          filterDate: row.Updated_At || row.Created_At,
+          filterDate: row.Created_At,
           searchText: [row.Event_Application_ID, row.Event_Name].filter(Boolean).join(' ').toLowerCase(),
         })));
 
         const requestRows = result.data || [];
+        const applicationById = new Map(
+          applicationRows.map((row) => [Number(row.Event_Application_ID || 0), row]),
+        );
         const requestApplicationIds = new Set(
           requestRows.map((row) => Number(row.Event_Application_ID || 0)).filter(Boolean),
         );
         const mappedRequestRows = requestRows.map((row) => {
           const statusKey = normalizeKey(row.Status);
           const visibility = normalizeKey(row.Event_Visibility) === 'private' ? 'Private' : 'Public';
-          const lifecycleAt = statusKey === 'successful'
-            ? row.Successful_At || row.Updated_At || row.Created_At
-            : statusKey === 'ended'
-              ? row.Ended_At || row.Updated_At || row.End_Date || row.Created_At
-              : row.Updated_At || row.Created_At;
           return {
             recordId: `ER-${row.Event_Request_ID}`,
+            applicationId: Number(row.Event_Application_ID || 0) || null,
             eventName: row.Event_Name || 'Untitled Program',
             statusKey,
             statusLabel: labelFromKey(statusKey),
@@ -745,7 +771,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               ? `${row.Cancelled_By_Role || 'Admin'} - User #${row.Cancelled_By_User_ID}`
               : 'N/A',
             createdAt: row.Created_At || null,
-            filterDate: lifecycleAt,
+            filterDate: applicationById.get(Number(row.Event_Application_ID || 0))?.Created_At || row.Created_At,
             updatedAt: row.Updated_At || null,
             createdAtLabel: formatDateTime(row.Created_At),
             updatedAtLabel: formatDateTime(row.Updated_At),
@@ -761,29 +787,32 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
               .toLowerCase(),
           };
         });
-        const applicationOnlyOutcomes = applicationRows
+        const applicationWithoutRequests = applicationRows
           .filter((row) => {
             const applicationId = Number(row.Event_Application_ID || 0);
-            const hasLinkedRequest = Number(row.Linked_Event_Request_ID || 0) > 0 || requestApplicationIds.has(applicationId);
-            return !hasLinkedRequest && ['rejected', 'cancelled'].includes(normalizeKey(row.Status));
+            const hasLinkedRequest = requestApplicationIds.has(applicationId);
+            return !hasLinkedRequest;
           })
           .map((row) => {
-            const statusKey = normalizeKey(row.Status);
+            const applicationStatus = normalizeKey(row.Status);
+            const statusKey = ['rejected', 'cancelled'].includes(applicationStatus)
+              ? applicationStatus
+              : 'pending';
             const visibility = normalizeKey(row.Event_Visibility) === 'private' ? 'Private' : 'Public';
-            const lifecycleAt = row.Updated_At || row.Created_At;
             return {
               recordId: `EA-${row.Event_Application_ID}`,
+              applicationId: Number(row.Event_Application_ID || 0) || null,
               eventName: row.Event_Name || 'Untitled Program',
               statusKey,
               statusLabel: labelFromKey(statusKey),
               eventVisibility: visibility,
-              assignedStaff: row.Staff_Reviewer_User_ID ? `Reviewed by User #${row.Staff_Reviewer_User_ID}` : 'Rejected during intake',
+              assignedStaff: row.Staff_Reviewer_User_ID ? `Reviewed by User #${row.Staff_Reviewer_User_ID}` : 'Awaiting review',
               schedule: `${formatShortDate(row.Proposed_Start_At)} - ${formatShortDate(row.Proposed_End_At)}`,
               cancellationReason: 'N/A',
               cancelledAtLabel: 'N/A',
               cancelledBy: 'N/A',
               createdAt: row.Created_At || null,
-              filterDate: lifecycleAt,
+              filterDate: row.Created_At,
               updatedAt: row.Updated_At || null,
               createdAtLabel: formatDateTime(row.Created_At),
               updatedAtLabel: formatDateTime(row.Updated_At),
@@ -799,7 +828,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                 .toLowerCase(),
             };
           });
-        mappedRows = [...mappedRequestRows, ...applicationOnlyOutcomes]
+        mappedRows = [...mappedRequestRows, ...applicationWithoutRequests]
           .sort((a, b) => new Date(b.filterDate || b.createdAt || 0).getTime() - new Date(a.filterDate || a.createdAt || 0).getTime());
       } else if (selectedTemplate.id === 'hospital_applications') {
         const result = await supabase
@@ -1085,7 +1114,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
         if (selectedAiEventKey !== 'all' && rowEventKey !== selectedAiEventKey) return false;
         if (aiEventDate && !scheduleDateKeysForRecord(row, (item) => item.programStartDate, (item) => item.programEndDate).includes(aiEventDate)) return false;
       }
-      if ((dateFrom || dateTo) && !withinDateRange(row.createdAt, dateFrom, dateTo)) return false;
+      if ((dateFrom || dateTo) && !withinDateRange(row.filterDate || row.createdAt, dateFrom, dateTo)) return false;
       if (searchTerm.trim()) {
         const query = searchTerm.trim().toLowerCase();
         if (!String(row.searchText || '').includes(query)) return false;
@@ -1155,28 +1184,21 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     safePreviewPage * previewPageSize,
   );
 
-  const summary = useMemo(() => {
-    const total = filteredRows.length;
-    const pending = filteredRows.filter((row) => pendingLikeStatus(row.statusKey)).length;
-    const approved = filteredRows.filter((row) => approvedLikeStatus(row.statusKey)).length;
-    const rejected = filteredRows.filter((row) => rejectedLikeStatus(row.statusKey)).length;
-    const cancelled = filteredRows.filter((row) => cancelledLikeStatus(row.statusKey)).length;
-    return { total, pending, approved, rejected, cancelled };
-  }, [filteredRows]);
-
-  const eventLifecycleSummary = useMemo(() => ({
-    total: eventApplicationAnalyticsRows.filter((row) => {
-      if ((dateFrom || dateTo) && !withinDateRange(row.filterDate || row.createdAt, dateFrom, dateTo)) return false;
-      if (searchTerm.trim() && !row.searchText.includes(searchTerm.trim().toLowerCase())) return false;
-      return true;
-    }).length,
-    requests: filteredRows.length,
-    approved: filteredRows.filter((row) => row.statusKey === 'approved').length,
-    rejected: filteredRows.filter((row) => row.statusKey === 'rejected').length,
-    ended: filteredRows.filter((row) => row.statusKey === 'ended').length,
-    successful: filteredRows.filter((row) => row.statusKey === 'successful').length,
-    cancelled: filteredRows.filter((row) => row.statusKey === 'cancelled').length,
-  }), [dateFrom, dateTo, eventApplicationAnalyticsRows, filteredRows, searchTerm]);
+  const eventLifecycleSummary = useMemo(() => filteredRows.reduce((summary, row) => {
+    summary.total += 1;
+    summary.requests += 1;
+    addLifecycleMilestones(summary, row.statusKey);
+    return summary;
+  }, {
+    total: 0,
+    requests: 0,
+    pending: 0,
+    approved: 0,
+    rejected: 0,
+    ended: 0,
+    successful: 0,
+    cancelled: 0,
+  }), [filteredRows]);
 
   const aiAccuracySummary = useMemo(() => {
     const comparableRows = filteredRows.filter((row) => Number(row.comparableFieldCount || 0) > 0);
@@ -1201,23 +1223,17 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     { name: 'Rejected cut', value: filteredRows.filter((row) => row.statusKey === 'rejectedcut').length, color: '#d97706' },
   ]), [filteredRows]);
 
-  const pct = (value, total) => (total > 0 ? Math.round((value / total) * 100) : 0);
-
   const statusChartData = useMemo(() => {
     if (selectedTemplate?.id === 'event_requests') {
-      const applicationCount = eventApplicationAnalyticsRows.filter((row) => {
-        if ((dateFrom || dateTo) && !withinDateRange(row.createdAt, dateFrom, dateTo)) return false;
-        if (searchTerm.trim() && !row.searchText.includes(searchTerm.trim().toLowerCase())) return false;
-        return true;
-      }).length;
-      const count = (status) => filteredRows.filter((row) => row.statusKey === status).length;
+      const applicationCount = filteredRows.length;
       return [
         { name: 'Applications', value: applicationCount, statusKey: 'applications', color: lifecycleColors.applications },
-        { name: 'Approved', value: count('approved'), statusKey: 'approved', color: lifecycleColors.approved },
-        { name: 'Rejected', value: count('rejected'), statusKey: 'rejected', color: lifecycleColors.rejected },
-        { name: 'Ended', value: count('ended'), statusKey: 'ended', color: lifecycleColors.ended },
-        { name: 'Successful', value: count('successful'), statusKey: 'successful', color: lifecycleColors.successful },
-        { name: 'Cancelled', value: count('cancelled'), statusKey: 'cancelled', color: lifecycleColors.cancelled },
+        { name: 'Pending', value: eventLifecycleSummary.pending, statusKey: 'pending', color: lifecycleColors.pending },
+        { name: 'Approved', value: eventLifecycleSummary.approved, statusKey: 'approved', color: lifecycleColors.approved },
+        { name: 'Rejected', value: eventLifecycleSummary.rejected, statusKey: 'rejected', color: lifecycleColors.rejected },
+        { name: 'Ended', value: eventLifecycleSummary.ended, statusKey: 'ended', color: lifecycleColors.ended },
+        { name: 'Successful', value: eventLifecycleSummary.successful, statusKey: 'successful', color: lifecycleColors.successful },
+        { name: 'Cancelled', value: eventLifecycleSummary.cancelled, statusKey: 'cancelled', color: lifecycleColors.cancelled },
       ];
     }
     const map = new Map();
@@ -1234,7 +1250,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       map.get(name).value += 1;
     });
     return Array.from(map.values());
-  }, [dateFrom, dateTo, eventApplicationAnalyticsRows, filteredRows, lifecycleColors, palette, searchTerm, selectedTemplate?.id]);
+  }, [eventLifecycleSummary, filteredRows, lifecycleColors, palette, selectedTemplate?.id]);
 
   const recentTrend = useMemo(() => {
     const frame = buildRecent7DayFrame();
@@ -1251,7 +1267,6 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     const query = searchTerm.trim().toLowerCase();
     const requests = rawRows.filter((row) => {
       if (selectedTemplate?.id !== 'event_requests') return false;
-      if (statusFilter !== 'all' && row.statusLabel !== statusFilter) return false;
       return !query || String(row.searchText || '').includes(query);
     });
     const applications = eventApplicationAnalyticsRows.filter((row) => (
@@ -1264,7 +1279,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       applications,
       requests,
     );
-  }, [eventActivityGrouping, eventActivityMonth, eventActivityYear, eventApplicationAnalyticsRows, rawRows, searchTerm, selectedTemplate?.id, statusFilter]);
+  }, [eventActivityGrouping, eventActivityMonth, eventActivityYear, eventApplicationAnalyticsRows, rawRows, searchTerm, selectedTemplate?.id]);
 
   const eventActivityYears = useMemo(() => {
     const currentYear = new Date().getFullYear();
@@ -1368,60 +1383,6 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
   }
 
   const SelectedIcon = selectedTemplate.icon || ClipboardList;
-
-  const standardKpiTiles = [
-    {
-      key: 'total',
-      label: 'Total Records',
-      value: summary.total,
-      pctValue: summary.total > 0 ? 100 : 0,
-      icon: SelectedIcon,
-      accent: palette.primary,
-    },
-    {
-      key: 'pending',
-      label: 'Pending / In Flight',
-      value: summary.pending,
-      pctValue: pct(summary.pending, summary.total),
-      icon: Clock3,
-      accent: palette.pendingStaff,
-    },
-    {
-      key: 'approved',
-      label: 'Approved / Completed',
-      value: summary.approved,
-      pctValue: pct(summary.approved, summary.total),
-      icon: CheckCircle2,
-      accent: palette.approved,
-    },
-    {
-      key: 'rejected',
-      label: 'Rejected by Quality',
-      value: summary.rejected,
-      pctValue: pct(summary.rejected, summary.total),
-      icon: XCircle,
-      accent: palette.rejected,
-    },
-    {
-      key: 'cancelled',
-      label: 'Cancelled / No Show',
-      value: summary.cancelled,
-      pctValue: pct(summary.cancelled, summary.total),
-      icon: XCircle,
-      accent: palette.rejected,
-    },
-  ];
-
-  const eventRequestKpiTiles = [
-    { key: 'event-applications', label: 'Applications', value: eventLifecycleSummary.total, pctValue: eventLifecycleSummary.total > 0 ? 100 : 0, icon: ClipboardList, accent: lifecycleColors.applications },
-    { key: 'approved-events', label: 'Approved Programs', value: eventLifecycleSummary.approved, pctValue: pct(eventLifecycleSummary.approved, eventLifecycleSummary.requests), icon: CheckCircle2, accent: lifecycleColors.approved },
-    { key: 'rejected-events', label: 'Rejected Programs', value: eventLifecycleSummary.rejected, pctValue: pct(eventLifecycleSummary.rejected, eventLifecycleSummary.requests), icon: XCircle, accent: lifecycleColors.rejected },
-    { key: 'ended-events', label: 'Ended Programs', value: eventLifecycleSummary.ended, pctValue: pct(eventLifecycleSummary.ended, eventLifecycleSummary.requests), icon: Clock3, accent: lifecycleColors.ended },
-    { key: 'successful-events', label: 'Successful Programs', value: eventLifecycleSummary.successful, pctValue: pct(eventLifecycleSummary.successful, eventLifecycleSummary.requests), icon: CheckCircle2, accent: lifecycleColors.successful },
-    { key: 'cancelled-events', label: 'Cancelled Programs', value: eventLifecycleSummary.cancelled, pctValue: pct(eventLifecycleSummary.cancelled, eventLifecycleSummary.requests), icon: XCircle, accent: lifecycleColors.cancelled },
-  ];
-
-  const kpiTiles = selectedTemplate.id === 'event_requests' ? eventRequestKpiTiles : standardKpiTiles;
 
   return (
     <div
@@ -1643,45 +1604,6 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
         )}
       </div>
 
-      {/* KPI tiles */}
-      {!isAiAccuracyReport && (
-      <section className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${selectedTemplate.id === 'event_requests' ? 'lg:grid-cols-3 xl:grid-cols-6' : 'lg:grid-cols-5'}`}>
-        {kpiTiles.map((tile) => {
-          const Icon = tile.icon;
-          const isEventMetric = selectedTemplate.id === 'event_requests';
-          return (
-            <div
-              key={tile.key}
-              className={`rounded-xl border border-slate-200 bg-white shadow-sm ${isEventMetric ? 'p-3.5' : 'p-4'}`}
-            >
-              <div className="flex items-start justify-between gap-2">
-                {isEventMetric ? (
-                  <span className="mt-1 h-2.5 w-2.5 rounded-full" style={{ backgroundColor: tile.accent }} />
-                ) : (
-                  <div
-                    className="flex h-9 w-9 flex-none items-center justify-center rounded-lg text-white shadow-sm"
-                    style={{ backgroundColor: tile.accent }}
-                  >
-                    <Icon size={15} />
-                  </div>
-                )}
-                {!isAiAccuracyReport ? (
-                  <span
-                    className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold"
-                    style={{ borderColor: `${tile.accent}33`, color: tile.accent, backgroundColor: `${tile.accent}10` }}
-                  >
-                    {tile.pctValue}%
-                  </span>
-                ) : null}
-              </div>
-              <p className={`${isEventMetric ? 'mt-2' : 'mt-3'} text-[10px] font-bold uppercase tracking-wider text-slate-500`}>{tile.label}</p>
-              <p className="mt-1 text-2xl font-bold leading-none text-slate-900">{tile.value}</p>
-            </div>
-          );
-        })}
-      </section>
-      )}
-
       {/* Charts row */}
       {isAiAccuracyReport ? (
         <section className="grid grid-cols-1 items-start gap-3 lg:grid-cols-[minmax(0,1.5fr)_minmax(280px,0.5fr)]">
@@ -1792,7 +1714,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold text-slate-800">{selectedTemplate.id === 'event_requests' ? 'Program Lifecycle by Period' : '7-Day Activity Overview'}</h3>
-              <p className="text-xs text-slate-500">{selectedTemplate.id === 'event_requests' ? 'Applications compared with current program outcomes' : 'Records created per day (within current filters)'}</p>
+              <p className="text-xs text-slate-500">{selectedTemplate.id === 'event_requests' ? 'Cumulative milestones for applications submitted in each period' : 'Records created per day (within current filters)'}</p>
             </div>
             {selectedTemplate.id === 'event_requests' ? (
               <div className="flex flex-wrap items-end gap-2">
@@ -1821,7 +1743,8 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
                   <XAxis dataKey="label" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
                   <YAxis allowDecimals={false} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
                   <Tooltip cursor={{ fill: '#f8fafc' }} />
-                  <Bar dataKey="applications" name="Applications" fill={lifecycleColors.applications} radius={[4, 4, 0, 0]} maxBarSize={30} />
+                  <Bar dataKey="applications" name="Total Applications" fill={lifecycleColors.applications} radius={[4, 4, 0, 0]} maxBarSize={30} />
+                  <Bar dataKey="pending" name="Pending" fill={lifecycleColors.pending} radius={[4, 4, 0, 0]} maxBarSize={30} />
                   <Bar dataKey="approved" name="Approved" fill={lifecycleColors.approved} radius={[4, 4, 0, 0]} maxBarSize={30} />
                   <Bar dataKey="rejected" name="Rejected" fill={lifecycleColors.rejected} radius={[4, 4, 0, 0]} maxBarSize={30} />
                   <Bar dataKey="ended" name="Ended" fill={lifecycleColors.ended} radius={[4, 4, 0, 0]} maxBarSize={30} />
@@ -1853,8 +1776,11 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
             </ResponsiveContainer>
           </div>
           {selectedTemplate.id === 'event_requests' && (
-            <div className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 text-[10px] text-slate-600">
-              {Object.entries(lifecycleColors).map(([key, color]) => <span key={key} className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />{key.charAt(0).toUpperCase() + key.slice(1)}</span>)}
+            <div className="mt-2">
+              <p className="mb-2 text-center text-[10px] text-slate-500">Successful programs remain included in Approved and Ended.</p>
+              <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 text-[10px] text-slate-600">
+                {Object.entries(lifecycleColors).map(([key, color]) => <span key={key} className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />{key.charAt(0).toUpperCase() + key.slice(1)}</span>)}
+              </div>
             </div>
           )}
         </article>
