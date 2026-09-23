@@ -106,6 +106,30 @@ function buildFullName(first, middle, last, suffix) {
     .trim();
 }
 
+function getWalkInDisplayName(attendee) {
+  const name = String(attendee?.Walk_In_Full_Name || "").trim();
+  const isPlaceholder = normalizeAttribute(name) === "walk in donor";
+  if (name && !isPlaceholder) return name;
+  return String(attendee?.Walk_In_Email || "").trim().toLowerCase();
+}
+
+function getDonorDisplayName({ attendee, userDetails, userId }) {
+  if (attendee?.Is_Walk_In) {
+    return getWalkInDisplayName(attendee) || "Walk-in donor";
+  }
+
+  return (
+    buildFullName(
+      userDetails?.first_name,
+      userDetails?.middle_name,
+      userDetails?.last_name,
+      userDetails?.suffix,
+    ) ||
+    getWalkInDisplayName(attendee) ||
+    (Number(userId || 0) > 0 ? `User #${userId}` : "Donor")
+  );
+}
+
 function formatDateTime(value) {
   if (!value) return "N/A";
   const parsed = new Date(value);
@@ -558,7 +582,7 @@ export default function BundlingPage() {
               .order("Submission_Detail_ID", { ascending: false })
           : Promise.resolve({ data: [], error: null }),
         availableAttendeeIds.length
-          ? supabase.rpc("get_cut_hair_inventory_waybills", {
+          ? supabase.rpc("get_cut_hair_inventory_attendee_context", {
               p_event_attendee_ids: availableAttendeeIds,
             })
           : Promise.resolve({ data: [], error: null }),
@@ -586,6 +610,9 @@ export default function BundlingPage() {
           Event_Request_ID: row.event_request_id,
           User_ID: row.user_id,
           Waybill_Code: row.waybill_code,
+          Is_Walk_In: Boolean(row.is_walk_in),
+          Walk_In_Full_Name: row.walk_in_full_name,
+          Walk_In_Email: row.walk_in_email,
         }),
       );
       const availableWaybillByAttendee = availableAttendeeRows.reduce(
@@ -652,13 +679,11 @@ export default function BundlingPage() {
               : String(submission.Waybill_Code || "")
                   .trim()
                   .toUpperCase() || buildWaybillCode({ submissionId }),
-            donorName:
-              buildFullName(
-                donor.first_name,
-                donor.middle_name,
-                donor.last_name,
-                donor.suffix,
-              ) || `Donor #${donorId}`,
+            donorName: getDonorDisplayName({
+              attendee,
+              userDetails: donor,
+              userId: donorId,
+            }),
             detail: availableDetailsBySubmission[submissionId] || null,
           };
         }),
@@ -805,7 +830,7 @@ export default function BundlingPage() {
 
         const attendeeResults = attendeeIds.length
           ? [
-              await supabase.rpc("get_cut_hair_inventory_waybills", {
+              await supabase.rpc("get_cut_hair_inventory_attendee_context", {
                 p_event_attendee_ids: attendeeIds,
               }),
             ]
@@ -821,6 +846,9 @@ export default function BundlingPage() {
                 Event_Request_ID: row.event_request_id,
                 User_ID: row.user_id,
                 Waybill_Code: row.waybill_code,
+                Is_Walk_In: Boolean(row.is_walk_in),
+                Walk_In_Full_Name: row.walk_in_full_name,
+                Walk_In_Email: row.walk_in_email,
               });
             }
           });
@@ -935,13 +963,11 @@ export default function BundlingPage() {
             status: row.Status || "",
             eventAttendeeId: attendeeId || null,
             eventRequestId: requestId || null,
-            donorName:
-              buildFullName(
-                userDetails.first_name,
-                userDetails.middle_name,
-                userDetails.last_name,
-                userDetails.suffix,
-              ) || `User #${userId}`,
+            donorName: getDonorDisplayName({
+              attendee,
+              userDetails,
+              userId,
+            }),
             eventTitle:
               eventRequest.Event_Name ||
               (requestId ? `Program #${requestId}` : "Program not linked"),
@@ -2260,6 +2286,12 @@ export default function BundlingPage() {
   const recommendedAvailableCount = rankedAvailableHair.filter((hair) =>
     ["recommended", "compatible"].includes(hair.compatibility.key),
   ).length;
+  const reviewAvailableCount = rankedAvailableHair.filter(
+    (hair) => hair.compatibility.key === "review",
+  ).length;
+  const tooShortAvailableCount = rankedAvailableHair.filter(
+    (hair) => hair.compatibility.key === "not-recommended",
+  ).length;
   const flowSteps = [
     {
       id: 1,
@@ -2627,11 +2659,11 @@ export default function BundlingPage() {
           </p>
         </div>
         <div className="text-right">
-          <p className="text-lg font-bold text-slate-900">
-            {recommendedAvailableCount}
+          <p className="text-sm font-bold text-slate-900">
+            {recommendedAvailableCount} ready
           </p>
           <p className="text-[9px] font-bold uppercase tracking-wide text-slate-500">
-            recommended or usable
+            {reviewAvailableCount} review &bull; {tooShortAvailableCount} too short
           </p>
         </div>
       </div>

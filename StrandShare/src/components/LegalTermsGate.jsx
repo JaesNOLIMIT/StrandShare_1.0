@@ -1,5 +1,5 @@
-import React from 'react';
-import { FileText, Loader2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { ExternalLink, FileText, Loader2, Maximize2, Minimize2 } from 'lucide-react';
 import { formatManilaDateTime } from '../lib/manilaTime';
 
 export default function LegalTermsGate({
@@ -8,6 +8,7 @@ export default function LegalTermsGate({
   previewClassName = 'h-[60vh]',
 }) {
   const canAccept = Boolean(document?.legal_document_id && previewUrl && !isLoading && !error);
+  const [isPreviewMinimized, setIsPreviewMinimized] = useState(false);
 
   return (
     <div className="space-y-4">
@@ -34,7 +35,22 @@ export default function LegalTermsGate({
       ) : (
         <>
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
-            <iframe title={`${document.title} PDF preview`} src={previewUrl} className={`w-full bg-white ${previewClassName}`} />
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2">
+              <div className="min-w-0 text-left">
+                <p className="truncate text-xs font-bold text-slate-800">{document.title}</p>
+                <p className="text-[11px] text-slate-500">Version {document.version}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <a href={previewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                  <ExternalLink size={13} /> Open PDF
+                </a>
+                <button type="button" onClick={() => setIsPreviewMinimized((value) => !value)} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50" aria-expanded={!isPreviewMinimized}>
+                  {isPreviewMinimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
+                  {isPreviewMinimized ? 'Show preview' : 'Minimize'}
+                </button>
+              </div>
+            </div>
+            {!isPreviewMinimized && <iframe title={`${document.title} PDF preview`} src={previewUrl} className={`w-full bg-white ${previewClassName}`} />}
           </div>
           <p className="text-xs text-slate-500">
             {document.title} · Version {document.version}

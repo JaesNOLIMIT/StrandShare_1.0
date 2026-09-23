@@ -2,8 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CheckCircle2,
   Eye,
+  ExternalLink,
   FileText,
   Loader2,
+  Maximize2,
+  Minimize2,
   Upload,
 } from 'lucide-react';
 import { useTheme } from '../../../context/ThemeContext';
@@ -20,6 +23,8 @@ import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
 const LEGAL_DOCUMENTS_TABLE = 'legal_documents';
 const LEGAL_DOCUMENTS_BUCKET = 'legal-documents';
 const DOCUMENT_TYPES = [
+  { value: 'walk_in_donation_terms', label: 'Walk-in Donation Terms and Conditions' },
+  { value: 'privacy_notice', label: 'Privacy Notice' },
   { value: 'consent_for_minors', label: 'Consent for Minors' },
   { value: 'event_application_terms', label: 'Program Application Terms and Conditions' },
   { value: 'hospital_representative_application_terms', label: 'H-Representative Application Terms and Conditions' },
@@ -122,6 +127,7 @@ export default function LegalDocumentsPage({ userProfile }) {
   const [previewUrl, setPreviewUrl] = useState('');
   const [localPreviewUrl, setLocalPreviewUrl] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isPreviewMinimized, setIsPreviewMinimized] = useState(false);
   const fileInputRef = useRef(null);
   const canManageSelected = canManage
     && (selectedDocumentType !== 'patient_application_terms' || roleKey === 'admin' || roleKey === 'superadmin');
@@ -579,13 +585,28 @@ export default function LegalDocumentsPage({ userProfile }) {
         </section>
 
         <section className="rounded-xl border border-gray-200 bg-white p-4 md:p-5">
-          <h2 className="mb-2 text-lg font-semibold text-gray-900">PDF Preview</h2>
-          <p className="mb-3 text-xs text-gray-500">
-            Showing {selectedDocument?.version ? `v${selectedDocument.version}` : activeDocument?.version ? `active v${activeDocument.version}` : 'latest'}.
-          </p>
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">PDF Preview</h2>
+              <p className="mt-1 text-xs text-gray-500">
+                Showing {selectedDocument?.version ? `v${selectedDocument.version}` : activeDocument?.version ? `active v${activeDocument.version}` : 'latest'}.
+              </p>
+            </div>
+            {(localPreviewUrl || previewUrl) && (
+              <div className="flex items-center gap-2">
+                <a href={localPreviewUrl || previewUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50">
+                  <ExternalLink size={13} /> Open PDF
+                </a>
+                <button type="button" onClick={() => setIsPreviewMinimized((value) => !value)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50" aria-expanded={!isPreviewMinimized}>
+                  {isPreviewMinimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
+                  {isPreviewMinimized ? 'Show preview' : 'Minimize'}
+                </button>
+              </div>
+            )}
+          </div>
 
           {localPreviewUrl || previewUrl ? (
-            <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+            <div className={`${isPreviewMinimized ? 'hidden' : ''} overflow-hidden rounded-lg border border-gray-200 bg-white`}>
               <iframe
                 title={`${selectedTypeDefinition.label} PDF preview`}
                 src={localPreviewUrl || previewUrl}

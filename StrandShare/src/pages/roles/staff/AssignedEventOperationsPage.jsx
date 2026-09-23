@@ -11,11 +11,16 @@ import {
   Loader2,
   Mail,
   MapPin,
+  Maximize2,
+  Minimize2,
   Phone,
   Printer,
+  QrCode,
   ScanLine,
   Search,
   Sparkles,
+  Trash2,
+  Upload,
   Users,
   X,
 } from 'lucide-react';
@@ -51,6 +56,7 @@ const EVENT_REQUESTS_TABLE = 'Event_Requests';
 const EVENT_ATTENDEES_TABLE = 'Event_Attendees';
 const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
 const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
+const HAIR_SUBMISSIONS_BUCKET = 'hair-submissions';
 const USERS_TABLE = 'users';
 const USER_DETAILS_TABLE = 'user_details';
 const PROFILE_PICTURES_BUCKET = 'profile_pictures';
@@ -67,9 +73,11 @@ const HAIR_COLOR_OPTIONS = ['Black', 'Dark Brown', 'Brown', 'Light Brown', 'Blon
 const HAIR_TEXTURE_OPTIONS = ['Straight', 'Wavy', 'Curly', 'Coily'];
 const HAIR_DENSITY_OPTIONS = ['Thin', 'Medium', 'Thick'];
 const HAIR_CONDITION_OPTIONS = ['Healthy', 'Slightly Dry', 'Dry', 'Damaged'];
+const WALK_IN_PHOTO_TYPES = ['Front', 'Side', 'Top'];
 const AI_LENGTH_ALLOWANCE_INCHES = 4;
 const MANILA_OFFSET_MINUTES = 8 * 60;
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const CONFIGURED_PUBLIC_SITE_URL = String(process.env.REACT_APP_PUBLIC_SITE_URL || '').trim().replace(/\/+$/, '');
 const EVENT_SCAN_OUTCOMES = [
   'RSVP donor: attendance becomes Present; next step is Hair Outcome Review.',
   'RSVP visitor: attendance becomes Present; their program process is complete.',
@@ -85,8 +93,7 @@ function getManilaSqlTimestamp(dateValue = new Date()) {
   if (Number.isNaN(date.getTime())) {
     return getManilaSqlTimestamp(new Date());
   }
-  const utcMs = date.getTime() + (date.getTimezoneOffset() * 60 * 1000);
-  const manilaShiftedDate = new Date(utcMs + (8 * 60 * 60 * 1000));
+  const manilaShiftedDate = new Date(date.getTime() + (MANILA_OFFSET_MINUTES * 60 * 1000));
   return manilaShiftedDate.toISOString().slice(0, 19).replace('T', ' ');
 }
 
@@ -117,12 +124,13 @@ function formatDateShort(value) {
 }
 
 function toManilaShiftedDate(dateValue = new Date()) {
-  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
-  if (Number.isNaN(date.getTime())) {
+  const wallClockMs = dateValue instanceof Date
+    ? dateValue.getTime() + (MANILA_OFFSET_MINUTES * 60 * 1000)
+    : parseManilaWallClockMs(dateValue);
+  if (!Number.isFinite(wallClockMs)) {
     return toManilaShiftedDate(new Date());
   }
-  const utcMs = date.getTime() + (date.getTimezoneOffset() * 60 * 1000);
-  return new Date(utcMs + (MANILA_OFFSET_MINUTES * 60 * 1000));
+  return new Date(wallClockMs);
 }
 
 function toManilaDayStartMs(dateValue = new Date()) {
@@ -208,11 +216,44 @@ function normalizeFlowStatusKey(value) {
     .replace(/[_\s-]+/g, '');
 }
 
-function isEventEnded(eventRow) {
+function parseManilaWallClockMs(value) {
+  if (!value) return Number.NaN;
+
+  const raw = String(value).trim();
+  const wallClockMatch = raw.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?$/,
+  );
+  if (wallClockMatch) {
+    const [, year, month, day, hour = '0', minute = '0', second = '0', fraction = '0'] = wallClockMatch;
+    return Date.UTC(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+      Number(fraction.padEnd(3, '0')),
+    );
+  }
+
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed + (MANILA_OFFSET_MINUTES * 60 * 1000) : Number.NaN;
+}
+
+function isEventWithinWalkInSchedule(eventRow, now = new Date()) {
+  if (!eventRow || normalizeFlowStatusKey(eventRow.Status) !== 'approved' || eventRow.Cancelled_At) return false;
+  const startMs = parseManilaWallClockMs(eventRow.Start_Date);
+  const endMs = parseManilaWallClockMs(eventRow.End_Date || eventRow.Start_Date);
+  const nowMs = now.getTime() + (MANILA_OFFSET_MINUTES * 60 * 1000);
+  return Number.isFinite(startMs) && Number.isFinite(endMs) && nowMs >= startMs && nowMs <= endMs;
+}
+
+function isEventEnded(eventRow, now = new Date()) {
   if (['ended', 'successful'].includes(normalizeFlowStatusKey(eventRow?.Status))) return true;
   if (!eventRow?.End_Date) return false;
-  const endTime = new Date(eventRow.End_Date).getTime();
-  return Number.isFinite(endTime) && endTime <= Date.now();
+  const endTime = parseManilaWallClockMs(eventRow.End_Date);
+  const nowManilaWallClock = now.getTime() + (MANILA_OFFSET_MINUTES * 60 * 1000);
+  return Number.isFinite(endTime) && endTime <= nowManilaWallClock;
 }
 
 function getEffectiveEventStatus(eventRow) {
@@ -438,10 +479,11 @@ function buildUserFullName(detailRow) {
 
 function enrichAttendeeRowWithUserData(attendeeRow, userRow, detailRow, fallbackRow = null) {
   const fullName = buildUserFullName(detailRow)
+    || String(attendeeRow?.Walk_In_Full_Name || '').trim()
     || String(attendeeRow?.Full_Name || '').trim()
     || String(fallbackRow?.Full_Name || '').trim()
     || 'N/A';
-  const email = String(userRow?.email || attendeeRow?.Email || fallbackRow?.Email || '').trim();
+  const email = String(userRow?.email || attendeeRow?.Walk_In_Email || attendeeRow?.Email || fallbackRow?.Email || '').trim();
   const contactNumber = String(detailRow?.contact_number || attendeeRow?.Contact_Number || fallbackRow?.Contact_Number || '').trim();
 
   return {
@@ -451,7 +493,7 @@ function enrichAttendeeRowWithUserData(attendeeRow, userRow, detailRow, fallback
     Email: email || null,
     Contact_Number: contactNumber || null,
     Photo_Path: detailRow?.photo_path || fallbackRow?.Photo_Path || null,
-    Birthdate: detailRow?.birthdate || fallbackRow?.Birthdate || null,
+    Birthdate: detailRow?.birthdate || attendeeRow?.Walk_In_Birthdate || fallbackRow?.Birthdate || null,
     Gender: detailRow?.gender || fallbackRow?.Gender || null,
   };
 }
@@ -496,6 +538,12 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   const [showSuccessfulConfirmation, setShowSuccessfulConfirmation] = useState(false);
   const [isMarkingSuccessful, setIsMarkingSuccessful] = useState(false);
   const [scanOutcome, setScanOutcome] = useState(null);
+  const [walkInIntake, setWalkInIntake] = useState(null);
+  const [walkInQrDataUrl, setWalkInQrDataUrl] = useState('');
+  const [showWalkInQr, setShowWalkInQr] = useState(false);
+  const [isUpdatingWalkIn, setIsUpdatingWalkIn] = useState(false);
+  const [isWalkInPanelMinimized, setIsWalkInPanelMinimized] = useState(false);
+  const [walkInScheduleClock, setWalkInScheduleClock] = useState(() => Date.now());
 
   const videoRef = useRef(null);
   const cameraStreamRef = useRef(null);
@@ -504,6 +552,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   const lastScanRef = useRef({ raw: '', at: 0, mode: '', locked: false });
   const attendeesCacheRef = useRef(new Map());
   const attendeeLoadSeqRef = useRef(0);
+  const walkInUpdateRef = useRef(false);
 
   useEffect(() => {
     if (!notice.text) return;
@@ -600,7 +649,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     try {
       const result = await supabase
         .from(EVENT_ATTENDEES_TABLE)
-        .select('Event_Attendee_ID, User_ID, Registration_Status, Attendance_Status, Waybill_Code, Waybill_Printed_At, Waybill_Printed_By, Notes, Created_At, Updated_At, Event_Request_ID, RSVP_Scanned_At, RSVP_Scanned_By, Attendee_Type')
+        .select('Event_Attendee_ID, User_ID, Registration_Status, Attendance_Status, Waybill_Code, Waybill_Printed_At, Waybill_Printed_By, Notes, Created_At, Updated_At, Event_Request_ID, RSVP_Scanned_At, RSVP_Scanned_By, Attendee_Type, Is_Walk_In, Walk_In_Full_Name, Walk_In_Email, Walk_In_Age, Walk_In_Birthdate, Guardian_Name, Guardian_Relationship, Guardian_Email, Walk_In_Registered_At')
         .eq('Event_Request_ID', targetEventRequestId)
         .order('Event_Attendee_ID', { ascending: true });
 
@@ -719,15 +768,15 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
   }, [loadEvents]);
 
   const eventFilterCounts = useMemo(() => {
-    const todayStart = toManilaDayStartMs(new Date());
+    const todayStart = toManilaDayStartMs(new Date(walkInScheduleClock));
     return EVENT_FILTERS.reduce((counts, filterItem) => ({
       ...counts,
       [filterItem.id]: events.filter((row) => matchesProgramTimeFilter(row, filterItem.id, todayStart)).length,
     }), {});
-  }, [events]);
+  }, [events, walkInScheduleClock]);
 
   const filteredEvents = useMemo(() => {
-    const todayStart = toManilaDayStartMs(new Date());
+    const todayStart = toManilaDayStartMs(new Date(walkInScheduleClock));
     const term = programSearch.trim().toLowerCase();
     return events.filter((row) => {
       if (selectedCalendarDate && toScheduleDateKey(row.Start_Date) !== selectedCalendarDate) return false;
@@ -741,12 +790,15 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         getEffectiveEventStatus(row),
       ].some((value) => String(value || '').toLowerCase().includes(term));
     });
-  }, [events, eventTimeFilter, programSearch, selectedCalendarDate]);
+  }, [events, eventTimeFilter, programSearch, selectedCalendarDate, walkInScheduleClock]);
 
   const selectedEvent = useMemo(() => (
     events.find((row) => Number(row.Event_Request_ID || 0) === Number(selectedRequestId || 0)) || null
   ), [events, selectedRequestId]);
-  const selectedEventEnded = useMemo(() => isEventEnded(selectedEvent), [selectedEvent]);
+  const selectedEventEnded = useMemo(
+    () => isEventEnded(selectedEvent, new Date(walkInScheduleClock)),
+    [selectedEvent, walkInScheduleClock],
+  );
   const selectedEventSuccessful = useMemo(
     () => normalizeFlowStatusKey(selectedEvent?.Status) === 'successful',
     [selectedEvent],
@@ -939,6 +991,205 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     }
   }, []);
 
+  const loadWalkInIntake = useCallback(async (eventRequestId) => {
+    if (!supabase || !eventRequestId) { setWalkInIntake(null); return; }
+    const response = await supabase.rpc('staff_get_event_walk_in_intake', { p_event_request_id: Number(eventRequestId) });
+    if (response.error) { setWalkInIntake(null); return; }
+    setWalkInIntake(response.data || null);
+  }, []);
+
+  useEffect(() => {
+    if (selectedEvent?.Event_Request_ID) void loadWalkInIntake(selectedEvent.Event_Request_ID);
+    else setWalkInIntake(null);
+  }, [loadWalkInIntake, selectedEvent?.Event_Request_ID]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setWalkInScheduleClock(Date.now()), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const canOpenWalkInIntake = useMemo(
+    () => isEventWithinWalkInSchedule(selectedEvent, new Date(walkInScheduleClock)),
+    [selectedEvent, walkInScheduleClock],
+  );
+  const walkInPublicUrl = useMemo(() => {
+    const token = String(walkInIntake?.Public_Token || '').trim();
+    if (!token || typeof window === 'undefined') return '';
+    const origin = CONFIGURED_PUBLIC_SITE_URL || window.location.origin.replace(/\/+$/, '');
+    return `${origin}/event-walk-in/${token}`;
+  }, [walkInIntake?.Public_Token]);
+  const handleSetWalkInIntake = useCallback(async (isOpen) => {
+    if (!supabase || !selectedEvent?.Event_Request_ID || walkInUpdateRef.current) return;
+    if (isOpen && !isEventWithinWalkInSchedule(selectedEvent)) {
+      setNotice({ kind: 'warning', text: 'Walk-in registration can open only during the active program schedule (Manila time).' });
+      return;
+    }
+
+    walkInUpdateRef.current = true;
+    setIsUpdatingWalkIn(true);
+    try {
+      const response = await supabase.rpc('staff_set_event_walk_in_intake', {
+        p_event_request_id: Number(selectedEvent.Event_Request_ID), p_is_open: Boolean(isOpen),
+      });
+      if (response.error) { setNotice({ kind: 'error', text: response.error.message }); return; }
+      setWalkInIntake(response.data || null);
+      setNotice({ kind: 'success', text: isOpen ? 'Walk-in registration is now open.' : 'Walk-in registration is now closed.' });
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to update walk-in registration.' });
+    } finally {
+      walkInUpdateRef.current = false;
+      setIsUpdatingWalkIn(false);
+    }
+  }, [selectedEvent]);
+
+  const handleShowWalkInQr = useCallback(async () => {
+    if (!walkInPublicUrl) return;
+    try { setWalkInQrDataUrl(await QRCode.toDataURL(walkInPublicUrl, { width: 420, margin: 2 })); setShowWalkInQr(true); }
+    catch (error) { setNotice({ kind: 'error', text: error.message || 'Unable to create the walk-in QR code.' }); }
+  }, [walkInPublicUrl]);
+
+  const handleCopyWalkInLink = useCallback(async () => {
+    if (!walkInPublicUrl) return;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(walkInPublicUrl);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = walkInPublicUrl;
+        textArea.style.position = 'fixed';
+        textArea.style.opacity = '0';
+        document.body.appendChild(textArea);
+        textArea.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(textArea);
+        if (!copied) throw new Error('Copy command was rejected.');
+      }
+      setNotice({ kind: 'success', text: 'Walk-in registration link copied.' });
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to copy the walk-in registration link.' });
+    }
+  }, [walkInPublicUrl]);
+
+  const attachWalkInPhotoPreviews = useCallback(async (images) => Promise.all(
+    (Array.isArray(images) ? images : []).map(async (image) => {
+      const filePath = String(image?.File_Path || '').trim();
+      if (!filePath || image?.Preview_Url) return image;
+      const signed = await supabase.storage.from(HAIR_SUBMISSIONS_BUCKET).createSignedUrl(filePath, 3600);
+      return { ...image, Preview_Url: signed.error ? '' : signed.data?.signedUrl || '' };
+    }),
+  ), []);
+
+  const handleCreateWalkInSubmission = useCallback(async (attendee, { fromScan = false } = {}) => {
+    if (!supabase || !attendee?.Event_Attendee_ID) return false;
+    setIsSaving(true);
+    try {
+      const response = await supabase.rpc('staff_create_walk_in_hair_submission', { p_event_attendee_id: Number(attendee.Event_Attendee_ID) });
+      if (response.error) throw response.error;
+      const payload = response.data || {};
+      const resolvedAttendee = enrichAttendeeRowWithUserData(payload.attendee || attendee, null, null, attendee);
+      const details = Array.isArray(payload.details) ? payload.details : [];
+      const waybillCode = payload.waybill_code || attendee.Waybill_Code || '';
+      const images = await attachWalkInPhotoPreviews(payload.images || []);
+      setActiveReview({ attendee: resolvedAttendee, submission: payload.submission, details, images, aiScreening: null, waybillCode });
+      setDetailDraft(createDetailDraft(details?.[0] || null));
+      setQualityReason('');
+      setScanMode('hair_review');
+      setNotice({ kind: 'success', text: 'Walk-in hair review opened. Upload the hair photos, record the condition, then Accept or Reject.' });
+      if (fromScan) {
+        setCameraStatus({ kind: 'success', message: 'Second walk-in QR scan recognized. Manual hair assessment opened.' });
+        setScanOutcome({
+          tone: 'success',
+          title: 'Walk-in hair review opened',
+          waybill: waybillCode,
+          subject: resolvedAttendee?.Walk_In_Full_Name || resolvedAttendee?.Full_Name || 'Walk-in donor',
+          action: 'Verified RSVP and created or loaded the manual walk-in hair record',
+          status: 'Awaiting staff decision',
+          nextStep: 'Upload photos, record hair details, then Accept or Reject',
+          statusChanges: [],
+        });
+      }
+      if (resolvedAttendee?.Event_Request_ID) {
+        void loadAttendees(resolvedAttendee.Event_Request_ID, { force: true, silent: true });
+      }
+      window.setTimeout(() => document.getElementById('hair-outcome-review')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+      return true;
+    } catch (error) {
+      const message = error.message || 'Unable to create the walk-in hair record.';
+      setNotice({ kind: 'error', text: message });
+      if (fromScan) {
+        setCameraStatus({ kind: 'error', message });
+        setScanOutcome({ tone: 'error', title: 'Walk-in hair review was not opened', waybill: attendee.Waybill_Code || '', action: 'No database change', status: 'Blocked', nextStep: message, statusChanges: [] });
+      }
+      return false;
+    } finally {
+      setIsSaving(false);
+    }
+  }, [attachWalkInPhotoPreviews, loadAttendees]);
+
+  const handleWalkInPhotoUpload = useCallback(async (fileList, requestedImageType = '') => {
+    const detailId = Number(activeReview?.details?.[0]?.Submission_Detail_ID || 0);
+    const submissionId = Number(activeReview?.submission?.Submission_ID || 0);
+    const files = Array.from(fileList || []).slice(0, requestedImageType ? 1 : 3);
+    if (!detailId || !submissionId || files.length === 0) return;
+    setIsSaving(true);
+    try {
+      const uploaded = [];
+      for (const [index, file] of files.entries()) {
+        if (!String(file.type || '').startsWith('image/')) throw new Error('Choose image files only.');
+        if (Number(file.size || 0) > 10 * 1024 * 1024) throw new Error('Each hair photo must be 10 MB or smaller.');
+        const safeName = String(file.name || `photo-${index + 1}.jpg`).replace(/[^a-zA-Z0-9._-]/g, '-').slice(-120);
+        const path = `walk-ins/${submissionId}/${Date.now()}-${index + 1}-${safeName}`;
+        const upload = await supabase.storage.from(HAIR_SUBMISSIONS_BUCKET).upload(path, file, { upsert: false, contentType: file.type });
+        if (upload.error) throw new Error(`Photo file upload failed: ${upload.error.message}`);
+        const imageType = requestedImageType || WALK_IN_PHOTO_TYPES[index];
+        const metadata = await supabase.rpc('staff_upsert_walk_in_hair_photo', {
+          p_submission_detail_id: detailId,
+          p_file_path: path,
+          p_image_type: imageType,
+        });
+        if (metadata.error) {
+          await supabase.storage.from(HAIR_SUBMISSIONS_BUCKET).remove([path]);
+          throw new Error(`Photo record save failed: ${metadata.error.message}`);
+        }
+        const savedImage = metadata.data?.image;
+        if (!savedImage?.Image_ID) {
+          await supabase.storage.from(HAIR_SUBMISSIONS_BUCKET).remove([path]);
+          throw new Error('Photo record save failed: the server returned no image record.');
+        }
+        const oldFilePath = String(metadata.data?.old_file_path || '').trim();
+        if (oldFilePath && oldFilePath !== path) {
+          await supabase.storage.from(HAIR_SUBMISSIONS_BUCKET).remove([oldFilePath]);
+        }
+        const [withPreview] = await attachWalkInPhotoPreviews([savedImage]);
+        uploaded.push(withPreview);
+      }
+      setActiveReview((prev) => {
+        const replacedTypes = new Set(uploaded.map((image) => normalizeFlowStatusKey(image?.Image_Type)));
+        return { ...prev, images: [...(prev?.images || []).filter((image) => !replacedTypes.has(normalizeFlowStatusKey(image?.Image_Type))), ...uploaded] };
+      });
+      setNotice({ kind: 'success', text: `${uploaded.length} walk-in hair photo${uploaded.length === 1 ? '' : 's'} uploaded.` });
+    } catch (error) { setNotice({ kind: 'error', text: error.message || 'Unable to upload hair photos.' }); }
+    finally { setIsSaving(false); }
+  }, [activeReview, attachWalkInPhotoPreviews]);
+
+  const handleRemoveWalkInPhoto = useCallback(async (image) => {
+    const detailIsFinal = (activeReview?.details || []).some((detail) => isFinalHairDetailStatus(detail?.Status));
+    if (!image?.Image_ID || detailIsFinal) return;
+    setIsSaving(true);
+    try {
+      const deletion = await supabase.rpc('staff_delete_walk_in_hair_photo', { p_image_id: Number(image.Image_ID) });
+      if (deletion.error) throw deletion.error;
+      const filePath = deletion.data?.file_path || image.File_Path;
+      if (filePath) await supabase.storage.from(HAIR_SUBMISSIONS_BUCKET).remove([filePath]);
+      setActiveReview((prev) => ({ ...prev, images: (prev?.images || []).filter((row) => Number(row.Image_ID) !== Number(image.Image_ID)) }));
+      setNotice({ kind: 'success', text: `${image.Image_Type || 'Hair'} photo removed.` });
+    } catch (error) {
+      setNotice({ kind: 'error', text: error.message || 'Unable to remove the hair photo.' });
+    } finally {
+      setIsSaving(false);
+    }
+  }, [activeReview?.details]);
+
   useEffect(() => {
     if (!selectedEvent?.Event_Request_ID) return;
 
@@ -1125,11 +1376,96 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         throw new Error('Selected program has no request ID.');
       }
 
-      const scannedAttendee = attendees.find((row) => (
+      let scannedAttendee = attendees.find((row) => (
         (scan.attendeeId && Number(row.Event_Attendee_ID) === Number(scan.attendeeId))
         || (scan.waybillCode && String(row.Waybill_Code || '').trim().toUpperCase() === String(scan.waybillCode).trim().toUpperCase())
         || (scan.userId && Number(row.User_ID) === Number(scan.userId))
       )) || null;
+      if (!scannedAttendee && (scan.attendeeId || scan.waybillCode)) {
+        let attendeeLookup = supabase.from(EVENT_ATTENDEES_TABLE).select('*').eq('Event_Request_ID', eventRequestId);
+        attendeeLookup = scan.attendeeId
+          ? attendeeLookup.eq('Event_Attendee_ID', Number(scan.attendeeId))
+          : attendeeLookup.eq('Waybill_Code', String(scan.waybillCode).trim().toUpperCase());
+        const lookupResult = await attendeeLookup.maybeSingle();
+        if (lookupResult.error) throw lookupResult.error;
+        if (lookupResult.data) scannedAttendee = enrichAttendeeRowWithUserData(lookupResult.data, null, null);
+      }
+      if (scannedAttendee?.Is_Walk_In) {
+        const walkInReviewCompleted = scannedAttendee.Hair_Intake_State === 'done'
+          || normalizeFlowStatusKey(scannedAttendee.Hair_Intake_Label).startsWith('done');
+        if (walkInReviewCompleted) {
+          const message = 'This walk-in donation is already completed. Its QR cannot be scanned again.';
+          setNotice({ kind: 'warning', text: message });
+          setCameraStatus({ kind: 'warning', message });
+          setScanOutcome({
+            tone: 'warning',
+            title: 'Walk-in donation already completed',
+            waybill: scannedAttendee.Waybill_Code || scan.waybillCode || '',
+            subject: scannedAttendee.Full_Name || scannedAttendee.Walk_In_Email || 'Walk-in donor',
+            action: 'No database change',
+            status: scannedAttendee.Hair_Intake_Label || 'Completed',
+            nextStep: 'No further RSVP or Hair Outcome scan is allowed',
+            statusChanges: [],
+          });
+          return false;
+        }
+        if (scanMode === 'rsvp') {
+          if (scannedAttendee.RSVP_Scanned_At || normalizeFlowStatusKey(scannedAttendee.Attendance_Status) === 'present') {
+            const message = 'RSVP Check-in is already complete. Switch to Hair Outcome Review and scan the same QR once.';
+            setNotice({ kind: 'warning', text: message });
+            setCameraStatus({ kind: 'warning', message });
+            setScanOutcome({
+              tone: 'warning',
+              title: 'Walk-in RSVP already completed',
+              waybill: scannedAttendee.Waybill_Code || scan.waybillCode || '',
+              subject: scannedAttendee.Full_Name || scannedAttendee.Walk_In_Email || 'Walk-in donor',
+              action: 'No database change',
+              status: 'Present',
+              nextStep: 'Use Hair Outcome Review for the second and final scan',
+              statusChanges: [],
+            });
+            return false;
+          }
+          const checkInResult = await supabase.rpc('staff_check_in_walk_in_attendee', {
+            p_event_request_id: eventRequestId,
+            p_event_attendee_id: Number(scannedAttendee.Event_Attendee_ID),
+          });
+          if (checkInResult.error) throw checkInResult.error;
+          const payload = checkInResult.data || {};
+          const updatedAttendee = enrichAttendeeRowWithUserData(payload.attendee || scannedAttendee, null, null, scannedAttendee);
+          const attendeeLabel = updatedAttendee?.Full_Name || updatedAttendee?.Walk_In_Full_Name || 'Walk-in donor';
+          const waybillCode = payload.waybill_code || updatedAttendee?.Waybill_Code || scan.waybillCode || '';
+          setAttendees((current) => {
+            const exists = current.some((row) => Number(row.Event_Attendee_ID) === Number(updatedAttendee.Event_Attendee_ID));
+            const nextRows = exists
+              ? current.map((row) => Number(row.Event_Attendee_ID) === Number(updatedAttendee.Event_Attendee_ID) ? { ...row, ...updatedAttendee } : row)
+              : [updatedAttendee, ...current];
+            attendeesCacheRef.current.set(eventRequestId, nextRows);
+            return nextRows;
+          });
+          setActiveReview(null);
+          setQualityReason('');
+          setDetailDraft(createDetailDraft(null));
+          setNotice({ kind: 'success', text: `${attendeeLabel} is Present. Ask the donor to join the donation line and show the same QR again at Hair Outcome Review.` });
+          setCameraStatus({ kind: 'success', message: `First scan complete for ${attendeeLabel}. Attendance is Present; no hair submission was created.` });
+          setScanOutcome({
+            tone: 'success',
+            title: payload.already_checked_in ? 'Walk-in RSVP was already complete' : 'Walk-in RSVP check-in completed',
+            waybill: waybillCode,
+            subject: attendeeLabel,
+            action: payload.already_checked_in ? 'Confirmed existing RSVP check-in' : 'Marked attendance as Present',
+            status: 'Present',
+            nextStep: 'Join the donation line, then show this same QR in Hair Outcome Review',
+            statusChanges: payload.already_checked_in ? [] : [{
+              label: 'Attendance',
+              before: scannedAttendee.Attendance_Status || 'Not Marked',
+              after: 'Present',
+            }],
+          });
+          return true;
+        }
+        return await handleCreateWalkInSubmission(scannedAttendee, { fromScan: true });
+      }
       if (scanMode === 'hair_review' && normalizeAttendeeType(scannedAttendee?.Attendee_Type) === 'Visitor') {
         const waybillCode = String(scannedAttendee?.Waybill_Code || scan.waybillCode || '').trim();
         setActiveReview({
@@ -1287,7 +1623,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       setIsSaving(false);
       isScanProcessingRef.current = false;
     }
-  }, [attendees, loadAiScreeningBySubmissionId, loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, scanMode, selectedEvent]);
+  }, [attendees, handleCreateWalkInSubmission, loadAiScreeningBySubmissionId, loadAttendees, loadSubmissionDetailsById, reviewStatusMeta.needsDecision, scanMode, selectedEvent]);
 
   const handleSaveDetailEdits = useCallback(async () => {
     if (!supabase || !selectedEvent) return;
@@ -1301,6 +1637,11 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
 
     if (reviewStatusMeta.isFinal) {
       setNotice({ kind: 'warning', text: 'Hair details are locked after final decision.' });
+      return;
+    }
+
+    if (activeReview?.attendee?.Is_Walk_In) {
+      setNotice({ kind: 'info', text: 'Walk-in condition details are saved together with the final Accept or Reject decision.' });
       return;
     }
 
@@ -1379,6 +1720,12 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       return;
     }
 
+    const isWalkInReview = Boolean(activeReview?.attendee?.Is_Walk_In || activeReview?.submission?.Is_Walk_In);
+    if (isWalkInReview && normalizedDecision === 'rejectedcut') {
+      setNotice({ kind: 'error', text: 'Walk-in hair has only Accept and Reject decisions.' });
+      return;
+    }
+
     const lengthRaw = String(detailDraft?.declaredLength || '').trim();
     const parsedLength = lengthRaw === '' ? null : Number(lengthRaw);
     if (parsedLength != null && (!Number.isFinite(parsedLength) || parsedLength < 0)) {
@@ -1386,11 +1733,87 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
       return;
     }
 
+    if (isWalkInReview) {
+      const missingAssessment = parsedLength == null
+        || parsedLength <= 0
+        || !String(detailDraft?.declaredColor || '').trim()
+        || !String(detailDraft?.declaredTexture || '').trim()
+        || !String(detailDraft?.declaredDensity || '').trim()
+        || !String(detailDraft?.declaredCondition || '').trim();
+      if (missingAssessment) {
+        setNotice({ kind: 'error', text: 'Complete length, color, hair pattern, density, and condition before the final decision.' });
+        return;
+      }
+      const uploadedTypes = new Set((activeReview?.images || []).map((image) => normalizeFlowStatusKey(image?.Image_Type)));
+      const missingPhotoTypes = WALK_IN_PHOTO_TYPES.filter((type) => !uploadedTypes.has(normalizeFlowStatusKey(type)));
+      if (missingPhotoTypes.length) {
+        setNotice({ kind: 'error', text: `Add the required ${missingPhotoTypes.join(', ')} hair photo${missingPhotoTypes.length === 1 ? '' : 's'} before the final decision.` });
+        return;
+      }
+    }
+
     setIsSubmittingQuality(true);
     setIsSaving(true);
     setNotice({ kind: '', text: '' });
 
     try {
+      if (isWalkInReview) {
+        const result = await supabase.rpc('staff_save_walk_in_hair_review', {
+          p_event_request_id: eventRequestId,
+          p_submission_id: submissionId,
+          p_decision: normalizedDecision === 'approved' ? 'Approved' : 'Rejected',
+          p_declared_length: parsedLength,
+          p_declared_color: String(detailDraft?.declaredColor || '').trim() || null,
+          p_declared_texture: String(detailDraft?.declaredTexture || '').trim() || null,
+          p_declared_density: String(detailDraft?.declaredDensity || '').trim() || null,
+          p_declared_condition: String(detailDraft?.declaredCondition || '').trim() || null,
+          p_is_chemically_treated: Boolean(detailDraft?.isChemicallyTreated),
+          p_is_colored: Boolean(detailDraft?.isColored),
+          p_is_bleached: Boolean(detailDraft?.isBleached),
+          p_is_rebonded: Boolean(detailDraft?.isRebonded),
+          p_detail_notes: String(detailDraft?.detailNotes || '').trim() || null,
+          p_rejection_reason: normalizedDecision === 'rejected' ? rejectionReason : null,
+        });
+        if (result.error) throw result.error;
+        const payload = result.data || {};
+        const accepted = normalizedDecision === 'approved';
+        const attendeeLabel = activeReview?.attendee?.Full_Name
+          || payload?.attendee?.Walk_In_Full_Name
+          || 'Walk-in donor';
+        const waybillCode = activeReview?.waybillCode
+          || payload?.attendee?.Waybill_Code
+          || '';
+        setNotice({ kind: 'success', text: accepted ? 'Walk-in hair accepted and added to Cut Hair Inventory.' : 'Walk-in hair rejected and removed from production.' });
+        setScanOutcome({
+          tone: accepted ? 'success' : 'warning',
+          title: accepted ? 'Walk-in hair accepted' : 'Walk-in hair rejected',
+          waybill: waybillCode,
+          subject: attendeeLabel,
+          action: 'Saved the final manual hair assessment',
+          status: accepted ? 'Cut' : 'Cancelled',
+          nextStep: accepted
+            ? 'Hair is available in Cut Hair Inventory for bundling'
+            : 'No further hair processing is allowed',
+          statusChanges: [
+            { label: 'Quality detail', before: 'Pending', after: accepted ? 'Approved' : 'Rejected' },
+            { label: 'Hair submission', before: activeReview?.submission?.Status || 'Pending', after: accepted ? 'Cut' : 'Cancelled' },
+            ...(accepted ? [{ label: 'Cut inventory', before: 'Not available', after: 'Cut / Available' }] : []),
+          ],
+        });
+        void triggerSmtpNow(`walk_in_hair_${normalizedDecision}`);
+        await loadAttendees(eventRequestId, { force: true });
+        setActiveReview(null);
+        setDetailDraft(createDetailDraft(null));
+        setQualityReason('');
+        setManualWaybillCode('');
+        setCameraStatus({
+          kind: 'info',
+          message: `Walk-in decision saved. Hair Outcome Review is ready for the next donor.`,
+        });
+        void startCameraScanner();
+        return;
+      }
+
       // Persist the values currently visible in the editable form before the
       // decision trigger calculates AI-vs-human accuracy. This also covers the
       // common flow where staff edits a field and clicks Approve immediately.
@@ -1470,6 +1893,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
             ? 'Hair quality marked Rejected Cut. Submission moved to Cancelled.'
             : 'Hair quality rejected. Submission moved to Cancelled.',
       });
+      void triggerSmtpNow('event_hair_quality_review');
       setCameraStatus({
         kind: resolvedDecision === 'Approved' ? 'success' : 'warning',
         message: resolvedDecision === 'Approved'
@@ -1640,8 +2064,8 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     setCameraStatus({
       kind: 'info',
       message: nextMode === 'hair_review'
-        ? 'Hair Outcome Review selected. Scan only donors who already completed RSVP check-in.'
-        : 'RSVP Check-in selected. This scan only records attendance.',
+        ? 'Hair Outcome Review selected. Scan a checked-in donor; a walk-in QR opens its manual assessment on this second scan.'
+        : 'RSVP Check-in selected. The first scan marks registered and walk-in attendees Present.',
     });
   };
 
@@ -2343,6 +2767,45 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                 </div>
               )}
 
+              <div className={`rounded-xl border border-violet-200 bg-white shadow-sm ${isWalkInPanelMinimized ? 'p-3' : 'p-5'}`}>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2">
+                    <QrCode size={18} className="mt-0.5 text-violet-700" />
+                    <div><h3 className="text-sm font-bold text-slate-900">Walk-in donor registration</h3>{!isWalkInPanelMinimized && <p className="mt-0.5 text-xs text-slate-500">Share the QR only at this program. It accepts identity and consent details; Staff records the hair separately.</p>}</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${walkInIntake?.is_open ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-100 text-slate-600'}`}>{walkInIntake?.is_open ? 'Open now' : 'Closed'}</span>
+                    <button type="button" onClick={() => setIsWalkInPanelMinimized((value) => !value)} className="inline-flex items-center gap-1 rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-xs font-bold text-violet-800 hover:bg-violet-50" aria-expanded={!isWalkInPanelMinimized}>
+                      {isWalkInPanelMinimized ? <Maximize2 size={13} /> : <Minimize2 size={13} />}
+                      {isWalkInPanelMinimized ? 'Expand' : 'Minimize'}
+                    </button>
+                  </div>
+                </div>
+                {!isWalkInPanelMinimized && <>
+                <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">{walkInIntake?.message || 'Loading walk-in intake status…'}</p>
+                {walkInPublicUrl && (
+                  <div className="mt-3 rounded-lg border border-violet-100 bg-violet-50/60 px-3 py-2">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-violet-700">Registration link</p>
+                    <a href={walkInPublicUrl} target="_blank" rel="noreferrer" className="mt-1 block break-all text-xs font-medium text-violet-800 underline decoration-violet-300 underline-offset-2 hover:text-violet-950">{walkInPublicUrl}</a>
+                  </div>
+                )}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { void handleSetWalkInIntake(!walkInIntake?.Is_Open); }}
+                    disabled={isUpdatingWalkIn || !walkInIntake || (!walkInIntake?.Is_Open && !canOpenWalkInIntake)}
+                    title={!walkInIntake?.Is_Open && !canOpenWalkInIntake ? 'Available only during the active program schedule (Manila time).' : undefined}
+                    className={`rounded-lg px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:opacity-70 ${walkInIntake?.Is_Open ? 'bg-slate-700 hover:bg-slate-800' : 'bg-violet-700 hover:bg-violet-800'}`}
+                  >
+                    {isUpdatingWalkIn ? 'Updating…' : walkInIntake?.Is_Open ? 'Close intake' : 'Open intake'}
+                  </button>
+                  <button type="button" onClick={() => { void handleShowWalkInQr(); }} disabled={!walkInIntake?.Public_Token} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-800 disabled:opacity-50">Show QR code</button>
+                  <button type="button" onClick={() => { void handleCopyWalkInLink(); }} disabled={!walkInPublicUrl} className="rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs font-bold text-violet-800 hover:bg-violet-50 disabled:opacity-50">Copy link</button>
+                  {walkInPublicUrl && <a href={walkInPublicUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Open link</a>}
+                </div>
+                </>}
+              </div>
+
               {/* Event scanner */}
               <div className={`${selectedEventSuccessful ? 'hidden' : ''} rounded-xl border border-slate-200 bg-white p-5 shadow-sm`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2376,7 +2839,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                     }`}
                   >
                     <span className="block text-xs font-bold text-slate-900">1. RSVP Check-in</span>
-                    <span className="mt-0.5 block text-[11px] text-slate-600">Attendance only. Marks the attendee Present.</span>
+                    <span className="mt-0.5 block text-[11px] text-slate-600">First scan: marks registered and walk-in attendees Present. No walk-in hair record is created yet.</span>
                   </button>
                   <button
                     type="button"
@@ -2389,7 +2852,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                     }`}
                   >
                     <span className="block text-xs font-bold text-slate-900">2. Hair Outcome Review</span>
-                    <span className="mt-0.5 block text-[11px] text-slate-600">Checked-in donors only. Opens AI details for staff review.</span>
+                    <span className="mt-0.5 block text-[11px] text-slate-600">Second scan: opens AI review for registered donors or the manual assessment for checked-in walk-ins.</span>
                   </button>
                 </div>
 
@@ -2565,9 +3028,15 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                       </section>
                     </div>
 
-                    <div className="hidden" aria-hidden="true">
+                    <div
+                      className={activeReview?.attendee?.Is_Walk_In ? 'rounded-xl border border-violet-200 bg-violet-50/40 p-4' : 'hidden'}
+                      aria-hidden={!activeReview?.attendee?.Is_Walk_In}
+                    >
                       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-xs font-semibold text-slate-800">Editable Hair Details</p>
+                        <div>
+                          <p className="text-sm font-bold text-violet-950">Manual hair assessment</p>
+                          <p className="mt-0.5 text-[11px] text-violet-700">Complete all five measurements and the treatment checklist. Values are saved with the final decision.</p>
+                        </div>
                         <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
                           reviewStatusMeta.isFinal ? 'bg-slate-200 text-slate-700' : 'bg-amber-100 text-amber-700'
                         }`}>
@@ -2698,21 +3167,53 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                         </label>
                       </div>
 
-                      <div className="mt-3">
-                        <button
-                          type="button"
-                          onClick={() => { void handleSaveDetailEdits(); }}
-                          disabled={reviewStatusMeta.isFinal || isSaving || isSavingDetail}
-                          className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                        >
-                          {(isSaving || isSavingDetail) ? <Loader2 size={12} className="animate-spin" /> : null}
-                          Save Hair Details
-                        </button>
-                      </div>
+                      <p className="mt-3 text-[11px] font-medium text-violet-700">Unchecked treatment boxes are saved as No.</p>
                     </div>
 
+                    {activeReview?.attendee?.Is_Walk_In && (
+                      <section className="rounded-xl border border-violet-200 bg-violet-50/50 p-4">
+                        <h4 className="text-sm font-bold text-violet-950">Walk-in hair photos</h4>
+                        <p className="mt-1 text-xs text-violet-700">Front, Side, and Top are all required. Take a new photo or upload an existing one for each view. Replacing a view removes its old file.</p>
+                        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                          {WALK_IN_PHOTO_TYPES.map((photoType) => {
+                            const photo = (activeReview?.images || []).find((image) => normalizeFlowStatusKey(image?.Image_Type) === normalizeFlowStatusKey(photoType));
+                            return (
+                              <article key={photoType} className="overflow-hidden rounded-xl border border-violet-200 bg-white">
+                                <div className="flex aspect-[4/3] items-center justify-center bg-violet-100/60">
+                                  {photo?.Preview_Url ? (
+                                    <img src={photo.Preview_Url} alt={`${photoType} hair evidence`} className="h-full w-full object-cover" />
+                                  ) : (
+                                    <div className="text-center text-violet-500"><Camera size={24} className="mx-auto" /><span className="mt-1 block text-[11px] font-semibold">No {photoType.toLowerCase()} photo</span></div>
+                                  )}
+                                </div>
+                                <div className="p-3">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-xs font-bold text-violet-950">{photoType}</span>
+                                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${photo ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>{photo ? 'Ready' : 'Required'}</span>
+                                  </div>
+                                  <div className="mt-2 grid grid-cols-2 gap-1.5">
+                                    <label className="inline-flex cursor-pointer items-center justify-center gap-1 rounded-md bg-violet-700 px-2 py-1.5 text-[10px] font-bold text-white hover:bg-violet-800">
+                                      <Camera size={12} /> Take photo
+                                      <input type="file" accept="image/*" capture="environment" className="hidden" disabled={isSaving || reviewStatusMeta.isFinal} onChange={(event) => { void handleWalkInPhotoUpload(event.target.files, photoType); event.target.value = ''; }} />
+                                    </label>
+                                    <label className="inline-flex cursor-pointer items-center justify-center gap-1 rounded-md border border-violet-300 bg-white px-2 py-1.5 text-[10px] font-bold text-violet-800 hover:bg-violet-50">
+                                      <Upload size={12} /> Upload
+                                      <input type="file" accept="image/*" className="hidden" disabled={isSaving || reviewStatusMeta.isFinal} onChange={(event) => { void handleWalkInPhotoUpload(event.target.files, photoType); event.target.value = ''; }} />
+                                    </label>
+                                  </div>
+                                  {photo && !reviewStatusMeta.isFinal && (
+                                    <button type="button" onClick={() => { void handleRemoveWalkInPhoto(photo); }} disabled={isSaving} className="mt-2 inline-flex w-full items-center justify-center gap-1 rounded-md px-2 py-1 text-[10px] font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-60"><Trash2 size={11} /> Remove</button>
+                                  )}
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      </section>
+                    )}
+
                     {(
-                      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                      <section className={`${activeReview?.attendee?.Is_Walk_In ? 'hidden' : ''} overflow-hidden rounded-xl border border-slate-200 bg-white`}>
                         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
                           <div className="flex items-start gap-2">
                             <Sparkles size={16} className="mt-0.5 shrink-0" style={{ color: primaryColor }} />
@@ -2805,7 +3306,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                       </section>
                     )}
 
-                    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                    <section className={`${activeReview?.attendee?.Is_Walk_In ? 'hidden' : ''} overflow-hidden rounded-xl border border-slate-200 bg-white`}>
                       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
                         <div>
                           <h4 className="text-sm font-bold text-slate-900">Detailed AI Assessment</h4>
@@ -2896,7 +3397,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
 
                     <div>
                       <label className="mb-1 block text-xs font-semibold text-slate-700" htmlFor="hair-quality-reason">
-                        Rejection reason (required for Rejected and Rejected Cut)
+                        Rejection reason {activeReview?.attendee?.Is_Walk_In ? '(required for Reject)' : '(required for Rejected and Rejected Cut)'}
                       </label>
                       <textarea
                         id="hair-quality-reason"
@@ -2917,7 +3418,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                         className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
                       >
                         {(isSaving || isSubmittingQuality) ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
-                        Approve Hair (Set Cut)
+                        {activeReview?.attendee?.Is_Walk_In ? 'Accept Hair (Set Cut)' : 'Approve Hair (Set Cut)'}
                       </button>
                       <button
                         type="button"
@@ -2928,7 +3429,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                         {(isSaving || isSubmittingQuality) ? <Loader2 size={12} className="animate-spin" /> : <AlertCircle size={12} />}
                         Reject Hair (Cancel)
                       </button>
-                      <button
+                      {!activeReview?.attendee?.Is_Walk_In && <button
                         type="button"
                         onClick={() => { void handleQualityDecision('Rejected Cut'); }}
                         disabled={reviewStatusMeta.isFinal || isSaving || isSubmittingQuality || isSavingDetail}
@@ -2936,7 +3437,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                       >
                         {(isSaving || isSubmittingQuality) ? <Loader2 size={12} className="animate-spin" /> : <AlertCircle size={12} />}
                         Rejected Cut (Cancel)
-                      </button>
+                      </button>}
                     </div>
                   </div>
                 )}
@@ -3041,6 +3542,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                               <p className="font-semibold text-slate-900">{attendee.Full_Name || 'N/A'}</p>
                               <p className="text-xs text-slate-600">{attendee.Email || 'No email'}</p>
                               <p className="text-xs text-slate-600">{attendee.Contact_Number || 'No contact'}</p>
+                              {attendee.Is_Walk_In && <span className="mt-1 inline-flex rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700">Walk-in · Unregistered</span>}
                             </td>
                             <td className="px-5 py-3 align-top">
                               <span
@@ -3090,7 +3592,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                               )}
                             </td>
                             <td className="px-5 py-3 align-top">
-                              <button
+                              <div className="flex flex-col gap-1.5"><button
                                 type="button"
                                 onClick={() => printWaybill(attendee)}
                                 disabled={isSaving}
@@ -3099,6 +3601,13 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                                 {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Printer size={12} />}
                                 Print Waybill
                               </button>
+                              {attendee.Is_Walk_In && attendee.Hair_Intake_State === 'not_started' && (
+                                normalizeFlowStatusKey(attendee.Attendance_Status) === 'present' && attendee.RSVP_Scanned_At ? (
+                                  <button type="button" onClick={() => { void handleCreateWalkInSubmission(attendee); }} disabled={isSaving} className="inline-flex items-center justify-center gap-1 rounded-md bg-violet-700 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-60"><Sparkles size={12} />Record hair</button>
+                                ) : (
+                                  <button type="button" disabled title="Scan this QR in RSVP Check-in first." className="inline-flex cursor-not-allowed items-center justify-center gap-1 rounded-md bg-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-500"><ScanLine size={12} />RSVP first</button>
+                                )
+                              )}</div>
                             </td>
                           </tr>
                         ))}
@@ -3140,6 +3649,22 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
         ]}
         showOpenDates={false}
       />
+
+      {showWalkInQr && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
+          <section role="dialog" aria-modal="true" aria-labelledby="walk-in-qr-title" className="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl">
+            <div className="flex items-start justify-between text-left"><div><h3 id="walk-in-qr-title" className="text-lg font-bold text-slate-900">Walk-in registration QR</h3><p className="mt-1 text-xs text-slate-500">{selectedEvent?.Event_Name}</p></div><button type="button" onClick={() => setShowWalkInQr(false)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100" aria-label="Close"><X size={18} /></button></div>
+            {walkInQrDataUrl && <img src={walkInQrDataUrl} alt="Walk-in registration QR code" className="mx-auto mt-5 h-72 w-72 rounded-xl border border-slate-200" />}
+            {walkInPublicUrl && <a href={walkInPublicUrl} target="_blank" rel="noreferrer" className="mt-3 block break-all text-xs font-medium text-violet-800 underline decoration-violet-300 underline-offset-2">{walkInPublicUrl}</a>}
+            <p className={`mt-4 rounded-lg px-3 py-2 text-xs font-semibold ${walkInIntake?.is_open ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'}`}>{walkInIntake?.is_open ? 'The form is open during the active program time.' : 'The QR is valid, but submissions remain blocked until intake is open.'}</p>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              <button type="button" onClick={() => { void handleCopyWalkInLink(); }} className="rounded-lg border border-violet-200 bg-white px-4 py-2 text-sm font-bold text-violet-800">Copy link</button>
+              {walkInPublicUrl && <a href={walkInPublicUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-800">Open form</a>}
+              <button type="button" onClick={() => window.print()} className="rounded-lg bg-violet-700 px-4 py-2 text-sm font-bold text-white">Print QR</button>
+            </div>
+          </section>
+        </div>, document.body
+      )}
 
       {showSuccessfulConfirmation && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[2147483000] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
@@ -3191,7 +3716,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                 <p>1. Find a program using search, calendar, or the status filters on the left.</p>
                 <p>2. Click <strong>Print All Waybills</strong> to print every attendee waybill with QR before program deployment.</p>
                 <p>3. Use <strong>RSVP Check-in</strong> first. It only records attendance and marks the attendee Present.</p>
-                <p>4. For donors, switch to <strong>Hair Outcome Review</strong> and scan the same QR again. Double-check the AI details, make corrections, then choose <strong>Approve</strong>, <strong>Reject</strong>, or <strong>Rejected Cut</strong>.</p>
+                <p>4. For donors, switch to <strong>Hair Outcome Review</strong> and scan the same QR again. Registered donors keep their AI comparison and three decisions. Walk-ins get the manual five-field assessment, treatment checklist, and required Front, Side, and Top photos before Accept or Reject.</p>
                 <p>5. Use <strong>Refresh</strong> anytime if you want an immediate sync; live updates are already active.</p>
               </div>
             </div>

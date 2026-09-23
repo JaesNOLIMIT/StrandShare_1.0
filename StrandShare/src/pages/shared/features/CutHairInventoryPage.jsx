@@ -44,6 +44,16 @@ function fullName(row) {
     .join(' ') || 'Unknown donor';
 }
 
+function inventoryDonorName(row) {
+  const registeredName = fullName(row?.donor);
+  if (registeredName !== 'Unknown donor') return registeredName;
+  const walkInName = String(row?.attendee?.walk_in_full_name || '').trim();
+  const meaningfulWalkInName = walkInName.toLowerCase() === 'walk-in donor' ? '' : walkInName;
+  return meaningfulWalkInName
+    || String(row?.attendee?.walk_in_email || '').trim()
+    || 'Unknown donor';
+}
+
 function periodStart(period) {
   const now = new Date();
   if (period === 'all') return null;
@@ -173,7 +183,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
           ? supabase.from('Event_Requests').select('Event_Request_ID, Event_Name, Start_Date').in('Event_Request_ID', eventIds)
           : Promise.resolve({ data: [], error: null }),
         attendeeIds.length
-          ? supabase.rpc('get_cut_hair_inventory_waybills', { p_event_attendee_ids: attendeeIds })
+          ? supabase.rpc('get_cut_hair_inventory_attendee_context', { p_event_attendee_ids: attendeeIds })
           : Promise.resolve({ data: [], error: null }),
         donorIds.length
           ? supabase.from('user_details').select('user_id, first_name, middle_name, last_name, suffix').in('user_id', donorIds)
@@ -221,6 +231,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
           Event_Request_ID: eventRequestId || row.Event_Request_ID,
           Event_Attendee_ID: eventAttendeeId || row.Event_Attendee_ID,
           Waybill_Code: String(attendee?.waybill_code || '').trim().toUpperCase(),
+          attendee,
           detail: detailsBySubmission.get(Number(row.Submission_ID)) || null,
           event: eventsById.get(eventRequestId) || null,
           donor: donorsById.get(donorUserId) || null,
@@ -298,7 +309,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
         row.wig?.Wig_Code,
         row.wig?.Wig_Name,
         row.event?.Event_Name,
-        fullName(row.donor),
+        inventoryDonorName(row),
         row.detail?.Declared_Color,
         row.detail?.Declared_Texture,
         row.Status,
@@ -492,7 +503,7 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <p className="font-semibold text-slate-900">{fullName(row.donor)}</p>
+                      <p className="font-semibold text-slate-900">{inventoryDonorName(row)}</p>
                       <p className="text-xs text-slate-500">{row.Source_Type === 'Non-Event' ? 'Independent donation' : 'Program donation'}</p>
                       {row.event && <p className="mt-1 inline-flex items-center gap-1 text-xs text-slate-600"><CalendarDays size={11} />{row.event.Event_Name} (ER-{row.Event_Request_ID})</p>}
                     </td>

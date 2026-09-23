@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer';
 import { createClient } from '@supabase/supabase-js';
 import { config as loadDotenv } from 'dotenv';
 import { jsPDF } from 'jspdf';
+import QRCode from 'qrcode';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -369,9 +370,38 @@ function buildCertificateAttachment(row) {
   };
 }
 
-function buildEmailAttachments(row) {
+async function buildWaybillQrAttachment(row) {
+  const notificationKey = normalizeKey(row?.Notification_Type);
+  if (notificationKey !== 'walkinregistrationreceived') return null;
+
+  const payload = row?.Payload && typeof row.Payload === 'object' ? row.Payload : {};
+  const waybillCode = String(payload.waybill_code || '').trim().toUpperCase();
+  if (!waybillCode) return null;
+
+  const qrPayload = JSON.stringify({
+    Payload_Type: 'Event_RSVP_Waybill',
+    Event_Request_ID: Number(payload.event_request_id || 0) || null,
+    Event_Attendee_ID: Number(payload.event_attendee_id || row?.Source_ID || 0) || null,
+    User_ID: null,
+    Waybill_Code: waybillCode,
+  });
+  const content = await QRCode.toBuffer(qrPayload, {
+    type: 'png', errorCorrectionLevel: 'M', margin: 2, width: 360,
+    color: { dark: '#0f172a', light: '#ffffff' },
+  });
+  return {
+    filename: `Donivra_Waybill_${safeFilePart(waybillCode, 'walk_in')}.png`,
+    content,
+    contentType: 'image/png',
+    cid: 'walk-in-waybill-qr',
+    contentDisposition: 'inline',
+  };
+}
+
+async function buildEmailAttachments(row) {
   const certificate = buildCertificateAttachment(row);
-  return certificate ? [certificate] : [];
+  const waybillQr = await buildWaybillQrAttachment(row);
+  return [certificate, waybillQr].filter(Boolean);
 }
 
 function buildEmailContent(row) {
@@ -676,9 +706,9 @@ async function processBatch({
 
     const attemptCount = Number(claimedRow.Attempt_Count || 0) + 1;
     const { subject, text, html } = buildEmailContent(claimedRow);
-    const attachments = buildEmailAttachments(claimedRow);
 
     try {
+      const attachments = await buildEmailAttachments(claimedRow);
       if (dryRun) {
         console.log(`[SMTP][DRY-RUN] Would send to ${claimedRow.Recipient_Email} | ${subject} | ${attachments.length} attachment(s)`);
       } else {

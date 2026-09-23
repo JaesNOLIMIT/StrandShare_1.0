@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Walk-in registration received</title></head>
+<body style="margin:0;background:#f5f3f1;color:#1f2937;font-family:Segoe UI,Arial,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your Donivra walk-in registration and QR waybill are ready.</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 12px;background:#f5f3f1;"><tr><td align="center">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;overflow:hidden;border:1px solid #eadde0;border-radius:20px;background:#ffffff;box-shadow:0 12px 32px rgba(91,11,22,.10);">
+      <tr><td style="height:8px;background:#5b0b16;"></td></tr>
+      <tr><td style="padding:24px 28px;border-bottom:1px solid #eee7e3;">
+        <div style="font-size:22px;font-weight:800;color:#5b0b16;letter-spacing:.04em;">DONIVRA</div>
+        <div style="margin-top:3px;font-size:12px;color:#9a6a62;">Where Hair Becomes Hope</div>
+      </td></tr>
+      <tr><td style="padding:30px 28px;text-align:left;">
+        <div style="display:inline-block;padding:6px 10px;border-radius:999px;background:#ecfdf5;color:#047857;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;">Registration confirmed</div>
+        <h1 style="margin:16px 0 10px;font-size:27px;line-height:1.25;color:#1f2937;">Your walk-in QR is ready</h1>
+        <p style="margin:0 0 22px;font-size:15px;line-height:1.7;color:#64748b;">Hello {{recipient_name}}, your walk-in donor registration and consent were received for <strong style="color:#374151;">{{event_name}}</strong>.</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border:1px solid #eadde0;border-radius:16px;background:#fffafa;"><tr><td align="center" style="padding:24px;">
+          <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.10em;color:#9a6a62;">Event waybill QR</div>
+          <img src="cid:walk-in-waybill-qr" width="240" height="240" alt="QR code for waybill {{waybill_code}}" style="display:block;width:240px;height:240px;margin:16px auto 12px;border:10px solid #ffffff;border-radius:14px;">
+          <div style="font-size:12px;color:#64748b;">Waybill code</div>
+          <div style="margin-top:4px;font-family:Consolas,Monaco,monospace;font-size:24px;font-weight:800;letter-spacing:.12em;color:#5b0b16;">{{waybill_code}}</div>
+        </td></tr></table>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:20px;border:1px solid #bfdbfe;border-radius:12px;background:#eff6ff;"><tr><td style="padding:18px;color:#1e40af;font-size:14px;line-height:1.65;">
+          <strong style="font-size:15px;">Use this same QR twice at the program</strong>
+          <div style="margin-top:12px;"><strong>1. RSVP Check-in:</strong> Show this QR to the assigned Staff member. Your first scan marks you Present.</div>
+          <div style="margin-top:8px;"><strong>2. Join the donation line:</strong> After check-in, fall in line and keep this email open on your phone.</div>
+          <div style="margin-top:8px;"><strong>3. Hair Outcome Review:</strong> Show the same QR again. Staff will take or upload Front, Side, and Top photos and complete the manual hair assessment.</div>
+          <div style="margin-top:8px;"><strong>4. Final result:</strong> Staff will accept or reject the donated hair after the assessment, and the result will be emailed to you.</div>
+        </td></tr></table>
+        <p style="margin:20px 0 0;font-size:13px;line-height:1.7;color:#64748b;">Keep this email available on your phone for both scans. The QR image is also attached in case your email app blocks inline images.</p>
+      </td></tr>
+      <tr><td style="padding:16px 28px;border-top:1px solid #eee7e3;background:#faf9f8;font-size:11px;color:#94a3b8;">Donivra · Walk-in registration reference {{waybill_code}}</td></tr>
+    </table>
+  </td></tr></table>
+</body>
+</html>

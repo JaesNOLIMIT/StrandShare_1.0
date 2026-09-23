@@ -13,6 +13,7 @@ import EventApplicationSuccessPage from './pages/public/EventApplicationSuccessP
 import PartnershipApplicationPage from './pages/public/PartnershipApplicationPage';
 import PartnerHospitalsPage from './pages/public/PartnerHospitalsPage';
 import PatientApplicationPage from './pages/public/PatientApplicationPage';
+import EventWalkInRegistrationPage from './pages/public/EventWalkInRegistrationPage';
 import StaffRole from './pages/roles/staff/StaffRole';
 import SpecialistRole from './pages/roles/specialist/SpecialistRole';
 import {
@@ -527,6 +528,8 @@ export default function App() {
   const isEventApplicationSuccessRoute = currentPath === '/apply-event/success';
   const isPartnerHospitalsRoute = currentPath === '/partner-hospitals';
   const isPatientApplicationRoute = currentPath === '/apply-patient';
+  const walkInRouteMatch = currentPath.match(/^\/event-walk-in\/([0-9a-f-]{36})$/i);
+  const isEventWalkInRoute = Boolean(walkInRouteMatch);
   const isCompleteAccountRoute = currentPath === '/complete-account';
   const isResetPasswordRoute = currentPath === '/reset-password';
   const isConfirmationCompleteRoute = currentPath === '/confirmation-complete';
@@ -537,6 +540,7 @@ export default function App() {
   const showEventApplicationSuccessPage = canRenderMainRoutes && !session && isEventApplicationSuccessRoute;
   const showPartnerHospitalsPage = canRenderMainRoutes && !session && isPartnerHospitalsRoute;
   const showPatientApplicationPage = canRenderMainRoutes && !session && isPatientApplicationRoute;
+  const showEventWalkInPage = canRenderMainRoutes && isEventWalkInRoute;
   const showLoginPage = canRenderMainRoutes && !session
     && !isLandingRoute
     && !isPartnershipApplicationRoute
@@ -544,8 +548,10 @@ export default function App() {
     && !isEventApplicationSuccessRoute
     && !isPartnerHospitalsRoute
     && !isPatientApplicationRoute;
+  const shouldShowLoginPage = showLoginPage && !isEventWalkInRoute;
   const showDashboard =
     canRenderMainRoutes &&
+    !isEventWalkInRoute &&
     !isLoadingAuth &&
     Boolean(session) &&
     Boolean(activeRole) &&
@@ -604,7 +610,11 @@ export default function App() {
           <PatientApplicationPage />
         )}
 
-        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && (showLoginPage || showLoginPreparationOverlay) && (
+        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && showEventWalkInPage && (
+          <EventWalkInRegistrationPage token={walkInRouteMatch?.[1]} />
+        )}
+
+        {!isCompleteAccountRoute && !isResetPasswordRoute && !isConfirmationCompleteRoute && (shouldShowLoginPage || showLoginPreparationOverlay) && (
           <div className={showLoginPreparationOverlay ? 'fixed inset-0 z-[100] overflow-auto bg-white' : ''}>
             <LoginPage
               authNotice={
