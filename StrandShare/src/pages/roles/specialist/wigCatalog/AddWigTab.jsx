@@ -46,15 +46,28 @@ import {
 
 const FILTERS_TABLE = 'Wig_AI_Filters';
 const configuredAiServerUrl = String(process.env.REACT_APP_AI_SERVER_URL || '').trim();
+const browserIsLocal = typeof window !== 'undefined'
+  && ['localhost', '127.0.0.1'].includes(window.location.hostname);
+const configuredAiIsLoopback = /^https?:\/\/(localhost|127(?:\.\d{1,3}){3})(?::|\/|$)/i
+  .test(configuredAiServerUrl);
+const usableConfiguredAiServerUrl = configuredAiServerUrl
+  && (!configuredAiIsLoopback || browserIsLocal)
+  ? configuredAiServerUrl
+  : '';
 const AI_SERVER_BASE_URL = (
-  configuredAiServerUrl && !configuredAiServerUrl.startsWith('/')
-    ? configuredAiServerUrl
-    : 'http://127.0.0.1:8000'
+  usableConfiguredAiServerUrl && !usableConfiguredAiServerUrl.startsWith('/')
+    ? usableConfiguredAiServerUrl
+    : browserIsLocal
+      ? 'http://127.0.0.1:8000'
+      : ''
 ).replace(/\/+$/, '');
-const LOCAL_AI_OFFLINE_MESSAGE =
-  'Local AI is offline. Start the Donivra Local AI service on this computer and allow Local Network Access if your browser asks. Then choose Check again. Refreshing this page does not start a local program.';
+const HAS_AI_SERVER = Boolean(AI_SERVER_BASE_URL);
+const AI_UNAVAILABLE_MESSAGE = HAS_AI_SERVER
+  ? 'AI processing is currently unavailable. You can check again or continue with manual cloud review.'
+  : 'No hosted AI service is configured for this deployment. You can continue with manual cloud review; the photo and staff-entered details will still be saved.';
 const POLL_MS = 1800;
 const OFFLINE_RECHECK_MS = 10000;
+const MANUAL_REVIEW_MODEL = 'manual-cloud-v1';
 const DEFAULT_FILTER_FIT = Object.freeze({
   full_wig: {
     offsetX: 0,
@@ -255,21 +268,25 @@ function WigDetailsForm({
 
 function AiStatusPill({ health, onRetry }) {
   const online = health.state === 'online';
+  const manual = health.state === 'manual';
   return (
     <button
       type="button"
       onClick={() => onRetry()}
+      disabled={manual}
       className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-semibold ${
         online
           ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+          : manual
+            ? 'cursor-default border-sky-200 bg-sky-50 text-sky-700'
           : health.state === 'checking'
             ? 'border-slate-200 bg-slate-50 text-slate-600'
-            : 'border-red-200 bg-red-50 text-red-700'
+            : 'border-amber-200 bg-amber-50 text-amber-700'
       }`}
     >
-      <span className={`h-2 w-2 rounded-full ${online ? 'bg-emerald-500' : health.state === 'checking' ? 'bg-slate-400' : 'bg-red-500'}`} />
-      {online ? 'Local AI ready' : health.state === 'checking' ? 'Checking local AI' : 'Local AI is offline'}
-      {health.state === 'checking' ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+      <span className={`h-2 w-2 rounded-full ${online ? 'bg-emerald-500' : manual ? 'bg-sky-500' : health.state === 'checking' ? 'bg-slate-400' : 'bg-amber-500'}`} />
+      {online ? 'AI ready' : manual ? 'Manual cloud mode' : health.state === 'checking' ? 'Checking AI service' : 'AI offline · manual available'}
+      {health.state === 'checking' ? <Loader2 size={11} className="animate-spin" /> : !manual ? <RefreshCw size={11} /> : null}
     </button>
   );
 }
@@ -293,7 +310,10 @@ export default function AddWigTab({
   const [submitting, setSubmitting] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [notice, setNotice] = useState({ kind: '', message: '' });
-  const [health, setHealth] = useState({ state: 'checking', details: null });
+  const [health, setHealth] = useState({
+    state: HAS_AI_SERVER ? 'checking' : 'manual',
+    details: null,
+  });
   const [detailsConfirmed, setDetailsConfirmed] = useState(false);
   const [duplicateConfirmed, setDuplicateConfirmed] = useState(false);
   const [reservedFor, setReservedFor] = useState('');
@@ -317,6 +337,10 @@ export default function AddWigTab({
   const isFailed = status === 'failed';
 
   const checkHealth = useCallback(async ({ silent = false } = {}) => {
+    if (!HAS_AI_SERVER) {
+      setHealth({ state: 'manual', details: null });
+      return false;
+    }
     if (!silent) setHealth({ state: 'checking', details: null });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4500);
@@ -327,7 +351,7 @@ export default function AddWigTab({
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
-      if (data?.status !== 'ok' || data?.mode !== 'local-only') {
+      if (data?.status !== 'ok') {
         throw new Error('Unexpected health response');
       }
       setHealth({ state: 'online', details: data });
@@ -492,13 +516,9 @@ export default function AddWigTab({
     setSubmitting(true);
     setNotice({ kind: '', message: '' });
     let insertedFilter = null;
+    let manualImagePath = '';
     try {
       const aiReady = await checkHealth();
-      if (!aiReady) {
-        setNotice({ kind: 'error', message: LOCAL_AI_OFFLINE_MESSAGE });
-        return;
-      }
-
       const length = String(form.hairLength).trim() ? Number(form.hairLength) : null;
       const insert = await supabase
         .from(FILTERS_TABLE)
@@ -530,6 +550,66 @@ export default function AddWigTab({
       if (insert.error) throw insert.error;
 
       insertedFilter = insert.data;
+      if (!aiReady) {
+        const extensionFromName = String(wigPhoto.name || '').toLowerCase().match(/\.(png|jpe?g|webp)$/)?.[1];
+        const extensionByType = {
+          'image/png': 'png',
+          'image/jpeg': 'jpg',
+          'image/jpg': 'jpg',
+          'image/webp': 'webp',
+        }[String(wigPhoto.type || '').toLowerCase()];
+        const extension = extensionFromName === 'jpeg' ? 'jpg' : extensionFromName || extensionByType || 'jpg';
+        manualImagePath = `${authUserId}/wig-ai-filters/${insert.data.Filter_ID}/manual-source.${extension}`;
+
+        const upload = await supabase.storage
+          .from(FILTERS_BUCKET)
+          .upload(manualImagePath, wigPhoto, {
+            contentType: wigPhoto.type || `image/${extension}`,
+            upsert: false,
+          });
+        if (upload.error) throw upload.error;
+
+        const attributeCandidates = rescoreDuplicateMatches(
+          inventoryForLocalAnalysis(inventory).map((item) => ({
+            ...item,
+            score: 0,
+            visualSimilarity: null,
+            reason: 'Similar staff-entered catalog attributes',
+          })),
+          form,
+        ).slice(0, 12);
+        const staged = await supabase.rpc('stage_manual_wig_catalog_review', {
+          p_filter_id: insert.data.Filter_ID,
+          p_image_path: manualImagePath,
+          p_duplicate_matches: attributeCandidates,
+        });
+        if (staged.error) throw staged.error;
+
+        const stagedFilter = staged.data?.filter || staged.data || {
+          ...insert.data,
+          Status: 'pending_review',
+          Source_Front_Path: manualImagePath,
+          Layer_Full_Wig_Path: manualImagePath,
+          Thumbnail_Path: manualImagePath,
+          AI_Model_Version: MANUAL_REVIEW_MODEL,
+          AI_Suggestions: { _meta: { mode: 'manual-cloud' } },
+          Duplicate_Matches: attributeCandidates,
+        };
+        setCurrentFilter(stagedFilter);
+        setHealth({ state: HAS_AI_SERVER ? 'offline' : 'manual', details: null });
+        setNotice({
+          kind: 'success',
+          message: 'The photo is ready for manual review. Verify all wig details before creating the catalog item.',
+        });
+        void logAuditAction({
+          action: 'wig_catalog_manual_review_started',
+          description: `filter_id=${insert.data.Filter_ID} ai_available=false`,
+          resource: 'wig_catalog_studio',
+          userProfile,
+        });
+        return;
+      }
+
       const payload = new FormData();
       payload.append('wig_photo', wigPhoto);
       payload.append('filter_id', String(insert.data.Filter_ID));
@@ -559,7 +639,7 @@ export default function AddWigTab({
         } catch {
           // Keep a plain-text server response.
         }
-        throw new Error(responseMessage || `Local AI returned HTTP ${response.status}`);
+        throw new Error(responseMessage || `AI service returned HTTP ${response.status}`);
       }
       setCurrentFilter({ ...insert.data, Status: 'processing' });
       setHealth({ state: 'online', details: health.details });
@@ -579,6 +659,9 @@ export default function AddWigTab({
           })
           .eq('Filter_ID', insertedFilter.Filter_ID);
       }
+      if (manualImagePath) {
+        await supabase.storage.from(FILTERS_BUCKET).remove([manualImagePath]);
+      }
       const isConnectionError =
         error?.name === 'AbortError'
         || error instanceof TypeError
@@ -588,8 +671,8 @@ export default function AddWigTab({
       setNotice({
         kind: 'error',
         message: isConnectionError
-          ? LOCAL_AI_OFFLINE_MESSAGE
-          : error?.message || 'Could not start local wig analysis.',
+          ? AI_UNAVAILABLE_MESSAGE
+          : error?.message || 'Could not prepare the wig review.',
       });
       if (isConnectionError) {
         setHealth((previous) => ({ ...previous, state: 'offline' }));
@@ -694,7 +777,7 @@ export default function AddWigTab({
       const created = createdRows.find((row) => row?.Wig_Code === form.wigCode) || createdRows[0];
       void logAuditAction({
         action: 'wig_catalog_item_created',
-        description: `wig_id=${created?.Wig_ID || ''} code=${created?.Wig_Code || form.wigCode} variants=${createdRows.length} local_ai=true`,
+        description: `wig_id=${created?.Wig_ID || ''} code=${created?.Wig_Code || form.wigCode} variants=${createdRows.length} processing=${currentFilter.AI_Model_Version === MANUAL_REVIEW_MODEL ? 'manual_cloud' : 'ai'}`,
         resource: 'wig_catalog_studio',
         userProfile,
       });
@@ -734,20 +817,22 @@ export default function AddWigTab({
         </div>
       </section>
 
-      {health.state === 'offline' && !currentFilter ? (
-        <section className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-red-800 sm:flex-row sm:items-center">
+      {['offline', 'manual'].includes(health.state) && !currentFilter ? (
+        <section className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 sm:flex-row sm:items-center">
           <AlertCircle size={19} className="shrink-0" />
           <div className="flex-1">
-            <p className="text-sm font-semibold">Start Local AI before continuing</p>
-            <p className="mt-0.5 text-xs leading-relaxed">{LOCAL_AI_OFFLINE_MESSAGE}</p>
+            <p className="text-sm font-semibold">AI is optional — manual review is available</p>
+            <p className="mt-0.5 text-xs leading-relaxed">{AI_UNAVAILABLE_MESSAGE}</p>
           </div>
-          <button
-            type="button"
-            onClick={() => checkHealth()}
-            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100"
-          >
-            <RefreshCw size={13} /> Check again
-          </button>
+          {HAS_AI_SERVER ? (
+            <button
+              type="button"
+              onClick={() => checkHealth()}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+            >
+              <RefreshCw size={13} /> Check again
+            </button>
+          ) : null}
         </section>
       ) : null}
 
@@ -856,10 +941,12 @@ export default function AddWigTab({
 
               <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[11px] text-slate-500">
                 <div className="flex items-center gap-1.5">
-                  <ShieldCheck size={13} className="text-emerald-600" /> Local processing
+                  <ShieldCheck size={13} className="text-emerald-600" />
+                  {health.state === 'online' ? 'AI processing' : 'Secure cloud upload'}
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <Wand2 size={13} className="text-violet-600" /> Background removal
+                  <Wand2 size={13} className="text-violet-600" />
+                  {health.state === 'online' ? 'Background removal' : 'Manual detail review'}
                 </div>
                 <div className="flex items-center gap-1.5">
                   <SearchCheck size={13} className="text-blue-600" /> Duplicate check
@@ -868,7 +955,7 @@ export default function AddWigTab({
 
               <button
                 type="button"
-                disabled={!wigPhoto || submitting || health.state !== 'online'}
+                disabled={!wigPhoto || submitting || health.state === 'checking'}
                 onClick={handleAnalyze}
                 className="mt-4 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-45"
                 style={{ backgroundColor: primaryColor || '#7f1d1d' }}
@@ -877,9 +964,11 @@ export default function AddWigTab({
                   ? <Loader2 size={16} className="animate-spin" />
                   : <BrainCircuit size={16} />}
                 {health.state === 'offline'
-                  ? 'Start Local AI to continue'
+                  ? 'Continue with manual review'
+                  : health.state === 'manual'
+                    ? 'Upload and review manually'
                   : health.state === 'checking'
-                    ? 'Checking Local AI...'
+                    ? 'Checking AI service...'
                     : 'Analyze and continue'}
               </button>
             </aside>
@@ -895,11 +984,10 @@ export default function AddWigTab({
           >
             <Loader2 size={30} className="animate-spin" />
           </span>
-          <h2 className="mt-4 text-base font-semibold text-slate-900">Processing locally on this computer</h2>
+          <h2 className="mt-4 text-base font-semibold text-slate-900">Processing the wig photo</h2>
           <p className="mx-auto mt-2 max-w-lg text-xs leading-relaxed text-slate-500">
-            Removing the background, identifying only confident attributes, and comparing the
-            wig against inventory images and entered details. The first run is slower while model
-            files are cached.
+            Removing the background, identifying confident attributes, and comparing the wig
+            against inventory images and entered details.
           </p>
           <div className="mx-auto mt-5 grid max-w-xl grid-cols-3 gap-2 text-[10px] font-semibold text-slate-500">
             <span className="rounded-lg bg-emerald-50 px-2 py-2 text-emerald-700">Raw photo stays local</span>
@@ -933,18 +1021,28 @@ export default function AddWigTab({
               <div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 size={19} className="text-emerald-600" />
-                  <h2 className="text-base font-semibold text-slate-900">Background removed</h2>
+                   <h2 className="text-base font-semibold text-slate-900">
+                     {currentFilter.AI_Model_Version === MANUAL_REVIEW_MODEL
+                       ? 'Photo ready for manual review'
+                       : 'Background removed'}
+                   </h2>
                 </div>
                 <p className="mt-1 text-xs text-slate-500">
-                  Review the transparent result and verify every editable detail.
+                   {currentFilter.AI_Model_Version === MANUAL_REVIEW_MODEL
+                     ? 'AI was unavailable, so verify the original photo and complete every editable detail.'
+                     : 'Review the transparent result and verify every editable detail.'}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[10px] font-semibold text-violet-700">
-                  {Object.keys(suggestions).filter((key) => key !== '_meta').length} confident AI suggestion(s)
+                  {currentFilter.AI_Model_Version === MANUAL_REVIEW_MODEL
+                    ? 'Manual staff review'
+                    : `${Object.keys(suggestions).filter((key) => key !== '_meta').length} confident AI suggestion(s)`}
                 </span>
                 <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[10px] font-semibold text-emerald-700">
-                  {suggestions?._meta?.processingSeconds
+                  {currentFilter.AI_Model_Version === MANUAL_REVIEW_MODEL
+                    ? 'Saved securely in cloud storage'
+                    : suggestions?._meta?.processingSeconds
                     ? `${suggestions._meta.processingSeconds}s local processing`
                     : 'Processed locally'}
                 </span>
@@ -965,7 +1063,11 @@ export default function AddWigTab({
                 </div>
                 <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500">
                   <span>Approved image preview</span>
-                  <span>Transparent PNG</span>
+                  <span>
+                    {currentFilter.AI_Model_Version === MANUAL_REVIEW_MODEL
+                      ? 'Original uploaded image'
+                      : 'Transparent PNG'}
+                  </span>
                 </div>
               </div>
               <WigDetailsForm
@@ -997,8 +1099,10 @@ export default function AddWigTab({
                     : 'No likely duplicate found'}
                 </h3>
                 <p className="mt-1 text-xs leading-relaxed text-slate-600">
-                  The score combines the local image comparison with the currently entered attributes.
-                  It is a warning, not an automatic rejection.
+                  {currentFilter.AI_Model_Version === MANUAL_REVIEW_MODEL
+                    ? 'Only staff-entered attributes are compared in manual mode.'
+                    : 'The score combines the image comparison with the currently entered attributes.'}
+                  {' '}It is a warning, not an automatic rejection.
                 </p>
               </div>
             </div>

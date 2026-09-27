@@ -91,11 +91,13 @@ Expected response includes:
 }
 ```
 
-The deployed site checks this loopback service automatically. A web page
-cannot launch a Windows process, so the AI service must already be running
-(or be configured to start when the specialist signs in to Windows). If the
-page reports that Local AI is offline, start it with `npm run ai:start`; the
-page checks again automatically and also provides a **Check again** button.
+The local development site checks this loopback service automatically. A
+Vercel deployment cannot launch or reach a Windows process at `127.0.0.1`.
+Production therefore uses either an HTTPS service configured through
+`REACT_APP_AI_SERVER_URL`, or the built-in manual cloud review fallback when
+that variable is empty or the service is unavailable. In manual mode the
+original image is stored in the catalog bucket and all attributes must be
+verified by the Specialist before final confirmation.
 
 ## API
 
