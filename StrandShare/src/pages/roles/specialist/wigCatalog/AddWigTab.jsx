@@ -48,22 +48,16 @@ const FILTERS_TABLE = 'Wig_AI_Filters';
 const configuredAiServerUrl = String(process.env.REACT_APP_AI_SERVER_URL || '').trim();
 const browserIsLocal = typeof window !== 'undefined'
   && ['localhost', '127.0.0.1'].includes(window.location.hostname);
-const configuredAiIsLoopback = /^https?:\/\/(localhost|127(?:\.\d{1,3}){3})(?::|\/|$)/i
-  .test(configuredAiServerUrl);
-const usableConfiguredAiServerUrl = configuredAiServerUrl
-  && (!configuredAiIsLoopback || browserIsLocal)
-  ? configuredAiServerUrl
-  : '';
 const AI_SERVER_BASE_URL = (
-  usableConfiguredAiServerUrl && !usableConfiguredAiServerUrl.startsWith('/')
-    ? usableConfiguredAiServerUrl
+  configuredAiServerUrl && !configuredAiServerUrl.startsWith('/')
+    ? configuredAiServerUrl
     : browserIsLocal
       ? 'http://127.0.0.1:8000'
       : ''
 ).replace(/\/+$/, '');
 const HAS_AI_SERVER = Boolean(AI_SERVER_BASE_URL);
 const AI_UNAVAILABLE_MESSAGE = HAS_AI_SERVER
-  ? 'AI processing is currently unavailable. You can check again or continue with manual cloud review.'
+  ? 'The private AI service on this computer is off or unavailable. Turn on Donivra AI, allow Local Network Access if the browser asks, then choose Check again. Manual review remains available.'
   : 'No hosted AI service is configured for this deployment. You can continue with manual cloud review; the photo and staff-entered details will still be saved.';
 const POLL_MS = 1800;
 const OFFLINE_RECHECK_MS = 10000;

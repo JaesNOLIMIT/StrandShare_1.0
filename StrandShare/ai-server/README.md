@@ -74,6 +74,33 @@ Run only the AI service:
 npm run ai:start
 ```
 
+### Always-ready Windows controls
+
+Install desktop shortcuts once, then turn the background AI on:
+
+```powershell
+npm run ai:install-controls
+npm run ai:on
+```
+
+`ai:on` starts the AI now and enables automatic startup when this Windows
+account signs in. `ai:off` stops it and disables that automatic startup. The
+desktop receives **Donivra AI On**, **Donivra AI Off**, and **Donivra AI
+Status** shortcuts for the same controls. No administrator permission is
+required.
+
+Additional terminal controls:
+
+```powershell
+npm run ai:start:background
+npm run ai:stop
+npm run ai:restart
+npm run ai:status
+```
+
+Background logs and the managed process ID are kept in the ignored
+`ai-server\.run` directory.
+
 Verify:
 
 ```powershell
@@ -91,13 +118,13 @@ Expected response includes:
 }
 ```
 
-The local development site checks this loopback service automatically. A
-Vercel deployment cannot launch or reach a Windows process at `127.0.0.1`.
-Production therefore uses either an HTTPS service configured through
-`REACT_APP_AI_SERVER_URL`, or the built-in manual cloud review fallback when
-that variable is empty or the service is unavailable. In manual mode the
-original image is stored in the catalog bucket and all attributes must be
-verified by the Specialist before final confirmation.
+The browser checks this loopback service automatically. A Vercel deployment
+cannot launch the Windows process itself, but the Specialist's browser can
+connect to the loopback service running on the same workstation. Allow Local
+Network Access if the browser asks. If the service is intentionally off or
+unavailable, the built-in manual cloud review fallback remains available. In
+manual mode the original image is stored in the catalog bucket and all
+attributes must be verified by the Specialist before final confirmation.
 
 ## API
 
