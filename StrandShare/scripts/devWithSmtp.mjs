@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 
 const children = [];
 let shuttingDown = false;
@@ -45,6 +46,14 @@ process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 
 run('web', 'npm', ['run', 'start:web'], { required: true });
-run('smtp-trigger', 'npm', ['run', 'smtp:trigger:server'], { required: false });
-run('smtp-worker', 'npm', ['run', 'smtp:worker:loop'], { required: false });
+const hasPrivateSmtpConfig = Boolean(process.env.SMTP_PASS)
+  || existsSync('.env.smtp.local')
+  || existsSync('scripts/.env.smtp.local');
+
+if (hasPrivateSmtpConfig) {
+  run('smtp-trigger', 'npm', ['run', 'smtp:trigger:server'], { required: false });
+  run('smtp-worker', 'npm', ['run', 'smtp:worker:loop'], { required: false });
+} else {
+  console.warn('[dev] Custom SMTP is not configured. Donivra application emails will remain queued.');
+}
 run('wig-catalog-local-ai', 'npm', ['run', 'ai:start'], { required: false });

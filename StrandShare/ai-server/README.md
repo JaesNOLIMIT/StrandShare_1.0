@@ -48,7 +48,7 @@ Fill in `ai-server\.env`:
 
 ```dotenv
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-server-only-key
+SUPABASE_SECRET_KEY=sb_secret_replace_me
 WIG_AI_FILTERS_BUCKET=wig_ai_filters
 REMBG_MODEL=birefnet-general
 CLIP_MODEL=openai/clip-vit-base-patch32

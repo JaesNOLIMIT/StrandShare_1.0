@@ -33,7 +33,7 @@ class SupabaseGateway:
     def __init__(self) -> None:
         self._client: Client = create_client(
             settings.supabase_url,
-            settings.supabase_service_role_key,
+            settings.supabase_secret_key,
         )
 
     # ------------------------------------------------------------------

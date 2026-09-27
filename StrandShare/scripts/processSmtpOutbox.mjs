@@ -601,9 +601,12 @@ function createTransport() {
 
 function createSupabaseAdminClient() {
   const supabaseUrl = requireEnv('SUPABASE_URL', readEnv('REACT_APP_SUPABASE_URL'));
-  const serviceRoleKey = requireEnv('SUPABASE_SERVICE_ROLE_KEY');
+  const secretKey = requireEnv(
+    'SUPABASE_SECRET_KEY',
+    readEnv('SUPABASE_SERVICE_ROLE_KEY'),
+  );
 
-  return createClient(supabaseUrl, serviceRoleKey, {
+  return createClient(supabaseUrl, secretKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,

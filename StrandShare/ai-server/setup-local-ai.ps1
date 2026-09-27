@@ -20,7 +20,7 @@ Write-Host '[Wig Catalog AI] Installing local GPU and image packages...'
 
 if (-not (Test-Path -LiteralPath (Join-Path $AiRoot '.env'))) {
   Copy-Item -LiteralPath (Join-Path $AiRoot '.env.example') -Destination (Join-Path $AiRoot '.env')
-  Write-Warning 'Created ai-server\.env. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY before starting.'
+  Write-Warning 'Created ai-server\.env. Add SUPABASE_URL and a dedicated SUPABASE_SECRET_KEY before starting.'
 }
 
 Write-Host '[Wig Catalog AI] Downloading model files once for unlimited local use...'

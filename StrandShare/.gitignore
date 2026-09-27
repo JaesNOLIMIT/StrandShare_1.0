@@ -4,6 +4,9 @@ build/
 dist/
 .DS_Store
 .env.local
+.env.smtp.local
+.env.*.local
+scripts/.env.smtp.local
 .env.development.local
 .env.test.local
 .env.production.local
