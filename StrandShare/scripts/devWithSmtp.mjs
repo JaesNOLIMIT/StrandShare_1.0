@@ -47,4 +47,6 @@ process.on('SIGTERM', () => shutdown(0));
 run('web', 'npm', ['run', 'start:web'], { required: true });
 run('smtp-trigger', 'npm', ['run', 'smtp:trigger:server'], { required: false });
 run('smtp-worker', 'npm', ['run', 'smtp:worker:loop'], { required: false });
-run('wig-catalog-local-ai', 'npm', ['run', 'ai:start'], { required: false });
+// Keep only the lightweight controller available. The Specialist starts the
+// heavy local models from the Wig Catalog page when they are actually needed.
+run('wig-catalog-ai-controller', 'npm', ['run', 'ai:controller:start'], { required: false });

@@ -48,7 +48,7 @@ Fill in `ai-server\.env`:
 
 ```dotenv
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-server-only-key
+SUPABASE_SECRET_KEY=your-server-only-secret-key
 WIG_AI_FILTERS_BUCKET=wig_ai_filters
 REMBG_MODEL=birefnet-general
 CLIP_MODEL=openai/clip-vit-base-patch32
@@ -60,18 +60,37 @@ ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,https://donivra.verc
 After the model files are cached, `LOCAL_MODELS_ONLY=1` prevents accidental
 model downloads and makes offline model loading explicit.
 
-## Run
+## Install the on/off controls once
 
-The normal development command starts the web app, SMTP helper, and local AI:
+From the project root, run:
 
 ```powershell
-npm start
+npm run ai:install-controls
 ```
 
-Run only the AI service:
+This creates:
+
+- a tiny controller that starts automatically when this Windows user signs in;
+- **Donivra AI On** and **Donivra AI Off** desktop shortcuts; and
+- the controller endpoint at `127.0.0.1:8010` used by the Specialist page.
+
+The controller does not load AI models and does not use the GPU. The heavy AI
+worker starts only when the Specialist chooses **Turn AI On** in Wig Catalog
+Studio (or uses the desktop shortcut). It shuts down automatically after 15
+minutes without AI activity and releases its GPU and RAM.
+
+The deployed Vercel page calls these loopback endpoints through the browser.
+Nothing is hosted in the cloud, and the AI is unavailable while this computer
+is off. Allow Local Network Access if the browser prompts for it.
+
+Useful commands:
 
 ```powershell
 npm run ai:start
+npm run ai:stop
+npm run ai:status
+npm run ai:controller:start
+npm run ai:controller:stop
 ```
 
 Verify:
@@ -91,11 +110,8 @@ Expected response includes:
 }
 ```
 
-The deployed site checks this loopback service automatically. A web page
-cannot launch a Windows process, so the AI service must already be running
-(or be configured to start when the specialist signs in to Windows). If the
-page reports that Local AI is offline, start it with `npm run ai:start`; the
-page checks again automatically and also provides a **Check again** button.
+`npm start` ensures the lightweight controller is available but leaves the
+heavy AI worker under the Specialist's explicit On/Off control.
 
 ## API
 

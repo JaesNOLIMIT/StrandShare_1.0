@@ -27,6 +27,14 @@ def _required(key: str) -> str:
     return value
 
 
+def _required_any(*keys: str) -> str:
+    for key in keys:
+        value = os.environ.get(key)
+        if value:
+            return value
+    raise RuntimeError(f"Required environment variable {' or '.join(keys)} is not set")
+
+
 def _int(key: str, default: int) -> int:
     raw = os.environ.get(key)
     if raw is None or raw == "":
@@ -71,7 +79,11 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         supabase_url=_required("SUPABASE_URL"),
-        supabase_service_role_key=_required("SUPABASE_SERVICE_ROLE_KEY"),
+        # New Supabase projects use sb_secret_* keys; older projects may still
+        # use the legacy service_role JWT. Both are server-only credentials.
+        supabase_service_role_key=_required_any(
+            "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY"
+        ),
         sources_bucket=os.environ.get("WIG_AI_SOURCES_BUCKET", "wig_ai_sources"),
         filters_bucket=os.environ.get("WIG_AI_FILTERS_BUCKET", "wig_ai_filters"),
         # BiRefNet General keeps fine hair strands while working well for both

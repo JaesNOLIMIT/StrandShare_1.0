@@ -16,6 +16,7 @@ import json
 import logging
 import shutil
 import tempfile
+import threading
 import time
 import traceback
 import uuid
@@ -37,6 +38,27 @@ logging.basicConfig(
 )
 log = logging.getLogger("wig-ai-server")
 
+RUN_ROOT = Path(__file__).resolve().parent.parent / ".run"
+LAST_ACTIVITY_FILE = RUN_ROOT / "last-ai-activity"
+ACTIVE_JOBS = 0
+ACTIVE_JOBS_LOCK = threading.Lock()
+
+
+def _touch_activity() -> None:
+    """Tell the lightweight controller that this worker is still in use."""
+    try:
+        RUN_ROOT.mkdir(parents=True, exist_ok=True)
+        LAST_ACTIVITY_FILE.write_text(str(int(time.time())), encoding="utf-8")
+    except OSError:
+        log.warning("Could not update the local AI activity marker", exc_info=True)
+
+
+def _change_active_jobs(delta: int) -> None:
+    global ACTIVE_JOBS
+    with ACTIVE_JOBS_LOCK:
+        ACTIVE_JOBS = max(0, ACTIVE_JOBS + delta)
+    _touch_activity()
+
 
 app = FastAPI(title="Wig Catalog Studio - Local AI Server", version="2.0.0")
 
@@ -52,6 +74,8 @@ app.add_middleware(
 @app.middleware("http")
 async def allow_browser_local_network_access(request: Request, call_next):
     """Allow an approved HTTPS frontend to call this loopback-only service."""
+    if request.url.path.startswith(("/analyze-wig", "/generate-filter", "/status/")):
+        _touch_activity()
     response = await call_next(request)
     origin = request.headers.get("origin", "")
     if origin in settings.allowed_origins:
@@ -61,6 +85,7 @@ async def allow_browser_local_network_access(request: Request, call_next):
 
 @app.on_event("startup")
 def _on_startup() -> None:
+    _touch_activity()
     log.info("Warming up local background-removal model...")
     warm_up()
     try:
@@ -123,12 +148,15 @@ class LocalAnalysisResponse(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 @app.get("/health")
-def health() -> dict[str, str]:
+def health() -> dict[str, Any]:
+    with ACTIVE_JOBS_LOCK:
+        active_jobs = ACTIVE_JOBS
     return {
         "status": "ok",
         "mode": "local-only",
         "background_model": settings.rembg_model,
         "analysis_model": settings.clip_model,
+        "active_jobs": active_jobs,
     }
 
 
@@ -259,12 +287,15 @@ def get_status(filter_id: int) -> StatusResponse:
 def _run_job_safely(req: GenerateFilterRequest) -> None:
     """Wrapper so a crash inside the pipeline always lands as Status=failed."""
     gateway = get_gateway()
+    _change_active_jobs(1)
     try:
         _run_job(req, gateway)
     except Exception as exc:  # noqa: BLE001
         log.exception("Pipeline failed for Filter_ID=%s", req.filter_id)
         tb = traceback.format_exc(limit=4)
         gateway.mark_failed(req.filter_id, f"{exc}\n{tb}")
+    finally:
+        _change_active_jobs(-1)
 
 
 def _run_local_job_safely(
@@ -277,6 +308,7 @@ def _run_local_job_safely(
     entered_attributes: dict[str, Any],
 ) -> None:
     gateway = get_gateway()
+    _change_active_jobs(1)
     try:
         started_at = time.perf_counter()
         outputs = run_pipeline(
@@ -329,6 +361,7 @@ def _run_local_job_safely(
         gateway.mark_failed(filter_id, f"{exc}\n{tb}")
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+        _change_active_jobs(-1)
 
 
 def _run_job(req: GenerateFilterRequest, gateway) -> None:

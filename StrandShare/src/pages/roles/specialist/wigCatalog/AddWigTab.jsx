@@ -14,6 +14,7 @@ import {
   ImagePlus,
   Loader2,
   Lock,
+  Power,
   RefreshCw,
   SearchCheck,
   ShieldCheck,
@@ -51,8 +52,14 @@ const AI_SERVER_BASE_URL = (
     ? configuredAiServerUrl
     : 'http://127.0.0.1:8000'
 ).replace(/\/+$/, '');
+const configuredAiControllerUrl = String(process.env.REACT_APP_AI_CONTROLLER_URL || '').trim();
+const AI_CONTROLLER_BASE_URL = (
+  configuredAiControllerUrl && !configuredAiControllerUrl.startsWith('/')
+    ? configuredAiControllerUrl
+    : 'http://127.0.0.1:8010'
+).replace(/\/+$/, '');
 const LOCAL_AI_OFFLINE_MESSAGE =
-  'Local AI is offline. Start the Donivra Local AI service on this computer and allow Local Network Access if your browser asks. Then choose Check again. Refreshing this page does not start a local program.';
+  'Local AI is off on this computer. Turn it on when you need it; it will release GPU and memory automatically after 15 minutes without use.';
 const POLL_MS = 1800;
 const OFFLINE_RECHECK_MS = 10000;
 const DEFAULT_FILTER_FIT = Object.freeze({
@@ -294,6 +301,8 @@ export default function AddWigTab({
   const [finalizing, setFinalizing] = useState(false);
   const [notice, setNotice] = useState({ kind: '', message: '' });
   const [health, setHealth] = useState({ state: 'checking', details: null });
+  const [controller, setController] = useState({ state: 'checking', aiState: 'unknown', details: null });
+  const [aiControlPending, setAiControlPending] = useState(false);
   const [detailsConfirmed, setDetailsConfirmed] = useState(false);
   const [duplicateConfirmed, setDuplicateConfirmed] = useState(false);
   const [reservedFor, setReservedFor] = useState('');
@@ -340,9 +349,84 @@ export default function AddWigTab({
     }
   }, []);
 
+  const checkController = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) {
+      setController((previous) => ({ ...previous, state: 'checking' }));
+    }
+    const requestController = new AbortController();
+    const timeout = setTimeout(() => requestController.abort(), 3000);
+    try {
+      const response = await fetch(`${AI_CONTROLLER_BASE_URL}/status`, {
+        signal: requestController.signal,
+        cache: 'no-store',
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (data?.status !== 'ok' || data?.controller !== 'ready') {
+        throw new Error('Unexpected controller response');
+      }
+      const aiState = data?.ai_state || 'off';
+      setController({ state: 'ready', aiState, details: data });
+      if (aiState === 'ready') {
+        void checkHealth({ silent: true });
+      } else if (aiState === 'off') {
+        setHealth({ state: 'offline', details: null });
+      }
+      return data;
+    } catch {
+      setController({ state: 'unavailable', aiState: 'unknown', details: null });
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }, [checkHealth]);
+
+  const setLocalAiPower = useCallback(async (turnOn) => {
+    setAiControlPending(true);
+    setNotice({ kind: '', message: '' });
+    setController((previous) => ({
+      ...previous,
+      aiState: turnOn ? 'starting' : 'stopping',
+    }));
+    try {
+      const response = await fetch(`${AI_CONTROLLER_BASE_URL}/ai/${turnOn ? 'on' : 'off'}`, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'X-Donivra-Local-Control': '1' },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+      setController({ state: 'ready', aiState: turnOn ? 'starting' : 'stopping', details: data });
+      if (!turnOn) setHealth({ state: 'offline', details: null });
+      setNotice({
+        kind: 'success',
+        message: turnOn
+          ? 'Local AI is starting. The first model warm-up may take a moment.'
+          : 'Local AI is turning off and releasing GPU and memory.',
+      });
+    } catch (error) {
+      setController({ state: 'unavailable', aiState: 'unknown', details: null });
+      setNotice({
+        kind: 'error',
+        message: error?.message || 'Could not reach the Donivra AI controller on this computer.',
+      });
+    } finally {
+      setAiControlPending(false);
+    }
+  }, []);
+
   useEffect(() => {
     void checkHealth();
-  }, [checkHealth]);
+    void checkController();
+  }, [checkController, checkHealth]);
+
+  useEffect(() => {
+    const transitioning = ['starting', 'stopping'].includes(controller.aiState);
+    const timer = setInterval(() => {
+      void checkController({ silent: true });
+    }, transitioning ? 2500 : OFFLINE_RECHECK_MS);
+    return () => clearInterval(timer);
+  }, [checkController, controller.aiState]);
 
   useEffect(() => {
     if (health.state !== 'offline' || currentFilter) return undefined;
@@ -730,23 +814,62 @@ export default function AddWigTab({
               done={false}
             />
           </div>
-          <AiStatusPill health={health} onRetry={checkHealth} />
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <AiStatusPill health={health} onRetry={checkHealth} />
+            {controller.state === 'ready' ? (
+              <button
+                type="button"
+                onClick={() => setLocalAiPower(controller.aiState !== 'ready')}
+                disabled={aiControlPending || ['starting', 'stopping'].includes(controller.aiState)}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-semibold disabled:cursor-wait disabled:opacity-60 ${
+                  controller.aiState === 'ready'
+                    ? 'border-red-200 bg-white text-red-700 hover:bg-red-50'
+                    : 'border-emerald-200 bg-emerald-600 text-white hover:bg-emerald-700'
+                }`}
+              >
+                {aiControlPending || ['starting', 'stopping'].includes(controller.aiState)
+                  ? <Loader2 size={12} className="animate-spin" />
+                  : <Power size={12} />}
+                {controller.aiState === 'ready'
+                  ? 'Turn AI Off'
+                  : controller.aiState === 'starting'
+                    ? 'AI is starting'
+                    : controller.aiState === 'stopping'
+                      ? 'AI is stopping'
+                      : 'Turn AI On'}
+              </button>
+            ) : null}
+          </div>
         </div>
       </section>
 
       {health.state === 'offline' && !currentFilter ? (
-        <section className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-red-800 sm:flex-row sm:items-center">
+        <section className={`flex flex-col gap-3 rounded-xl border p-4 sm:flex-row sm:items-center ${
+          controller.state === 'ready'
+            ? 'border-amber-200 bg-amber-50 text-amber-900'
+            : 'border-red-200 bg-red-50 text-red-800'
+        }`}>
           <AlertCircle size={19} className="shrink-0" />
           <div className="flex-1">
-            <p className="text-sm font-semibold">Start Local AI before continuing</p>
-            <p className="mt-0.5 text-xs leading-relaxed">{LOCAL_AI_OFFLINE_MESSAGE}</p>
+            <p className="text-sm font-semibold">
+              {controller.state === 'ready' ? 'Local AI is currently off' : 'Local AI controller is unavailable'}
+            </p>
+            <p className="mt-0.5 text-xs leading-relaxed">
+              {controller.state === 'ready'
+                ? LOCAL_AI_OFFLINE_MESSAGE
+                : 'Run npm run ai:install-controls once on this Specialist computer, then allow Local Network Access if the browser asks.'}
+            </p>
           </div>
           <button
             type="button"
-            onClick={() => checkHealth()}
-            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-100"
+            onClick={() => (controller.state === 'ready' ? setLocalAiPower(true) : checkController())}
+            disabled={aiControlPending || controller.aiState === 'starting'}
+            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-current bg-white px-3 py-2 text-xs font-semibold hover:bg-white/60 disabled:cursor-wait disabled:opacity-60"
           >
-            <RefreshCw size={13} /> Check again
+            {aiControlPending || controller.aiState === 'starting'
+              ? <Loader2 size={13} className="animate-spin" />
+              : controller.state === 'ready' ? <Power size={13} /> : <RefreshCw size={13} />}
+            {controller.state === 'ready' ? 'Turn AI On' : 'Check controller'}
           </button>
         </section>
       ) : null}
