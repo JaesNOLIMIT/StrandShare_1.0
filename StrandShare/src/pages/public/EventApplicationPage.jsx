@@ -1280,7 +1280,7 @@ export default function EventApplicationPage() {
         setEmailAvailability(hasActiveApplication
           ? {
             status: 'blocked',
-            message: 'This email already has an active application. Wait until it is approved or rejected before applying again.',
+            message: 'This email already has an active application. Wait until it is approved, rejected, or cancelled before applying again.',
           }
           : {
             status: 'available',
