@@ -4,6 +4,8 @@ build/
 dist/
 .DS_Store
 .env.local
+.env.smtp.local
+scripts/.env.smtp.local
 .env.development.local
 .env.test.local
 .env.production.local
@@ -12,3 +14,4 @@ yarn-debug.log*
 yarn-error.log*
 .next
 out
+.run/

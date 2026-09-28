@@ -54,7 +54,12 @@
     "eject": "react-scripts eject",
     "smtp:trigger:server": "node scripts/smtpTriggerServer.mjs",
     "smtp:worker:once": "node scripts/processSmtpOutbox.mjs",
-    "smtp:worker:loop": "node scripts/processSmtpOutbox.mjs --loop"
+    "smtp:worker:loop": "node scripts/processSmtpOutbox.mjs --loop",
+    "smtp:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-smtp-worker.ps1 Start",
+    "smtp:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-smtp-worker.ps1 Stop",
+    "smtp:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-smtp-worker.ps1 Restart",
+    "smtp:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-smtp-worker.ps1 Status",
+    "smtp:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-smtp-worker.ps1 Install"
   },
   "devDependencies": {
     "@craco/craco": "^7.1.0"

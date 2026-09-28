@@ -43,6 +43,18 @@ function toUtc8SqlTimestamp(value = new Date()) {
   return utc8Date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
+function parseDatabaseTimestamp(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  // The current schema stores Philippine wall-clock values in timestamp
+  // columns without a zone. Attach +08:00 explicitly so a worker running in
+  // another Windows timezone does not shift the displayed event time.
+  const hasZone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const normalized = raw.replace(' ', 'T');
+  const parsed = new Date(hasZone ? normalized : `${normalized}+08:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function normalizeKey(value) {
   return String(value || '')
     .trim()
@@ -60,8 +72,8 @@ function normalizePreferredContactLabel(value) {
 
 function formatDate(value) {
   if (!value) return 'N/A';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value);
+  const parsed = parseDatabaseTimestamp(value);
+  if (!parsed) return String(value);
   return parsed.toLocaleString('en-PH', {
     timeZone: 'Asia/Manila',
     year: 'numeric',
@@ -601,7 +613,10 @@ function createTransport() {
 
 function createSupabaseAdminClient() {
   const supabaseUrl = requireEnv('SUPABASE_URL', readEnv('REACT_APP_SUPABASE_URL'));
-  const serviceRoleKey = requireEnv('SUPABASE_SERVICE_ROLE_KEY');
+  const serviceRoleKey = requireEnv(
+    'SUPABASE_SECRET_KEY',
+    readEnv('SUPABASE_SERVICE_ROLE_KEY'),
+  );
 
   return createClient(supabaseUrl, serviceRoleKey, {
     auth: {
@@ -637,6 +652,24 @@ async function updateRowAfterSend(supabase, row, values) {
 
   if (error) {
     throw new Error(`Update failed for outbox row ${row.SMTP_Email_Outbox_ID}: ${error.message}`);
+  }
+}
+
+async function recoverStaleProcessingRows(supabase) {
+  const staleBefore = toUtc8SqlTimestamp(new Date(Date.now() - (10 * 60 * 1000)));
+  const retryAt = toUtc8SqlTimestamp();
+  const { error } = await supabase
+    .from(TABLE_NAME)
+    .update({
+      Status: 'Failed',
+      Last_Error: 'Recovered after the local SMTP worker stopped before completing delivery.',
+      Next_Attempt_At: retryAt,
+      Updated_At: retryAt,
+    })
+    .eq('Status', 'Processing')
+    .lt('Updated_At', staleBefore);
+  if (error) {
+    throw new Error(`Failed to recover stale SMTP rows: ${error.message}`);
   }
 }
 
@@ -777,15 +810,22 @@ async function run() {
 
   const supabase = createSupabaseAdminClient();
   const transporter = createTransport();
+  let transportVerified = dryRun;
 
-  if (!dryRun) {
-    await transporter.verify();
-    console.log('[SMTP] Transport verified.');
-  } else {
+  if (dryRun) {
     console.log('[SMTP] DRY RUN mode enabled.');
   }
 
+  const ensureTransport = async () => {
+    if (transportVerified) return;
+    await transporter.verify();
+    transportVerified = true;
+    console.log('[SMTP] Transport verified.');
+  };
+
   const execute = async () => {
+    await ensureTransport();
+    await recoverStaleProcessingRows(supabase);
     const summary = await processBatch({
       supabase,
       transporter,

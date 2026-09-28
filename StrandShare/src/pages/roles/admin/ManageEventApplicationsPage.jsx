@@ -1148,7 +1148,7 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
   };
 
   return (
-    <div ref={pageRootRef} className="flex flex-col gap-5 lg:h-[calc(100vh-134px)] lg:min-h-0 lg:overflow-hidden">
+    <div ref={pageRootRef} className="flex flex-col gap-5 lg:h-full lg:min-h-0 lg:overflow-hidden">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="role-page-title text-2xl font-bold text-slate-900">Manage Program Applications</h1>
@@ -1326,7 +1326,7 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
           </div>
         </section>
 
-        <section className="min-h-0 space-y-4 overflow-y-auto pr-1">
+        <section className="min-h-0 space-y-4 overflow-y-auto pr-1 pb-6">
           {!selectedRow ? (
             <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white px-6 py-20 text-center shadow-sm">
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-400">

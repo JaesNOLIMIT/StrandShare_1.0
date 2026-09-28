@@ -1,16 +1,19 @@
-const DEFAULT_TRIGGER_URL = 'http://127.0.0.1:4101/smtp/process-once';
 const REQUEST_TIMEOUT_MS = 15000;
 
 function resolveTriggerUrl() {
   const fromEnv = String(process.env.REACT_APP_SMTP_TRIGGER_URL || '').trim();
   if (fromEnv) return fromEnv;
-  return DEFAULT_TRIGGER_URL;
+  return '';
 }
 
 export async function triggerSmtpNow(reason = 'manual') {
   const endpoint = resolveTriggerUrl();
   if (!endpoint) {
-    return { ok: false, skipped: true, message: 'SMTP trigger endpoint is not configured.' };
+    return {
+      ok: true,
+      queued: true,
+      message: 'Email was queued for the independent local SMTP worker.',
+    };
   }
 
   const controller = new AbortController();
