@@ -28,7 +28,13 @@ const TONES = {
   },
 };
 
-export default function WaybillScanResult({ outcome = null, possibleOutcomes = [] }) {
+export default function WaybillScanResult({
+  outcome = null,
+  possibleOutcomes = [],
+  compact = false,
+  metricLabel = "",
+  metricValue = "",
+}) {
   const tone = TONES[outcome?.tone] || TONES.info;
   const Icon = tone.Icon;
 
@@ -47,30 +53,67 @@ export default function WaybillScanResult({ outcome = null, possibleOutcomes = [
                   </span>
                 ) : null}
               </div>
-              <p className="mt-1 text-sm font-bold text-slate-900">{outcome.title || 'Waybill processed'}</p>
-              <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 text-xs text-slate-700 sm:grid-cols-2">
-                {outcome.waybill ? <p><strong>Waybill:</strong> <span className="font-mono">{outcome.waybill}</span></p> : null}
-                {outcome.subject ? <p><strong>Person/item:</strong> {outcome.subject}</p> : null}
-                {outcome.action ? <p><strong>Completed:</strong> {outcome.action}</p> : null}
-                {outcome.nextStep ? <p><strong>Next:</strong> {outcome.nextStep}</p> : null}
+              <div className={compact && metricValue !== "" ? "mt-1 grid gap-3 sm:grid-cols-[1fr,auto] sm:items-center" : "mt-1"}>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-slate-900">{outcome.title || 'Waybill processed'}</p>
+                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-700">
+                    {outcome.waybill ? <p><strong>Waybill:</strong> <span className="font-mono">{outcome.waybill}</span></p> : null}
+                    {outcome.subject ? <p><strong>Donor:</strong> {outcome.subject}</p> : null}
+                  </div>
+                </div>
+                {compact && metricValue !== "" ? (
+                  <div className="min-w-[112px] rounded-lg border border-emerald-200 bg-white/80 px-3 py-2 text-center">
+                    <p className="text-2xl font-extrabold leading-none text-emerald-700">{metricValue}</p>
+                    <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">{metricLabel}</p>
+                  </div>
+                ) : null}
               </div>
-              <div className="mt-2 rounded-lg border border-black/5 bg-white/70 px-2.5 py-2">
-                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Status changes</p>
-                {outcome.statusChanges?.length ? (
-                  <ul className="mt-1 space-y-1 text-xs text-slate-700">
-                    {outcome.statusChanges.map((change) => (
-                      <li key={`${change.label}-${change.before}-${change.after}`} className="flex flex-wrap items-center gap-1">
-                        <strong>{change.label}:</strong>
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5">{change.before || 'None'}</span>
-                        <span aria-hidden="true">→</span>
-                        <span className="rounded bg-white px-1.5 py-0.5 font-semibold">{change.after || 'None'}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="mt-1 text-xs font-medium text-slate-600">No status changed.</p>
-                )}
-              </div>
+              {compact ? (
+                <>
+                  {outcome.nextStep ? (
+                    <p className="mt-2 rounded-lg bg-white/70 px-2.5 py-2 text-xs font-medium text-slate-700">
+                      <strong>Next:</strong> {outcome.nextStep}
+                    </p>
+                  ) : null}
+                  {outcome.statusChanges?.length ? (
+                    <details className="mt-2 text-xs text-slate-600">
+                      <summary className="cursor-pointer font-semibold">View technical status changes</summary>
+                      <ul className="mt-2 space-y-1 rounded-lg border border-black/5 bg-white/70 px-2.5 py-2">
+                        {outcome.statusChanges.map((change) => (
+                          <li key={`${change.label}-${change.before}-${change.after}`} className="flex flex-wrap items-center gap-1">
+                            <strong>{change.label}:</strong>
+                            <span>{change.before || 'None'} → {change.after || 'None'}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 text-xs text-slate-700 sm:grid-cols-2">
+                    {outcome.action ? <p><strong>Completed:</strong> {outcome.action}</p> : null}
+                    {outcome.nextStep ? <p><strong>Next:</strong> {outcome.nextStep}</p> : null}
+                  </div>
+                  <div className="mt-2 rounded-lg border border-black/5 bg-white/70 px-2.5 py-2">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Status changes</p>
+                    {outcome.statusChanges?.length ? (
+                      <ul className="mt-1 space-y-1 text-xs text-slate-700">
+                        {outcome.statusChanges.map((change) => (
+                          <li key={`${change.label}-${change.before}-${change.after}`} className="flex flex-wrap items-center gap-1">
+                            <strong>{change.label}:</strong>
+                            <span className="rounded bg-slate-100 px-1.5 py-0.5">{change.before || 'None'}</span>
+                            <span aria-hidden="true">→</span>
+                            <span className="rounded bg-white px-1.5 py-0.5 font-semibold">{change.after || 'None'}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-1 text-xs font-medium text-slate-600">No status changed.</p>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </section>

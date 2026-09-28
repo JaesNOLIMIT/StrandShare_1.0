@@ -51,6 +51,26 @@ const CANCELLATION_REASONS = [
   'Government or Local Authority Order',
   'Other',
 ];
+const ADMIN_FILTER_GROUPS = [
+  {
+    label: 'Review status',
+    filters: [
+      { key: 'all', label: 'All' },
+      { key: 'pendingadminapproval', label: 'Pending Admin' },
+      { key: 'appealed', label: 'Appealed' },
+      { key: 'rejected', label: 'Rejected' },
+      { key: 'cancelled', label: 'Cancelled' },
+    ],
+  },
+  {
+    label: 'Approved programs',
+    filters: [
+      { key: 'approved', label: 'All Approved' },
+      { key: 'ended', label: 'Ended' },
+      { key: 'successful', label: 'Successful' },
+    ],
+  },
+];
 
 function normalizePrivateIdObjectPath(value) {
   const raw = String(value || '').trim().replace(/^\/+/, '');
@@ -98,6 +118,8 @@ function statusLabel(value) {
   if (key === 'pendingadminapproval') return 'Pending Admin Approval';
   if (key === 'appealed') return 'Appealed';
   if (key === 'approved') return 'Approved';
+  if (key === 'ended') return 'Ended';
+  if (key === 'successful') return 'Successful';
   if (key === 'rejected') return 'Rejected';
   if (key === 'cancelled') return 'Cancelled';
   return value || 'N/A';
@@ -108,6 +130,8 @@ function statusPillClass(value) {
   if (key === 'pendingadminapproval') return 'border border-amber-200 bg-amber-50 text-amber-700';
   if (key === 'appealed') return 'border border-violet-200 bg-violet-50 text-violet-700';
   if (key === 'approved') return 'border border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (key === 'ended') return 'border border-slate-300 bg-slate-100 text-slate-700';
+  if (key === 'successful') return 'border border-emerald-300 bg-emerald-100 text-emerald-800';
   if (key === 'rejected') return 'border border-rose-200 bg-rose-50 text-rose-700';
   if (key === 'cancelled') return 'border border-slate-300 bg-slate-100 text-slate-700';
   return 'border border-slate-200 bg-slate-100 text-slate-700';
@@ -200,6 +224,37 @@ function isFutureManilaDateTime(value) {
   const withZone = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(normalized) ? normalized : `${normalized}+08:00`;
   const parsed = new Date(withZone);
   return !Number.isNaN(parsed.getTime()) && parsed.getTime() > Date.now();
+}
+
+function parseManilaDateTime(value) {
+  if (!value) return Number.NaN;
+  const raw = String(value).trim();
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const withZone = /(?:Z|[+-]\d{2}(?::?\d{2})?)$/i.test(normalized) ? normalized : `${normalized}+08:00`;
+  return new Date(withZone).getTime();
+}
+
+function isAdminApprovedProgram(row) {
+  return ['approved', 'ended', 'successful'].includes(normalizeStatus(row?.Status));
+}
+
+function isSuccessfulProgram(row) {
+  return normalizeStatus(row?.Status) === 'successful';
+}
+
+function isEndedProgram(row, now = Date.now()) {
+  const statusKey = normalizeStatus(row?.Status);
+  if (statusKey === 'successful') return false;
+  if (statusKey === 'ended') return true;
+  if (statusKey !== 'approved') return false;
+  const endTime = parseManilaDateTime(row?.End_Date || row?.Start_Date);
+  return Number.isFinite(endTime) && endTime <= now;
+}
+
+function getAdminProgramLifecycleStatus(row) {
+  if (isSuccessfulProgram(row)) return 'Successful';
+  if (isEndedProgram(row)) return 'Ended';
+  return row?.Status || 'N/A';
 }
 
 function ContactLink({ type, value }) {
@@ -455,8 +510,8 @@ function AdminRequestDetails({ row, privateIdUrl, assignedStaffLabel, staffRevie
             <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Final Decision</p>
             <p className="mt-1 text-sm text-slate-600">The administrator’s recorded result for this program application.</p>
           </div>
-          <span className={`rounded-full px-3 py-1.5 text-sm font-bold ${statusPillClass(row.Status)}`}>
-            {statusLabel(row.Status)}
+          <span className={`rounded-full px-3 py-1.5 text-sm font-bold ${statusPillClass(isAdminApprovedProgram(row) ? 'Approved' : row.Status)}`}>
+            {isAdminApprovedProgram(row) ? 'Approved' : statusLabel(row.Status)}
           </span>
         </div>
       </DetailSection>
@@ -692,7 +747,9 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
       const key = normalizeStatus(row.Status);
       if (statusFilter === 'pendingadminapproval') return key === 'pendingadminapproval';
       if (statusFilter === 'appealed') return key === 'appealed';
-      if (statusFilter === 'approved') return key === 'approved';
+      if (statusFilter === 'approved') return isAdminApprovedProgram(row);
+      if (statusFilter === 'ended') return isEndedProgram(row);
+      if (statusFilter === 'successful') return isSuccessfulProgram(row);
       if (statusFilter === 'rejected') return key === 'rejected';
       if (statusFilter === 'cancelled') return key === 'cancelled';
       return true;
@@ -725,7 +782,9 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
       acc.all += 1;
       if (statusKey === 'pendingadminapproval') acc.pendingadminapproval += 1;
       if (statusKey === 'appealed') acc.appealed += 1;
-      if (statusKey === 'approved') acc.approved += 1;
+      if (isAdminApprovedProgram(row)) acc.approved += 1;
+      if (isEndedProgram(row)) acc.ended += 1;
+      if (isSuccessfulProgram(row)) acc.successful += 1;
       if (statusKey === 'rejected') acc.rejected += 1;
       if (statusKey === 'cancelled') acc.cancelled += 1;
       return acc;
@@ -734,6 +793,8 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
       pendingadminapproval: 0,
       appealed: 0,
       approved: 0,
+      ended: 0,
+      successful: 0,
       rejected: 0,
       cancelled: 0,
     });
@@ -802,6 +863,8 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
   ]);
 
   const selectedStatusKey = useMemo(() => normalizeStatus(selectedRow?.Status), [selectedRow]);
+  const selectedIsApprovedProgram = isAdminApprovedProgram(selectedRow);
+  const selectedLifecycleStatus = isSuccessfulProgram(selectedRow) ? 'Successful' : isEndedProgram(selectedRow) ? 'Ended' : '';
   const canDecide = selectedStatusKey === 'pendingadminapproval' || selectedStatusKey === 'appealed';
   const canCancel = selectedStatusKey === 'approved' && isFutureManilaDateTime(selectedRow?.Start_Date);
 
@@ -1215,29 +1278,29 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
               )}
             </div>
 
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                { key: 'all', label: 'All' },
-                { key: 'pendingadminapproval', label: 'Pending Admin' },
-                { key: 'appealed', label: 'Appealed' },
-                { key: 'approved', label: 'Approved' },
-                { key: 'rejected', label: 'Rejected' },
-                { key: 'cancelled', label: 'Cancelled' },
-              ].map((filter) => {
-                const isActive = statusFilter === filter.key;
-                return (
-                  <button
-                    key={filter.key}
-                    type="button"
-                    onClick={() => setStatusFilter(filter.key)}
-                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${isActive ? 'border-transparent text-white shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
-                    style={isActive ? { backgroundColor: primaryColor } : undefined}
-                  >
-                    {filter.label}
-                    <span className={`rounded-full px-1.5 py-px text-[10px] ${isActive ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-600'}`}>{statusCounts[filter.key] || 0}</span>
-                  </button>
-                );
-              })}
+            <div className="space-y-2.5">
+              {ADMIN_FILTER_GROUPS.map((group) => (
+                <div key={group.label}>
+                  <p className="mb-1.5 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-400">{group.label}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.filters.map((filter) => {
+                      const isActive = statusFilter === filter.key;
+                      return (
+                        <button
+                          key={filter.key}
+                          type="button"
+                          onClick={() => setStatusFilter(filter.key)}
+                          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${isActive ? 'border-transparent text-white shadow-sm' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'}`}
+                          style={isActive ? { backgroundColor: primaryColor } : undefined}
+                        >
+                          {filter.label}
+                          <span className={`rounded-full px-1.5 py-px text-[10px] ${isActive ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-600'}`}>{statusCounts[filter.key] || 0}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
 
             {selectedCalendarDate && (
@@ -1282,6 +1345,8 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
               <ul className="divide-y divide-slate-100">
                 {visibleRows.map((row) => {
                   const active = Number(row.Event_Request_ID || 0) === Number(selectedId || 0);
+                  const approvedProgram = isAdminApprovedProgram(row);
+                  const lifecycleStatus = isSuccessfulProgram(row) ? 'Successful' : isEndedProgram(row) ? 'Ended' : '';
                   return (
                     <li key={row.Event_Request_ID}>
                       <button
@@ -1306,12 +1371,14 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
                             {formatScheduleDateLabel(toScheduleDateKey(row.Start_Date), true)}
                           </p>
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${normalizeStatus(row.Status) === 'approved' ? 'border' : statusPillClass(row.Status)}`}
-                              style={normalizeStatus(row.Status) === 'approved' ? { borderColor: '#a7f3d0', backgroundColor: '#ecfdf5', color: '#047857' } : undefined}
-                            >
-                              {statusLabel(row.Status)}
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${approvedProgram ? 'border border-emerald-200 bg-emerald-50 text-emerald-700' : statusPillClass(row.Status)}`}>
+                              {approvedProgram ? 'Approved' : statusLabel(row.Status)}
                             </span>
+                            {lifecycleStatus && (
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusPillClass(lifecycleStatus)}`}>
+                                {lifecycleStatus}
+                              </span>
+                            )}
                             <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">
                               {eventVisibilityLabel(row.Event_Visibility)}
                             </span>
@@ -1360,8 +1427,8 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
                         <span aria-hidden="true">•</span>
                         <span>{String(selectedRow.Application?.Expected_Attendees ?? '').trim() ? Number(selectedRow.Application.Expected_Attendees).toLocaleString('en-PH') : 'No'} attendees</span>
                       </div>
-                      <p className={`mt-1.5 text-xs font-semibold ${selectedStatusKey === 'approved' ? 'text-emerald-700' : selectedStatusKey === 'rejected' ? 'text-rose-700' : 'text-amber-700'}`}>
-                        {selectedStatusKey === 'approved'
+                      <p className={`mt-1.5 text-xs font-semibold ${selectedIsApprovedProgram ? 'text-emerald-700' : selectedStatusKey === 'rejected' ? 'text-rose-700' : 'text-amber-700'}`}>
+                        {selectedIsApprovedProgram
                           ? `Reviewed by ${reviewerName} • ${formatDateTime(selectedRow.Admin_Reviewed_At)}`
                           : selectedStatusKey === 'rejected'
                             ? `Rejected by ${reviewerName} • ${formatDateTime(selectedRow.Admin_Reviewed_At)}`
@@ -1374,7 +1441,7 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {selectedStatusKey === 'approved' ? (
+                    {selectedIsApprovedProgram ? (
                       <span
                         className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-bold"
                         style={{ borderColor: '#6ee7b7', backgroundColor: '#d1fae5', color: '#047857' }}
@@ -1384,6 +1451,11 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
                     ) : (
                       <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusPillClass(selectedRow.Status)}`}>
                         {statusLabel(selectedRow.Status)}
+                      </span>
+                    )}
+                    {selectedLifecycleStatus && (
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusPillClass(selectedLifecycleStatus)}`}>
+                        {selectedLifecycleStatus}
                       </span>
                     )}
                     <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-700">
@@ -1507,11 +1579,13 @@ export default function ManageEventRequestsPage({ isActivePage = false, userProf
         resultCount={visibleRows.length}
         getStartDate={(row) => row.Start_Date}
         getEndDate={(row) => row.Start_Date}
-        getStatus={(row) => row.Status}
+        getStatus={getAdminProgramLifecycleStatus}
         statusItems={[
           { key: 'pendingadminapproval', label: 'Pending Admin', dotClass: 'bg-amber-500', reserved: true },
           { key: 'appealed', label: 'Appealed', dotClass: 'bg-violet-500', reserved: true },
           { key: 'approved', label: 'Approved', dotClass: 'bg-emerald-500', reserved: true },
+          { key: 'ended', label: 'Ended', dotClass: 'bg-slate-500', reserved: false },
+          { key: 'successful', label: 'Successful', dotClass: 'bg-emerald-700', reserved: false },
           { key: 'rejected', label: 'Rejected', dotClass: 'bg-rose-500', reserved: false },
           { key: 'cancelled', label: 'Cancelled', dotClass: 'bg-slate-400', reserved: false },
         ]}

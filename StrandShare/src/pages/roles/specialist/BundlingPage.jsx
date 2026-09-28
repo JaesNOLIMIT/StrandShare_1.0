@@ -1043,7 +1043,6 @@ export default function BundlingPage() {
     return memberRows.length;
   }, [bundleMembersByBundleId, scannerBundleRow]);
   const draftCount = drafts.length;
-  const activeDraftCounterLabel = `${scannerBundleMemberCount}/${BUNDLE_HAIR_COUNT_TARGET_MAX}`;
   const canCloseActiveDraft =
     scannerBundleMemberCount >= BUNDLE_HAIR_COUNT_TARGET_MIN &&
     scannerBundleMemberCount <= BUNDLE_HAIR_COUNT_TARGET_MAX;
@@ -2258,6 +2257,13 @@ export default function BundlingPage() {
   const selectedDraftRow = String(selectedKey).startsWith("draft-")
     ? drafts.find((d) => `draft-${d.Bundle_ID}` === selectedKey) || null
     : null;
+  const selectedDraftMemberCount = selectedDraftRow
+    ? (bundleMembersByBundleId[Number(selectedDraftRow.Bundle_ID || 0)] || [])
+        .length
+    : 0;
+  const canFinalizeSelectedDraft =
+    selectedDraftMemberCount >= BUNDLE_HAIR_COUNT_TARGET_MIN &&
+    selectedDraftMemberCount <= BUNDLE_HAIR_COUNT_TARGET_MAX;
   const selectedBundleRow = String(selectedKey).startsWith("bundle-")
     ? activeBundles.find((b) => `bundle-${b.Bundle_ID}` === selectedKey) || null
     : null;
@@ -3184,7 +3190,7 @@ export default function BundlingPage() {
                         Active Draft #{scannerBundleRow.Bundle_ID}
                       </h3>
                       <span
-                        className="rounded-full border px-2 py-0.5 text-[11px] font-semibold"
+                        className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
                         style={
                           canCloseActiveDraft
                             ? {
@@ -3205,9 +3211,7 @@ export default function BundlingPage() {
                               }
                         }
                       >
-                        {activeDraftCounterLabel} / target{" "}
-                        {BUNDLE_HAIR_COUNT_TARGET_MIN}-
-                        {BUNDLE_HAIR_COUNT_TARGET_MAX}
+                        {canCloseActiveDraft ? "Ready to finalize" : "Building bundle"}
                       </span>
                     </div>
                     <button
@@ -3230,35 +3234,34 @@ export default function BundlingPage() {
                     </button>
                   </div>
 
-                  {/* Progress toward the closeable range. Green once 8-10 hairs. */}
-                  <div className="mt-3">
-                    <div
-                      className="h-2 w-full overflow-hidden rounded-full"
-                      style={{ backgroundColor: "#e2e8f0" }}
-                    >
+                  {/* Make the current bundle size and readiness visible at a glance. */}
+                  <div className={`mt-3 rounded-lg border px-3 py-3 ${canCloseActiveDraft ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}>
+                    <div className="flex items-end justify-between gap-3">
+                      <div>
+                        <p className={`text-2xl font-extrabold leading-none ${canCloseActiveDraft ? "text-emerald-700" : "text-slate-800"}`}>
+                          {scannerBundleMemberCount}
+                          <span className="ml-1 text-sm font-semibold text-slate-500">/ {BUNDLE_HAIR_COUNT_TARGET_MAX} hairs</span>
+                        </p>
+                        <p className={`mt-1 text-xs font-semibold ${canCloseActiveDraft ? "text-emerald-700" : "text-slate-600"}`}>
+                          {canCloseActiveDraft
+                            ? "Bundle is ready to finalize"
+                            : `${BUNDLE_HAIR_COUNT_TARGET_MIN - scannerBundleMemberCount} more ${BUNDLE_HAIR_COUNT_TARGET_MIN - scannerBundleMemberCount === 1 ? "hair" : "hairs"} needed`}
+                        </p>
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-500">Allowed: {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX}</span>
+                    </div>
+                    <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
                       <div
-                        className="h-full rounded-full transition-all"
+                        className={`h-full rounded-full transition-all ${canCloseActiveDraft ? "bg-emerald-600" : ""}`}
                         style={{
                           width: `${Math.min(100, Math.round((scannerBundleMemberCount / BUNDLE_HAIR_COUNT_TARGET_MAX) * 100))}%`,
-                          backgroundColor: canCloseActiveDraft
-                            ? tertiaryColor
-                            : primaryColor,
+                          ...(!canCloseActiveDraft ? { backgroundColor: primaryColor } : {}),
                         }}
                       />
                     </div>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      {scannerBundleMemberCount} of{" "}
-                      {BUNDLE_HAIR_COUNT_TARGET_MAX} hairs
-                      {canCloseActiveDraft
-                        ? " - ready to close"
-                        : scannerBundleMemberCount <
-                            BUNDLE_HAIR_COUNT_TARGET_MIN
-                          ? ` - need ${BUNDLE_HAIR_COUNT_TARGET_MIN - scannerBundleMemberCount} more to close`
-                          : ""}
-                    </p>
                   </div>
 
-                  <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[220px,1fr]">
+                  <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[180px,1fr]">
                     {/* Compact square camera preview */}
                     <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-900">
                       <div className="relative aspect-square w-full">
@@ -3349,8 +3352,7 @@ export default function BundlingPage() {
                         disabled={
                           isClosingScannerBundle || !canCloseActiveDraft
                         }
-                        className="inline-flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-white transition disabled:opacity-60"
-                        style={{ backgroundColor: tertiaryColor }}
+                        className={`inline-flex w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-white transition ${canCloseActiveDraft ? "bg-emerald-600 hover:bg-emerald-700" : "cursor-not-allowed bg-slate-400"}`}
                       >
                         {isClosingScannerBundle ? (
                           <Loader2 size={14} className="animate-spin" />
@@ -3361,10 +3363,7 @@ export default function BundlingPage() {
                       </button>
 
                       <p className="text-[11px] text-slate-500">
-                        Each scan adds a hair and updates the event&apos;s
-                        collected count. The close button unlocks at{" "}
-                        {BUNDLE_HAIR_COUNT_TARGET_MIN}-
-                        {BUNDLE_HAIR_COUNT_TARGET_MAX} hairs.
+                        Scan one waybill per hair. Finalize between {BUNDLE_HAIR_COUNT_TARGET_MIN}-{BUNDLE_HAIR_COUNT_TARGET_MAX} hairs.
                       </p>
                     </div>
                   </div>
@@ -3373,24 +3372,33 @@ export default function BundlingPage() {
                     <WaybillScanResult
                       outcome={scanOutcome}
                       possibleOutcomes={BUNDLING_SCAN_OUTCOMES}
+                      compact
+                      metricLabel="Hairs in bundle"
+                      metricValue={scannerBundleMemberCount}
                     />
                   </div>
                 </div>
               ) : null}
               <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-sm font-bold text-slate-800">
-                    Hairs in Draft #{selectedDraftRow.Bundle_ID}
-                  </h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-bold text-slate-800">
+                      Hairs in Draft #{selectedDraftRow.Bundle_ID}
+                    </h3>
+                    <span className={`rounded-full border px-2.5 py-0.5 text-xs font-bold ${canFinalizeSelectedDraft ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
+                      {selectedDraftMemberCount} {selectedDraftMemberCount === 1 ? "hair" : "hairs"}
+                    </span>
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={() => handleFinalizeDraft(selectedDraftRow)}
                       disabled={
-                        isFinalizingDraftId === selectedDraftRow.Bundle_ID
+                        isFinalizingDraftId === selectedDraftRow.Bundle_ID ||
+                        !canFinalizeSelectedDraft
                       }
-                      className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
-                      style={{ backgroundColor: tertiaryColor }}
+                      className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-semibold text-white transition ${canFinalizeSelectedDraft ? "bg-emerald-600 hover:bg-emerald-700" : "cursor-not-allowed bg-slate-400"}`}
+                      title={canFinalizeSelectedDraft ? "Finalize this bundle" : `Add ${Math.max(0, BUNDLE_HAIR_COUNT_TARGET_MIN - selectedDraftMemberCount)} more hairs to finalize`}
                     >
                       {isFinalizingDraftId === selectedDraftRow.Bundle_ID ? (
                         <Loader2 size={12} className="animate-spin" />
