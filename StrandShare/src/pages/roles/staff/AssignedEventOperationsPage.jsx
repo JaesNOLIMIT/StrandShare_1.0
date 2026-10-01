@@ -833,10 +833,11 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
     [selectedEvent],
   );
   const endedAttendanceChart = useMemo(() => ([
-    { name: 'Registered', shortName: 'Registered', value: Number(eventSummary?.registered || 0), color: '#64748b' },
+    { name: 'Donors', shortName: 'Donors', value: Number(eventSummary?.donors || 0), color: primaryColor },
+    { name: 'Registered with mobile app', shortName: 'Mobile app', value: Number(eventSummary?.registered || 0), color: '#64748b' },
+    { name: 'Walk-in donors', shortName: 'Walk-ins', value: Number(eventSummary?.walk_ins || 0), color: '#7c3aed' },
     { name: 'Present', shortName: 'Present', value: Number(eventSummary?.present || 0), color: '#0f766e' },
     { name: 'No-show', shortName: 'No-show', value: Number(eventSummary?.no_show || 0), color: '#dc2626' },
-    { name: 'Donors', shortName: 'Donors', value: Number(eventSummary?.donors || 0), color: primaryColor },
     { name: 'Visitors', shortName: 'Visitors', value: Number(eventSummary?.visitors || 0), color: '#2563eb' },
   ]), [eventSummary, primaryColor]);
   const endedAttendanceTable = endedAttendanceChart;
@@ -2778,7 +2779,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                   </div>
                   <div className="mt-3 grid items-start gap-3 xl:grid-cols-3">
                     <section className="flex flex-col rounded-xl border border-slate-200 bg-slate-50/40 p-3">
-                      <div className="flex items-center justify-between"><h4 className="text-xs font-bold text-slate-800">Attendance</h4><span className="text-[10px] text-slate-500">{eventSummary?.registered ?? 0} registered</span></div>
+                      <div className="flex items-center justify-between"><h4 className="text-xs font-bold text-slate-800">Attendance</h4><span className="text-[10px] text-slate-500">{eventSummary?.donors ?? 0} donors · {eventSummary?.registered ?? 0} mobile app · {eventSummary?.walk_ins ?? 0} walk-in</span></div>
                       <SummaryMetricBarChart rows={endedAttendanceChart} />
                       <SummaryBreakdownTable rows={endedAttendanceTable} />
                     </section>
@@ -3612,7 +3613,7 @@ export default function AssignedEventOperationsPage({ userProfile, isActivePage 
                               <p className="font-semibold text-slate-900">{attendee.Full_Name || 'N/A'}</p>
                               <p className="text-xs text-slate-600">{attendee.Email || 'No email'}</p>
                               <p className="text-xs text-slate-600">{attendee.Contact_Number || 'No contact'}</p>
-                              {attendee.Is_Walk_In && <span className="mt-1 inline-flex rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700">Walk-in · Unregistered</span>}
+                              {attendee.Is_Walk_In && <span className="mt-1 inline-flex rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700">Walk-in Donor</span>}
                             </td>
                             <td className="px-5 py-3 align-top">
                               <span

@@ -59,9 +59,9 @@ const AI_CONTROLLER_BASE_URL = (
     : 'http://127.0.0.1:8010'
 ).replace(/\/+$/, '');
 const LOCAL_AI_OFFLINE_MESSAGE =
-  'Local AI is off on this computer. Turn it on when you need it; it will release GPU and memory automatically after 15 minutes without use.';
+  'Local AI is off on this computer. Start it here, or check that the local controller is running.';
 const POLL_MS = 1800;
-const OFFLINE_RECHECK_MS = 10000;
+const OFFLINE_RECHECK_MS = 5000;
 const DEFAULT_FILTER_FIT = Object.freeze({
   full_wig: {
     offsetX: 0,
@@ -260,23 +260,24 @@ function WigDetailsForm({
   );
 }
 
-function AiStatusPill({ health, onRetry }) {
+function AiStatusPill({ health, controller, onRetry }) {
   const online = health.state === 'online';
+  const transitioning = ['starting', 'stopping'].includes(controller.aiState);
   return (
     <button
       type="button"
       onClick={() => onRetry()}
       className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-semibold ${
-        online
+        online && !transitioning
           ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-          : health.state === 'checking'
+          : health.state === 'checking' || transitioning
             ? 'border-slate-200 bg-slate-50 text-slate-600'
             : 'border-red-200 bg-red-50 text-red-700'
       }`}
     >
-      <span className={`h-2 w-2 rounded-full ${online ? 'bg-emerald-500' : health.state === 'checking' ? 'bg-slate-400' : 'bg-red-500'}`} />
-      {online ? 'Local AI ready' : health.state === 'checking' ? 'Checking local AI' : 'Local AI is offline'}
-      {health.state === 'checking' ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+      <span className={`h-2 w-2 rounded-full ${online && !transitioning ? 'bg-emerald-500' : health.state === 'checking' || transitioning ? 'bg-slate-400' : 'bg-red-500'}`} />
+      {controller.aiState === 'starting' ? 'Local AI starting' : controller.aiState === 'stopping' ? 'Local AI stopping' : online ? 'Local AI ready' : health.state === 'checking' ? 'Checking local AI' : 'Local AI is offline'}
+      {health.state === 'checking' || transitioning ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
     </button>
   );
 }
@@ -293,6 +294,7 @@ export default function AddWigTab({
   const fileInputRef = useRef(null);
   const appliedSuggestionsRef = useRef(null);
   const codeRequestRef = useRef(0);
+  const controlEpochRef = useRef(0);
   const [form, setForm] = useState({ ...EMPTY_WIG_FORM });
   const [wigPhoto, setWigPhoto] = useState(null);
   const [isPhotoDragging, setIsPhotoDragging] = useState(false);
@@ -350,6 +352,7 @@ export default function AddWigTab({
   }, []);
 
   const checkController = useCallback(async ({ silent = false } = {}) => {
+    const controlEpoch = controlEpochRef.current;
     if (!silent) {
       setController((previous) => ({ ...previous, state: 'checking' }));
     }
@@ -362,6 +365,7 @@ export default function AddWigTab({
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
+      if (controlEpoch !== controlEpochRef.current) return data;
       if (data?.status !== 'ok' || data?.controller !== 'ready') {
         throw new Error('Unexpected controller response');
       }
@@ -374,6 +378,7 @@ export default function AddWigTab({
       }
       return data;
     } catch {
+      if (controlEpoch !== controlEpochRef.current) return null;
       setController({ state: 'unavailable', aiState: 'unknown', details: null });
       return null;
     } finally {
@@ -382,6 +387,7 @@ export default function AddWigTab({
   }, [checkHealth]);
 
   const setLocalAiPower = useCallback(async (turnOn) => {
+    controlEpochRef.current += 1;
     setAiControlPending(true);
     setNotice({ kind: '', message: '' });
     setController((previous) => ({
@@ -396,13 +402,13 @@ export default function AddWigTab({
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
-      setController({ state: 'ready', aiState: turnOn ? 'starting' : 'stopping', details: data });
+      setController({ state: 'ready', aiState: data?.ai_state || (turnOn ? 'starting' : 'stopping'), details: data });
       if (!turnOn) setHealth({ state: 'offline', details: null });
       setNotice({
         kind: 'success',
         message: turnOn
-          ? 'Local AI is starting. The first model warm-up may take a moment.'
-          : 'Local AI is turning off and releasing GPU and memory.',
+          ? 'Local AI is starting. Model warm-up can take a moment.'
+          : 'Local AI is stopping.',
       });
     } catch (error) {
       setController({ state: 'unavailable', aiState: 'unknown', details: null });
@@ -424,7 +430,7 @@ export default function AddWigTab({
     const transitioning = ['starting', 'stopping'].includes(controller.aiState);
     const timer = setInterval(() => {
       void checkController({ silent: true });
-    }, transitioning ? 2500 : OFFLINE_RECHECK_MS);
+    }, transitioning ? 1000 : OFFLINE_RECHECK_MS);
     return () => clearInterval(timer);
   }, [checkController, controller.aiState]);
 
@@ -815,27 +821,27 @@ export default function AddWigTab({
             />
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <AiStatusPill health={health} onRetry={checkHealth} />
+            <AiStatusPill health={health} controller={controller} onRetry={checkHealth} />
             {controller.state === 'ready' ? (
               <button
                 type="button"
-                onClick={() => setLocalAiPower(controller.aiState !== 'ready')}
-                disabled={aiControlPending || ['starting', 'stopping'].includes(controller.aiState)}
+                onClick={() => setLocalAiPower(!['ready', 'starting'].includes(controller.aiState))}
+                disabled={aiControlPending}
                 className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] font-semibold disabled:cursor-wait disabled:opacity-60 ${
-                  controller.aiState === 'ready'
+                  ['ready', 'starting'].includes(controller.aiState)
                     ? 'border-red-200 bg-white text-red-700 hover:bg-red-50'
                     : 'border-emerald-200 bg-emerald-600 text-white hover:bg-emerald-700'
                 }`}
               >
-                {aiControlPending || ['starting', 'stopping'].includes(controller.aiState)
+                {aiControlPending
                   ? <Loader2 size={12} className="animate-spin" />
                   : <Power size={12} />}
                 {controller.aiState === 'ready'
                   ? 'Turn AI Off'
                   : controller.aiState === 'starting'
-                    ? 'AI is starting'
+                    ? 'Stop starting'
                     : controller.aiState === 'stopping'
-                      ? 'AI is stopping'
+                      ? 'Start again'
                       : 'Turn AI On'}
               </button>
             ) : null}
@@ -843,7 +849,7 @@ export default function AddWigTab({
         </div>
       </section>
 
-      {health.state === 'offline' && !currentFilter ? (
+      {health.state === 'offline' && !currentFilter && !['starting', 'stopping'].includes(controller.aiState) ? (
         <section className={`flex flex-col gap-3 rounded-xl border p-4 sm:flex-row sm:items-center ${
           controller.state === 'ready'
             ? 'border-amber-200 bg-amber-50 text-amber-900'
@@ -856,7 +862,7 @@ export default function AddWigTab({
             </p>
             <p className="mt-0.5 text-xs leading-relaxed">
               {controller.state === 'ready'
-                ? LOCAL_AI_OFFLINE_MESSAGE
+                ? controller.details?.control_error || LOCAL_AI_OFFLINE_MESSAGE
                 : 'Run npm run ai:install-controls once on this Specialist computer, then allow Local Network Access if the browser asks.'}
             </p>
           </div>

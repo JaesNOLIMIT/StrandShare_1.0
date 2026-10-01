@@ -30,7 +30,7 @@ export default function Sidebar({
   return (
     <div
       className={`h-full bg-white border-r border-gray-200 flex flex-col transition-all duration-200 ${
-        isCollapsed ? 'w-20' : 'w-64'
+        isCollapsed ? 'w-20' : 'w-[216px]'
       }`}
     >
       {/* Logo Section */}
@@ -75,7 +75,7 @@ export default function Sidebar({
       </div>
 
       {/* Navigation */}
-      <nav className={`flex-1 overflow-y-auto space-y-2 ${isCollapsed ? 'p-2' : 'p-3'}`}>
+      <nav className={`flex-1 overflow-y-auto space-y-1.5 ${isCollapsed ? 'p-2' : 'p-3'}`}>
         {items.map((item) => {
           const Icon = item.icon;
           const isActive = currentPage === item.id;

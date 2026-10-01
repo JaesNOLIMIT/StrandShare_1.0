@@ -13,6 +13,7 @@ import {
   Search,
   ScanLine,
   Send,
+  UserPlus,
   Users,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
@@ -531,9 +532,10 @@ function templateCatalogForRole(roleKey, theme) {
         { key: 'eventName', label: 'Program Name' },
         { key: 'statusLabel', label: 'Status' },
         { key: 'schedule', label: 'Schedule' },
-        { key: 'registered', label: 'Registered' },
-        { key: 'present', label: 'Present' },
         { key: 'donors', label: 'Donors' },
+        { key: 'registered', label: 'Registered with Mobile App' },
+        { key: 'walkIns', label: 'Walk-in Donors' },
+        { key: 'present', label: 'Present' },
         { key: 'accepted', label: 'Accepted Hair' },
         { key: 'inventoryAdded', label: 'Added to Inventory' },
         { key: 'aiAccuracyLabel', label: 'AI Accuracy' },
@@ -813,6 +815,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
             programEndDate: row.end_date || row.start_date || null,
             schedule: `${formatShortDate(row.start_date)} - ${formatShortDate(row.end_date)}`,
             registered: Number(row.registered || 0),
+            walkIns: Number(row.walk_ins || 0),
             present: Number(row.present || 0),
             noShow: Number(row.no_show || 0),
             donors: Number(row.donors || 0),
@@ -1303,6 +1306,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     const totals = filteredRows.reduce((summary, row) => {
       summary.programs += 1;
       summary.registered += Number(row.registered || 0);
+      summary.walkIns += Number(row.walkIns || 0);
       summary.present += Number(row.present || 0);
       summary.noShow += Number(row.noShow || 0);
       summary.donors += Number(row.donors || 0);
@@ -1318,6 +1322,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
     }, {
       programs: 0,
       registered: 0,
+      walkIns: 0,
       present: 0,
       noShow: 0,
       donors: 0,
@@ -1337,10 +1342,11 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
   }, [filteredRows]);
 
   const programAttendanceChart = useMemo(() => ([
-    { name: 'Registered', shortName: 'Registered', value: programAnalyticsSummary.registered, color: '#64748b' },
+    { name: 'Donors', shortName: 'Donors', value: programAnalyticsSummary.donors, color: '#6b1010' },
+    { name: 'Registered with mobile app', shortName: 'Mobile app', value: programAnalyticsSummary.registered, color: '#64748b' },
+    { name: 'Walk-in donors', shortName: 'Walk-ins', value: programAnalyticsSummary.walkIns, color: '#7c3aed' },
     { name: 'Present', shortName: 'Present', value: programAnalyticsSummary.present, color: '#0f766e' },
     { name: 'No-show', shortName: 'No-show', value: programAnalyticsSummary.noShow, color: '#dc2626' },
-    { name: 'Donors', shortName: 'Donors', value: programAnalyticsSummary.donors, color: '#6b1010' },
     { name: 'Visitors', shortName: 'Visitors', value: programAnalyticsSummary.visitors, color: '#2563eb' },
   ]), [programAnalyticsSummary]);
 
@@ -1841,10 +1847,11 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
       {/* Charts row */}
       {isProgramAnalyticsReport ? (
         <section className="space-y-3">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
             {[
-              { label: 'Programs', value: programAnalyticsSummary.programs, detail: isAdmin ? 'All visible programs' : 'Assigned to you', Icon: Calendar, color: primaryColor },
-              { label: 'Registered', value: programAnalyticsSummary.registered, detail: 'Expected attendees', Icon: Users, color: '#64748b' },
+              { label: 'Donors', value: programAnalyticsSummary.donors, detail: 'All donor registrations', Icon: Users, color: '#6b1010' },
+              { label: 'Registered with Mobile App', value: programAnalyticsSummary.registered, detail: 'Before the program', Icon: Users, color: '#64748b' },
+              { label: 'Walk-in Donors', value: programAnalyticsSummary.walkIns, detail: 'Registered on-site', Icon: UserPlus, color: '#7c3aed' },
               { label: 'Present', value: programAnalyticsSummary.present, detail: 'Checked in', Icon: CheckCircle2, color: '#0f766e' },
               { label: 'Accepted Hair', value: programAnalyticsSummary.accepted, detail: `${programAnalyticsSummary.donors} donors`, Icon: ScanLine, color: '#059669' },
               { label: 'Inventory Added', value: programAnalyticsSummary.inventoryAdded, detail: `${formatPercentage(programAnalyticsSummary.aiAccuracy)}% AI accuracy`, Icon: Boxes, color: '#6b1010' },
@@ -1887,7 +1894,7 @@ export default function RoleReportsPage({ userProfile, onNavigate }) {
             ) : (
               <div className="grid items-start xl:grid-cols-3">
                 <article className="flex flex-col border-b border-slate-200 p-4 xl:border-b-0 xl:border-r">
-                  <div className="flex items-center justify-between"><h4 className="text-xs font-bold text-slate-800">Attendance</h4><span className="text-[10px] text-slate-500">{programAnalyticsSummary.registered} registered</span></div>
+                  <div className="flex items-center justify-between"><h4 className="text-xs font-bold text-slate-800">Attendance</h4><span className="text-[10px] text-slate-500">{programAnalyticsSummary.donors} donors · {programAnalyticsSummary.registered} mobile app · {programAnalyticsSummary.walkIns} walk-in</span></div>
                   <ProgramSummaryChart rows={programAttendanceChart} className="mt-2 h-32" />
                   <ProgramSummaryTable rows={programAttendanceChart} />
                 </article>

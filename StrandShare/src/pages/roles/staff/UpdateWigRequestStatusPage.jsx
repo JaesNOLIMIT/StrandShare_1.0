@@ -1679,7 +1679,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
 
       await logAuditAction({
         action: 'staff_complete_wig_release',
-        description: `${selectedRow.requestId}: final wig handover confirmed${String(actionReason || '').trim() ? ` | notes: ${String(actionReason).trim()}` : ''}`,
+        description: `${selectedRow.requestId}: ${selectedRow.statusKey === 'ready_for_pickup' ? 'patient pickup confirmed' : 'final wig release confirmed'}${String(actionReason || '').trim() ? ` | notes: ${String(actionReason).trim()}` : ''}`,
         resource: 'Wig_Requests',
         status: 'success',
         userProfile,
@@ -2081,6 +2081,20 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                 ) : null}
               </div>
 
+              {selectedRow.statusKey === 'ready_for_pickup' ? (
+                <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 text-cyan-950">
+                  <div className="flex items-start gap-3">
+                    <CheckCircle2 size={20} className="mt-0.5 shrink-0 text-cyan-700" />
+                    <div>
+                      <p className="text-sm font-bold">Ready for Pick-up</p>
+                      <p className="mt-1 text-xs leading-5 text-cyan-900">
+                        The wig is prepared and waiting for the patient or authorized recipient. It has not been picked up yet. Select Confirm Pick-up only after the wig is received.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="rounded-xl border border-slate-200 bg-white p-4">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-sm font-semibold text-slate-900">Wig Preference</p>
@@ -2197,7 +2211,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                     {selectedRow.safetyAssessment.medical_restriction_details ? <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Restriction details:</span> {selectedRow.safetyAssessment.medical_restriction_details}</p> : null}
                     <p className="text-sm text-slate-700"><span className="font-semibold text-slate-900">Clinical allergies/current medications:</span> {selectedRow.clinicalAllergiesMedications}</p>
                     <div className="flex items-center gap-2 border-t border-slate-200 pt-3 text-sm font-semibold text-emerald-700">
-                      <CheckCircle2 size={17} /> Confirmed by the hospital
+                      <CheckCircle2 size={17} /> {selectedRow.hospitalId ? 'Confirmed by the hospital' : 'Confirmed for direct patient request'}
                     </div>
                   </div>
                 ) : (
@@ -2206,13 +2220,15 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white p-4">
-                <p className="text-sm font-semibold text-slate-900">Release Workflow</p>
+                <p className="text-sm font-semibold text-slate-900">{selectedRow.statusKey === 'ready_for_pickup' ? 'Pick-up Workflow' : 'Release Workflow'}</p>
                 <div className="mt-3 space-y-1.5 text-sm text-slate-700">
-                  <p className="inline-flex items-center gap-1.5">
+                  {selectedRow.statusKey === 'ready_for_pickup' ? (
+                    <p><span className="font-semibold text-slate-900">Current step:</span> Waiting for patient pick-up</p>
+                  ) : <p className="inline-flex items-center gap-1.5">
                     <CalendarDays size={14} className="text-slate-500" />
                     <span><span className="font-semibold text-slate-900">Release Date:</span> {formatDateTime(selectedRow.releaseDate)}</span>
-                  </p>
-                  <p><span className="font-semibold text-slate-900">Flow Status:</span> {selectedRow.releaseWorkflowLabel}</p>
+                  </p>}
+                  {selectedRow.statusKey !== 'ready_for_pickup' ? <p><span className="font-semibold text-slate-900">Flow Status:</span> {selectedRow.releaseWorkflowLabel}</p> : null}
                   <p className="inline-flex items-center gap-1.5">
                     <CalendarDays size={14} className="text-slate-500" />
                     <span><span className="font-semibold text-slate-900">Required distribution window:</span> {formatDateOnly(selectedRow.expectedReleaseEarliestAt)} – {formatDateOnly(selectedRow.expectedReleaseLatestAt)}</span>
@@ -2234,7 +2250,9 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                       ? 'Matching stock is available, so this request can only be allocated or rejected.'
                       : 'No matching stock is available, so this request can only enter production or be rejected.'
                     : ['releasing', 'ready_for_pickup'].includes(selectedRow.statusKey)
-                      ? 'Complete the physical handover to move this request to its final Released status.'
+                      ? selectedRow.statusKey === 'ready_for_pickup'
+                        ? 'Confirm the patient pick-up to move this request to its final Released status.'
+                        : 'Confirm the physical release to move this request to its final Released status.'
                     : selectedRow.statusKey === 'accepted_allocated' && !selectedRow.hospitalId
                       ? 'The wig is allocated. Mark it Ready for Pick-up only when it is prepared for the patient.'
                     : 'Select only the next valid step for this request.'}
@@ -2248,7 +2266,7 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                         : 'The hospital approved the release schedule. Confirm only after the wig has been physically handed over to the patient or authorized recipient.'}
                     </div>
                     <p className="text-xs font-medium text-slate-600">
-                      Use the fixed footer below to confirm this final handover.
+                      Use the fixed footer below only after the wig has been received.
                     </p>
                   </div>
                 ) : selectedRow.statusKey === 'released' ? (
@@ -2662,8 +2680,8 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
             {releaseConfirmationStep === 'confirm' ? (
               <>
                 <div className="border-b border-slate-200 px-5 py-4">
-                  <h3 className="text-lg font-bold text-slate-900">Final Release Confirmation</h3>
-                  <p className="mt-1 text-sm text-slate-600">Review the handover details before completing this request.</p>
+                  <h3 className="text-lg font-bold text-slate-900">{selectedRow.statusKey === 'ready_for_pickup' ? 'Confirm Pick-up' : 'Final Release Confirmation'}</h3>
+                  <p className="mt-1 text-sm text-slate-600">{selectedRow.statusKey === 'ready_for_pickup' ? 'Use this only after the patient or authorized recipient physically receives the wig.' : 'Review the handover details before completing this request.'}</p>
                 </div>
                 <div className="space-y-4 p-5">
                   <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
@@ -2680,14 +2698,14 @@ export default function UpdateWigRequestStatusPage({ userProfile, isActivePage =
                     Continuing confirms the wig was handed over. The request will move permanently from <strong>{selectedRow.statusLabel}</strong> to <strong>Released</strong>.
                   </div>
                   <div>
-                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-600">Final handover notes (optional)</label>
+                    <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-600">{selectedRow.statusKey === 'ready_for_pickup' ? 'Pick-up notes (optional)' : 'Final release notes (optional)'}</label>
                     <textarea
                       value={actionReason}
                       onChange={(event) => setActionReason(event.target.value)}
                       disabled={isApplyingAction}
                       rows={3}
                       className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
-                      placeholder="Add the recipient, handover condition, or other final confirmation notes."
+                      placeholder={selectedRow.statusKey === 'ready_for_pickup' ? 'Add the recipient or other pick-up notes.' : 'Add the recipient, release condition, or other final confirmation notes.'}
                     />
                   </div>
                 </div>

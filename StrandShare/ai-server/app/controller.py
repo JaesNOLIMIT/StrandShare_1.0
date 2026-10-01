@@ -1,4 +1,4 @@
-"""Tiny loopback controller for turning the local AI worker on and off.
+"""Tiny loopback controller for keeping the local AI worker ready.
 
 This process starts at Windows sign-in but deliberately imports no ML package.
 The Vercel frontend reaches it through the specialist's browser at 127.0.0.1.
@@ -51,8 +51,14 @@ ALLOWED_ORIGINS = DEFAULT_ORIGINS | {
     for item in ENV.get("ALLOWED_ORIGINS", "").split(",")
     if item.strip()
 }
-IDLE_SECONDS = max(60, int(ENV.get("AI_IDLE_TIMEOUT_MINUTES", "15")) * 60)
+ALWAYS_ON = ENV.get("AI_ALWAYS_ON", "1").strip().lower() not in {"0", "false", "no", "off"}
+IDLE_SECONDS = 0 if ALWAYS_ON else max(60, int(ENV.get("AI_IDLE_TIMEOUT_MINUTES", "15")) * 60)
 CONTROL_LOCK = threading.Lock()
+STATE_LOCK = threading.Lock()
+REQUESTED_ACTION: str | None = None
+REQUESTED_AT = 0.0
+CONTROL_ERROR: str | None = None
+MANAGER_BUSY = False
 
 
 def _port_open(port: int) -> bool:
@@ -102,13 +108,34 @@ def _active_jobs() -> int:
 
 
 def _status() -> dict[str, Any]:
+    global REQUESTED_ACTION, CONTROL_ERROR
     age = _last_activity_age()
     state = _ai_state()
+    with STATE_LOCK:
+        if REQUESTED_ACTION == "Start" and state == "ready":
+            REQUESTED_ACTION = None
+            CONTROL_ERROR = None
+        elif REQUESTED_ACTION == "Stop" and state == "off":
+            REQUESTED_ACTION = None
+            CONTROL_ERROR = None
+        elif REQUESTED_ACTION and time.monotonic() - REQUESTED_AT > 300:
+            CONTROL_ERROR = "The local AI worker did not finish changing state. Check ai-server/.run logs."
+            REQUESTED_ACTION = None
+        elif REQUESTED_ACTION == "Start" and not MANAGER_BUSY and state == "off":
+            CONTROL_ERROR = "The local AI worker did not start. Check ai-server/.run logs."
+            REQUESTED_ACTION = None
+        if REQUESTED_ACTION == "Start":
+            state = "starting"
+        elif REQUESTED_ACTION == "Stop":
+            state = "stopping"
+        error = CONTROL_ERROR
     return {
         "status": "ok",
         "mode": "local-only",
         "controller": "ready",
         "ai_state": state,
+        "always_on": ALWAYS_ON,
+        "control_error": error,
         "idle_timeout_seconds": IDLE_SECONDS,
         "idle_seconds": age if state == "ready" else None,
         "active_jobs": _active_jobs() if state == "ready" else 0,
@@ -116,31 +143,54 @@ def _status() -> dict[str, Any]:
 
 
 def _run_manager(action: str) -> None:
+    global REQUESTED_ACTION, CONTROL_ERROR, MANAGER_BUSY
     with CONTROL_LOCK:
-        subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(MANAGER),
-                action,
-            ],
-            cwd=str(AI_ROOT.parent),
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            timeout=30,
-        )
+        with STATE_LOCK:
+            MANAGER_BUSY = True
+        try:
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(MANAGER),
+                    action,
+                ],
+                cwd=str(AI_ROOT.parent),
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=30,
+            )
+            failed = result.returncode != 0
+        except (OSError, subprocess.TimeoutExpired):
+            failed = True
+        with STATE_LOCK:
+            if REQUESTED_ACTION == action:
+                MANAGER_BUSY = False
+                if failed:
+                    REQUESTED_ACTION = None
+                    CONTROL_ERROR = "Could not change local AI power. Check ai-server/.run logs and the local setup."
 
 
 def _start_action(action: str) -> None:
+    global REQUESTED_ACTION, REQUESTED_AT, CONTROL_ERROR, MANAGER_BUSY
+    with STATE_LOCK:
+        REQUESTED_ACTION = action
+        REQUESTED_AT = time.monotonic()
+        CONTROL_ERROR = None
+        MANAGER_BUSY = True
     threading.Thread(target=_run_manager, args=(action,), daemon=True).start()
 
 
 def _idle_monitor() -> None:
     while True:
         time.sleep(15)
+        if ALWAYS_ON:
+            continue
         if _ai_state() != "ready" or _active_jobs() > 0:
             continue
         age = _last_activity_age()
@@ -208,8 +258,11 @@ class ControllerHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     RUN_ROOT.mkdir(parents=True, exist_ok=True)
-    threading.Thread(target=_idle_monitor, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", 8010), ControllerHandler)
+    if ALWAYS_ON:
+        _start_action("Start")
+    else:
+        threading.Thread(target=_idle_monitor, daemon=True).start()
     server.serve_forever()
 
 

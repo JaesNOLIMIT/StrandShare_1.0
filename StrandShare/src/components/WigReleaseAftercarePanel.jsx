@@ -20,9 +20,27 @@ function safeFileName(value) {
   return String(value || 'evidence').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-');
 }
 
-function getPublicUrl(path) {
-  if (!path || !supabase) return '';
-  return supabase.storage.from(PATIENT_ASSETS_BUCKET).getPublicUrl(path).data?.publicUrl || '';
+function normalizePatientAssetPath(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const storageMarkers = [
+    `/storage/v1/object/public/${PATIENT_ASSETS_BUCKET}/`,
+    `/storage/v1/object/sign/${PATIENT_ASSETS_BUCKET}/`,
+    `/storage/v1/object/authenticated/${PATIENT_ASSETS_BUCKET}/`,
+  ];
+
+  try {
+    const parsed = new URL(raw);
+    const marker = storageMarkers.find((candidate) => parsed.pathname.includes(candidate));
+    if (marker) return decodeURIComponent(parsed.pathname.split(marker)[1] || '');
+  } catch {
+    // Stored values are normally bucket-relative paths, not absolute URLs.
+  }
+
+  return raw
+    .replace(/^\/+/, '')
+    .replace(new RegExp(`^${PATIENT_ASSETS_BUCKET}/`), '');
 }
 
 function statusClasses(status) {
@@ -58,6 +76,39 @@ function formatDestination(snapshot) {
 }
 
 function AppealEvidenceGallery({ paths = [] }) {
+  const evidencePathKey = (Array.isArray(paths) ? paths : []).map(String).join('\u0000');
+  const normalizedPaths = useMemo(
+    () => evidencePathKey ? evidencePathKey.split('\u0000').map(normalizePatientAssetPath).filter(Boolean) : [],
+    [evidencePathKey],
+  );
+  const [urlsByPath, setUrlsByPath] = useState({});
+  const [failedPaths, setFailedPaths] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFailedPaths([]);
+
+    if (!supabase || normalizedPaths.length === 0) {
+      setUrlsByPath({});
+      return () => { cancelled = true; };
+    }
+
+    Promise.all(normalizedPaths.map(async (path) => {
+      try {
+        const signed = await supabase.storage.from(PATIENT_ASSETS_BUCKET).createSignedUrl(path, 60 * 60);
+        if (signed.data?.signedUrl) return [path, signed.data.signedUrl];
+      } catch {
+        // Public URL fallback below supports older bucket configurations.
+      }
+      const publicUrl = supabase.storage.from(PATIENT_ASSETS_BUCKET).getPublicUrl(path).data?.publicUrl || '';
+      return [path, publicUrl];
+    })).then((entries) => {
+      if (!cancelled) setUrlsByPath(Object.fromEntries(entries));
+    });
+
+    return () => { cancelled = true; };
+  }, [normalizedPaths]);
+
   if (!paths.length) {
     return <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">No photos were attached to this older concern record.</p>;
   }
@@ -65,12 +116,32 @@ function AppealEvidenceGallery({ paths = [] }) {
     <div className="mt-3">
       <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Attached photos</p>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {paths.map((path, index) => (
-          <a key={path} href={getPublicUrl(path)} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-            <img src={getPublicUrl(path)} alt={`Concern evidence ${index + 1}`} className="h-28 w-full object-cover transition group-hover:scale-105" />
-            <span className="flex items-center justify-center gap-1 p-2 text-[11px] font-bold text-slate-700"><FileImage size={13} /> View photo {index + 1}</span>
-          </a>
-        ))}
+        {normalizedPaths.map((path, index) => {
+          const imageUrl = urlsByPath[path] || '';
+          const failed = failedPaths.includes(path);
+          const content = (
+            <>
+              {imageUrl && !failed ? (
+                <img
+                  src={imageUrl}
+                  alt={`Concern evidence ${index + 1}`}
+                  onError={() => setFailedPaths((current) => current.includes(path) ? current : [...current, path])}
+                  className="h-28 w-full object-cover transition group-hover:scale-105"
+                />
+              ) : (
+                <span className="flex h-28 items-center justify-center px-3 text-center text-xs text-slate-500">
+                  {failed ? 'Photo unavailable' : 'Loading photo...'}
+                </span>
+              )}
+              <span className="flex items-center justify-center gap-1 p-2 text-[11px] font-bold text-slate-700"><FileImage size={13} /> {failed ? `Photo ${index + 1}` : `View photo ${index + 1}`}</span>
+            </>
+          );
+          return imageUrl && !failed ? (
+            <a key={path} href={imageUrl} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-lg border border-slate-200 bg-slate-50">{content}</a>
+          ) : (
+            <article key={path} className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50">{content}</article>
+          );
+        })}
       </div>
     </div>
   );
@@ -195,7 +266,7 @@ function SubmittedAppealCard({ mode, appeal, decisionForm, setDecisionForm, onRe
   );
 }
 
-function ReturnWorkflowPanel({ mode, appeal, busy, returnForm, setReturnForm, onSubmitShipment, onStaffAction }) {
+function ReturnWorkflowPanel({ mode, appeal, isDirectPickup, busy, returnForm, setReturnForm, onSubmitShipment, onStaffAction }) {
   if (!appeal?.return_status) return null;
   const destination = appeal.return_destination_snapshot || {};
   const destinationAddress = formatDestination(destination);
@@ -207,7 +278,7 @@ function ReturnWorkflowPanel({ mode, appeal, busy, returnForm, setReturnForm, on
     <section className="rounded-xl border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{appeal.requested_resolution === 'Return and Close' ? 'Return and close' : 'Return, repair and re-release'}</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{appeal.requested_resolution === 'Return and Close' ? 'Return and close' : isDirectPickup ? 'Return, repair and pickup' : 'Return, repair and re-release'}</p>
           <h4 className="mt-0.5 font-bold text-slate-900">{['Completed', 'Return Completed'].includes(appeal.return_status) ? 'Problem Solved' : appeal.return_status}</h4>
         </div>
         {appeal.return_tracking_number ? <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{appeal.return_courier}: {appeal.return_tracking_number}</span> : null}
@@ -238,10 +309,11 @@ function ReturnWorkflowPanel({ mode, appeal, busy, returnForm, setReturnForm, on
         <div className="mt-3 flex flex-wrap justify-end gap-2">
           {appeal.return_status === 'In Transit' ? <button type="button" onClick={() => onStaffAction('receive')} disabled={busy} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Confirm return received</button> : null}
           {appeal.return_status === 'Return Received' ? <button type="button" onClick={() => onStaffAction('start_repair')} disabled={busy} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Start repair</button> : null}
-          {appeal.return_status === 'Under Repair' ? <button type="button" onClick={() => onStaffAction('complete_repair')} disabled={busy} className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Repair complete · send to release scheduling</button> : null}
+          {appeal.return_status === 'Under Repair' ? <button type="button" onClick={() => onStaffAction('complete_repair')} disabled={busy} className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{isDirectPickup ? 'Mark Ready for Pick-up' : 'Repair complete · send to release scheduling'}</button> : null}
         </div>
       ) : null}
 
+      {appeal.return_status === 'Ready for Pick-up' ? <p className="mt-3 rounded-lg bg-cyan-50 px-3 py-2 text-sm font-semibold text-cyan-900">The repair is complete. The wig is waiting for the patient or authorized recipient to pick it up.</p> : null}
       {appeal.return_status === 'Ready for Re-release' ? <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900">Repair complete. A new release date must now be scheduled.</p> : null}
       {appeal.return_status === 'Return Completed' ? <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900">Returned wig received. This request is now closed with no repair or re-release.</p> : null}
       {appeal.return_status === 'Completed' ? <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900">Re-release complete. The repaired or replacement wig was handed over.</p> : null}
@@ -485,7 +557,9 @@ export default function WigReleaseAftercarePanel({ mode = 'hospital', isActivePa
       setNotice({
         kind: 'success',
         text: action === 'complete_repair'
-          ? 'Repair completed. The request is ready for Staff to schedule a new release date.'
+          ? selected.request?.Hospital_ID
+            ? 'Repair completed. The request is ready for Staff to schedule a new release date.'
+            : 'Repair completed. The request is ready for patient pickup.'
           : 'Return workflow updated successfully.',
       });
       await loadRecords(selected.receipt_id);
@@ -518,7 +592,7 @@ export default function WigReleaseAftercarePanel({ mode = 'hospital', isActivePa
             {mode === 'hospital' && !selected.terms_accepted_at && <div className="rounded-xl border border-amber-300 bg-amber-50 p-4"><div className="flex gap-2"><ShieldCheck size={20} className="shrink-0 text-amber-700" /><div><h4 className="font-bold text-amber-950">Confirm receipt and accept terms</h4><p className="mt-1 text-sm leading-6 text-amber-950">{selected.terms_snapshot}</p><p className="mt-2 text-xs font-semibold text-amber-800">Terms version {selected.terms_version} · The seven-day concern period is based on Staff's release time.</p></div></div><label className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-white p-3 text-sm text-slate-800"><input type="checkbox" checked={termsChecked} onChange={(event) => setTermsChecked(event.target.checked)} className="mt-0.5" /><span>I confirm the wig was received for this patient, I reviewed these terms, and I accept the seven-day concern policy.</span></label><div className="mt-4 flex justify-end"><button type="button" onClick={confirmReceipt} disabled={!termsChecked || busyId === selected.receipt_id} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">{busyId === selected.receipt_id ? 'Saving...' : 'Confirm receipt & accept'}</button></div></div>}
             {selected.terms_accepted_at && <p className="flex items-center gap-2 text-xs text-emerald-800"><CheckCircle2 size={15} /> Receipt confirmed {formatDateTime(selected.terms_accepted_at)}</p>}
             {selected.appeal ? <SubmittedAppealCard mode={mode} appeal={selected.appeal} decisionForm={decisionForm} setDecisionForm={setDecisionForm} onReview={reviewAppeal} busy={busyId === selected.receipt_id} /> : mode === 'hospital' && selected.terms_accepted_at && appealOpen ? <AppealSubmissionForm form={appealForm} setForm={setAppealForm} onSubmit={submitAppeal} busy={busyId === selected.receipt_id} /> : mode === 'hospital' && !appealOpen ? <div className="flex gap-2 rounded-lg border border-slate-200 bg-slate-100 p-3 text-sm text-slate-700"><AlertTriangle size={18} className="shrink-0" /> The seven-day concern period has ended. Contact Staff for exceptional assistance.</div> : null}
-            <ReturnWorkflowPanel mode={mode} appeal={selected.appeal} busy={busyId === selected.receipt_id} returnForm={returnForm} setReturnForm={setReturnForm} onSubmitShipment={submitReturnShipment} onStaffAction={updateReturnWorkflow} />
+            <ReturnWorkflowPanel mode={mode} appeal={selected.appeal} isDirectPickup={!selected.request?.Hospital_ID} busy={busyId === selected.receipt_id} returnForm={returnForm} setReturnForm={setReturnForm} onSubmitShipment={submitReturnShipment} onStaffAction={updateReturnWorkflow} />
           </div>}
         </div>
       )}

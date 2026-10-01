@@ -12,6 +12,12 @@ A modern, pixel-perfect React frontend for the Donivra hair donation platform. B
 - **Production-Ready Code**: Complete, no placeholders, ready for deployment
 - **High-Quality Images**: Uses Unsplash URLs for professional-grade image placeholders
 
+## Hair receiving workflows
+
+- **Booked salon appointments:** Staff configure opening times, appointment duration, buffer, grace period, and donors per time. They can open a booking from the calendar or scan its `WB` waybill, confirm/edit the hair details, then choose Approved, Rejected, or Rejected Cut. Approved hair is added to cut-hair inventory automatically.
+- **Courier and drop-off donations:** Staff receive the physical package from Receiving Schedule. A specialist then performs the separate Quality Check. Appointment submissions are intentionally excluded from that specialist queue.
+- **Program donations:** Event hair continues through Assigned Program Operations and is not handled by either non-event route above.
+
 ## Project Structure
 
 ```

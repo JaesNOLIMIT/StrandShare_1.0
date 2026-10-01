@@ -37,6 +37,67 @@ function normalizeKey(value) {
   return String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
 }
 
+const APPLICATION_STATUS_DEFINITIONS = [
+  { key: 'pendingstaffreview', name: 'Pending Staff', color: '#f59e0b' },
+  { key: 'pendingadmindecision', name: 'Pending Admin', color: '#0ea5e9' },
+  { key: 'appealed', name: 'Appealed', color: '#8b5cf6' },
+  { key: 'approved', name: 'Approved', color: '#059669' },
+  { key: 'rejected', name: 'Rejected', color: '#e11d48' },
+  { key: 'cancelled', name: 'Cancelled', color: '#64748b' },
+  { key: 'withdrawn', name: 'Withdrawn', color: '#78716c' },
+  { key: 'closed', name: 'Closed', color: '#475569' },
+];
+
+function canonicalApplicationStatus(value) {
+  const key = normalizeKey(value);
+  if (key === 'pendingadminapproval') return 'pendingadmindecision';
+  if (key === 'canceled') return 'cancelled';
+  return key;
+}
+
+function readableStatusName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Other';
+  return raw
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+export function buildApplicationStatusData(applicationRows = []) {
+  const counts = new Map(APPLICATION_STATUS_DEFINITIONS.map(({ key }) => [key, 0]));
+  const unknownStatuses = new Map();
+
+  applicationRows.forEach((row) => {
+    const key = canonicalApplicationStatus(row?.Status);
+    if (!key) {
+      unknownStatuses.set('other', {
+        name: 'Other',
+        value: (unknownStatuses.get('other')?.value || 0) + 1,
+      });
+      return;
+    }
+    if (counts.has(key)) {
+      counts.set(key, counts.get(key) + 1);
+      return;
+    }
+    unknownStatuses.set(key, {
+      name: readableStatusName(row?.Status),
+      value: (unknownStatuses.get(key)?.value || 0) + 1,
+    });
+  });
+
+  const knownStatuses = APPLICATION_STATUS_DEFINITIONS.map((definition) => ({
+    ...definition,
+    value: counts.get(definition.key) || 0,
+  }));
+  const extraStatuses = [...unknownStatuses.entries()]
+    .sort(([, left], [, right]) => left.name.localeCompare(right.name))
+    .map(([key, entry]) => ({ key, ...entry, color: '#94a3b8' }));
+
+  return [...knownStatuses, ...extraStatuses];
+}
+
 function formatShortDate(value) {
   if (!value) return 'N/A';
   const date = new Date(value);
@@ -387,22 +448,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
         reviewQueueSet.has(key) ? sum + value : sum
       ), 0);
 
-      const appStatusCounts = {
-        pendingstaffreview: 0,
-        pendingadmindecision: 0,
-        appealed: 0,
-        rejected: 0,
-      };
-      applicationRows.forEach((row) => {
-        const key = normalizeKey(row.Status);
-        if (key in appStatusCounts) appStatusCounts[key] += 1;
-      });
-      const applicationStatusData = [
-        { name: 'Pending Staff', value: appStatusCounts.pendingstaffreview, color: '#f59e0b' },
-        { name: 'Pending Admin', value: appStatusCounts.pendingadmindecision, color: '#0ea5e9' },
-        { name: 'Appealed', value: appStatusCounts.appealed, color: '#8b5cf6' },
-        { name: 'Rejected', value: appStatusCounts.rejected, color: '#e11d48' },
-      ];
+      const applicationStatusData = buildApplicationStatusData(applicationRows);
 
       const activeLegal = legalResult.data.find((row) => Boolean(row.is_active)) || null;
       const systemChecks = {
@@ -665,7 +711,7 @@ export default function DashboardPage({ onNavigate, userProfile, onInitialDataRe
         <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-3">
           <h3 className="text-sm font-bold text-slate-800">Status Breakdown</h3>
           <p className="text-xs text-slate-500">Share of all applications</p>
-          <div className="mt-4 space-y-3">
+          <div className="mt-4 max-h-52 space-y-2 overflow-y-auto pr-1">
             {dashboard.applicationStatusData.map((entry) => (
               <ProgressRow
                 key={entry.name}

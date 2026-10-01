@@ -18,6 +18,7 @@ SMTP_PASS=your-provider-app-password
 SMTP_FROM_EMAIL=your-email@example.com
 SMTP_FROM_NAME=Donivra
 SMTP_REPLY_TO=
+PUBLIC_APP_URL=https://donivra.vercel.app
 
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-server-only-secret
@@ -25,6 +26,7 @@ SUPABASE_SERVICE_ROLE_KEY=your-server-only-secret
 SMTP_BATCH_SIZE=25
 SMTP_MAX_ATTEMPTS=5
 SMTP_RETRY_BASE_MINUTES=5
+SMTP_QUOTA_RETRY_HOURS=24
 SMTP_DRY_RUN=false
 ```
 
@@ -46,6 +48,16 @@ npm run smtp:start
 npm run smtp:stop
 npm run smtp:restart
 npm run smtp:status
+npm run smtp:templates:verify
 ```
 
 Logs and PID files are written under the ignored `.run` directory.
+
+All HTML templates are rendered inside the same responsive Donivra email
+layout. The template verification command checks the branding, production
+link, action button, responsive shell, and assigned-person display.
+
+Gmail daily sending-limit responses do not consume the normal attempt budget.
+Those messages remain `Pending` and are retried after
+`SMTP_QUOTA_RETRY_HOURS`; they must not be reported to staff as permanently
+failed. Gmail still controls when its account quota becomes available again.

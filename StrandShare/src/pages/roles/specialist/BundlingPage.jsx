@@ -970,7 +970,11 @@ export default function BundlingPage() {
             }),
             eventTitle:
               eventRequest.Event_Name ||
-              (requestId ? `Program #${requestId}` : "Program not linked"),
+              (row.From_Event
+                ? requestId
+                  ? `Program #${requestId}`
+                  : "Program unavailable"
+                : "Independent donation"),
             updatedAt: row.Updated_At || null,
             detail,
           });
@@ -1448,45 +1452,9 @@ export default function BundlingPage() {
       setNotice({ kind: "", text: "" });
 
       try {
-        let rpcWaybillPayload = waybill;
-        if (isValidWaybillCode(waybill)) {
-          const knownEventHair = availableCutHair.find(
-            (hair) =>
-              hair.isEventHair &&
-              String(hair.waybillCode || "")
-                .trim()
-                .toUpperCase() === waybill,
-          );
-
-          // Event codes must be sent unchanged because bundle_scan_add_waybill
-          // resolves them from Event_Attendees.Waybill_Code. Only decode locally
-          // generated non-event waybills into their Hair_Submissions ID.
-          if (!knownEventHair) {
-            const decodedSubmissionId = Number.parseInt(waybill.slice(2), 36);
-            if (
-              Number.isInteger(decodedSubmissionId) &&
-              decodedSubmissionId > 0
-            ) {
-              const submissionLookup = await supabase
-                .from(HAIR_SUBMISSIONS_TABLE)
-                .select("Submission_ID")
-                .eq("Submission_ID", decodedSubmissionId)
-                .eq("From_Event", false)
-                .maybeSingle();
-              if (submissionLookup.error) throw submissionLookup.error;
-              if (submissionLookup.data?.Submission_ID) {
-                rpcWaybillPayload = JSON.stringify({
-                  Submission_ID: submissionLookup.data.Submission_ID,
-                  Waybill_Code: waybill,
-                });
-              }
-            }
-          }
-        }
-
         const result = await supabase.rpc("bundle_scan_add_waybill", {
           p_bundle_id: bundleId,
-          p_waybill_payload: rpcWaybillPayload,
+          p_waybill_payload: waybill,
         });
         if (result.error) throw result.error;
 
@@ -1535,10 +1503,8 @@ export default function BundlingPage() {
             },
             {
               label: "Hair submission",
-              before:
-                payload?.submission?.From_Event === false ? "Available" : "Cut",
-              after:
-                payload?.submission?.From_Event === false ? "Available" : "Cut",
+              before: "Cut",
+              after: "Cut",
             },
             {
               label: "Cut inventory",

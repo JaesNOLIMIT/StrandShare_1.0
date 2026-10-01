@@ -5,10 +5,12 @@ import { jsPDF } from 'jspdf';
 import QRCode from 'qrcode';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const TABLE_NAME = 'SMTP_Email_Outbox';
 const TEMPLATE_DIR = path.resolve(process.cwd(), 'supabase', 'email_templates');
 const templateCache = new Map();
+let quotaBlockedUntilMs = 0;
 
 function readEnv(name, fallback = '') {
   return String(process.env[name] ?? fallback).trim();
@@ -27,6 +29,18 @@ function toPositiveInt(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function isDailySendingLimitError(error) {
+  const details = [error?.message, error?.response, error?.responseCode, error?.code]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return details.includes('daily user sending limit exceeded')
+    || details.includes('daily sending quota exceeded')
+    || details.includes('daily recipient quota exceeded')
+    || (details.includes('quota') && details.includes('exceed'));
+}
+
 function toBool(value, fallback = false) {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (!normalized) return fallback;
@@ -41,6 +55,10 @@ function toUtc8SqlTimestamp(value = new Date()) {
   // timestamp is the Philippine wall-clock time regardless of host timezone.
   const utc8Date = new Date(date.getTime() + (8 * 60 * 60 * 1000));
   return utc8Date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function quotaRetryDate(hours) {
+  return toUtc8SqlTimestamp(new Date(Date.now() + (hours * 60 * 60 * 1000)));
 }
 
 function parseDatabaseTimestamp(value) {
@@ -212,6 +230,9 @@ function htmlToText(html) {
     .replace(/&#039;/g, "'")
     .replace(/&middot;/g, '·')
     .replace(/&mdash;/g, '—')
+    .replaceAll('\u00c2\u00b7', ' · ')
+    .replaceAll('\u00e2\u20ac\u201c', '–')
+    .replaceAll('\u00e2\u20ac\u201d', '—')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -255,6 +276,188 @@ function buildTemplateContext(row, payload) {
   }
 
   return context;
+}
+
+function titleCase(value) {
+  return String(value || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function resolveEmailPresentation(row) {
+  const key = normalizeKey(row?.Notification_Type);
+  if (/(reject|cancel|declin|fail)/.test(key)) {
+    return {
+      badge: 'Decision update',
+      accent: '#b42318',
+      soft: '#fff1f0',
+      border: '#fecaca',
+    };
+  }
+  if (/(approv|accept|success|received|ready|created|released|assigned|confirm)/.test(key)) {
+    return {
+      badge: 'Confirmed',
+      accent: '#047857',
+      soft: '#ecfdf5',
+      border: '#a7f3d0',
+    };
+  }
+  if (/(pending|review|ended|transit|repair|bundl)/.test(key)) {
+    return {
+      badge: 'Status update',
+      accent: '#1d4ed8',
+      soft: '#eff6ff',
+      border: '#bfdbfe',
+    };
+  }
+  return {
+    badge: titleCase(row?.Notification_Type || 'Donivra update'),
+    accent: '#5b0b16',
+    soft: '#fff7f8',
+    border: '#ead7da',
+  };
+}
+
+function resolveAssignedPeople(context) {
+  const candidates = [
+    ['Assigned staff', context.assigned_staff_name],
+    [
+      'Assigned specialist',
+      context.assigned_specialist_name || context.specialist_name,
+    ],
+    [
+      'Reviewed by',
+      context.reviewed_by_name
+        || context.reviewer_name
+        || context.staff_reviewer_name,
+    ],
+    ['Coordinator', context.coordinator_name],
+    ['Account manager', context.manager_name],
+    ['Hospital representative', context.representative_name],
+    ['Updated by', context.cancelled_by],
+    ['Issued by', context.issued_by_name],
+  ];
+  const seen = new Set();
+  return candidates
+    .map(([label, value]) => [label, String(value || '').trim()])
+    .filter(([, value]) => value && !/^assigned donivra/i.test(value))
+    .filter(([, value]) => {
+      const key = value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function cleanEmailLines(text) {
+  const footerPattern = /^(automated|official|issued by) .*donivra/i;
+  return String(text || '')
+    .replaceAll('\r', '')
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .filter((line) => !/^(donivra|where hair becomes hope)$/i.test(line))
+    .filter((line) => !footerPattern.test(line));
+}
+
+function buildProfessionalEmailHtml({ row, subject, text, context }) {
+  const presentation = resolveEmailPresentation(row);
+  const assignedPeople = resolveAssignedPeople(context);
+  const notificationKey = normalizeKey(row?.Notification_Type);
+  const lines = cleanEmailLines(text);
+  const details = [];
+  const paragraphs = [];
+  const seenDetails = new Set();
+
+  for (const line of lines) {
+    const match = line.match(/^([^:{}]{2,42}):\s+(.+)$/);
+    if (match && !/^https?$/i.test(match[1])) {
+      const label = match[1].trim();
+      const value = match[2].trim();
+      const key = `${label.toLowerCase()}:${value.toLowerCase()}`;
+      if (!seenDetails.has(key)) {
+        seenDetails.add(key);
+        details.push([label, value]);
+      }
+    } else if (
+      line !== subject
+      && !line.startsWith('{')
+      && !line.startsWith('}')
+    ) {
+      paragraphs.push(line);
+    }
+  }
+
+  for (const [label, value] of assignedPeople) {
+    const key = `${label.toLowerCase()}:${value.toLowerCase()}`;
+    if (!seenDetails.has(key)) {
+      seenDetails.add(key);
+      details.push([label, value]);
+    }
+  }
+
+  const recipientName = String(
+    context.recipient_name
+      || context.applicant_name
+      || context.patient_name
+      || context.applicant_first_name
+      || '',
+  ).trim();
+  const greeting = recipientName ? `Hello ${recipientName},` : 'Hello,';
+  const bodyParagraphs = paragraphs
+    .filter((line) => !line.toLowerCase().startsWith('hello '))
+    .slice(0, 8);
+  const detailRows = details
+    .slice(0, 14)
+    .map(
+      ([label, value]) => `
+      <tr>
+        <td style="padding:7px 12px 7px 0;color:#64748b;font-size:13px;vertical-align:top;white-space:nowrap;">${escapeHtml(label)}</td>
+        <td style="padding:7px 0;color:#1f2937;font-size:13px;font-weight:600;line-height:1.5;">${escapeHtml(value)}</td>
+      </tr>`,
+    )
+    .join('');
+  const qrBlock = notificationKey === 'walkinregistrationreceived'
+    ? '<div style="margin:22px 0;text-align:center;"><img src="cid:walk-in-waybill-qr" width="220" height="220" alt="Donation waybill QR" style="display:block;width:220px;height:220px;margin:0 auto;border:10px solid #fff;border-radius:16px;box-shadow:0 4px 16px rgba(15,23,42,.10);"></div>'
+    : '';
+  const reference = [
+    context.event_request_id ? `ER-${context.event_request_id}` : '',
+    context.event_application_id ? `EA-${context.event_application_id}` : '',
+    context.waybill_code || '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(subject)}</title></head>
+<body style="margin:0;background:#f5f3f1;color:#1f2937;font-family:Segoe UI,Arial,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtml(subject)}</div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;background:#f5f3f1;padding:28px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%;max-width:640px;overflow:hidden;border:1px solid #e5d6d8;border-radius:18px;background:#ffffff;box-shadow:0 10px 30px rgba(66,15,22,.08);">
+        <tr><td style="height:7px;background:#5b0b16;"></td></tr>
+        <tr><td style="padding:22px 28px;border-bottom:1px solid #eee7e3;">
+          <div style="font-size:22px;font-weight:800;letter-spacing:.04em;color:#5b0b16;">DONIVRA</div>
+          <div style="margin-top:3px;font-size:12px;color:#9a6a62;">Where Hair Becomes Hope</div>
+        </td></tr>
+        <tr><td style="padding:28px;">
+          <span style="display:inline-block;padding:6px 10px;border:1px solid ${presentation.border};border-radius:999px;background:${presentation.soft};color:${presentation.accent};font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;">${escapeHtml(presentation.badge)}</span>
+          <h1 style="margin:15px 0 10px;font-size:27px;line-height:1.25;color:#1f2937;">${escapeHtml(subject)}</h1>
+          <p style="margin:0 0 16px;font-size:15px;line-height:1.7;color:#475569;">${escapeHtml(greeting)}</p>
+          ${bodyParagraphs.map((line) => `<p style="margin:0 0 12px;font-size:14px;line-height:1.7;color:#475569;">${escapeHtml(line)}</p>`).join('')}
+          ${detailRows ? `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:20px 0;border:1px solid ${presentation.border};border-radius:12px;background:${presentation.soft};"><tr><td style="padding:13px 18px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0">${detailRows}</table></td></tr></table>` : ''}
+          ${qrBlock}
+        </td></tr>
+        <tr><td style="padding:15px 28px;border-top:1px solid #eee7e3;background:#faf9f8;font-size:11px;line-height:1.5;color:#94a3b8;">Automated notification from Donivra${reference ? ` · ${escapeHtml(reference)}` : ''}</td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
 }
 
 function safeFilePart(value, fallback = 'certificate') {
@@ -432,8 +635,14 @@ function buildEmailContent(row) {
   const templateHtml = getTemplateHtml(row?.Template_Key);
   if (templateHtml) {
     const templateContext = buildTemplateContext(row, payload);
-    const html = renderTemplate(templateHtml, templateContext);
-    const text = htmlToText(html);
+    const renderedTemplate = renderTemplate(templateHtml, templateContext);
+    const text = htmlToText(renderedTemplate);
+    const html = buildProfessionalEmailHtml({
+      row,
+      subject,
+      text,
+      context: templateContext,
+    });
     return { subject, text, html };
   }
 
@@ -526,7 +735,8 @@ function buildEmailContent(row) {
   }
 
   const text = lines.join('\n');
-  const html = textToHtml(text);
+  const context = buildTemplateContext(row, payload);
+  const html = buildProfessionalEmailHtml({ row, subject, text, context });
   return { subject, text, html };
 }
 
@@ -626,6 +836,87 @@ function createSupabaseAdminClient() {
   });
 }
 
+const personNameCache = new Map();
+
+async function getPersonName(supabase, userId) {
+  const id = Number(userId || 0);
+  if (!Number.isInteger(id) || id <= 0) return '';
+  if (personNameCache.has(id)) return personNameCache.get(id);
+
+  const [{ data: account }, { data: details }] = await Promise.all([
+    supabase.from('users').select('email').eq('user_id', id).maybeSingle(),
+    supabase
+      .from('user_details')
+      .select('first_name,middle_name,last_name,suffix')
+      .eq('user_id', id)
+      .maybeSingle(),
+  ]);
+  const name = [
+    details?.first_name,
+    details?.middle_name,
+    details?.last_name,
+    details?.suffix,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' ') || String(account?.email || '').trim();
+  personNameCache.set(id, name);
+  return name;
+}
+
+async function enrichEmailRow(supabase, row) {
+  const payload = {
+    ...(row?.Payload && typeof row.Payload === 'object' ? row.Payload : {}),
+  };
+  const sourceTable = String(row?.Source_Table || '').trim();
+  const sourceId = Number(row?.Source_ID || 0);
+
+  try {
+    if (sourceTable === 'Event_Requests' && sourceId > 0) {
+      const { data: request } = await supabase
+        .from('Event_Requests')
+        .select('Assigned_Staff_User_ID,Cancelled_Assigned_Staff_User_ID')
+        .eq('Event_Request_ID', sourceId)
+        .maybeSingle();
+      const staffId = request?.Assigned_Staff_User_ID
+        || request?.Cancelled_Assigned_Staff_User_ID;
+      payload.assigned_staff_name = payload.assigned_staff_name
+        || await getPersonName(supabase, staffId);
+    }
+
+    if (sourceTable === 'Event_Applications' && sourceId > 0) {
+      const { data: application } = await supabase
+        .from('Event_Applications')
+        .select('Staff_Reviewer_User_ID')
+        .eq('Event_Application_ID', sourceId)
+        .maybeSingle();
+      payload.reviewed_by_name = payload.reviewed_by_name
+        || await getPersonName(supabase, application?.Staff_Reviewer_User_ID);
+    }
+
+    const linkedEventRequestId = Number(
+      payload.event_request_id || payload.linked_event_request_id || 0,
+    );
+    if (!payload.assigned_staff_name && linkedEventRequestId > 0) {
+      const { data: request } = await supabase
+        .from('Event_Requests')
+        .select('Assigned_Staff_User_ID,Cancelled_Assigned_Staff_User_ID')
+        .eq('Event_Request_ID', linkedEventRequestId)
+        .maybeSingle();
+      payload.assigned_staff_name = await getPersonName(
+        supabase,
+        request?.Assigned_Staff_User_ID || request?.Cancelled_Assigned_Staff_User_ID,
+      );
+    }
+  } catch (error) {
+    console.warn(
+      `[SMTP] Could not enrich personnel for row ${row?.SMTP_Email_Outbox_ID}: ${error?.message || error}`,
+    );
+  }
+
+  return { ...row, Payload: payload };
+}
+
 async function claimRow(supabase, rowId) {
   const { data, error } = await supabase
     .from(TABLE_NAME)
@@ -688,8 +979,16 @@ async function processBatch({
   batchSize,
   maxAttempts,
   retryBaseMinutes,
+  quotaRetryHours,
   dryRun,
 }) {
+  if (quotaBlockedUntilMs > Date.now()) {
+    console.log(
+      `[SMTP] Sender quota cooldown is active until ${new Date(quotaBlockedUntilMs).toISOString()}.`,
+    );
+    return { processed: 0, sent: 0, failed: 0, skipped: 0 };
+  }
+
   const nowIso = toUtc8SqlTimestamp();
 
   let query = supabase
@@ -712,7 +1011,7 @@ async function processBatch({
 
   const rows = Array.isArray(queuedRows) ? queuedRows : [];
   if (rows.length === 0) {
-    console.log(`[SMTP] No pending rows at ${new Date().toISOString()}.`);
+    console.log(`[SMTP] No queued rows are due at ${new Date().toISOString()}.`);
     return { processed: 0, sent: 0, failed: 0, skipped: 0 };
   }
 
@@ -738,10 +1037,11 @@ async function processBatch({
     }
 
     const attemptCount = Number(claimedRow.Attempt_Count || 0) + 1;
-    const { subject, text, html } = buildEmailContent(claimedRow);
+    const enrichedRow = await enrichEmailRow(supabase, claimedRow);
+    const { subject, text, html } = buildEmailContent(enrichedRow);
 
     try {
-      const attachments = await buildEmailAttachments(claimedRow);
+      const attachments = await buildEmailAttachments(enrichedRow);
       if (dryRun) {
         console.log(`[SMTP][DRY-RUN] Would send to ${claimedRow.Recipient_Email} | ${subject} | ${attachments.length} attachment(s)`);
       } else {
@@ -767,15 +1067,20 @@ async function processBatch({
       sent += 1;
       console.log(`[SMTP] Sent row ${claimedRow.SMTP_Email_Outbox_ID} to ${claimedRow.Recipient_Email}`);
     } catch (error) {
-      const nextStatus = maxAttempts > 0 && attemptCount >= maxAttempts ? 'Cancelled' : 'Failed';
-      const nextAttemptAt = nextStatus === 'Cancelled'
-        ? toUtc8SqlTimestamp()
-        : nextAttemptDate(attemptCount, retryBaseMinutes);
+      const quotaLimited = isDailySendingLimitError(error);
+      const nextStatus = quotaLimited
+        ? 'Pending'
+        : (maxAttempts > 0 && attemptCount >= maxAttempts ? 'Cancelled' : 'Failed');
+      const nextAttemptAt = quotaLimited
+        ? quotaRetryDate(quotaRetryHours)
+        : (nextStatus === 'Cancelled'
+          ? toUtc8SqlTimestamp()
+          : nextAttemptDate(attemptCount, retryBaseMinutes));
 
       try {
         await updateRowAfterSend(supabase, claimedRow, {
           Status: nextStatus,
-          Attempt_Count: attemptCount,
+          Attempt_Count: quotaLimited ? Number(claimedRow.Attempt_Count || 0) : attemptCount,
           Last_Error: String(error?.message || error || 'SMTP send failed').slice(0, 4000),
           Next_Attempt_At: nextAttemptAt,
         });
@@ -785,6 +1090,25 @@ async function processBatch({
 
       failed += 1;
       console.error(`[SMTP] Failed row ${claimedRow.SMTP_Email_Outbox_ID}: ${error?.message || error}`);
+      if (quotaLimited) {
+        quotaBlockedUntilMs = Date.now() + (quotaRetryHours * 60 * 60 * 1000);
+        const { error: deferError } = await supabase
+          .from(TABLE_NAME)
+          .update({
+            Status: 'Pending',
+            Next_Attempt_At: nextAttemptAt,
+            Updated_At: toUtc8SqlTimestamp(),
+          })
+          .in('Status', ['Pending', 'Failed'])
+          .lte('Next_Attempt_At', toUtc8SqlTimestamp());
+        if (deferError) {
+          console.error(
+            `[SMTP] Could not defer the remaining quota-blocked queue: ${deferError.message}`,
+          );
+        }
+        console.error(`[SMTP] Daily sender quota reached. Remaining messages stay queued until ${nextAttemptAt}.`);
+        break;
+      }
     }
   }
 
@@ -804,6 +1128,7 @@ async function run() {
   const batchSize = toPositiveInt(readEnv('SMTP_BATCH_SIZE', '25'), 25);
   const maxAttempts = toPositiveInt(readEnv('SMTP_MAX_ATTEMPTS', '5'), 5);
   const retryBaseMinutes = toPositiveInt(readEnv('SMTP_RETRY_BASE_MINUTES', '5'), 5);
+  const quotaRetryHours = toPositiveInt(readEnv('SMTP_QUOTA_RETRY_HOURS', '24'), 24);
   const fromEmail = requireEnv('SMTP_FROM_EMAIL', readEnv('SMTP_USER'));
   const fromName = readEnv('SMTP_FROM_NAME', 'Donivra');
   const replyTo = readEnv('SMTP_REPLY_TO', '');
@@ -835,6 +1160,7 @@ async function run() {
       batchSize,
       maxAttempts,
       retryBaseMinutes,
+      quotaRetryHours,
       dryRun,
     });
 
@@ -859,8 +1185,15 @@ async function run() {
   }
 }
 
-run().catch((error) => {
-  console.error(`[SMTP] Fatal error: ${error?.message || error}`);
-  process.exit(1);
-});
+const isMainModule = process.argv[1]
+  && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (isMainModule) {
+  run().catch((error) => {
+    console.error(`[SMTP] Fatal error: ${error?.message || error}`);
+    process.exit(1);
+  });
+}
+
+export { buildEmailContent, buildProfessionalEmailHtml, isDailySendingLimitError };
 

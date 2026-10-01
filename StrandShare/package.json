@@ -55,6 +55,7 @@
     "smtp:trigger:server": "node scripts/smtpTriggerServer.mjs",
     "smtp:worker:once": "node scripts/processSmtpOutbox.mjs",
     "smtp:worker:loop": "node scripts/processSmtpOutbox.mjs --loop",
+    "smtp:templates:verify": "node scripts/verifySmtpTemplates.mjs",
     "smtp:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-smtp-worker.ps1 Start",
     "smtp:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-smtp-worker.ps1 Stop",
     "smtp:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manage-smtp-worker.ps1 Restart",

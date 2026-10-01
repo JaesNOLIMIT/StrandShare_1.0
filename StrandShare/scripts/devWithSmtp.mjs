@@ -48,6 +48,5 @@ run('web', 'npm', ['run', 'start:web'], { required: true });
 // SMTP is a Windows sign-in worker managed independently of localhost.
 // Starting the React dev server only ensures that worker is available.
 run('smtp-worker', 'npm', ['run', 'smtp:start'], { required: false });
-// Keep only the lightweight controller available. The Specialist starts the
-// heavy local models from the Wig Catalog page when they are actually needed.
+// The lightweight controller keeps the local AI worker ready by default.
 run('wig-catalog-ai-controller', 'npm', ['run', 'ai:controller:start'], { required: false });

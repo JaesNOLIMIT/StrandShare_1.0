@@ -121,7 +121,9 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
       const submissionsResult = submissionIds.length
         ? await supabase
           .from('Hair_Submissions')
-          .select('Submission_ID, User_ID, Status, Bundle_ID, Event_Request_ID, Event_Attendee_ID, From_Event')
+          .select(
+            'Submission_ID, User_ID, Status, Bundle_ID, Event_Request_ID, Event_Attendee_ID, From_Event, Waybill_Code',
+          )
           .in('Submission_ID', submissionIds)
         : { data: [], error: null };
       if (submissionsResult.error) throw submissionsResult.error;
@@ -230,7 +232,9 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
           Donor_User_ID: donorUserId || row.Donor_User_ID,
           Event_Request_ID: eventRequestId || row.Event_Request_ID,
           Event_Attendee_ID: eventAttendeeId || row.Event_Attendee_ID,
-          Waybill_Code: String(attendee?.waybill_code || '').trim().toUpperCase(),
+          Waybill_Code: String(
+            submission?.Waybill_Code || attendee?.waybill_code || '',
+          ).trim().toUpperCase(),
           attendee,
           detail: detailsBySubmission.get(Number(row.Submission_ID)) || null,
           event: eventsById.get(eventRequestId) || null,
@@ -499,7 +503,9 @@ export default function CutHairInventoryPage({ isActivePage = true }) {
                       {row.Waybill_Code ? (
                         <p className="whitespace-nowrap font-mono text-xs font-bold text-slate-900">{row.Waybill_Code}</p>
                       ) : (
-                        <p className="text-xs text-slate-400">{row.Source_Type === 'Non-Event' ? 'Not issued' : 'Unavailable'}</p>
+                        <p className="text-xs text-slate-400">
+                          Waybill unavailable
+                        </p>
                       )}
                     </td>
                     <td className="px-4 py-3">

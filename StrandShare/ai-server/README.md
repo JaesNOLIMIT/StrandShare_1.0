@@ -74,10 +74,12 @@ This creates:
 - **Donivra AI On** and **Donivra AI Off** desktop shortcuts; and
 - the controller endpoint at `127.0.0.1:8010` used by the Specialist page.
 
-The controller does not load AI models and does not use the GPU. The heavy AI
-worker starts only when the Specialist chooses **Turn AI On** in Wig Catalog
-Studio (or uses the desktop shortcut). It shuts down automatically after 15
-minutes without AI activity and releases its GPU and RAM.
+The controller starts the AI worker automatically at Windows sign-in. The model
+may take a little time to warm up, but Wig Catalog Studio does not need a first
+click to start it. **Turn AI Off** stops the worker; it stays off until you turn
+it back on or restart the controller. This uses GPU and RAM while running. Set
+`AI_ALWAYS_ON=0` in `ai-server/.env` to restore the optional idle shutdown
+(`AI_IDLE_TIMEOUT_MINUTES`).
 
 The deployed Vercel page calls these loopback endpoints through the browser.
 Nothing is hosted in the cloud, and the AI is unavailable while this computer
@@ -110,8 +112,8 @@ Expected response includes:
 }
 ```
 
-`npm start` ensures the lightweight controller is available but leaves the
-heavy AI worker under the Specialist's explicit On/Off control.
+`npm start` ensures the controller is available; the controller starts the
+worker unless it was explicitly turned off during this controller session.
 
 ## API
 

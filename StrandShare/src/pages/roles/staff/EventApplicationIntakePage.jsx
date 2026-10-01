@@ -102,6 +102,25 @@ function statusPillClass(value) {
   return 'border border-slate-200 bg-slate-100 text-slate-700';
 }
 
+const APPLICATION_STATUS_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'pendingstaffreview', label: 'Pending Staff' },
+  { key: 'pendingadmindecision', label: 'Pending Admin' },
+  { key: 'appealed', label: 'Appealed' },
+  { key: 'approved', label: 'Approved' },
+  { key: 'rejected', label: 'Rejected' },
+  { key: 'cancelled', label: 'Cancelled' },
+  { key: 'withdrawn', label: 'Withdrawn' },
+  { key: 'closed', label: 'Closed' },
+];
+
+function canonicalApplicationStatus(value) {
+  const key = normalizeStatus(value);
+  if (key === 'pendingadminapproval') return 'pendingadmindecision';
+  if (key === 'canceled') return 'cancelled';
+  return key || 'other';
+}
+
 function normalizeEventVisibility(value) {
   const key = String(value || '')
     .trim()
@@ -709,7 +728,7 @@ function DetailSection({ icon: Icon, title, subtitle, children, theme }) {
           <p className="text-xs" style={{ color: theme?.secondaryTextColor }}>{subtitle}</p>
         </div>
       </div>
-      <div className="rounded-2xl border bg-white p-6 md:p-8" style={{ borderColor: `${theme?.secondaryColor || '#64748b'}38` }}>{children}</div>
+      <div className="min-w-0 rounded-2xl border bg-white p-4 sm:p-6 md:p-8" style={{ borderColor: `${theme?.secondaryColor || '#64748b'}38` }}>{children}</div>
     </section>
   );
 }
@@ -732,6 +751,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
   const [rows, setRows] = useState([]);
   const [eventRequestsById, setEventRequestsById] = useState({});
   const [selectedId, setSelectedId] = useState(null);
+  const [mobileView, setMobileView] = useState('queue');
   const [privateIdUrl, setPrivateIdUrl] = useState('');
   const [staffUserId, setStaffUserId] = useState(userProfile?.user_id || null);
   const [staffNotes, setStaffNotes] = useState('');
@@ -837,10 +857,16 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
     if (!pageScrollContainer) return undefined;
 
     const previousOverflow = pageScrollContainer.style.overflow;
-    pageScrollContainer.scrollTop = 0;
-    pageScrollContainer.style.overflow = 'hidden';
+    const desktopQuery = window.matchMedia('(min-width: 1024px)');
+    const syncOverflow = () => {
+      pageScrollContainer.style.overflow = desktopQuery.matches ? 'hidden' : previousOverflow;
+    };
+    if (desktopQuery.matches) pageScrollContainer.scrollTop = 0;
+    syncOverflow();
+    desktopQuery.addEventListener('change', syncOverflow);
 
     return () => {
+      desktopQuery.removeEventListener('change', syncOverflow);
       pageScrollContainer.style.overflow = previousOverflow;
     };
   }, [isActivePage]);
@@ -997,9 +1023,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
   }, [selectedId]);
 
   const queueRows = useMemo(() => {
-    const ALLOWED = ['pendingstaffreview', 'pendingadmindecision', 'rejected', 'appealed', 'approved', 'cancelled'];
     return rows
-      .filter((row) => ALLOWED.includes(normalizeStatus(row.Status)))
       .slice()
       .sort((a, b) => {
         const aTime = new Date(a.Created_At || 0).getTime();
@@ -1007,6 +1031,19 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
         return aTime - bTime;
       });
   }, [rows]);
+
+  const applicationStatusFilters = useMemo(() => {
+    const knownKeys = new Set(APPLICATION_STATUS_FILTERS.map(({ key }) => key));
+    const additionalFilters = [];
+    queueRows.forEach((row) => {
+      const key = canonicalApplicationStatus(row.Status);
+      if (knownKeys.has(key)) return;
+      knownKeys.add(key);
+      additionalFilters.push({ key, label: statusLabel(row.Status) || 'Other' });
+    });
+    additionalFilters.sort((left, right) => left.label.localeCompare(right.label));
+    return [...APPLICATION_STATUS_FILTERS, ...additionalFilters];
+  }, [queueRows]);
 
   // Keep selection valid as realtime inserts/deletes change the queue.
   useEffect(() => {
@@ -1036,7 +1073,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
   const statusCounts = useMemo(() => {
     const counts = { all: queueRows.length };
     queueRows.forEach((row) => {
-      const key = normalizeStatus(row.Status);
+      const key = canonicalApplicationStatus(row.Status);
       counts[key] = (counts[key] || 0) + 1;
     });
     return counts;
@@ -1045,7 +1082,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
   const visibleRows = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     return queueRows.filter((row) => {
-      if (statusFilter !== 'all' && normalizeStatus(row.Status) !== statusFilter) return false;
+      if (statusFilter !== 'all' && canonicalApplicationStatus(row.Status) !== statusFilter) return false;
       if (
         selectedCalendarDate
         && !applicationProgramDateKeys(row).includes(selectedCalendarDate)
@@ -1650,7 +1687,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
       )}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[360px,minmax(0,1fr)]">
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <section className={`${mobileView === 'queue' ? 'flex' : 'hidden'} min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm lg:flex`}>
           <div className="space-y-3 border-b border-slate-200 px-4 py-3">
             <div className="flex items-center justify-between">
               <h2 className="flex items-center gap-2 text-sm font-bold text-slate-800">
@@ -1698,15 +1735,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
             </div>
 
             <div className="flex flex-wrap gap-1.5">
-              {[
-                { key: 'all', label: 'All' },
-                { key: 'pendingstaffreview', label: 'Pending Staff' },
-                { key: 'pendingadmindecision', label: 'Pending Admin' },
-                { key: 'approved', label: 'Approved' },
-                { key: 'rejected', label: 'Rejected' },
-                { key: 'appealed', label: 'Appealed' },
-                { key: 'cancelled', label: 'Cancelled' },
-              ].map((filter) => {
+              {applicationStatusFilters.map((filter) => {
                 const isActive = statusFilter === filter.key;
                 const count = statusCounts[filter.key] || 0;
                 return (
@@ -1789,7 +1818,11 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
                     <li key={row.Event_Application_ID}>
                       <button
                         type="button"
-                        onClick={() => setSelectedId(row.Event_Application_ID)}
+                        onClick={() => {
+                          setSelectedId(row.Event_Application_ID);
+                          setMobileView('details');
+                          pageRootRef.current?.parentElement?.scrollTo?.({ top: 0 });
+                        }}
                         className={`flex w-full items-start gap-3 px-4 py-3.5 text-left transition ${
                           isActive ? 'bg-teal-50/60' : 'hover:bg-slate-50'
                         }`}
@@ -1830,7 +1863,15 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
           </div>
         </section>
 
-        <section className="space-y-4 lg:min-h-0 lg:overflow-y-auto lg:pb-1 lg:pr-1">
+        <section className={`${mobileView === 'details' ? 'block' : 'hidden'} min-w-0 space-y-4 lg:block lg:min-h-0 lg:overflow-y-auto lg:pb-1 lg:pr-1`}>
+          <button
+            type="button"
+            onClick={() => setMobileView('queue')}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold lg:hidden"
+            style={{ color: primaryColor }}
+          >
+            <ChevronLeft size={16} /> Applications
+          </button>
           {!selectedRow ? (
             <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white px-6 py-20 text-center shadow-sm">
               <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-400">
@@ -1846,17 +1887,17 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
               {/* Hero */}
               <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                 <div className="h-1.5 w-full" style={{ background: `linear-gradient(90deg, ${primaryColor}, ${primaryColor}99)` }} />
-                <div className="flex flex-wrap items-start justify-between gap-4 px-5 py-4">
-                  <div className="flex items-start gap-3">
+                <div className="flex flex-wrap items-start justify-between gap-4 px-4 py-4 sm:px-5">
+                  <div className="flex min-w-0 items-start gap-3">
                     <div
                       className="flex h-12 w-12 flex-none items-center justify-center rounded-full text-sm font-bold text-white"
                       style={{ backgroundColor: primaryColor }}
                     >
                       {applicantInitials(selectedRow)}
                     </div>
-                    <div>
+                    <div className="min-w-0">
                       <p className="text-[10px] font-bold uppercase tracking-[0.14em]" style={{ color: theme?.secondaryTextColor || '#64748b' }}>Program application</p>
-                      <h2 className="text-xl font-bold text-slate-900">{selectedRow.Event_Name || 'Untitled Program'}</h2>
+                      <h2 className="break-words text-lg font-bold text-slate-900 sm:text-xl">{selectedRow.Event_Name || 'Untitled Program'}</h2>
                       <p className="mt-0.5 text-sm font-medium text-slate-700">{applicantFullName(selectedRow)}</p>
                       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600">
                         <span>{normalizeEventVisibility(selectedRow.Event_Visibility)}</span>
@@ -1951,7 +1992,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
               {renderApplicationDetails()}
 
               {/* Staff Notes - editable when not locked, read-only otherwise */}
-              <div className="mx-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm md:mx-8">
+                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:mx-6 sm:p-5 md:mx-8">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <FileText size={15} className="text-slate-500" />
@@ -2026,7 +2067,7 @@ export default function EventApplicationIntakePage({ userProfile, isActivePage =
 
               {/* Action buttons - hidden when locked */}
               {!isLockedFromActions && (
-                <div className="mx-6 flex flex-wrap items-center justify-end gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:mx-8">
+                <div className="flex flex-wrap items-center justify-end gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:mx-6 md:mx-8">
                   <button
                     type="button"
                     onClick={handleSaveNotes}

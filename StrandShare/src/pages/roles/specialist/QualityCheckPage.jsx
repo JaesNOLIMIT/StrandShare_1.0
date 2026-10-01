@@ -1,5 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   AlertCircle,
   Camera,
@@ -7,53 +13,72 @@ import {
   CheckCircle2,
   Image as ImageIcon,
   Loader2,
-  PackageOpen,
   ScanLine,
   XCircle,
-} from 'lucide-react';
-import jsQR from 'jsqr';
-import { useTheme } from '../../../context/ThemeContext';
-import { isSupabaseConfigured, supabase } from '../../../lib/supabaseClient';
-import useRealtimeRefresh from '../../../hooks/useRealtimeRefresh';
-import PageHeaderActions from '../../../components/PageHeaderActions';
-import WaybillScanResult from '../../../components/scanning/WaybillScanResult';
+} from "lucide-react";
+import jsQR from "jsqr";
+import { useTheme } from "../../../context/ThemeContext";
+import { isSupabaseConfigured, supabase } from "../../../lib/supabaseClient";
+import useRealtimeRefresh from "../../../hooks/useRealtimeRefresh";
+import PageHeaderActions from "../../../components/PageHeaderActions";
 import {
   HAIR_SUBMISSION_STATUS,
   WAYBILL_CODE_LENGTH,
   isValidWaybillCode,
   normalizeWaybillCodeInput,
   parseWaybillQrPayload,
-} from '../../../lib/hairSubmissionWorkflow';
+} from "../../../lib/hairSubmissionWorkflow";
 
-const HAIR_SUBMISSIONS_TABLE = 'Hair_Submissions';
-const HAIR_SUBMISSION_DETAILS_TABLE = 'Hair_Submission_Details';
-const HAIR_SUBMISSION_IMAGES_TABLE = 'Hair_Submission_Images';
-const HAIR_SUBMISSION_LOGISTICS_TABLE = 'Hair_Submission_Logistics';
-const AI_SCREENINGS_TABLE = 'AI_Screenings';
-const USER_DETAILS_TABLE = 'user_details';
-const PROFILE_PICTURES_BUCKET = 'profile_pictures';
-const HAIR_SUBMISSIONS_BUCKET = 'hair-submissions';
+const HAIR_SUBMISSIONS_TABLE = "Hair_Submissions";
+const HAIR_SUBMISSION_DETAILS_TABLE = "Hair_Submission_Details";
+const HAIR_SUBMISSION_IMAGES_TABLE = "Hair_Submission_Images";
+const HAIR_SUBMISSION_LOGISTICS_TABLE = "Hair_Submission_Logistics";
+const AI_SCREENINGS_TABLE = "AI_Screenings";
+const SALON_APPOINTMENTS_TABLE = "Salon_Donation_Appointments";
+const USER_DETAILS_TABLE = "user_details";
+const PROFILE_PICTURES_BUCKET = "profile_pictures";
+const HAIR_SUBMISSIONS_BUCKET = "hair-submissions";
 const SCAN_DEBOUNCE_MS = 2500;
-const QUALITY_SCAN_OUTCOMES = [
-  'Received independent hair donation: submission details load and await Approve or Reject.',
-  'Approved: the independent donation becomes Available for specialist Bundling.',
-  'Rejected: the quality result is Rejected; it is not recorded as a donor cancellation.',
-  'Already approved or rejected: the final locked result is shown without changing it.',
-  'Only Hair_Submissions.Waybill_Code is accepted on this page.',
-  'Not received, already bundled, cancelled, unknown, or malformed waybill: scan is blocked with the exact reason.',
+const HAIR_COLOR_OPTIONS = [
+  "Black",
+  "Dark Brown",
+  "Brown",
+  "Light Brown",
+  "Blonde",
+  "Red / Auburn",
+  "Gray",
+  "White",
+  "Mixed / Other",
+];
+const HAIR_PATTERN_OPTIONS = [
+  "Straight",
+  "Wavy",
+  "Curly",
+  "Coily / Kinky",
+  "Mixed",
+];
+const HAIR_DENSITY_OPTIONS = ["Light", "Medium", "Heavy"];
+const HAIR_CONDITION_OPTIONS = [
+  "No Visible Concerns Detected",
+  "Dry",
+  "Brittle",
+  "Damaged",
+  "Split Ends",
+  "Tangled / Matted",
+  "Other",
 ];
 
 const EMPTY_DETAIL_DRAFT = Object.freeze({
-  declaredLength: '',
-  declaredColor: '',
-  declaredTexture: '',
-  declaredDensity: '',
-  declaredCondition: '',
+  declaredLength: "",
+  declaredColor: "",
+  declaredTexture: "",
+  declaredDensity: "",
+  declaredCondition: "",
   isChemicallyTreated: false,
   isColored: false,
   isBleached: false,
   isRebonded: false,
-  detailNotes: '',
+  detailNotes: "",
 });
 
 const ACTIVE_STATUSES = [
@@ -61,12 +86,15 @@ const ACTIVE_STATUSES = [
   HAIR_SUBMISSION_STATUS.CUT,
   HAIR_SUBMISSION_STATUS.AVAILABLE,
   HAIR_SUBMISSION_STATUS.CANCELLED,
-  'Rejected',
+  "Rejected",
 ];
 
-function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
-  const safeAlpha = Math.max(0, Math.min(1, Number.isFinite(alpha) ? alpha : 1));
-  const input = String(colorValue || '').trim();
+function withColorAlpha(colorValue, alpha, fallback = "#0275d8") {
+  const safeAlpha = Math.max(
+    0,
+    Math.min(1, Number.isFinite(alpha) ? alpha : 1),
+  );
+  const input = String(colorValue || "").trim();
   const hexMatch = input.match(/^#([0-9a-f]{6})$/i);
   if (hexMatch) {
     const r = parseInt(hexMatch[1].slice(0, 2), 16);
@@ -74,98 +102,165 @@ function withColorAlpha(colorValue, alpha, fallback = '#0275d8') {
     const b = parseInt(hexMatch[1].slice(4, 6), 16);
     return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
   }
-  return withColorAlpha(fallback, safeAlpha, '#0275d8');
+  return withColorAlpha(fallback, safeAlpha, "#0275d8");
 }
 
 function buildFullName(first, middle, last, suffix) {
   return [first, middle, last, suffix]
-    .map((value) => String(value || '').trim())
+    .map((value) => String(value || "").trim())
     .filter(Boolean)
-    .join(' ')
+    .join(" ")
     .trim();
 }
 
+function optionsIncludingCurrent(options, currentValue) {
+  const current = String(currentValue || "").trim();
+  if (
+    !current ||
+    options.some((option) => option.toLowerCase() === current.toLowerCase())
+  ) {
+    return options;
+  }
+  return [current, ...options];
+}
+
 function statusBadgeStyle(status, primaryColor, tertiaryColor) {
-  const key = String(status || '').toLowerCase().replace(/[_\s-]+/g, '');
-  if (key === 'cut' || key === 'available' || key === 'approved') {
-    return { backgroundColor: withColorAlpha(tertiaryColor, 0.16), color: tertiaryColor, borderColor: withColorAlpha(tertiaryColor, 0.4) };
+  const key = String(status || "")
+    .toLowerCase()
+    .replace(/[_\s-]+/g, "");
+  if (key === "cut" || key === "available" || key === "approved") {
+    return {
+      backgroundColor: withColorAlpha(tertiaryColor, 0.16),
+      color: tertiaryColor,
+      borderColor: withColorAlpha(tertiaryColor, 0.4),
+    };
   }
-  if (key === 'cancelled' || key === 'rejected') {
-    return { backgroundColor: '#fef2f2', color: '#b91c1c', borderColor: '#fecaca' };
+  if (key === "cancelled" || key === "rejected") {
+    return {
+      backgroundColor: "#fef2f2",
+      color: "#b91c1c",
+      borderColor: "#fecaca",
+    };
   }
-  if (key === 'pending') {
-    return { backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' };
+  if (key === "pending") {
+    return {
+      backgroundColor: "#fffbeb",
+      color: "#b45309",
+      borderColor: "#fde68a",
+    };
   }
-  return { backgroundColor: '#f1f5f9', color: '#475569', borderColor: '#cbd5e1' };
+  return {
+    backgroundColor: "#f1f5f9",
+    color: "#475569",
+    borderColor: "#cbd5e1",
+  };
 }
 
 function logisticsIsReceived(row) {
   if (!row) return false;
-  const type = String(row.Logistics_Type || '').toLowerCase();
-  const dropoff = String(row.Dropoff_Status || '').toLowerCase().replace(/[_\s-]+/g, '');
-  const shipment = String(row.Shipment_Status || '').toLowerCase().replace(/[_\s-]+/g, '');
-  if (type.includes('walk-in') || type.includes('dropoff')) {
-    return dropoff === 'completed' && Boolean(row.Completed_At || row.Received_At);
+  const type = String(row.Logistics_Type || "").toLowerCase();
+  const dropoff = String(row.Dropoff_Status || "")
+    .toLowerCase()
+    .replace(/[_\s-]+/g, "");
+  const shipment = String(row.Shipment_Status || "")
+    .toLowerCase()
+    .replace(/[_\s-]+/g, "");
+  if (type.includes("walk-in") || type.includes("dropoff")) {
+    return (
+      dropoff === "completed" && Boolean(row.Completed_At || row.Received_At)
+    );
   }
-  return Boolean(row.Received_At) || ['received', 'completed', 'delivered'].includes(shipment);
+  return (
+    Boolean(row.Received_At) ||
+    ["received", "completed", "delivered"].includes(shipment)
+  );
 }
 
 function formatDateTime(value) {
-  if (!value) return 'Date unavailable';
+  if (!value) return "Date unavailable";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Date unavailable';
+  if (Number.isNaN(date.getTime())) return "Date unavailable";
   return date.toLocaleString([], {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
   });
 }
 
 function isAbsoluteUrl(value) {
-  return /^https?:\/\//i.test(String(value || '').trim());
+  return /^https?:\/\//i.test(String(value || "").trim());
 }
 
 function humanizeLabel(value) {
-  const text = String(value || '')
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
+  const text = String(value || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
-  if (!text) return 'Not provided';
+  if (!text) return "Not provided";
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function normalizeComparisonValue(value) {
-  return String(value ?? '').trim().toLowerCase().replace(/[_\s-]+/g, '');
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s-]+/g, "");
 }
 
 function calculateLiveAiAccuracy(screening, draft) {
-  if (!screening) return { comparable: 0, matched: 0, changed: [], aiPercent: 0, humanPercent: 0 };
+  if (!screening)
+    return {
+      comparable: 0,
+      matched: 0,
+      changed: [],
+      aiPercent: 0,
+      humanPercent: 0,
+    };
   const comparisons = [
-    ['length', screening.Estimated_Length, draft.declaredLength, (ai, human) => String(human ?? '').trim() !== '' && Number(ai) === Number(human)],
-    ['color', screening.Detected_Color, draft.declaredColor],
-    ['texture', screening.Detected_Texture, draft.declaredTexture],
-    ['density', screening.Detected_Density, draft.declaredDensity],
-    ['condition', screening.Detected_Condition, draft.declaredCondition],
-  ].filter(([, ai]) => ai != null && String(ai).trim() !== '');
-  const changed = comparisons.filter(([, ai, human, matcher]) => (
-    matcher ? !matcher(ai, human) : normalizeComparisonValue(ai) !== normalizeComparisonValue(human)
-  )).map(([field]) => field);
+    [
+      "length",
+      screening.Estimated_Length,
+      draft.declaredLength,
+      (ai, human) =>
+        String(human ?? "").trim() !== "" && Number(ai) === Number(human),
+    ],
+    ["color", screening.Detected_Color, draft.declaredColor],
+    ["texture", screening.Detected_Texture, draft.declaredTexture],
+    ["density", screening.Detected_Density, draft.declaredDensity],
+    ["condition", screening.Detected_Condition, draft.declaredCondition],
+  ].filter(([, ai]) => ai != null && String(ai).trim() !== "");
+  const changed = comparisons
+    .filter(([, ai, human, matcher]) =>
+      matcher
+        ? !matcher(ai, human)
+        : normalizeComparisonValue(ai) !== normalizeComparisonValue(human),
+    )
+    .map(([field]) => field);
   const comparable = comparisons.length;
   const matched = comparable - changed.length;
   const aiPercent = comparable ? (matched / comparable) * 100 : 0;
-  return { comparable, matched, changed, aiPercent, humanPercent: comparable ? 100 - aiPercent : 0 };
+  return {
+    comparable,
+    matched,
+    changed,
+    aiPercent,
+    humanPercent: comparable ? 100 - aiPercent : 0,
+  };
 }
 
 function draftFromAiScreening(screening) {
   return {
     ...EMPTY_DETAIL_DRAFT,
-    declaredLength: screening?.Estimated_Length == null ? '' : String(screening.Estimated_Length),
-    declaredColor: String(screening?.Detected_Color || ''),
-    declaredTexture: String(screening?.Detected_Texture || ''),
-    declaredDensity: String(screening?.Detected_Density || ''),
-    declaredCondition: String(screening?.Detected_Condition || ''),
+    declaredLength:
+      screening?.Estimated_Length == null
+        ? ""
+        : String(screening.Estimated_Length),
+    declaredColor: String(screening?.Detected_Color || ""),
+    declaredTexture: String(screening?.Detected_Texture || ""),
+    declaredDensity: String(screening?.Detected_Density || ""),
+    declaredCondition: String(screening?.Detected_Condition || ""),
   };
 }
 
@@ -184,16 +279,18 @@ function detailDraftWithAiFallback(detail, screening) {
 }
 
 function formatAnswerValue(value) {
-  if (value === null || value === undefined || value === '') return 'Not provided';
-  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-  if (Array.isArray(value)) return value.length ? value.map(formatAnswerValue).join(', ') : 'None';
-  if (typeof value === 'object') return 'Recorded';
-  return humanizeLabel(value).replace(/(\d)\s+(\d)/g, '$1-$2');
+  if (value === null || value === undefined || value === "")
+    return "Not provided";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value))
+    return value.length ? value.map(formatAnswerValue).join(", ") : "None";
+  if (typeof value === "object") return "Recorded";
+  return humanizeLabel(value).replace(/(\d)\s+(\d)/g, "$1-$2");
 }
 
 function splitLeadingJson(rawValue) {
-  const raw = String(rawValue || '').trim();
-  if (!raw.startsWith('{')) return { jsonText: '', trailingText: raw };
+  const raw = String(rawValue || "").trim();
+  if (!raw.startsWith("{")) return { jsonText: "", trailingText: raw };
 
   let depth = 0;
   let insideString = false;
@@ -204,7 +301,7 @@ function splitLeadingJson(rawValue) {
     if (insideString) {
       if (isEscaped) {
         isEscaped = false;
-      } else if (character === '\\') {
+      } else if (character === "\\") {
         isEscaped = true;
       } else if (character === '"') {
         insideString = false;
@@ -213,9 +310,9 @@ function splitLeadingJson(rawValue) {
     }
     if (character === '"') {
       insideString = true;
-    } else if (character === '{') {
+    } else if (character === "{") {
       depth += 1;
-    } else if (character === '}') {
+    } else if (character === "}") {
       depth -= 1;
       if (depth === 0) {
         return {
@@ -226,44 +323,57 @@ function splitLeadingJson(rawValue) {
     }
   }
 
-  return { jsonText: '', trailingText: raw };
+  return { jsonText: "", trailingText: raw };
 }
 
 function normalizeActivityNote(value) {
-  const raw = String(value || '').replace(/\s+/g, ' ').trim();
+  const raw = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!raw) return null;
 
-  const isDonorCancellation = /(?:status changed to cancelled by donor|donation cancelled by donor)/i.test(raw);
+  const isDonorCancellation =
+    /(?:status changed to cancelled by donor|donation cancelled by donor)/i.test(
+      raw,
+    );
   if (isDonorCancellation) {
     const reasonMatch = raw.match(/\breason:\s*(.+)$/i);
-    const rawReason = String(reasonMatch?.[1] || '')
-      .replace(/[.\s]+$/, '')
+    const rawReason = String(reasonMatch?.[1] || "")
+      .replace(/[.\s]+$/, "")
       .trim();
-    const isModuleReason = /cancelled by donor from donor donation module/i.test(rawReason);
+    const isModuleReason =
+      /cancelled by donor from donor donation module/i.test(rawReason);
     return {
-      tone: 'cancelled',
-      title: 'Donation cancelled by donor',
+      tone: "cancelled",
+      title: "Donation cancelled by donor",
       detail: rawReason
-        ? (isModuleReason ? 'Cancelled through the donor donation module.' : rawReason)
-        : '',
+        ? isModuleReason
+          ? "Cancelled through the donor donation module."
+          : rawReason
+        : "",
     };
   }
 
   return {
-    tone: 'note',
-    title: 'Donation update',
+    tone: "note",
+    title: "Donation update",
     detail: raw,
   };
 }
 
 function parseDonorNotes(notes) {
-  const raw = String(notes || '').trim();
+  const raw = String(notes || "").trim();
   if (!raw) return null;
   const { jsonText, trailingText } = splitLeadingJson(raw);
   try {
     const parsed = JSON.parse(jsonText || raw);
     const answers = parsed?.questionnaire_answers;
-    if (parsed && typeof parsed === 'object' && answers && typeof answers === 'object') {
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      answers &&
+      typeof answers === "object"
+    ) {
       return {
         structured: true,
         source: parsed.source,
@@ -284,10 +394,21 @@ function DonorScreeningSummary({ notes }) {
   if (!parsed) return null;
 
   if (!parsed.structured) {
+    const normalizedNote = parsed.raw.toLowerCase().replace(/\s+/g, " ").trim();
+    if (
+      normalizedNote.includes(
+        "courier donation confirmed from the mobile donations module",
+      ) ||
+      normalizedNote.includes("walk-in donation confirmed")
+    ) {
+      return null;
+    }
     return (
-      <section className="min-w-0 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-700">Donor notes</p>
-        <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-blue-950 [overflow-wrap:anywhere]">
+      <section className="min-w-0 rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2.5">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-700">
+          Donor notes
+        </p>
+        <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-5 text-blue-950 [overflow-wrap:anywhere]">
           {parsed.raw}
         </p>
       </section>
@@ -295,32 +416,38 @@ function DonorScreeningSummary({ notes }) {
   }
 
   const highlightKeys = [
-    'screening_intent',
-    'hair_texture',
-    'wash_frequency',
-    'scalp_itch',
-    'dandruff_or_flakes',
-    'chemical_process_history',
+    "screening_intent",
+    "hair_texture",
+    "wash_frequency",
+    "scalp_itch",
+    "dandruff_or_flakes",
+    "chemical_process_history",
   ];
   const highlightAnswers = highlightKeys
     .map((key) => parsed.answers.find(([answerKey]) => answerKey === key))
     .filter(Boolean);
-  const remainingAnswers = parsed.answers.filter(([key, value]) => (
-    !highlightKeys.includes(key)
-    && value !== null
-    && value !== undefined
-    && String(value).trim() !== ''
-  ));
-  const unansweredCount = parsed.answers.filter(([, value]) => (
-    value === null || value === undefined || String(value).trim() === ''
-  )).length;
+  const remainingAnswers = parsed.answers.filter(
+    ([key, value]) =>
+      !highlightKeys.includes(key) &&
+      value !== null &&
+      value !== undefined &&
+      String(value).trim() !== "",
+  );
+  const unansweredCount = parsed.answers.filter(
+    ([, value]) =>
+      value === null || value === undefined || String(value).trim() === "",
+  ).length;
 
   return (
     <section className="min-w-0 rounded-xl border border-blue-100 bg-blue-50/40 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold text-slate-800">Donor screening summary</p>
-          <p className="mt-0.5 text-xs text-slate-500">Answers submitted before the hair was sent.</p>
+          <p className="text-sm font-semibold text-slate-800">
+            Donor screening summary
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Answers submitted before the hair was sent.
+          </p>
         </div>
         <div className="flex flex-wrap gap-1.5 text-[11px]">
           {parsed.source ? (
@@ -338,8 +465,14 @@ function DonorScreeningSummary({ notes }) {
 
       <div className="mt-3 grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3">
         {highlightAnswers.map(([key, value]) => (
-          <div key={key} className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2">
-            <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400" title={humanizeLabel(key)}>
+          <div
+            key={key}
+            className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2"
+          >
+            <p
+              className="truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400"
+              title={humanizeLabel(key)}
+            >
               {humanizeLabel(key)}
             </p>
             <p className="mt-0.5 break-words text-sm font-medium text-slate-700 [overflow-wrap:anywhere]">
@@ -377,18 +510,23 @@ function DonorScreeningSummary({ notes }) {
 
       {unansweredCount ? (
         <p className="mt-1 text-[10px] text-slate-400">
-          {unansweredCount} screening {unansweredCount === 1 ? 'answer was' : 'answers were'} not provided.
+          {unansweredCount} screening{" "}
+          {unansweredCount === 1 ? "answer was" : "answers were"} not provided.
         </p>
       ) : null}
 
       {parsed.activityNote ? (
-        <div className={`mt-3 rounded-lg border px-3 py-2.5 ${
-          parsed.activityNote.tone === 'cancelled'
-            ? 'border-rose-200 bg-rose-50 text-rose-800'
-            : 'border-slate-200 bg-white text-slate-700'
-        }`}>
+        <div
+          className={`mt-3 rounded-lg border px-3 py-2.5 ${
+            parsed.activityNote.tone === "cancelled"
+              ? "border-rose-200 bg-rose-50 text-rose-800"
+              : "border-slate-200 bg-white text-slate-700"
+          }`}
+        >
           <p className="text-xs font-semibold">{parsed.activityNote.title}</p>
-          {parsed.activityNote.detail ? <p className="mt-0.5 text-[11px]">{parsed.activityNote.detail}</p> : null}
+          {parsed.activityNote.detail ? (
+            <p className="mt-0.5 text-[11px]">{parsed.activityNote.detail}</p>
+          ) : null}
         </div>
       ) : null}
     </section>
@@ -397,53 +535,62 @@ function DonorScreeningSummary({ notes }) {
 
 function detailRowToDraft(row) {
   return {
-    declaredLength: row?.Declared_Length === null || row?.Declared_Length === undefined
-      ? ''
-      : String(row.Declared_Length),
-    declaredColor: String(row?.Declared_Color || ''),
-    declaredTexture: String(row?.Declared_Texture || ''),
-    declaredDensity: String(row?.Declared_Density || ''),
-    declaredCondition: String(row?.Declared_Condition || ''),
+    declaredLength:
+      row?.Declared_Length === null || row?.Declared_Length === undefined
+        ? ""
+        : String(row.Declared_Length),
+    declaredColor: String(row?.Declared_Color || ""),
+    declaredTexture: String(row?.Declared_Texture || ""),
+    declaredDensity: String(row?.Declared_Density || ""),
+    declaredCondition: String(row?.Declared_Condition || ""),
     isChemicallyTreated: Boolean(row?.Is_Chemically_Treated),
     isColored: Boolean(row?.Is_Colored),
     isBleached: Boolean(row?.Is_Bleached),
     isRebonded: Boolean(row?.Is_Rebonded),
-    detailNotes: String(row?.Detail_Notes || ''),
+    detailNotes: String(row?.Detail_Notes || ""),
   };
 }
 
 export default function QualityCheckPage() {
   const { theme } = useTheme();
-  const primaryColor = theme?.primaryColor || '#0275d8';
-  const tertiaryColor = theme?.tertiaryColor || '#10b981';
-  const primaryTextColor = theme?.primaryTextColor || '#0f172a';
-  const secondaryTextColor = theme?.secondaryTextColor || '#64748b';
-  const tertiaryTextColor = theme?.tertiaryTextColor || '#94a3b8';
-  const headingFont = theme?.secondaryFontFamily || theme?.fontFamily || 'Poppins';
-  const bodyFont = theme?.fontFamily || 'Poppins';
+  const primaryColor = theme?.primaryColor || "#0275d8";
+  const tertiaryColor = theme?.tertiaryColor || "#10b981";
+  const primaryTextColor = theme?.primaryTextColor || "#0f172a";
+  const secondaryTextColor = theme?.secondaryTextColor || "#64748b";
+  const tertiaryTextColor = theme?.tertiaryTextColor || "#94a3b8";
+  const headingFont =
+    theme?.secondaryFontFamily || theme?.fontFamily || "Poppins";
+  const bodyFont = theme?.fontFamily || "Poppins";
 
-  const rootStyle = { color: primaryTextColor, fontFamily: `${bodyFont}, sans-serif` };
-  const headingStyle = { color: primaryTextColor, fontFamily: `${headingFont}, sans-serif` };
+  const rootStyle = {
+    color: primaryTextColor,
+    fontFamily: `${bodyFont}, sans-serif`,
+  };
+  const headingStyle = {
+    color: primaryTextColor,
+    fontFamily: `${headingFont}, sans-serif`,
+  };
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const scannerCanvasRef = useRef(null);
-  const lastScanRef = useRef({ raw: '', at: 0 });
+  const lastScanRef = useRef({ raw: "", at: 0 });
   const isScanProcessingRef = useRef(false);
 
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isStartingCamera, setIsStartingCamera] = useState(false);
-  const [cameraStatus, setCameraStatus] = useState({ tone: 'info', message: 'Camera is off. Turn it on to scan a waybill.' });
-  const [manualWaybillCode, setManualWaybillCode] = useState('');
+  const [, setCameraStatus] = useState({ tone: "info", message: "" });
+  const [manualWaybillCode, setManualWaybillCode] = useState("");
 
   const [queue, setQueue] = useState([]);
+  const [queueFilter, setQueueFilter] = useState("Pending");
   const [activeSubmissionId, setActiveSubmissionId] = useState(null);
   const [activeDetail, setActiveDetail] = useState(null);
   const [isLoadingQueue, setIsLoadingQueue] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [isProcessingAction, setIsProcessingAction] = useState(false);
-  const [notice, setNotice] = useState({ kind: '', text: '' });
-  const [rejectionReason, setRejectionReason] = useState('');
+  const [notice, setNotice] = useState({ kind: "", text: "" });
+  const [rejectionReason, setRejectionReason] = useState("");
   const [showRejectionInput, setShowRejectionInput] = useState(false);
   const [decisionConfirmation, setDecisionConfirmation] = useState(null);
   const [imageUrlsByPath, setImageUrlsByPath] = useState({});
@@ -462,37 +609,46 @@ export default function QualityCheckPage() {
 
   const loadQueue = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
-      setNotice({ kind: 'error', text: 'Supabase is not configured.' });
+      setNotice({ kind: "error", text: "Supabase is not configured." });
       return;
     }
 
     setIsLoadingQueue(true);
-    setNotice({ kind: '', text: '' });
+    setNotice({ kind: "", text: "" });
 
     try {
       const submissionsResult = await supabase
         .from(HAIR_SUBMISSIONS_TABLE)
-        .select('Submission_ID, User_ID, Status, Created_At, Updated_At, Bundle_ID, From_Event, Donor_Notes, Waybill_Code, AI_Screening_ID')
-        .eq('From_Event', false)
-        .in('Status', ACTIVE_STATUSES)
-        .is('Bundle_ID', null)
-        .order('Updated_At', { ascending: false })
+        .select(
+          "Submission_ID, User_ID, Status, Created_At, Updated_At, Bundle_ID, From_Event, Donor_Notes, Waybill_Code, AI_Screening_ID",
+        )
+        .eq("From_Event", false)
+        .in("Status", ACTIVE_STATUSES)
+        .is("Bundle_ID", null)
+        .order("Updated_At", { ascending: false })
         .limit(150);
 
       if (submissionsResult.error) throw submissionsResult.error;
 
       const rows = submissionsResult.data || [];
-      const userIds = Array.from(new Set(rows.map((row) => Number(row.User_ID || 0)).filter(Boolean)));
-      const submissionIds = rows.map((row) => Number(row.Submission_ID || 0)).filter(Boolean);
+      const userIds = Array.from(
+        new Set(rows.map((row) => Number(row.User_ID || 0)).filter(Boolean)),
+      );
+      const submissionIds = rows
+        .map((row) => Number(row.Submission_ID || 0))
+        .filter(Boolean);
 
       let usersByUserId = {};
       let detailsBySubmissionId = {};
       let logisticsBySubmissionId = {};
+      let appointmentSubmissionIds = new Set();
       if (userIds.length) {
         const { data, error } = await supabase
           .from(USER_DETAILS_TABLE)
-          .select('user_id, first_name, middle_name, last_name, suffix, photo_path')
-          .in('user_id', userIds);
+          .select(
+            "user_id, first_name, middle_name, last_name, suffix, photo_path",
+          )
+          .in("user_id", userIds);
         if (error) throw error;
         usersByUserId = (data || []).reduce((acc, row) => {
           acc[Number(row.user_id)] = row;
@@ -500,69 +656,119 @@ export default function QualityCheckPage() {
         }, {});
       }
       if (submissionIds.length) {
-        const [detailsResult, logisticsResult] = await Promise.all([
-          supabase.from(HAIR_SUBMISSION_DETAILS_TABLE).select('Submission_ID, Status').in('Submission_ID', submissionIds),
-          supabase.from(HAIR_SUBMISSION_LOGISTICS_TABLE).select('*').in('Submission_ID', submissionIds),
-        ]);
+        const [detailsResult, logisticsResult, appointmentsResult] =
+          await Promise.all([
+            supabase
+              .from(HAIR_SUBMISSION_DETAILS_TABLE)
+              .select("Submission_ID, Status")
+              .in("Submission_ID", submissionIds),
+            supabase
+              .from(HAIR_SUBMISSION_LOGISTICS_TABLE)
+              .select("*")
+              .in("Submission_ID", submissionIds),
+            supabase
+              .from(SALON_APPOINTMENTS_TABLE)
+              .select("Hair_Submission_ID")
+              .in("Hair_Submission_ID", submissionIds),
+          ]);
         if (detailsResult.error) throw detailsResult.error;
         if (logisticsResult.error) throw logisticsResult.error;
-        detailsBySubmissionId = (detailsResult.data || []).reduce((acc, row) => {
-          acc[Number(row.Submission_ID)] = row;
-          return acc;
-        }, {});
-        logisticsBySubmissionId = (logisticsResult.data || []).reduce((acc, row) => {
-          acc[Number(row.Submission_ID)] = row;
-          return acc;
-        }, {});
+        if (appointmentsResult.error) throw appointmentsResult.error;
+        detailsBySubmissionId = (detailsResult.data || []).reduce(
+          (acc, row) => {
+            acc[Number(row.Submission_ID)] = row;
+            return acc;
+          },
+          {},
+        );
+        logisticsBySubmissionId = (logisticsResult.data || []).reduce(
+          (acc, row) => {
+            acc[Number(row.Submission_ID)] = row;
+            return acc;
+          },
+          {},
+        );
+        appointmentSubmissionIds = new Set(
+          (appointmentsResult.data || []).map((row) =>
+            Number(row.Hair_Submission_ID),
+          ),
+        );
       }
 
       const enriched = rows.map((row) => {
         const userId = Number(row.User_ID || 0);
         const userDetails = usersByUserId[userId] || {};
-        const qualityDetail = detailsBySubmissionId[Number(row.Submission_ID)] || {};
-        const logistics = logisticsBySubmissionId[Number(row.Submission_ID)] || null;
-        const isCancelled = String(row.Status || '').toLowerCase() === 'cancelled';
+        const qualityDetail =
+          detailsBySubmissionId[Number(row.Submission_ID)] || {};
+        const logistics =
+          logisticsBySubmissionId[Number(row.Submission_ID)] || null;
+        const isCancelled =
+          String(row.Status || "").toLowerCase() === "cancelled";
         return {
           submissionId: row.Submission_ID,
           userId,
           status: row.Status,
-          qualityStatus: isCancelled ? 'Cancelled' : (qualityDetail.Status || 'Pending'),
-          submissionCode: String(row.Waybill_Code || '').trim().toUpperCase() || `Submission #${row.Submission_ID}`,
+          qualityStatus: isCancelled
+            ? "Cancelled"
+            : qualityDetail.Status || "Pending",
+          submissionCode:
+            String(row.Waybill_Code || "")
+              .trim()
+              .toUpperCase() || `Submission #${row.Submission_ID}`,
           logistics,
           aiScreeningId: row.AI_Screening_ID,
           isPhysicallyReceived: logisticsIsReceived(logistics),
           createdAt: row.Created_At,
           updatedAt: row.Updated_At,
-          donorNotes: row.Donor_Notes || '',
-          donorName: buildFullName(userDetails.first_name, userDetails.middle_name, userDetails.last_name, userDetails.suffix) || `User #${userId}`,
-          donorPhotoPath: userDetails.photo_path || '',
+          donorNotes: row.Donor_Notes || "",
+          donorName:
+            buildFullName(
+              userDetails.first_name,
+              userDetails.middle_name,
+              userDetails.last_name,
+              userDetails.suffix,
+            ) || `User #${userId}`,
+          donorPhotoPath: userDetails.photo_path || "",
         };
       });
 
-      const visibleQueue = enriched.filter((row) => (
-        row.isPhysicallyReceived || String(row.status || '').toLowerCase() === 'cancelled'
-      ));
+      const visibleQueue = enriched.filter(
+        (row) =>
+          !appointmentSubmissionIds.has(Number(row.submissionId)) &&
+          (row.isPhysicallyReceived ||
+            String(row.status || "").toLowerCase() === "cancelled"),
+      );
       setQueue(visibleQueue);
 
-      if (visibleQueue.length && !visibleQueue.some((r) => r.submissionId === activeSubmissionId)) {
-        setActiveSubmissionId(visibleQueue[0].submissionId);
+      if (
+        activeSubmissionId &&
+        !visibleQueue.some((r) => r.submissionId === activeSubmissionId)
+      ) {
+        setActiveSubmissionId(null);
+        setActiveDetail(null);
       } else if (!visibleQueue.length) {
         setActiveSubmissionId(null);
         setActiveDetail(null);
       }
 
-      const photoPaths = Array.from(new Set(
-        visibleQueue.map((r) => r.donorPhotoPath).filter((path) => path && !imageUrlsByPath[path]),
-      ));
+      const photoPaths = Array.from(
+        new Set(
+          visibleQueue
+            .map((r) => r.donorPhotoPath)
+            .filter((path) => path && !imageUrlsByPath[path]),
+        ),
+      );
       if (photoPaths.length) {
         const resolved = await Promise.all(
           photoPaths.map(async (path) => {
             try {
               if (isAbsoluteUrl(path)) return [path, path];
-              const { data } = supabase.storage.from(PROFILE_PICTURES_BUCKET).getPublicUrl(path);
-              return [path, data?.publicUrl || ''];
+              const { data } = supabase.storage
+                .from(PROFILE_PICTURES_BUCKET)
+                .getPublicUrl(path);
+              return [path, data?.publicUrl || ""];
             } catch {
-              return [path, ''];
+              return [path, ""];
             }
           }),
         );
@@ -575,11 +781,14 @@ export default function QualityCheckPage() {
         });
       }
     } catch (error) {
-      setNotice({ kind: 'error', text: error?.message || 'Unable to load QA queue.' });
+      setNotice({
+        kind: "error",
+        text: error?.message || "Unable to load QA queue.",
+      });
     } finally {
       setIsLoadingQueue(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSubmissionId]);
 
   const loadDetail = useCallback(async (submissionId) => {
@@ -593,36 +802,38 @@ export default function QualityCheckPage() {
     try {
       const detailsResult = await supabase
         .from(HAIR_SUBMISSION_DETAILS_TABLE)
-        .select('*')
-        .eq('Submission_ID', submissionId)
-        .order('Submission_Detail_ID', { ascending: true });
+        .select("*")
+        .eq("Submission_ID", submissionId)
+        .order("Submission_Detail_ID", { ascending: true });
 
       if (detailsResult.error) throw detailsResult.error;
       const detailRows = detailsResult.data || [];
       const submissionResult = await supabase
         .from(HAIR_SUBMISSIONS_TABLE)
-        .select('AI_Screening_ID')
-        .eq('Submission_ID', submissionId)
+        .select("AI_Screening_ID")
+        .eq("Submission_ID", submissionId)
         .maybeSingle();
       if (submissionResult.error) throw submissionResult.error;
       let aiScreening = null;
       if (submissionResult.data?.AI_Screening_ID) {
         const aiResult = await supabase
           .from(AI_SCREENINGS_TABLE)
-          .select('*')
-          .eq('AI_Screening_ID', submissionResult.data.AI_Screening_ID)
+          .select("*")
+          .eq("AI_Screening_ID", submissionResult.data.AI_Screening_ID)
           .maybeSingle();
         if (aiResult.error) throw aiResult.error;
         aiScreening = aiResult.data || null;
       }
-      const detailIds = detailRows.map((row) => Number(row.Submission_Detail_ID || 0)).filter(Boolean);
+      const detailIds = detailRows
+        .map((row) => Number(row.Submission_Detail_ID || 0))
+        .filter(Boolean);
 
       let imagesByDetailId = {};
       if (detailIds.length) {
         const imagesResult = await supabase
           .from(HAIR_SUBMISSION_IMAGES_TABLE)
-          .select('*')
-          .in('Submission_Detail_ID', detailIds);
+          .select("*")
+          .in("Submission_Detail_ID", detailIds);
         if (imagesResult.error) throw imagesResult.error;
         imagesByDetailId = (imagesResult.data || []).reduce((acc, row) => {
           const key = Number(row.Submission_Detail_ID);
@@ -632,12 +843,14 @@ export default function QualityCheckPage() {
         }, {});
       }
 
-      const allImagePaths = Array.from(new Set(
-        Object.values(imagesByDetailId)
-          .flat()
-          .map((row) => row.File_Path)
-          .filter((path) => path && !imageUrlsByPath[path]),
-      ));
+      const allImagePaths = Array.from(
+        new Set(
+          Object.values(imagesByDetailId)
+            .flat()
+            .map((row) => row.File_Path)
+            .filter((path) => path && !imageUrlsByPath[path]),
+        ),
+      );
 
       if (allImagePaths.length) {
         const signedResult = await supabase.storage
@@ -645,7 +858,7 @@ export default function QualityCheckPage() {
           .createSignedUrls(allImagePaths, 60 * 60);
         if (signedResult.error) {
           setNotice({
-            kind: 'error',
+            kind: "error",
             text: `Submission details loaded, but the private hair photos could not be opened: ${signedResult.error.message}`,
           });
         } else {
@@ -666,13 +879,16 @@ export default function QualityCheckPage() {
       });
       setDetailDraft(detailDraftWithAiFallback(detailRows[0], aiScreening));
     } catch (error) {
-      setNotice({ kind: 'error', text: error?.message || 'Unable to load submission detail.' });
+      setNotice({
+        kind: "error",
+        text: error?.message || "Unable to load submission detail.",
+      });
       setActiveDetail(null);
       setDetailDraft({ ...EMPTY_DETAIL_DRAFT });
     } finally {
       setIsLoadingDetail(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -680,12 +896,19 @@ export default function QualityCheckPage() {
     return () => {
       stopCamera();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useRealtimeRefresh({
-    channelName: 'specialist-quality-check-live',
-    tables: [HAIR_SUBMISSIONS_TABLE, HAIR_SUBMISSION_DETAILS_TABLE, HAIR_SUBMISSION_IMAGES_TABLE, HAIR_SUBMISSION_LOGISTICS_TABLE, AI_SCREENINGS_TABLE],
+    channelName: "specialist-quality-check-live",
+    tables: [
+      HAIR_SUBMISSIONS_TABLE,
+      HAIR_SUBMISSION_DETAILS_TABLE,
+      HAIR_SUBMISSION_IMAGES_TABLE,
+      HAIR_SUBMISSION_LOGISTICS_TABLE,
+      AI_SCREENINGS_TABLE,
+      SALON_APPOINTMENTS_TABLE,
+    ],
     onChange: () => {
       void loadQueue();
       if (activeSubmissionId) {
@@ -702,154 +925,289 @@ export default function QualityCheckPage() {
       setDetailDraft({ ...EMPTY_DETAIL_DRAFT });
     }
     setShowRejectionInput(false);
-    setRejectionReason('');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    setRejectionReason("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSubmissionId]);
 
-  const handleScannedText = useCallback(async (decodedText) => {
-    if (isScanProcessingRef.current) return;
-    isScanProcessingRef.current = true;
+  const handleScannedText = useCallback(
+    async (decodedText) => {
+      if (isScanProcessingRef.current) return;
+      isScanProcessingRef.current = true;
 
-    try {
-      const waybill = parseWaybillQrPayload(decodedText);
-      const compact = String(waybill?.waybillCode || decodedText || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-      if (!isValidWaybillCode(compact)) {
-        setCameraStatus({ tone: 'error', message: 'Scan did not match a hair submission waybill.' });
-        setScanOutcome({ tone: 'error', title: 'Invalid waybill', action: 'No database change', status: 'Blocked', nextStep: 'Use the WB + 6-character code printed for this hair submission' });
-        return;
-      }
+      try {
+        const waybill = parseWaybillQrPayload(decodedText);
+        const compact = String(waybill?.waybillCode || decodedText || "")
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, "");
+        if (!isValidWaybillCode(compact)) {
+          setCameraStatus({
+            tone: "error",
+            message: "Scan did not match a hair submission waybill.",
+          });
+          setScanOutcome({
+            tone: "error",
+            title: "Invalid waybill",
+            action: "No database change",
+            status: "Blocked",
+            nextStep:
+              "Use the WB + 6-character code printed for this hair submission",
+          });
+          return;
+        }
 
-      const lookup = await supabase
-        .from(HAIR_SUBMISSIONS_TABLE)
-        .select('Submission_ID, User_ID, Status, From_Event, Bundle_ID, Waybill_Code')
-        .eq('Waybill_Code', compact)
-        .maybeSingle();
+        const lookup = await supabase
+          .from(HAIR_SUBMISSIONS_TABLE)
+          .select(
+            "Submission_ID, User_ID, Status, From_Event, Bundle_ID, Waybill_Code",
+          )
+          .eq("Waybill_Code", compact)
+          .maybeSingle();
 
-      if (lookup?.error) throw lookup.error;
-      const submission = lookup?.data;
+        if (lookup?.error) throw lookup.error;
+        const submission = lookup?.data;
 
-      if (!submission?.Submission_ID) {
-        setCameraStatus({ tone: 'error', message: `No Hair_Submissions record uses waybill ${compact}.` });
+        if (!submission?.Submission_ID) {
+          setCameraStatus({
+            tone: "error",
+            message: `No Hair_Submissions record uses waybill ${compact}.`,
+          });
+          setScanOutcome({
+            tone: "error",
+            title: "Submission not found",
+            waybill: compact,
+            action: "No database change",
+            status: "Blocked",
+            nextStep: "Check the waybill and scan again",
+          });
+          return;
+        }
+
+        if (submission.From_Event !== false) {
+          setCameraStatus({
+            tone: "warning",
+            message: `Waybill ${compact} is not an independent donation waybill.`,
+          });
+          setScanOutcome({
+            tone: "warning",
+            title: "Unsupported waybill",
+            waybill: compact,
+            action: "No specialist quality change",
+            status: "Use program workflow",
+            nextStep: "Use Staff Assigned Program Operations",
+          });
+          return;
+        }
+
+        const appointmentResult = await supabase
+          .from(SALON_APPOINTMENTS_TABLE)
+          .select("Appointment_ID")
+          .eq("Hair_Submission_ID", submission.Submission_ID)
+          .maybeSingle();
+        if (appointmentResult.error) throw appointmentResult.error;
+        if (appointmentResult.data?.Appointment_ID) {
+          setCameraStatus({
+            tone: "warning",
+            message: `Waybill ${compact} belongs to a booked salon appointment.`,
+          });
+          setScanOutcome({
+            tone: "warning",
+            title: "Appointment waybill",
+            waybill: compact,
+            action: "No specialist quality change",
+            status: "Use Receiving Schedule",
+            nextStep: "Open the Appointments tab and review the hair there",
+          });
+          return;
+        }
+
+        if (submission.Bundle_ID) {
+          setCameraStatus({
+            tone: "info",
+            message: `Waybill ${compact} is already assigned to a bundle.`,
+          });
+          setScanOutcome({
+            tone: "info",
+            title: "Hair is already bundled",
+            waybill: compact,
+            action: "Loaded current state only",
+            status: "Bundling",
+            nextStep: "Manage it from the Bundling page",
+          });
+          return;
+        }
+
+        const statusKey = String(submission.Status || "")
+          .toLowerCase()
+          .replace(/[_\s-]+/g, "");
+        const submissionLabel = compact;
+        const logisticsResult = await supabase
+          .from(HAIR_SUBMISSION_LOGISTICS_TABLE)
+          .select("*")
+          .eq("Submission_ID", submission.Submission_ID)
+          .maybeSingle();
+        if (logisticsResult.error) throw logisticsResult.error;
+        const received = logisticsIsReceived(logisticsResult.data);
+        const detailResult = await supabase
+          .from(HAIR_SUBMISSION_DETAILS_TABLE)
+          .select("Status")
+          .eq("Submission_ID", submission.Submission_ID)
+          .maybeSingle();
+        if (detailResult.error) throw detailResult.error;
+        const qualityStatusKey = String(detailResult.data?.Status || "Pending")
+          .toLowerCase()
+          .replace(/[_\s-]+/g, "");
+
+        if (statusKey === "cancelled") {
+          setCameraStatus({
+            tone: "info",
+            message: `Waybill ${submissionLabel} is Cancelled and cannot be bundled.`,
+          });
+          setScanOutcome({
+            tone: "warning",
+            title: "Cancelled hair",
+            waybill: submissionLabel,
+            action: "No database change",
+            status: "Cancelled",
+            nextStep: "No further processing allowed",
+          });
+        } else if (!received) {
+          setCameraStatus({
+            tone: "warning",
+            message: `Waybill ${submissionLabel} has not been received yet.`,
+          });
+          setScanOutcome({
+            tone: "warning",
+            title: "Hair not received",
+            waybill: submissionLabel,
+            action: "No database change",
+            status: "Awaiting arrival",
+            nextStep:
+              "Complete receiving in Salon Schedule or courier receiving first",
+          });
+        } else if (
+          ["pending", "cut"].includes(statusKey) &&
+          qualityStatusKey === "pending"
+        ) {
+          setCameraStatus({
+            tone: "info",
+            message: `Waybill ${submissionLabel} loaded. Inspect the hair and choose Approve or Reject below.`,
+          });
+          setScanOutcome({
+            tone: "success",
+            title: "Quality review loaded",
+            waybill: submissionLabel,
+            action: "Loaded donor and hair details",
+            status: "Awaiting decision",
+            nextStep: "Inspect and choose Approve or Reject",
+            statusChanges: [],
+          });
+        } else if (qualityStatusKey === "approved") {
+          setCameraStatus({
+            tone: "info",
+            message: `Waybill ${submissionLabel} is already Approved and ready for Bundling.`,
+          });
+          setScanOutcome({
+            tone: "info",
+            title: "Quality review already complete",
+            waybill: submissionLabel,
+            action: "Loaded locked result",
+            status: "Approved",
+            nextStep: "Scan this waybill into an open bundle",
+          });
+        } else if (qualityStatusKey === "rejected") {
+          setCameraStatus({
+            tone: "info",
+            message: `Waybill ${submissionLabel} is Rejected and cannot be bundled.`,
+          });
+          setScanOutcome({
+            tone: "warning",
+            title: "Quality review already complete",
+            waybill: submissionLabel,
+            action: "Loaded locked result",
+            status: "Rejected",
+            nextStep: "No further processing allowed",
+          });
+        } else if (!["pending", "cut"].includes(statusKey)) {
+          setCameraStatus({
+            tone: "warning",
+            message: `Waybill ${submissionLabel} is not awaiting specialist quality review.`,
+          });
+          setScanOutcome({
+            tone: "warning",
+            title: "Hair is not ready for quality review",
+            waybill: submissionLabel,
+            action: "No database change",
+            status: submission.Status || "Not ready",
+            nextStep: "Staff must receive it in Salon Schedule first",
+          });
+        } else {
+          setCameraStatus({
+            tone: "info",
+            message: `Waybill ${submissionLabel} is already ${submission.Status}. Read-only.`,
+          });
+          setScanOutcome({
+            tone: "info",
+            title: "Current waybill state loaded",
+            waybill: submissionLabel,
+            action: "Read-only lookup",
+            status: submission.Status || "Read-only",
+            nextStep: "No quality action is available",
+          });
+        }
+
+        await loadQueue();
+        setActiveSubmissionId(submission.Submission_ID);
+      } catch (error) {
+        setCameraStatus({
+          tone: "error",
+          message: error?.message || "Unable to load scanned waybill.",
+        });
         setScanOutcome({
-          tone: 'error', title: 'Submission not found', waybill: compact,
-          action: 'No database change', status: 'Blocked', nextStep: 'Check the waybill and scan again',
+          tone: "error",
+          title: "Waybill could not be processed",
+          action: "No database change",
+          status: "Blocked",
+          nextStep: error?.message || "Try scanning again",
         });
-        return;
+      } finally {
+        isScanProcessingRef.current = false;
       }
-
-      if (submission.From_Event !== false) {
-        setCameraStatus({
-          tone: 'warning',
-          message: `Waybill ${compact} is not an independent donation waybill.`,
-        });
-        setScanOutcome({
-          tone: 'warning', title: 'Unsupported waybill', waybill: compact,
-          action: 'No specialist quality change', status: 'Use program workflow', nextStep: 'Use Staff Assigned Program Operations',
-        });
-        return;
-      }
-
-      if (submission.Bundle_ID) {
-        setCameraStatus({
-          tone: 'info',
-          message: `Waybill ${compact} is already assigned to a bundle.`,
-        });
-        setScanOutcome({
-          tone: 'info', title: 'Hair is already bundled', waybill: compact,
-          action: 'Loaded current state only', status: 'Bundling', nextStep: 'Manage it from the Bundling page',
-        });
-        return;
-      }
-
-      const statusKey = String(submission.Status || '').toLowerCase().replace(/[_\s-]+/g, '');
-      const submissionLabel = compact;
-      const logisticsResult = await supabase
-        .from(HAIR_SUBMISSION_LOGISTICS_TABLE)
-        .select('*')
-        .eq('Submission_ID', submission.Submission_ID)
-        .maybeSingle();
-      if (logisticsResult.error) throw logisticsResult.error;
-      const received = logisticsIsReceived(logisticsResult.data);
-      const detailResult = await supabase
-        .from(HAIR_SUBMISSION_DETAILS_TABLE)
-        .select('Status')
-        .eq('Submission_ID', submission.Submission_ID)
-        .maybeSingle();
-      if (detailResult.error) throw detailResult.error;
-      const qualityStatusKey = String(detailResult.data?.Status || 'Pending').toLowerCase().replace(/[_\s-]+/g, '');
-
-      if (statusKey === 'cancelled') {
-        setCameraStatus({
-          tone: 'info',
-          message: `Waybill ${submissionLabel} is Cancelled and cannot be bundled.`,
-        });
-        setScanOutcome({ tone: 'warning', title: 'Cancelled hair', waybill: submissionLabel, action: 'No database change', status: 'Cancelled', nextStep: 'No further processing allowed' });
-      } else if (!received) {
-        setCameraStatus({ tone: 'warning', message: `Waybill ${submissionLabel} has not been received yet.` });
-        setScanOutcome({ tone: 'warning', title: 'Hair not received', waybill: submissionLabel, action: 'No database change', status: 'Awaiting arrival', nextStep: 'Complete receiving in Salon Schedule or courier receiving first' });
-      } else if (['pending', 'cut'].includes(statusKey) && qualityStatusKey === 'pending') {
-        setCameraStatus({
-          tone: 'info',
-          message: `Waybill ${submissionLabel} loaded. Inspect the hair and choose Approve or Reject below.`,
-        });
-        setScanOutcome({ tone: 'success', title: 'Quality review loaded', waybill: submissionLabel, action: 'Loaded donor and hair details', status: 'Awaiting decision', nextStep: 'Inspect and choose Approve or Reject', statusChanges: [] });
-      } else if (qualityStatusKey === 'approved') {
-        setCameraStatus({
-          tone: 'info',
-          message: `Waybill ${submissionLabel} is already Approved and ready for Bundling.`,
-        });
-        setScanOutcome({ tone: 'info', title: 'Quality review already complete', waybill: submissionLabel, action: 'Loaded locked result', status: 'Approved', nextStep: 'Scan this waybill into an open bundle' });
-      } else if (qualityStatusKey === 'rejected') {
-        setCameraStatus({
-          tone: 'info',
-          message: `Waybill ${submissionLabel} is Rejected and cannot be bundled.`,
-        });
-        setScanOutcome({ tone: 'warning', title: 'Quality review already complete', waybill: submissionLabel, action: 'Loaded locked result', status: 'Rejected', nextStep: 'No further processing allowed' });
-      } else if (!['pending', 'cut'].includes(statusKey)) {
-        setCameraStatus({
-          tone: 'warning',
-          message: `Waybill ${submissionLabel} is not awaiting specialist quality review.`,
-        });
-        setScanOutcome({ tone: 'warning', title: 'Hair is not ready for quality review', waybill: submissionLabel, action: 'No database change', status: submission.Status || 'Not ready', nextStep: 'Staff must receive it in Salon Schedule first' });
-      } else {
-        setCameraStatus({
-          tone: 'info',
-          message: `Waybill ${submissionLabel} is already ${submission.Status}. Read-only.`,
-        });
-        setScanOutcome({ tone: 'info', title: 'Current waybill state loaded', waybill: submissionLabel, action: 'Read-only lookup', status: submission.Status || 'Read-only', nextStep: 'No quality action is available' });
-      }
-
-      await loadQueue();
-      setActiveSubmissionId(submission.Submission_ID);
-    } catch (error) {
-      setCameraStatus({ tone: 'error', message: error?.message || 'Unable to load scanned waybill.' });
-      setScanOutcome({ tone: 'error', title: 'Waybill could not be processed', action: 'No database change', status: 'Blocked', nextStep: error?.message || 'Try scanning again' });
-    } finally {
-      isScanProcessingRef.current = false;
-    }
-  }, [loadQueue]);
+    },
+    [loadQueue],
+  );
 
   const handleToggleCamera = async () => {
     if (isCameraOn) {
       stopCamera();
       setIsCameraOn(false);
-      setCameraStatus({ tone: 'info', message: 'Camera is off. Turn it on to scan a waybill.' });
+      setCameraStatus({
+        tone: "info",
+        message: "Camera is off. Turn it on to scan a waybill.",
+      });
       return;
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraStatus({ tone: 'error', message: 'Camera API is unavailable on this browser/device.' });
+      setCameraStatus({
+        tone: "error",
+        message: "Camera API is unavailable on this browser/device.",
+      });
       return;
     }
 
     setIsStartingCamera(true);
-    setCameraStatus({ tone: 'info', message: 'Initializing camera...' });
+    setCameraStatus({ tone: "info", message: "Initializing camera..." });
 
     try {
       stopCamera();
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
       });
 
       streamRef.current = stream;
@@ -861,9 +1219,15 @@ export default function QualityCheckPage() {
       }
 
       setIsCameraOn(true);
-      setCameraStatus({ tone: 'success', message: 'Scanner is running. Point camera at a waybill QR.' });
+      setCameraStatus({
+        tone: "success",
+        message: "Scanner is running. Point camera at a waybill QR.",
+      });
     } catch (error) {
-      setCameraStatus({ tone: 'error', message: error?.message || 'Could not access the camera.' });
+      setCameraStatus({
+        tone: "error",
+        message: error?.message || "Could not access the camera.",
+      });
     } finally {
       setIsStartingCamera(false);
     }
@@ -873,8 +1237,9 @@ export default function QualityCheckPage() {
     const code = normalizeWaybillCodeInput(manualWaybillCode);
     if (!isValidWaybillCode(code)) {
       setCameraStatus({
-        tone: 'warning',
-        message: 'Enter a complete waybill: WB followed by 6 letters or numbers.',
+        tone: "warning",
+        message:
+          "Enter a complete waybill: WB followed by 6 letters or numbers.",
       });
       return;
     }
@@ -895,22 +1260,28 @@ export default function QualityCheckPage() {
 
       try {
         if (!scannerCanvasRef.current) {
-          scannerCanvasRef.current = document.createElement('canvas');
+          scannerCanvasRef.current = document.createElement("canvas");
         }
         const canvas = scannerCanvasRef.current;
         canvas.width = frameWidth;
         canvas.height = frameHeight;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) return;
 
         ctx.drawImage(video, 0, 0, frameWidth, frameHeight);
         const imageData = ctx.getImageData(0, 0, frameWidth, frameHeight);
-        const code = jsQR(imageData.data, frameWidth, frameHeight, { inversionAttempts: 'attemptBoth' });
-        const decoded = String(code?.data || '').trim();
+        const code = jsQR(imageData.data, frameWidth, frameHeight, {
+          inversionAttempts: "attemptBoth",
+        });
+        const decoded = String(code?.data || "").trim();
         if (!decoded) return;
 
         const now = Date.now();
-        if (lastScanRef.current.raw === decoded && now - lastScanRef.current.at < SCAN_DEBOUNCE_MS) return;
+        if (
+          lastScanRef.current.raw === decoded &&
+          now - lastScanRef.current.at < SCAN_DEBOUNCE_MS
+        )
+          return;
         lastScanRef.current = { raw: decoded, at: now };
 
         void handleScannedText(decoded);
@@ -922,17 +1293,23 @@ export default function QualityCheckPage() {
     return () => window.clearInterval(intervalId);
   }, [isCameraOn, handleScannedText]);
 
-  const activeQueueRow = queue.find((row) => row.submissionId === activeSubmissionId) || null;
+  const activeQueueRow =
+    queue.find((row) => row.submissionId === activeSubmissionId) || null;
 
   const setDetailField = (field, value) => {
     setDetailDraft((previous) => ({ ...previous, [field]: value }));
   };
 
   const getDetailUpdates = () => {
-    const lengthText = String(detailDraft.declaredLength || '').trim();
+    const lengthText = String(detailDraft.declaredLength || "").trim();
     const declaredLength = lengthText ? Number(lengthText) : null;
-    if (lengthText && (!Number.isFinite(declaredLength) || declaredLength < 0 || declaredLength > 999.99)) {
-      throw new Error('Hair length must be between 0 and 999.99 inches.');
+    if (
+      lengthText &&
+      (!Number.isFinite(declaredLength) ||
+        declaredLength < 0 ||
+        declaredLength > 999.99)
+    ) {
+      throw new Error("Hair length must be between 0 and 999.99 inches.");
     }
     return {
       declaredLength,
@@ -951,18 +1328,23 @@ export default function QualityCheckPage() {
   const handleApprove = async () => {
     if (!activeQueueRow) return;
     setIsProcessingAction(true);
-    setNotice({ kind: '', text: '' });
+    setNotice({ kind: "", text: "" });
     try {
-      const result = await supabase.rpc('specialist_review_non_event_hair_quality_v2', {
-        p_submission_id: activeQueueRow.submissionId,
-        p_decision: 'Approved',
-        p_rejection_reason: null,
-        p_detail_updates: getDetailUpdates(),
-      });
+      const result = await supabase.rpc(
+        "specialist_review_non_event_hair_quality_v2",
+        {
+          p_submission_id: activeQueueRow.submissionId,
+          p_decision: "Approved",
+          p_rejection_reason: null,
+          p_detail_updates: getDetailUpdates(),
+        },
+      );
       if (result.error) throw result.error;
 
       const payload = result.data || {};
-      const updatedDetails = Array.isArray(payload?.details) ? payload.details : [];
+      const updatedDetails = Array.isArray(payload?.details)
+        ? payload.details
+        : [];
       if (updatedDetails.length) {
         setActiveDetail((prev) => ({
           details: updatedDetails,
@@ -973,24 +1355,47 @@ export default function QualityCheckPage() {
       }
 
       setCameraStatus({
-        tone: 'success',
+        tone: "success",
         message: `Waybill ${activeQueueRow.submissionCode} quality result is now Approved.`,
       });
       setScanOutcome({
-        tone: 'success', title: 'Quality review approved', waybill: activeQueueRow.submissionCode,
-        subject: activeQueueRow.donorName, action: 'Saved final quality decision', status: 'Approved / Available',
-        nextStep: 'Hair is now available for Bundling',
+        tone: "success",
+        title: "Quality review approved",
+        waybill: activeQueueRow.submissionCode,
+        subject: activeQueueRow.donorName,
+        action: "Saved final quality decision",
+        status: "Approved / Available",
+        nextStep: "Hair is now available for Bundling",
         statusChanges: [
-          { label: 'Quality detail', before: activeQualityStatus || 'Pending', after: 'Approved' },
-          { label: 'Hair submission', before: activeQueueRow.status || 'Pending', after: 'Available' },
-          { label: 'Cut inventory', before: 'Not available', after: 'Cut / Available' },
+          {
+            label: "Quality detail",
+            before: activeQualityStatus || "Pending",
+            after: "Approved",
+          },
+          {
+            label: "Hair submission",
+            before: activeQueueRow.status || "Pending",
+            after: "Available",
+          },
+          {
+            label: "Cut inventory",
+            before: "Not available",
+            after: "Cut / Available",
+          },
         ],
       });
-      setNotice({ kind: 'success', text: 'Quality review approved. The independent hair donation is now Available for bundling.' });
+      setNotice({
+        kind: "success",
+        text: "Quality review approved. The independent hair donation is now Available for bundling.",
+      });
       await loadQueue();
-      await loadDetail(activeQueueRow.submissionId);
+      setActiveSubmissionId(null);
+      setActiveDetail(null);
     } catch (error) {
-      setNotice({ kind: 'error', text: error?.message || 'Unable to approve.' });
+      setNotice({
+        kind: "error",
+        text: error?.message || "Unable to approve.",
+      });
     } finally {
       setIsProcessingAction(false);
     }
@@ -998,25 +1403,30 @@ export default function QualityCheckPage() {
 
   const handleReject = async () => {
     if (!activeQueueRow) return;
-    const reason = String(rejectionReason || '').trim();
+    const reason = String(rejectionReason || "").trim();
     if (!reason) {
-      setNotice({ kind: 'warning', text: 'Provide a rejection reason.' });
+      setNotice({ kind: "warning", text: "Provide a rejection reason." });
       return;
     }
 
     setIsProcessingAction(true);
-    setNotice({ kind: '', text: '' });
+    setNotice({ kind: "", text: "" });
     try {
-      const result = await supabase.rpc('specialist_review_non_event_hair_quality_v2', {
-        p_submission_id: activeQueueRow.submissionId,
-        p_decision: 'Rejected',
-        p_rejection_reason: reason,
-        p_detail_updates: getDetailUpdates(),
-      });
+      const result = await supabase.rpc(
+        "specialist_review_non_event_hair_quality_v2",
+        {
+          p_submission_id: activeQueueRow.submissionId,
+          p_decision: "Rejected",
+          p_rejection_reason: reason,
+          p_detail_updates: getDetailUpdates(),
+        },
+      );
       if (result.error) throw result.error;
 
       const payload = result.data || {};
-      const updatedDetails = Array.isArray(payload?.details) ? payload.details : [];
+      const updatedDetails = Array.isArray(payload?.details)
+        ? payload.details
+        : [];
       if (updatedDetails.length) {
         setActiveDetail((prev) => ({
           details: updatedDetails,
@@ -1027,26 +1437,46 @@ export default function QualityCheckPage() {
       }
 
       setCameraStatus({
-        tone: 'warning',
+        tone: "warning",
         message: `Waybill ${activeQueueRow.submissionCode} quality result is now Rejected.`,
       });
       setScanOutcome({
-        tone: 'warning', title: 'Quality review rejected', waybill: activeQueueRow.submissionCode,
-        subject: activeQueueRow.donorName, action: 'Saved final quality decision', status: 'Rejected',
-        nextStep: 'No further bundling or production is allowed',
+        tone: "warning",
+        title: "Quality review rejected",
+        waybill: activeQueueRow.submissionCode,
+        subject: activeQueueRow.donorName,
+        action: "Saved final quality decision",
+        status: "Rejected",
+        nextStep: "No further bundling or production is allowed",
         statusChanges: [
-          { label: 'Quality detail', before: activeQualityStatus || 'Pending', after: 'Rejected' },
-          { label: 'Hair submission', before: activeQueueRow.status || 'Pending', after: activeQueueRow.status || 'Pending' },
-          { label: 'Cut inventory', before: 'Not available', after: 'Not available' },
+          {
+            label: "Quality detail",
+            before: activeQualityStatus || "Pending",
+            after: "Rejected",
+          },
+          {
+            label: "Hair submission",
+            before: activeQueueRow.status || "Pending",
+            after: activeQueueRow.status || "Pending",
+          },
+          {
+            label: "Cut inventory",
+            before: "Not available",
+            after: "Not available",
+          },
         ],
       });
-      setNotice({ kind: 'success', text: 'Quality review rejected. The submission is marked Rejected and cannot enter Bundling.' });
+      setNotice({
+        kind: "success",
+        text: "Quality review rejected. The submission is marked Rejected and cannot enter Bundling.",
+      });
       setShowRejectionInput(false);
-      setRejectionReason('');
+      setRejectionReason("");
       await loadQueue();
-      await loadDetail(activeQueueRow.submissionId);
+      setActiveSubmissionId(null);
+      setActiveDetail(null);
     } catch (error) {
-      setNotice({ kind: 'error', text: error?.message || 'Unable to reject.' });
+      setNotice({ kind: "error", text: error?.message || "Unable to reject." });
     } finally {
       setIsProcessingAction(false);
     }
@@ -1055,20 +1485,20 @@ export default function QualityCheckPage() {
   const requestApprove = () => {
     if (!activeQueueRow || isProcessingAction) return;
     setDecisionConfirmation({
-      decision: 'Approved',
+      decision: "Approved",
       submissionCode: activeQueueRow.submissionCode,
     });
   };
 
   const requestReject = () => {
     if (!activeQueueRow || isProcessingAction) return;
-    const reason = String(rejectionReason || '').trim();
+    const reason = String(rejectionReason || "").trim();
     if (!reason) {
-      setNotice({ kind: 'warning', text: 'Provide a rejection reason.' });
+      setNotice({ kind: "warning", text: "Provide a rejection reason." });
       return;
     }
     setDecisionConfirmation({
-      decision: 'Rejected',
+      decision: "Rejected",
       submissionCode: activeQueueRow.submissionCode,
       reason,
     });
@@ -1077,9 +1507,9 @@ export default function QualityCheckPage() {
   const confirmDecision = async () => {
     const decision = decisionConfirmation?.decision;
     setDecisionConfirmation(null);
-    if (decision === 'Approved') {
+    if (decision === "Approved") {
       await handleApprove();
-    } else if (decision === 'Rejected') {
+    } else if (decision === "Rejected") {
       await handleReject();
     }
   };
@@ -1087,53 +1517,70 @@ export default function QualityCheckPage() {
   const queueByStatus = useMemo(() => {
     const groups = { Pending: [], Approved: [], Rejected: [], Cancelled: [] };
     queue.forEach((row) => {
-      const key = String(row.qualityStatus || '').toLowerCase().replace(/[_\s-]+/g, '');
-      if (key === 'pending' && row.isPhysicallyReceived) groups.Pending.push(row);
-      else if (key === 'approved') groups.Approved.push(row);
-      else if (key === 'rejected') groups.Rejected.push(row);
-      else if (key === 'cancelled') groups.Cancelled.push(row);
+      const key = String(row.qualityStatus || "")
+        .toLowerCase()
+        .replace(/[_\s-]+/g, "");
+      if (key === "pending" && row.isPhysicallyReceived)
+        groups.Pending.push(row);
+      else if (key === "approved") groups.Approved.push(row);
+      else if (key === "rejected") groups.Rejected.push(row);
+      else if (key === "cancelled") groups.Cancelled.push(row);
     });
     return groups;
   }, [queue]);
+  const filteredQueue = queueByStatus[queueFilter] || [];
 
-  const cameraNoticeStyle = (() => {
-    switch (cameraStatus.tone) {
-      case 'success':
-        return { backgroundColor: withColorAlpha(tertiaryColor, 0.14), color: tertiaryColor, borderColor: withColorAlpha(tertiaryColor, 0.5) };
-      case 'error':
-        return { backgroundColor: '#fef2f2', color: '#b91c1c', borderColor: '#fecaca' };
-      case 'warning':
-        return { backgroundColor: '#fffbeb', color: '#b45309', borderColor: '#fde68a' };
-      default:
-        return { backgroundColor: withColorAlpha(primaryColor, 0.12), color: primaryColor, borderColor: withColorAlpha(primaryColor, 0.45) };
-    }
-  })();
-
-  const activeImages = Object.values(activeDetail?.imagesByDetailId || {}).flat();
+  const activeImages = Object.values(
+    activeDetail?.imagesByDetailId || {},
+  ).flat();
   const activeDetailRow = activeDetail?.details?.[0] || null;
-  const activeStatusKey = String(activeQueueRow?.status || '').toLowerCase().replace(/[_\s-]+/g, '');
-  const activeQualityStatus = activeStatusKey === 'cancelled'
-    ? 'Cancelled'
-    : (activeDetailRow?.Status || activeQueueRow?.qualityStatus || 'Pending');
-  const activeQualityStatusKey = String(activeQualityStatus).toLowerCase().replace(/[_\s-]+/g, '');
-  const canDecide = activeQueueRow?.isPhysicallyReceived && ['pending', 'cut'].includes(activeStatusKey) && activeQualityStatusKey === 'pending';
+  const activeStatusKey = String(activeQueueRow?.status || "")
+    .toLowerCase()
+    .replace(/[_\s-]+/g, "");
+  const activeQualityStatus =
+    activeStatusKey === "cancelled"
+      ? "Cancelled"
+      : activeDetailRow?.Status || activeQueueRow?.qualityStatus || "Pending";
+  const activeQualityStatusKey = String(activeQualityStatus)
+    .toLowerCase()
+    .replace(/[_\s-]+/g, "");
+  const canDecide =
+    activeQueueRow?.isPhysicallyReceived &&
+    ["pending", "cut"].includes(activeStatusKey) &&
+    activeQualityStatusKey === "pending";
   const activeAiScreening = activeDetail?.aiScreening || null;
-  const liveAiAccuracy = calculateLiveAiAccuracy(activeAiScreening, detailDraft);
+  const liveAiAccuracy = calculateLiveAiAccuracy(
+    activeAiScreening,
+    detailDraft,
+  );
+  const donationRouteLabel = activeQueueRow?.logistics?.Logistics_Type
+    ? humanizeLabel(activeQueueRow.logistics.Logistics_Type)
+    : "Courier Donation";
 
   return (
-    <div className="min-w-0 space-y-6 overflow-x-hidden" style={rootStyle}>
+    <div className="min-w-0 space-y-4 overflow-x-hidden" style={rootStyle}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="role-page-title text-2xl font-bold" style={headingStyle}>Hair Quality Check</h1>
+          <h1
+            className="role-page-title text-2xl font-bold"
+            style={headingStyle}
+          >
+            Hair Quality Check
+          </h1>
           <p className="text-sm" style={{ color: secondaryTextColor }}>
-            Scan the exact Hair Submissions waybill. Only physically received hair can be reviewed.
+            Review received courier and drop-off hair
           </p>
         </div>
         <PageHeaderActions
           onRefresh={() => loadQueue()}
           refreshLoading={isLoadingQueue}
           helpTitle="About Hair Quality Check"
-          helpContent={<p>This page accepts only Hair_Submissions.Waybill_Code. Walk-in hair must be completed in Salon Schedule and courier hair must be received before quality review.</p>}
+          helpContent={
+            <p>
+              This page is only for received courier and drop-off hair. Booked
+              salon appointments are reviewed from Receiving Schedule.
+            </p>
+          }
         />
       </header>
 
@@ -1141,51 +1588,54 @@ export default function QualityCheckPage() {
         <div
           className="rounded-xl border px-3 py-2 text-sm font-medium"
           style={
-            notice.kind === 'error' ? { borderColor: '#fecaca', backgroundColor: '#fef2f2', color: '#b91c1c' }
-              : notice.kind === 'success' ? { borderColor: '#a7f3d0', backgroundColor: '#ecfdf5', color: '#047857' }
-                : { borderColor: '#fde68a', backgroundColor: '#fffbeb', color: '#b45309' }
+            notice.kind === "error"
+              ? {
+                  borderColor: "#fecaca",
+                  backgroundColor: "#fef2f2",
+                  color: "#b91c1c",
+                }
+              : notice.kind === "success"
+                ? {
+                    borderColor: "#a7f3d0",
+                    backgroundColor: "#ecfdf5",
+                    color: "#047857",
+                  }
+                : {
+                    borderColor: "#fde68a",
+                    backgroundColor: "#fffbeb",
+                    color: "#b45309",
+                  }
           }
         >
           {notice.text}
         </div>
       )}
 
-      <div className="grid min-w-0 grid-cols-1 items-start gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
-        <aside className="rounded-2xl border bg-white p-5 shadow-sm xl:sticky xl:top-4" style={{ borderColor: '#e2e8f0' }}>
-          <div className="mb-4 flex items-start justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <ScanLine size={20} style={{ color: primaryColor }} />
-              <div>
-                <h2 className="text-base font-semibold" style={headingStyle}>QR waybill scanner</h2>
-                <p className="mt-0.5 text-[11px]" style={{ color: tertiaryTextColor }}>Scan with camera or enter the code</p>
-              </div>
-            </div>
-            <span
-              className="mt-0.5 inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[10px] font-semibold"
-              style={isCameraOn
-                ? { borderColor: '#a7f3d0', backgroundColor: '#ecfdf5', color: '#047857' }
-                : { borderColor: '#e2e8f0', backgroundColor: '#f8fafc', color: '#64748b' }}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${isCameraOn ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-              {isCameraOn ? 'Scanning' : 'Off'}
-            </span>
+      <div className="grid min-w-0 grid-cols-1 items-start gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
+        <aside
+          className="rounded-2xl border bg-white p-4 shadow-sm xl:sticky xl:top-4"
+          style={{ borderColor: "#e2e8f0" }}
+        >
+          <div className="mb-3 flex items-center gap-2">
+            <ScanLine size={18} style={{ color: primaryColor }} />
+            <h2 className="text-sm font-semibold" style={headingStyle}>
+              QR Scanner
+            </h2>
           </div>
 
-          <div className="relative mx-auto aspect-square w-full max-w-[300px] overflow-hidden rounded-2xl bg-slate-950 shadow-inner">
+          <div className="relative mx-auto aspect-square w-full overflow-hidden rounded-xl bg-slate-950 shadow-inner">
             <video
               ref={videoRef}
-              className={`absolute inset-0 h-full w-full object-cover ${isCameraOn ? '' : 'hidden'}`}
+              className={`absolute inset-0 h-full w-full object-cover ${isCameraOn ? "" : "hidden"}`}
               autoPlay
               playsInline
               muted
             />
             {!isCameraOn ? (
-              <div className="flex h-full flex-col items-center justify-center px-7 text-center text-slate-300">
-                <span className="mb-3 rounded-2xl bg-white/10 p-4">
-                  <ScanLine size={34} />
+              <div className="flex h-full items-center justify-center text-slate-200">
+                <span className="inline-flex items-center gap-2 text-sm font-semibold">
+                  <ScanLine size={24} /> Scan
                 </span>
-                <p className="text-sm font-semibold text-white">Scanner is off</p>
-                <p className="mt-1 text-xs leading-5 text-slate-400">Start the camera and place the printed waybill QR inside the frame.</p>
               </div>
             ) : null}
             {isCameraOn ? (
@@ -1197,41 +1647,45 @@ export default function QualityCheckPage() {
             ) : null}
           </div>
 
-          <div className="mt-4 flex items-start gap-2 rounded-xl border px-3 py-2.5 text-xs leading-5" style={cameraNoticeStyle}>
-            <AlertCircle size={16} className="mt-0.5 shrink-0" />
-            <span>{cameraStatus.message}</span>
-          </div>
-
           <button
             type="button"
             onClick={handleToggleCamera}
             disabled={isStartingCamera}
             className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition disabled:opacity-60"
-            style={{ backgroundColor: isCameraOn ? '#dc2626' : primaryColor }}
+            style={{ backgroundColor: isCameraOn ? "#dc2626" : primaryColor }}
           >
+            {isStartingCamera ? (
+              <Loader2 className="animate-spin" size={16} />
+            ) : isCameraOn ? (
+              <CameraOff size={16} />
+            ) : (
+              <Camera size={16} />
+            )}
             {isStartingCamera
-              ? <Loader2 className="animate-spin" size={16} />
-              : isCameraOn ? <CameraOff size={16} /> : <Camera size={16} />}
-            {isStartingCamera ? 'Starting camera...' : isCameraOn ? 'Stop scanner' : 'Start QR scanner'}
+              ? "Starting..."
+              : isCameraOn
+                ? "Stop Scanner"
+                : "Start Scanner"}
           </button>
 
-          <div className="my-4 flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            <span className="h-px flex-1 bg-slate-200" />
-            No camera available?
-            <span className="h-px flex-1 bg-slate-200" />
-          </div>
-
-          <label htmlFor="quality-waybill-manual" className="block text-xs font-semibold text-slate-700">
-            Enter donor waybill
+          <label
+            htmlFor="quality-waybill-manual"
+            className="mt-4 block text-xs font-semibold text-slate-700"
+          >
+            Waybill
           </label>
           <div className="mt-1.5 flex gap-2">
             <input
               id="quality-waybill-manual"
               type="text"
               value={manualWaybillCode}
-              onChange={(event) => setManualWaybillCode(normalizeWaybillCodeInput(event.target.value))}
+              onChange={(event) =>
+                setManualWaybillCode(
+                  normalizeWaybillCodeInput(event.target.value),
+                )
+              }
               onKeyDown={(event) => {
-                if (event.key === 'Enter') {
+                if (event.key === "Enter") {
                   event.preventDefault();
                   void handleManualWaybillLookup();
                 }
@@ -1245,94 +1699,139 @@ export default function QualityCheckPage() {
             />
             <button
               type="button"
-              onClick={() => { void handleManualWaybillLookup(); }}
-              disabled={isScanProcessingRef.current || !isValidWaybillCode(manualWaybillCode)}
+              onClick={() => {
+                void handleManualWaybillLookup();
+              }}
+              disabled={
+                isScanProcessingRef.current ||
+                !isValidWaybillCode(manualWaybillCode)
+              }
               className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl px-3 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-50"
               style={{ backgroundColor: primaryColor }}
             >
-              <ScanLine size={15} />
-              Find
+              <ScanLine size={15} /> Find
             </button>
           </div>
-          <div className="mt-1.5 flex justify-between text-[11px] text-slate-500">
-            <span>WB + 6 uppercase letters or numbers</span>
-            <span className="font-mono">{manualWaybillCode.length}/{WAYBILL_CODE_LENGTH}</span>
-          </div>
-          <div className="mt-4">
-            <WaybillScanResult outcome={scanOutcome} possibleOutcomes={QUALITY_SCAN_OUTCOMES} />
-          </div>
+          {scanOutcome?.title ? (
+            <p
+              className={`mt-2 text-xs font-medium ${scanOutcome.tone === "error" ? "text-red-700" : scanOutcome.tone === "warning" ? "text-amber-700" : "text-emerald-700"}`}
+            >
+              {scanOutcome.title}
+              {scanOutcome.waybill ? ` · ${scanOutcome.waybill}` : ""}
+            </p>
+          ) : null}
         </aside>
 
-        <div className="min-w-0 overflow-hidden rounded-2xl border bg-white p-5 shadow-sm" style={{ borderColor: '#e2e8f0' }}>
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold" style={headingStyle}>Submission Review</h2>
-            {activeQueueRow ? (
-              <span
-                className="rounded-full border px-2.5 py-0.5 text-xs font-semibold"
-                style={statusBadgeStyle(activeQualityStatus, primaryColor, tertiaryColor)}
+        <div
+          className="min-w-0 overflow-hidden rounded-2xl border bg-white p-4 shadow-sm"
+          style={{ borderColor: "#e2e8f0" }}
+        >
+          <div className="mb-3 flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
+            <div className="min-w-0">
+              <h2
+                className="truncate text-base font-semibold"
+                style={headingStyle}
               >
-                {activeQualityStatus}
-              </span>
+                {activeQueueRow?.donorName || "Submission Review"}
+              </h2>
+              {activeQueueRow ? (
+                <div
+                  className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs"
+                  style={{ color: secondaryTextColor }}
+                >
+                  <span className="font-mono">
+                    {activeQueueRow.submissionCode}
+                  </span>
+                  <span>{donationRouteLabel}</span>
+                </div>
+              ) : null}
+            </div>
+            {activeQueueRow ? (
+              <div className="flex items-center gap-2">
+                <span
+                  className="rounded-full border px-2.5 py-0.5 text-xs font-semibold"
+                  style={statusBadgeStyle(
+                    activeQualityStatus,
+                    primaryColor,
+                    tertiaryColor,
+                  )}
+                >
+                  {activeQualityStatus}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setActiveSubmissionId(null)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50 hover:text-slate-800"
+                  aria-label="Close submission review"
+                  title="Close review"
+                >
+                  <XCircle size={17} />
+                </button>
+              </div>
             ) : null}
           </div>
 
           {!activeQueueRow ? (
-            <p className="text-sm" style={{ color: secondaryTextColor }}>
-              Scan a waybill or pick a row from the queue to begin.
-            </p>
+            <div className="flex min-h-[180px] flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-6 text-center">
+              <span className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-500 shadow-sm">
+                <ScanLine size={21} />
+              </span>
+              <p className="text-sm font-semibold text-slate-800">
+                No submission selected
+              </p>
+              <p
+                className="mt-1 max-w-sm text-xs leading-5"
+                style={{ color: secondaryTextColor }}
+              >
+                Scan a waybill or choose a pending review below. Completed
+                reviews will not reopen automatically.
+              </p>
+            </div>
           ) : (
-            <div className="min-w-0 space-y-4">
-              <div className="flex min-w-0 items-center gap-3">
-                <div
-                  className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full"
-                  style={{ backgroundColor: withColorAlpha(primaryColor, 0.12) }}
-                >
-                  {activeQueueRow.donorPhotoPath && imageUrlsByPath[activeQueueRow.donorPhotoPath] ? (
-                    <img src={imageUrlsByPath[activeQueueRow.donorPhotoPath]} alt={activeQueueRow.donorName} className="h-full w-full object-cover" />
-                  ) : (
-                    <PackageOpen size={24} style={{ color: primaryColor }} />
-                  )}
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold truncate" style={{ color: primaryTextColor }}>{activeQueueRow.donorName}</p>
-                  <p className="font-mono text-xs" style={{ color: secondaryTextColor }}>
-                    {activeQueueRow.submissionCode}
-                  </p>
-                  <p className="mt-0.5 text-[11px]" style={{ color: tertiaryTextColor }}>
-                    Submitted {formatDateTime(activeQueueRow.createdAt)}
-                  </p>
-                </div>
-              </div>
-
+            <div className="min-w-0 space-y-3">
               <DonorScreeningSummary notes={activeQueueRow.donorNotes} />
 
               {isLoadingDetail ? (
-                <div className="flex items-center gap-2 rounded-xl bg-slate-50 px-4 py-6 text-sm" style={{ color: secondaryTextColor }}>
-                  <Loader2 size={14} className="animate-spin" /> Loading submission details...
+                <div
+                  className="flex items-center gap-2 rounded-xl bg-slate-50 px-4 py-6 text-sm"
+                  style={{ color: secondaryTextColor }}
+                >
+                  <Loader2 size={14} className="animate-spin" /> Loading
+                  submission details...
                 </div>
               ) : (
-                <>
-                  <section className="border-t border-slate-200 pt-4">
+                <div className="grid min-w-0 items-start gap-3 xl:grid-cols-[240px_minmax(0,1fr)]">
+                  <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 xl:sticky xl:top-4">
                     <div className="mb-3 flex items-center justify-between gap-3">
-                      <h3 className="text-sm font-semibold" style={{ color: primaryTextColor }}>
-                        Submitted hair photos
-                        <span className="ml-2 font-normal" style={{ color: tertiaryTextColor }}>
+                      <h3
+                        className="text-sm font-semibold"
+                        style={{ color: primaryTextColor }}
+                      >
+                        Photo
+                        <span
+                          className="ml-2 font-normal"
+                          style={{ color: tertiaryTextColor }}
+                        >
                           ({activeImages.length})
                         </span>
                       </h3>
                     </div>
                     {activeImages.length ? (
-                      <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-6">
+                      <div className="grid min-w-0 grid-cols-2 gap-2 xl:grid-cols-1">
                         {activeImages.map((image) => {
                           const url = imageUrlsByPath[image.File_Path];
                           return (
                             <a
                               key={image.Image_ID}
                               href={url || undefined}
-                              target={url ? '_blank' : undefined}
-                              rel={url ? 'noreferrer' : undefined}
-                              className="group relative aspect-[4/3] min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white"
-                              title={url ? 'Open full-size photo' : 'Photo unavailable'}
+                              target={url ? "_blank" : undefined}
+                              rel={url ? "noreferrer" : undefined}
+                              className="group relative aspect-[4/3] w-full min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"
+                              title={
+                                url
+                                  ? "Open full-size photo"
+                                  : "Photo unavailable"
+                              }
                               onClick={(event) => {
                                 if (!url) event.preventDefault();
                               }}
@@ -1340,17 +1839,22 @@ export default function QualityCheckPage() {
                               {url ? (
                                 <img
                                   src={url}
-                                  alt={image.Image_Type || 'Submitted hair'}
+                                  alt={image.Image_Type || "Submitted hair"}
                                   className="h-full w-full object-cover transition duration-200 group-hover:scale-105"
                                   loading="lazy"
                                 />
                               ) : (
-                                <span className="flex h-full w-full items-center justify-center" style={{ color: tertiaryTextColor }}>
+                                <span
+                                  className="flex h-full w-full items-center justify-center"
+                                  style={{ color: tertiaryTextColor }}
+                                >
                                   <ImageIcon size={24} />
                                 </span>
                               )}
                               <span className="absolute inset-x-0 bottom-0 truncate bg-slate-950/70 px-2 py-1.5 text-[10px] font-semibold text-white">
-                                {humanizeLabel(image.Image_Type || 'Hair photo')}
+                                {humanizeLabel(
+                                  image.Image_Type || "Hair photo",
+                                )}
                               </span>
                             </a>
                           );
@@ -1359,186 +1863,330 @@ export default function QualityCheckPage() {
                     ) : (
                       <div className="flex items-center gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-5 text-sm text-slate-500">
                         <ImageIcon size={18} />
-                        No submitted hair photos are attached to this detail record.
+                        No submitted hair photos are attached to this detail
+                        record.
                       </div>
                     )}
                   </section>
 
-                  <section className="border-t border-slate-200 pt-4">
-                    <h3 className="text-sm font-semibold" style={{ color: primaryTextColor }}>Inspection details</h3>
-                    <p className="mb-4 mt-0.5 text-xs" style={{ color: secondaryTextColor }}>
-                      {canDecide
-                        ? 'Correct any donor-declared values. Changes save when you approve or reject.'
-                        : 'This review is complete - inspection details are read-only.'}
-                    </p>
+                  <div className="min-w-0 space-y-3">
+                    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <h3
+                        className="mb-3 text-sm font-semibold"
+                        style={{ color: primaryTextColor }}
+                      >
+                        Inspection
+                      </h3>
 
-                    {!activeDetailRow ? (
-                      <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                        No detail row exists yet. One will be created automatically when this review is submitted.
-                      </div>
-                    ) : null}
-
-                    <fieldset disabled={!canDecide || isProcessingAction} className="space-y-4 disabled:opacity-75">
-                      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        <label className="block text-sm font-medium text-slate-700">
-                          Hair length
-                          <div className="relative mt-1">
-                            <input
-                              type="number"
-                              min="0"
-                              max="999.99"
-                              step="0.01"
-                              value={detailDraft.declaredLength}
-                              onChange={(event) => setDetailField('declaredLength', event.target.value)}
-                              placeholder="e.g. 12"
-                              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 pr-9 text-sm text-slate-900 outline-none focus:border-slate-500"
-                            />
-                            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-slate-400">in</span>
-                          </div>
-                        </label>
-
-                        <label className="block text-sm font-medium text-slate-700">
-                          Hair color
-                          <input
-                            value={detailDraft.declaredColor}
-                            onChange={(event) => setDetailField('declaredColor', event.target.value)}
-                            placeholder="e.g. Black"
-                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
-                          />
-                        </label>
-
-                        <label className="block text-sm font-medium text-slate-700">
-                          Hair pattern
-                          <input
-                            value={detailDraft.declaredTexture}
-                            onChange={(event) => setDetailField('declaredTexture', event.target.value)}
-                            placeholder="e.g. Straight or Wavy"
-                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
-                          />
-                        </label>
-
-                        <label className="block text-sm font-medium text-slate-700">
-                          Hair density
-                          <input
-                            value={detailDraft.declaredDensity}
-                            onChange={(event) => setDetailField('declaredDensity', event.target.value)}
-                            placeholder="e.g. Light, Medium, or Heavy"
-                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
-                          />
-                        </label>
-
-                        <label className="block text-sm font-medium text-slate-700 sm:col-span-2">
-                          Hair condition
-                          <input
-                            value={detailDraft.declaredCondition}
-                            onChange={(event) => setDetailField('declaredCondition', event.target.value)}
-                            placeholder="Describe the received condition"
-                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
-                          />
-                        </label>
-                      </div>
-
-                      <div>
-                        <p className="text-sm font-medium text-slate-700">Treatment indicators</p>
-                        <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                          {[
-                            ['isChemicallyTreated', 'Chemically treated'],
-                            ['isColored', 'Colored'],
-                            ['isBleached', 'Bleached'],
-                            ['isRebonded', 'Rebonded'],
-                          ].map(([field, label]) => (
-                            <label
-                              key={field}
-                              className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
-                                detailDraft[field]
-                                  ? 'border-rose-200 bg-rose-50 text-rose-800'
-                                  : 'border-slate-200 bg-slate-50 text-slate-600'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={detailDraft[field]}
-                                onChange={(event) => setDetailField(field, event.target.checked)}
-                                className="h-4 w-4 rounded border-slate-300"
-                              />
-                              {label}
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-
-                      <label className="block text-sm font-medium text-slate-700">
-                        Inspection notes
-                        <textarea
-                          value={detailDraft.detailNotes}
-                          onChange={(event) => setDetailField('detailNotes', event.target.value)}
-                          rows={3}
-                          placeholder="Add inspection notes for this hair submission"
-                          className="mt-1 w-full resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
-                        />
-                      </label>
-                    </fieldset>
-
-                    {activeDetailRow?.Rejection_Reason ? (
-                      <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-                        <span className="font-semibold">Rejection reason: </span>
-                        {activeDetailRow.Rejection_Reason}
-                      </div>
-                    ) : null}
-                  </section>
-
-                  <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
-                      <div>
-                        <h3 className="text-sm font-semibold text-slate-900">Original AI Screening vs Human Inspection</h3>
-                        <p className="mt-0.5 text-xs text-slate-500">Changing any comparable human field immediately updates the percentages below.</p>
-                      </div>
-                      {activeAiScreening && liveAiAccuracy.comparable > 0 ? (
-                        <div className="flex flex-wrap gap-2">
-                          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                            AI correct {Number(liveAiAccuracy.aiPercent.toFixed(1))}%
-                          </span>
-                          <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
-                            Human changes {Number(liveAiAccuracy.humanPercent.toFixed(1))}%
-                          </span>
+                      {!activeDetailRow ? (
+                        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                          No detail row exists yet. One will be created
+                          automatically when this review is submitted.
                         </div>
                       ) : null}
-                    </div>
-                    {!activeAiScreening ? (
-                      <p className="m-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">No AI screening is linked to this submission. Human quality review is still available, but AI accuracy cannot be calculated.</p>
-                    ) : (
-                      <div className="p-4">
-                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-                          {[
-                            ['Length', `${activeAiScreening.Estimated_Length ?? 'N/A'} in`, detailDraft.declaredLength ? `${detailDraft.declaredLength} in` : 'Not provided', 'length'],
-                            ['Color', activeAiScreening.Detected_Color, detailDraft.declaredColor || 'Not provided', 'color'],
-                            ['Hair Pattern', activeAiScreening.Detected_Texture, detailDraft.declaredTexture || 'Not provided', 'texture'],
-                            ['Density', activeAiScreening.Detected_Density, detailDraft.declaredDensity || 'Not provided', 'density'],
-                            ['Condition', activeAiScreening.Detected_Condition, detailDraft.declaredCondition || 'Not provided', 'condition'],
-                          ].map(([label, aiValue, humanValue, field]) => {
-                            const changed = liveAiAccuracy.changed.includes(field);
-                            return (
-                              <div key={field} className={`rounded-lg border p-3 ${changed ? 'border-amber-300 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
-                                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
-                                <p className="mt-2 text-[10px] font-semibold uppercase text-slate-400">AI</p>
-                                <p className="truncate text-xs font-semibold text-slate-900" title={String(aiValue || '')}>{aiValue || 'Not provided'}</p>
-                                <p className="mt-2 text-[10px] font-semibold uppercase text-slate-400">Human</p>
-                                <p className="truncate text-xs font-semibold text-slate-900" title={String(humanValue)}>{humanValue}</p>
-                                <p className={`mt-2 text-[10px] font-bold ${changed ? 'text-amber-700' : 'text-emerald-700'}`}>{changed ? 'Changed by human' : 'Matches AI'}</p>
-                              </div>
-                            );
-                          })}
+
+                      <fieldset
+                        disabled={!canDecide || isProcessingAction}
+                        className="space-y-4 disabled:opacity-75"
+                      >
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="block text-sm font-medium text-slate-700">
+                            Hair length
+                            <div className="relative mt-1">
+                              <input
+                                type="number"
+                                min="0"
+                                max="999.99"
+                                step="0.01"
+                                value={detailDraft.declaredLength}
+                                onChange={(event) =>
+                                  setDetailField(
+                                    "declaredLength",
+                                    event.target.value,
+                                  )
+                                }
+                                placeholder="e.g. 12"
+                                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 pr-9 text-sm text-slate-900 outline-none focus:border-slate-500"
+                              />
+                              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-slate-400">
+                                in
+                              </span>
+                            </div>
+                          </label>
+
+                          <label className="block text-sm font-medium text-slate-700">
+                            Hair color
+                            <select
+                              value={detailDraft.declaredColor}
+                              onChange={(event) =>
+                                setDetailField(
+                                  "declaredColor",
+                                  event.target.value,
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
+                            >
+                              <option value="">Select color</option>
+                              {optionsIncludingCurrent(
+                                HAIR_COLOR_OPTIONS,
+                                detailDraft.declaredColor,
+                              ).map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="order-4 block text-sm font-medium text-slate-700">
+                            Hair pattern
+                            <select
+                              value={detailDraft.declaredTexture}
+                              onChange={(event) =>
+                                setDetailField(
+                                  "declaredTexture",
+                                  event.target.value,
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
+                            >
+                              <option value="">Select pattern</option>
+                              {optionsIncludingCurrent(
+                                HAIR_PATTERN_OPTIONS,
+                                detailDraft.declaredTexture,
+                              ).map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="order-3 block text-sm font-medium text-slate-700">
+                            Hair density
+                            <select
+                              value={detailDraft.declaredDensity}
+                              onChange={(event) =>
+                                setDetailField(
+                                  "declaredDensity",
+                                  event.target.value,
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
+                            >
+                              <option value="">Select density</option>
+                              {optionsIncludingCurrent(
+                                HAIR_DENSITY_OPTIONS,
+                                detailDraft.declaredDensity,
+                              ).map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="order-5 block text-sm font-medium text-slate-700 sm:col-span-2">
+                            Hair condition
+                            <select
+                              value={detailDraft.declaredCondition}
+                              onChange={(event) =>
+                                setDetailField(
+                                  "declaredCondition",
+                                  event.target.value,
+                                )
+                              }
+                              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
+                            >
+                              <option value="">Select condition</option>
+                              {optionsIncludingCurrent(
+                                HAIR_CONDITION_OPTIONS,
+                                detailDraft.declaredCondition,
+                              ).map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
                         </div>
-                        {liveAiAccuracy.changed.length ? <p className="mt-3 text-xs text-amber-700">Changed fields: {liveAiAccuracy.changed.join(', ')}</p> : null}
+
+                        <div>
+                          <p className="text-sm font-medium text-slate-700">
+                            Treatment
+                          </p>
+                          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                            {[
+                              ["isChemicallyTreated", "Chemically treated"],
+                              ["isColored", "Colored"],
+                              ["isBleached", "Bleached"],
+                              ["isRebonded", "Rebonded"],
+                            ].map(([field, label]) => (
+                              <label
+                                key={field}
+                                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                                  detailDraft[field]
+                                    ? "border-rose-200 bg-rose-50 text-rose-800"
+                                    : "border-slate-200 bg-slate-50 text-slate-600"
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={detailDraft[field]}
+                                  onChange={(event) =>
+                                    setDetailField(field, event.target.checked)
+                                  }
+                                  className="h-4 w-4 rounded border-slate-300"
+                                />
+                                {label}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+
+                        <label className="block text-sm font-medium text-slate-700">
+                          Notes
+                          <textarea
+                            value={detailDraft.detailNotes}
+                            onChange={(event) =>
+                              setDetailField("detailNotes", event.target.value)
+                            }
+                            rows={3}
+                            placeholder="Optional notes"
+                            className="mt-1 w-full resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-500"
+                          />
+                        </label>
+                      </fieldset>
+
+                      {activeDetailRow?.Rejection_Reason ? (
+                        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                          <span className="font-semibold">
+                            Rejection reason:{" "}
+                          </span>
+                          {activeDetailRow.Rejection_Reason}
+                        </div>
+                      ) : null}
+                    </section>
+
+                    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-900">
+                            AI Comparison
+                          </h3>
+                        </div>
+                        {activeAiScreening && liveAiAccuracy.comparable > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                              AI correct{" "}
+                              {Number(liveAiAccuracy.aiPercent.toFixed(1))}%
+                            </span>
+                            <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
+                              Human changes{" "}
+                              {Number(liveAiAccuracy.humanPercent.toFixed(1))}%
+                            </span>
+                          </div>
+                        ) : null}
                       </div>
-                    )}
-                  </section>
-                </>
+                      {!activeAiScreening ? (
+                        <p className="px-4 py-3 text-sm text-slate-500">
+                          No AI screening available.
+                        </p>
+                      ) : (
+                        <div className="p-4">
+                          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                            {[
+                              [
+                                "Length",
+                                `${activeAiScreening.Estimated_Length ?? "N/A"} in`,
+                                detailDraft.declaredLength
+                                  ? `${detailDraft.declaredLength} in`
+                                  : "Not provided",
+                                "length",
+                              ],
+                              [
+                                "Color",
+                                activeAiScreening.Detected_Color,
+                                detailDraft.declaredColor || "Not provided",
+                                "color",
+                              ],
+                              [
+                                "Hair Pattern",
+                                activeAiScreening.Detected_Texture,
+                                detailDraft.declaredTexture || "Not provided",
+                                "texture",
+                              ],
+                              [
+                                "Density",
+                                activeAiScreening.Detected_Density,
+                                detailDraft.declaredDensity || "Not provided",
+                                "density",
+                              ],
+                              [
+                                "Condition",
+                                activeAiScreening.Detected_Condition,
+                                detailDraft.declaredCondition || "Not provided",
+                                "condition",
+                              ],
+                            ].map(([label, aiValue, humanValue, field]) => {
+                              const changed =
+                                liveAiAccuracy.changed.includes(field);
+                              return (
+                                <div
+                                  key={field}
+                                  className={`rounded-lg border p-3 ${changed ? "border-amber-300 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}
+                                >
+                                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                                    {label}
+                                  </p>
+                                  <p className="mt-2 text-[10px] font-semibold uppercase text-slate-400">
+                                    AI
+                                  </p>
+                                  <p
+                                    className="truncate text-xs font-semibold text-slate-900"
+                                    title={String(aiValue || "")}
+                                  >
+                                    {aiValue || "Not provided"}
+                                  </p>
+                                  <p className="mt-2 text-[10px] font-semibold uppercase text-slate-400">
+                                    Human
+                                  </p>
+                                  <p
+                                    className="truncate text-xs font-semibold text-slate-900"
+                                    title={String(humanValue)}
+                                  >
+                                    {humanValue}
+                                  </p>
+                                  <p
+                                    className={`mt-2 text-[10px] font-bold ${changed ? "text-amber-700" : "text-emerald-700"}`}
+                                  >
+                                    {changed
+                                      ? "Changed by human"
+                                      : "Matches AI"}
+                                  </p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {liveAiAccuracy.changed.length ? (
+                            <p className="mt-3 text-xs text-amber-700">
+                              Changed fields:{" "}
+                              {liveAiAccuracy.changed.join(", ")}
+                            </p>
+                          ) : null}
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                </div>
               )}
 
               {showRejectionInput ? (
                 <div>
-                  <label className="block text-sm font-medium mb-1" style={{ color: primaryTextColor }}>
+                  <label
+                    className="block text-sm font-medium mb-1"
+                    style={{ color: primaryTextColor }}
+                  >
                     Rejection reason
                   </label>
                   <textarea
@@ -1552,17 +2200,20 @@ export default function QualityCheckPage() {
                 </div>
               ) : null}
 
-              <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4">
+              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 pt-3">
                 {canDecide ? (
                   <>
                     <button
                       type="button"
                       onClick={requestApprove}
                       disabled={isProcessingAction}
-                      className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                      style={{ backgroundColor: tertiaryColor }}
+                      className="order-2 inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none"
                     >
-                      {isProcessingAction ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                      {isProcessingAction ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <CheckCircle2 size={14} />
+                      )}
                       Approve
                     </button>
                     {showRejectionInput ? (
@@ -1570,10 +2221,14 @@ export default function QualityCheckPage() {
                         type="button"
                         onClick={requestReject}
                         disabled={isProcessingAction || !rejectionReason.trim()}
-                        className="inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                        style={{ backgroundColor: '#dc2626' }}
+                        className="order-1 inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                        style={{ backgroundColor: "#dc2626" }}
                       >
-                        {isProcessingAction ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
+                        {isProcessingAction ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <XCircle size={14} />
+                        )}
                         Confirm Rejection
                       </button>
                     ) : (
@@ -1581,8 +2236,8 @@ export default function QualityCheckPage() {
                         type="button"
                         onClick={() => setShowRejectionInput(true)}
                         disabled={isProcessingAction}
-                        className="inline-flex items-center gap-2 rounded-lg border bg-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
-                        style={{ borderColor: '#fecaca', color: '#b91c1c' }}
+                        className="order-1 inline-flex items-center gap-2 rounded-lg border bg-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                        style={{ borderColor: "#fecaca", color: "#b91c1c" }}
                       >
                         <XCircle size={14} />
                         Reject
@@ -1602,138 +2257,212 @@ export default function QualityCheckPage() {
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-2xl border bg-white shadow-sm" style={{ borderColor: '#e2e8f0' }}>
-        <div className="flex items-center justify-between gap-2 border-b px-5 py-4" style={{ borderColor: '#e2e8f0' }}>
+      <div
+        className="overflow-hidden rounded-2xl border bg-white shadow-sm"
+        style={{ borderColor: "#e2e8f0" }}
+      >
+        <div
+          className="flex flex-wrap items-end justify-between gap-3 border-b px-5 py-4"
+          style={{ borderColor: "#e2e8f0" }}
+        >
           <div>
-            <h2 className="text-lg font-semibold" style={headingStyle}>Received hair review queue</h2>
+            <h2 className="text-base font-semibold" style={headingStyle}>
+              Review Queue
+            </h2>
             <p className="mt-0.5 text-xs" style={{ color: secondaryTextColor }}>
-              Clear groups separate work awaiting review from final quality decisions and cancellations.
+              Review received donations or check previous quality decisions.
             </p>
           </div>
-          <span className="text-xs" style={{ color: tertiaryTextColor }}>{queue.length} independent donations</span>
+          <div className="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1">
+            {["Pending", "Approved", "Rejected", "Cancelled"].map((filter) => (
+              <button
+                key={filter}
+                type="button"
+                onClick={() => setQueueFilter(filter)}
+                className={`rounded-md px-2.5 py-1.5 text-xs font-semibold transition ${
+                  queueFilter === filter
+                    ? "bg-white text-slate-900 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                {filter} {queueByStatus[filter].length}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {!queue.length && !isLoadingQueue ? (
-          <div className="px-4 py-8 text-center text-sm" style={{ color: secondaryTextColor }}>
-            No submissions in the QA queue yet.
+        {!filteredQueue.length && !isLoadingQueue ? (
+          <div
+            className="px-4 py-8 text-center text-sm"
+            style={{ color: secondaryTextColor }}
+          >
+            No {queueFilter.toLowerCase()} submissions.
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-3">
-            {Object.entries(queueByStatus).map(([statusLabel, rows]) => (
-              <div key={statusLabel} className="rounded-lg border bg-slate-50 p-3" style={{ borderColor: '#e2e8f0' }}>
-                <div className="mb-2 flex items-center justify-between">
-                  <span
-                    className="rounded-full border px-2 py-0.5 text-[11px] font-semibold"
-                    style={statusBadgeStyle(statusLabel, primaryColor, tertiaryColor)}
-                  >
-                    {statusLabel}
+          <div className="divide-y divide-slate-100">
+            {filteredQueue.map((row) => {
+              const isActive = row.submissionId === activeSubmissionId;
+              const route = row.logistics?.Logistics_Type
+                ? humanizeLabel(row.logistics.Logistics_Type)
+                : "Courier Donation";
+              return (
+                <button
+                  key={row.submissionId}
+                  type="button"
+                  onClick={() => setActiveSubmissionId(row.submissionId)}
+                  className="flex w-full min-w-0 items-center gap-4 px-5 py-3 text-left transition hover:bg-slate-50"
+                  style={
+                    isActive
+                      ? { backgroundColor: withColorAlpha(primaryColor, 0.06) }
+                      : undefined
+                  }
+                >
+                  <span className="min-w-0 flex-1">
+                    <span
+                      className="block truncate text-sm font-semibold"
+                      style={{ color: primaryTextColor }}
+                    >
+                      {row.donorName}
+                    </span>
+                    <span
+                      className="mt-0.5 block truncate text-xs"
+                      style={{ color: tertiaryTextColor }}
+                    >
+                      {route} · Updated {formatDateTime(row.updatedAt)}
+                    </span>
                   </span>
-                  <span className="text-xs font-semibold" style={{ color: tertiaryTextColor }}>{rows.length}</span>
-                </div>
-                <div className="space-y-2">
-                  {!rows.length ? (
-                    <p className="text-xs" style={{ color: tertiaryTextColor }}>None.</p>
-                  ) : (
-                    rows.map((row) => {
-                      const isActive = row.submissionId === activeSubmissionId;
-                      return (
-                        <button
-                          key={row.submissionId}
-                          type="button"
-                          onClick={() => setActiveSubmissionId(row.submissionId)}
-                          className="w-full rounded-lg border bg-white px-3 py-2 text-left transition"
-                          style={
-                            isActive
-                              ? { borderColor: primaryColor, backgroundColor: withColorAlpha(primaryColor, 0.08) }
-                              : { borderColor: '#e2e8f0' }
-                          }
-                        >
-                          <p className="font-mono text-xs font-semibold" style={{ color: primaryTextColor }}>{row.submissionCode}</p>
-                          <p className="mt-0.5 truncate text-xs" style={{ color: secondaryTextColor }}>{row.donorName}</p>
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            ))}
+                  <span
+                    className="shrink-0 font-mono text-xs"
+                    style={{ color: secondaryTextColor }}
+                  >
+                    {row.submissionCode}
+                  </span>
+                  <span
+                    className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+                    style={statusBadgeStyle(
+                      row.qualityStatus,
+                      primaryColor,
+                      tertiaryColor,
+                    )}
+                  >
+                    {row.qualityStatus}
+                  </span>
+                  <span
+                    className="shrink-0 text-xs font-semibold"
+                    style={{ color: primaryColor }}
+                  >
+                    {queueFilter === "Pending" ? "Review →" : "View →"}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
 
-      {decisionConfirmation && typeof document !== 'undefined' ? createPortal((
-        <div
-          className="fixed inset-0 flex items-center justify-center px-4 py-6"
-          style={{
-            inset: 0,
-            zIndex: 2147483000,
-            backgroundColor: 'rgba(15, 23, 42, 0.68)',
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="quality-decision-title"
-            className="w-full max-w-md rounded-2xl border border-slate-200 p-5 shadow-2xl"
-            style={{
-              backgroundColor: '#ffffff',
-              opacity: 1,
-              isolation: 'isolate',
-            }}
-          >
-            <div className="flex items-start gap-3">
-              <span className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
-                decisionConfirmation.decision === 'Approved'
-                  ? 'bg-emerald-50 text-emerald-700'
-                  : 'bg-rose-50 text-rose-700'
-              }`}>
-                {decisionConfirmation.decision === 'Approved' ? <CheckCircle2 size={20} /> : <AlertCircle size={20} />}
-              </span>
-              <div>
-                <h2 id="quality-decision-title" className="text-lg font-semibold text-slate-900">
-                  {decisionConfirmation.decision === 'Approved' ? 'Approve this hair?' : 'Reject this hair?'}
-                </h2>
-                <p className="mt-1 text-sm leading-6 text-slate-600">
-                  Waybill <span className="font-mono font-semibold text-slate-800">{decisionConfirmation.submissionCode}</span>
-                  {decisionConfirmation.decision === 'Approved'
-                    ? ' will be marked Approved and its independent donation status will become Available for Bundling.'
-                    : ' will be marked Rejected. It will not be treated as Cancelled and cannot enter Bundling.'}
+      {decisionConfirmation && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="fixed inset-0 flex items-center justify-center px-4 py-6"
+              style={{
+                inset: 0,
+                zIndex: 2147483000,
+                backgroundColor: "rgba(15, 23, 42, 0.68)",
+              }}
+            >
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="quality-decision-title"
+                className="w-full max-w-md rounded-2xl border border-slate-200 p-5 shadow-2xl"
+                style={{
+                  backgroundColor: "#ffffff",
+                  opacity: 1,
+                  isolation: "isolate",
+                }}
+              >
+                <div className="flex items-start gap-3">
+                  <span
+                    className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
+                      decisionConfirmation.decision === "Approved"
+                        ? "bg-emerald-50 text-emerald-700"
+                        : "bg-rose-50 text-rose-700"
+                    }`}
+                  >
+                    {decisionConfirmation.decision === "Approved" ? (
+                      <CheckCircle2 size={20} />
+                    ) : (
+                      <AlertCircle size={20} />
+                    )}
+                  </span>
+                  <div>
+                    <h2
+                      id="quality-decision-title"
+                      className="text-lg font-semibold text-slate-900"
+                    >
+                      {decisionConfirmation.decision === "Approved"
+                        ? "Approve this hair?"
+                        : "Reject this hair?"}
+                    </h2>
+                    <p className="mt-1 text-sm leading-6 text-slate-600">
+                      Waybill{" "}
+                      <span className="font-mono font-semibold text-slate-800">
+                        {decisionConfirmation.submissionCode}
+                      </span>
+                      {decisionConfirmation.decision === "Approved"
+                        ? " will be marked Approved and its independent donation status will become Available for Bundling."
+                        : " will be marked Rejected. It will not be treated as Cancelled and cannot enter Bundling."}
+                    </p>
+                  </div>
+                </div>
+
+                {decisionConfirmation.reason ? (
+                  <div className="mt-4 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2.5">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-rose-500">
+                      Rejection reason
+                    </p>
+                    <p className="mt-1 text-sm text-rose-800">
+                      {decisionConfirmation.reason}
+                    </p>
+                  </div>
+                ) : null}
+
+                <p className="mt-4 text-xs text-slate-500">
+                  This quality decision cannot be changed after confirmation.
                 </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDecisionConfirmation(null)}
+                    disabled={isProcessingAction}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-60"
+                  >
+                    Go back
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void confirmDecision()}
+                    disabled={isProcessingAction}
+                    className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 ${
+                      decisionConfirmation.decision === "Approved"
+                        ? "bg-emerald-700"
+                        : "bg-rose-700"
+                    }`}
+                  >
+                    {isProcessingAction ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : null}
+                    Confirm{" "}
+                    {decisionConfirmation.decision === "Approved"
+                      ? "approval"
+                      : "rejection"}
+                  </button>
+                </div>
               </div>
-            </div>
-
-            {decisionConfirmation.reason ? (
-              <div className="mt-4 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-rose-500">Rejection reason</p>
-                <p className="mt-1 text-sm text-rose-800">{decisionConfirmation.reason}</p>
-              </div>
-            ) : null}
-
-            <p className="mt-4 text-xs text-slate-500">This quality decision cannot be changed after confirmation.</p>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setDecisionConfirmation(null)}
-                disabled={isProcessingAction}
-                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-60"
-              >
-                Go back
-              </button>
-              <button
-                type="button"
-                onClick={() => void confirmDecision()}
-                disabled={isProcessingAction}
-                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 ${
-                  decisionConfirmation.decision === 'Approved' ? 'bg-emerald-700' : 'bg-rose-700'
-                }`}
-              >
-                {isProcessingAction ? <Loader2 size={14} className="animate-spin" /> : null}
-                Confirm {decisionConfirmation.decision === 'Approved' ? 'approval' : 'rejection'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ), document.body) : null}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

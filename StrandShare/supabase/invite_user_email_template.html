@@ -179,12 +179,6 @@
                 <div style="margin:0 0 16px 0;background-color:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:12px 14px;color:#065f46;font-size:13px;line-height:1.6;">
                   Use these credentials to sign in through the Donivra mobile application. Patient accounts are not available in the staff website.
                 </div>
-                {{ else if or (eq .Data.account_type "partner_hospital") (eq .Data.account_type "internal_web_user") }}
-                <div style="margin:0 0 16px 0;">
-                  <a href="{{ .SiteURL }}/login" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 18px;border-radius:8px;">
-                    Go To Login
-                  </a>
-                </div>
                 {{ end }}
 
                 {{ if or (eq .Data.account_type "patient") (eq .Data.account_type "partner_hospital") (eq .Data.account_type "internal_web_user") }}
