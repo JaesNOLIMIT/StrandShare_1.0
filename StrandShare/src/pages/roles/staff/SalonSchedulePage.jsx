@@ -214,7 +214,20 @@ function routeKind(row) {
     return "Drop-off";
   return "";
 }
+function submissionFlowKey(row) {
+  return String(row?.submission?.Status || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
 function receivingStatus(row) {
+  const submissionStatus = submissionFlowKey(row);
+  const submissionIsCancelled = ["cancelled", "canceled"].includes(
+    submissionStatus,
+  );
+  const submissionHasAdvanced =
+    Boolean(row?.submission?.Bundle_ID) ||
+    (Boolean(submissionStatus) && submissionStatus !== "pending");
+
   if (routeKind(row) === "Courier") {
     const key = String(row?.Shipment_Status || "")
       .toLowerCase()
@@ -226,10 +239,18 @@ function receivingStatus(row) {
       return "Received";
     if (key === "noshow") return "No Show";
     if (["cancelled", "canceled"].includes(key)) return "Cancelled";
+    if (submissionIsCancelled) return "Cancelled";
+    // The receiving RPC accepts only unbundled Pending submissions. Older or
+    // inconsistent logistics rows can have no shipment status even though the
+    // parent submission has already moved past receiving; do not show those as
+    // actionable expected arrivals.
+    if (submissionHasAdvanced) return "Received";
     return "Expected";
   }
   const status = String(row?.Dropoff_Status || "Expected").trim();
   if (status === "Completed") return "Received";
+  if (status === "Expected" && submissionIsCancelled) return "Cancelled";
+  if (status === "Expected" && submissionHasAdvanced) return "Received";
   return status;
 }
 function receivingStatusLabel(status) {
@@ -276,57 +297,89 @@ function expectedArrivalLabel(row) {
 function receivingTimeline(row) {
   if (!row) return [];
   const status = receivingStatus(row);
+  const route = routeKind(row);
   const receivedAt = row.Completed_At || row.Received_At;
   const submissionStatus = String(row.submission?.Status || "").trim();
+  const qualityStatus = String(row.detail?.Status || "").trim();
   const submissionKey = submissionStatus
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
-  const qualityDone = [
+  const qualityKey = qualityStatus
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  const qualityRejected = ["rejected", "rejectedcut"].includes(qualityKey) ||
+    submissionKey === "rejected";
+  const qualityDone = ["approved", "rejected", "rejectedcut"].includes(qualityKey) || [
     "approved",
     "accepted",
     "hairaccepted",
     "qualityapproved",
+    "available",
     "forbundling",
     "bundled",
     "inproduction",
     "wigcreated",
     "wigcompleted",
   ].some((key) => submissionKey.includes(key));
-  const completed = [
-    "bundled",
-    "inproduction",
-    "wigcreated",
-    "wigcompleted",
-  ].some((key) => submissionKey.includes(key));
+  const qualityLabel = qualityRejected
+    ? ["rejected", "rejectedcut"].includes(qualityKey)
+      ? qualityStatus
+      : "Rejected"
+    : qualityStatus || submissionStatus;
+  const received = status === "Received" || Boolean(receivedAt);
+  const arrivalStages =
+    route === "Drop-off"
+      ? [
+          {
+            label: "Expected",
+            detail: expectedArrivalLabel(row),
+            done: ["Checked In", "Received"].includes(status),
+          },
+          {
+            label: "Checked In",
+            detail: row.Checked_In_At
+              ? formatDateTime(row.Checked_In_At)
+              : received
+                ? "Confirmed before receiving"
+                : "Awaiting donor",
+            // Receiving a drop-off is only allowed after check-in. Treat older
+            // records with a missing timestamp as complete once receipt exists.
+            done: Boolean(row.Checked_In_At) || received,
+          },
+        ]
+      : [];
   const stages = [
-    {
-      label: "Expected Arrival",
-      detail: expectedArrivalLabel(row),
-      done: ["Checked In", "Received"].includes(status),
-    },
-    {
-      label: "Checked In",
-      detail: row.Checked_In_At ? formatDateTime(row.Checked_In_At) : "—",
-      done: Boolean(row.Checked_In_At),
-    },
+    ...arrivalStages,
     {
       label: "Hair Received",
-      detail: receivedAt ? formatDateTime(receivedAt) : "—",
-      done: Boolean(receivedAt),
+      detail: receivedAt
+        ? formatDateTime(receivedAt)
+        : received
+          ? "Receipt confirmed"
+          : route === "Courier"
+            ? "Awaiting courier arrival"
+            : "Awaiting staff confirmation",
+      done: received,
     },
     {
       label: "Quality Check",
       detail: qualityDone
-        ? submissionStatus
-        : receivedAt
+        ? qualityLabel
+        : received
           ? "Waiting for Specialist"
-          : "—",
+          : "Starts after receiving",
       done: qualityDone,
+      rejected: qualityRejected,
     },
     {
-      label: "Completed",
-      detail: completed ? submissionStatus : "—",
-      done: completed,
+      label: qualityRejected ? "Donation Rejected" : "Completed",
+      detail: qualityRejected
+        ? "Not accepted for hair inventory"
+        : qualityDone
+          ? qualityLabel
+          : "—",
+      done: qualityDone,
+      rejected: qualityRejected,
     },
   ];
   let currentAssigned = false;
@@ -385,6 +438,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
   const [dateFilter, setDateFilter] = useState("");
   const [selectedId, setSelectedId] = useState(null);
   const [notes, setNotes] = useState("");
+  const [receivingConfirmation, setReceivingConfirmation] = useState(null);
   const [overrideDraft, setOverrideDraft] = useState(EMPTY_OVERRIDE);
   const [notice, setNotice] = useState({ kind: "", text: "" });
   const [loading, setLoading] = useState(false);
@@ -484,7 +538,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
         const result = await supabase
           .from(SUBMISSIONS_TABLE)
           .select(
-            "Submission_ID,User_ID,Status,Waybill_Code,Created_At,Donor_Notes,From_Event",
+            "Submission_ID,User_ID,Status,Bundle_ID,Waybill_Code,Created_At,Donor_Notes,From_Event",
           )
           .in("Submission_ID", ids)
           .eq("From_Event", false);
@@ -494,14 +548,14 @@ export default function SalonSchedulePage({ isActivePage = true }) {
       const submissionById = Object.fromEntries(
         submissions.map((row) => [row.Submission_ID, row]),
       );
-      let appointmentDetailsBySubmissionId = {};
-      if (appointmentSubmissionIds.length) {
+      let detailsBySubmissionId = {};
+      if (ids.length) {
         const detailResult = await supabase
           .from("Hair_Submission_Details")
           .select("*")
-          .in("Submission_ID", appointmentSubmissionIds);
+          .in("Submission_ID", ids);
         if (detailResult.error) throw detailResult.error;
-        appointmentDetailsBySubmissionId = Object.fromEntries(
+        detailsBySubmissionId = Object.fromEntries(
           (detailResult.data || []).map((row) => [row.Submission_ID, row]),
         );
       }
@@ -540,6 +594,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
           return {
             ...logistics,
             submission,
+            detail: detailsBySubmissionId[logistics.Submission_ID] || null,
             account: usersById[submission.User_ID],
             profile: detailsById[submission.User_ID],
           };
@@ -557,7 +612,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
           profile: detailsById[appointment.User_ID] || null,
           submission: submissionById[appointment.Hair_Submission_ID] || null,
           detail:
-            appointmentDetailsBySubmissionId[appointment.Hair_Submission_ID] ||
+            detailsBySubmissionId[appointment.Hair_Submission_ID] ||
             null,
         })),
       );
@@ -711,6 +766,17 @@ export default function SalonSchedulePage({ isActivePage = true }) {
     visibleQueue.find((row) => row.Submission_ID === selectedId) || null;
   const selectedReceivingStatus = selected ? receivingStatus(selected) : "";
   const selectedRoute = selected ? routeKind(selected) : "";
+  const selectedQualityStatus = String(selected?.detail?.Status || "").trim();
+  const selectedQualityKey = selectedQualityStatus
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  const selectedProgressStatus = ["rejected", "rejectedcut"].includes(
+    selectedQualityKey,
+  )
+    ? selectedQualityStatus
+    : selectedQualityKey === "approved"
+      ? "Approved"
+      : selectedReceivingStatus;
   const selectedReceivingFinal = ["Received", "Cancelled", "No Show"].includes(
     selectedReceivingStatus,
   );
@@ -1030,40 +1096,34 @@ export default function SalonSchedulePage({ isActivePage = true }) {
     }
   };
 
-  const runAction = async (action) => {
-    if (!selected || !supabase) return;
-    if (["cancel", "no_show"].includes(action) && !notes.trim()) {
-      setNotice({
-        kind: "error",
-        text: "Enter a reason before cancelling or marking Not Received.",
+  const runAction = async (action, confirmed = false) => {
+    const target = confirmed ? receivingConfirmation : selected;
+    if (!target || !supabase || saving) return;
+    if (["cancel", "no_show"].includes(action) && !confirmed) {
+      setReceivingConfirmation({
+        action,
+        Submission_ID: selected.Submission_ID,
+        donorName: fullName(selected.profile),
+        waybill: selected.submission.Waybill_Code || `#${selected.Submission_ID}`,
+        route: selectedRoute,
+        reason: notes,
       });
       return;
     }
-    if (
-      action === "cancel" &&
-      !window.confirm(
-        "Cancel this expected drop-off? This is final and cannot be reopened.",
-      )
-    )
-      return;
-    if (
-      action === "no_show" &&
-      !window.confirm(
-        `Mark ${fullName(selected.profile)}'s donation (${selected.submission.Waybill_Code || `#${selected.Submission_ID}`}) as Not Received? This is final and cannot be reopened.`,
-      )
-    )
+    const reason = confirmed ? receivingConfirmation.reason.trim() : notes.trim();
+    if (["cancel", "no_show"].includes(action) && !reason)
       return;
     setSaving(true);
     try {
-      const { error } = action === "no_show" && selectedRoute === "Courier"
+      const { error } = action === "no_show" && target.route === "Courier"
         ? await supabase.rpc("staff_mark_courier_hair_not_received", {
-            p_submission_id: selected.Submission_ID,
-            p_reason: notes.trim(),
+            p_submission_id: target.Submission_ID,
+            p_reason: reason,
           })
         : await supabase.rpc("staff_update_walk_in_donation", {
-            p_submission_id: selected.Submission_ID,
+            p_submission_id: target.Submission_ID,
             p_action: action,
-            p_notes: notes.trim() || null,
+            p_notes: reason || null,
           });
       if (error) throw error;
       setNotice({
@@ -1071,9 +1131,14 @@ export default function SalonSchedulePage({ isActivePage = true }) {
         text:
           action === "complete"
             ? "Receiving completed. The hair can now move to its separate quality review."
-            : "Walk-in status updated.",
+            : action === "no_show"
+              ? "Donation marked Not Received."
+              : action === "cancel"
+                ? "Expected drop-off cancelled."
+                : "Receiving status updated.",
       });
       setNotes("");
+      setReceivingConfirmation(null);
       await loadPage();
     } catch (error) {
       setNotice({
@@ -2137,22 +2202,34 @@ export default function SalonSchedulePage({ isActivePage = true }) {
 
                     <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(210px,0.68fr)]">
                       <div>
-                        <h3 className="text-sm font-semibold text-slate-900">
-                          Receiving progress
-                        </h3>
-                        <div className="mt-2 space-y-0">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <h3 className="text-sm font-semibold text-slate-900">
+                            Receiving progress
+                          </h3>
+                          <span
+                            className="rounded-full border px-2.5 py-1 text-[11px] font-bold"
+                            style={statusTone(selectedProgressStatus)}
+                          >
+                            {receivingStatusLabel(selectedProgressStatus)}
+                          </span>
+                        </div>
+                        <div className="mt-3 space-y-0">
                           {receivingTimeline(selected).map(
                             (stage, index, stages) => (
                               <div
                                 key={stage.label}
-                                className="relative flex gap-3 pb-1.5 last:pb-0"
+                                className="relative flex gap-3 pb-3 last:pb-0"
                               >
                                 {index < stages.length - 1 ? (
                                   <span
-                                    className={`absolute left-[9px] top-5 h-full w-px ${stage.done ? "" : "bg-slate-200"}`}
+                                    className={`absolute left-[9px] top-5 h-full w-0.5 ${stage.done ? "" : "bg-slate-200"}`}
                                     style={
                                       stage.done
-                                        ? { backgroundColor: tertiaryColor }
+                                        ? {
+                                            backgroundColor: stage.rejected
+                                              ? primaryColorDark
+                                              : tertiaryColorDark,
+                                          }
                                         : undefined
                                     }
                                   />
@@ -2161,7 +2238,11 @@ export default function SalonSchedulePage({ isActivePage = true }) {
                                   className={`relative z-[1] mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${stage.done ? "text-white" : stage.current ? "ring-2 ring-offset-2 text-white" : "bg-slate-200 text-slate-400"}`}
                                   style={
                                     stage.done
-                                      ? { backgroundColor: tertiaryColor }
+                                      ? {
+                                          backgroundColor: stage.rejected
+                                            ? primaryColorDark
+                                            : tertiaryColorDark,
+                                        }
                                       : stage.current
                                       ? {
                                           backgroundColor: primaryColor,
@@ -2170,19 +2251,33 @@ export default function SalonSchedulePage({ isActivePage = true }) {
                                       : undefined
                                   }
                                 >
-                                  {stage.done ? (
+                                  {stage.rejected ? (
+                                    <XCircle size={13} />
+                                  ) : stage.done ? (
                                     <CheckCircle2 size={13} />
                                   ) : (
                                     <span className="h-1.5 w-1.5 rounded-full bg-current" />
                                   )}
                                 </span>
-                                <div>
+                                <div className="min-w-0">
                                   <p
                                     className={`text-sm font-semibold ${stage.current ? "text-slate-900" : stage.done ? "text-slate-800" : "text-slate-400"}`}
+                                    style={
+                                      stage.rejected
+                                        ? { color: primaryColorDark }
+                                        : undefined
+                                    }
                                   >
                                     {stage.label}
                                   </p>
-                                  <p className="mt-0.5 text-xs text-slate-500">
+                                  <p
+                                    className={`mt-0.5 text-xs ${stage.done ? "text-slate-600" : "text-slate-400"}`}
+                                    style={
+                                      stage.rejected
+                                        ? { color: primaryColorDark }
+                                        : undefined
+                                    }
+                                  >
                                     {stage.detail}
                                   </p>
                                 </div>
@@ -2192,12 +2287,18 @@ export default function SalonSchedulePage({ isActivePage = true }) {
                         </div>
                       </div>
                       <div className="space-y-2">
-                        <div className="rounded-xl bg-slate-50 p-2.5">
+                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                           <p className="text-xs font-bold uppercase tracking-wide text-slate-500">
-                            Expected arrival
+                            {selectedRoute === "Courier"
+                              ? "Courier delivery"
+                              : "Expected arrival"}
                           </p>
                           <p className="mt-1 text-sm font-semibold text-slate-900">
-                            {expectedArrivalLabel(selected)}
+                            {selectedRoute === "Courier"
+                              ? selected.Received_At
+                                ? `Received ${formatDateTime(selected.Received_At)}`
+                                : receivingStatusLabel(selectedReceivingStatus)
+                              : expectedArrivalLabel(selected)}
                           </p>
                         </div>
                         {selected.Cancellation_Reason ? (
@@ -2301,9 +2402,13 @@ export default function SalonSchedulePage({ isActivePage = true }) {
                       </div>
                     ) : (
                       <div className="rounded-xl bg-slate-50 p-4 text-sm text-slate-600">
-                        This receiving record is final. Received hair continues
-                        to Specialist Quality Check; cancelled and not-received
-                        records remain in history.
+                        {["rejected", "rejectedcut"].includes(
+                          selectedQualityKey,
+                        )
+                          ? "Quality check complete. This donation was rejected and will not enter hair inventory."
+                          : selectedQualityKey === "approved"
+                            ? "Quality check complete. This donation was accepted and can continue through the hair inventory workflow."
+                            : "This receiving record is final. Received hair continues to Specialist Quality Check; cancelled and not-received records remain in history."}
                       </div>
                     )}
                   </div>
@@ -2428,6 +2533,79 @@ export default function SalonSchedulePage({ isActivePage = true }) {
           </section>
         </div>
       )}
+
+      {receivingConfirmation && typeof document !== "undefined"
+        ? createPortal(
+            <div className="fixed inset-0 z-[2147483001] flex items-center justify-center p-4">
+              <button
+                type="button"
+                aria-label="Close confirmation"
+                disabled={saving}
+                onClick={() => setReceivingConfirmation(null)}
+                className="absolute inset-0 bg-slate-950/55"
+              />
+              <section
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="receiving-confirmation-title"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && !saving) setReceivingConfirmation(null);
+                }}
+                className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl"
+              >
+                <div className="flex items-start gap-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full" style={statusTone("No Show")}>
+                    {receivingConfirmation.action === "no_show" ? <UserX size={20} /> : <XCircle size={20} />}
+                  </span>
+                  <div className="min-w-0">
+                    <h2 id="receiving-confirmation-title" className="text-lg font-semibold text-slate-900">
+                      {receivingConfirmation.action === "no_show" ? "Mark as Not Received?" : "Cancel this drop-off?"}
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {receivingConfirmation.donorName} · {receivingConfirmation.waybill}
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-4 text-sm text-slate-600">
+                  {receivingConfirmation.action === "no_show"
+                    ? "This waybill will be closed and cannot later be marked Received. The donation will remain visible under Not Received."
+                    : "This drop-off will be cancelled and cannot later be marked Received. The donation will remain visible under Cancelled."}
+                </p>
+                <label className="mt-4 block text-sm font-medium text-slate-700">
+                  Reason <span className="text-red-600">*</span>
+                  <textarea
+                    autoFocus
+                    rows={3}
+                    value={receivingConfirmation.reason}
+                    onChange={(event) => setReceivingConfirmation((current) => current ? { ...current, reason: event.target.value } : null)}
+                    placeholder="Explain why the donation was not received"
+                    className={`${inputClass} mt-1.5`}
+                  />
+                </label>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => setReceivingConfirmation(null)}
+                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50"
+                  >
+                    Keep donation
+                  </button>
+                  <button
+                    type="button"
+                    disabled={saving || !receivingConfirmation.reason.trim()}
+                    onClick={() => void runAction(receivingConfirmation.action, true)}
+                    className="rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{ backgroundColor: primaryColor }}
+                  >
+                    {saving ? "Saving…" : receivingConfirmation.action === "no_show" ? "Confirm Not Received" : "Confirm cancellation"}
+                  </button>
+                </div>
+              </section>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {isCameraOn && typeof document !== "undefined"
         ? createPortal(

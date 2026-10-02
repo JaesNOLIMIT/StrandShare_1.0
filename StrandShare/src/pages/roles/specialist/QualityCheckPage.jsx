@@ -85,6 +85,8 @@ const ACTIVE_STATUSES = [
   HAIR_SUBMISSION_STATUS.PENDING,
   HAIR_SUBMISSION_STATUS.CUT,
   HAIR_SUBMISSION_STATUS.AVAILABLE,
+  HAIR_SUBMISSION_STATUS.WIG_IN_PRODUCTION,
+  HAIR_SUBMISSION_STATUS.WIG_CREATED,
   HAIR_SUBMISSION_STATUS.CANCELLED,
   "Rejected",
 ];
@@ -624,9 +626,8 @@ export default function QualityCheckPage() {
         )
         .eq("From_Event", false)
         .in("Status", ACTIVE_STATUSES)
-        .is("Bundle_ID", null)
         .order("Updated_At", { ascending: false })
-        .limit(150);
+        .limit(1000);
 
       if (submissionsResult.error) throw submissionsResult.error;
 
