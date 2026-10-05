@@ -67,13 +67,12 @@ const HAIR_COLORS = [
   "Brown",
   "Light Brown",
   "Blonde",
-  "Red",
   "Gray",
-  "White",
-  "Mixed",
+  "Red / Auburn",
+  "Other",
 ];
 const HAIR_PATTERNS = ["Straight", "Wavy", "Curly", "Coily"];
-const HAIR_DENSITIES = ["Low", "Medium", "High"];
+const HAIR_DENSITIES = ["Light", "Thin", "Thick"];
 const HAIR_CONDITIONS = [
   "No Visible Concerns Detected",
   "Dry",
@@ -189,11 +188,15 @@ function appointmentStatus(row) {
 function appointmentReviewDraft(row) {
   const detail = row?.detail || {};
   const hair = row?.Hair_Details || {};
+  const declaredColor = detail.Declared_Color || hair.declaredColor || "";
+  const declaredDensity = detail.Declared_Density || hair.declaredDensity || "";
   return {
     declaredLength: detail.Declared_Length ?? hair.declaredLength ?? "",
-    declaredColor: detail.Declared_Color || hair.declaredColor || "",
+    declaredColor: HAIR_COLORS.includes(declaredColor) ? declaredColor : "",
     declaredTexture: detail.Declared_Texture || hair.declaredTexture || "",
-    declaredDensity: detail.Declared_Density || hair.declaredDensity || "",
+    declaredDensity: HAIR_DENSITIES.includes(declaredDensity)
+      ? declaredDensity
+      : "",
     declaredCondition:
       detail.Declared_Condition || hair.declaredCondition || "",
     isChemicallyTreated: Boolean(
@@ -450,6 +453,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
   );
   const [appointmentRejectionReason, setAppointmentRejectionReason] =
     useState("");
+  const [appointmentConfirmation, setAppointmentConfirmation] = useState(null);
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isStartingCamera, setIsStartingCamera] = useState(false);
   const videoRef = useRef(null);
@@ -475,6 +479,10 @@ export default function SalonSchedulePage({ isActivePage = true }) {
     if (!isSupabaseConfigured || !supabase) return;
     setLoading(true);
     try {
+      const overdueResult = await supabase.rpc(
+        "staff_refresh_overdue_salon_appointments",
+      );
+      if (overdueResult.error) throw overdueResult.error;
       const [lr, appointmentsResult, hr, or, officeResult] = await Promise.all([
         supabase
           .from(LOGISTICS_TABLE)
@@ -815,6 +823,11 @@ export default function SalonSchedulePage({ isActivePage = true }) {
       .toLowerCase()
       .replace(/[^a-z]/g, ""),
   );
+  const selectedAppointmentClosed = ["Cancelled", "No Show"].includes(
+    selectedAppointment?.Status,
+  );
+  const selectedAppointmentReviewLocked =
+    selectedAppointmentFinal || selectedAppointmentClosed;
   const calendarCells = useMemo(
     () => buildMonthCells(calendarMonth),
     [calendarMonth],
@@ -826,6 +839,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
   };
 
   useEffect(() => {
+    setAppointmentConfirmation(null);
     setAppointmentReview(
       selectedAppointment
         ? appointmentReviewDraft(selectedAppointment)
@@ -1038,8 +1052,24 @@ export default function SalonSchedulePage({ isActivePage = true }) {
     return () => window.clearInterval(timer);
   }, [isCameraOn, processScannedWaybill]);
 
-  const reviewAppointmentHair = async (decision) => {
-    if (!selectedAppointment || !supabase || selectedAppointmentFinal) return;
+  const validateAppointmentReview = (decision) => {
+    const requiredFields = [
+      ["declaredLength", "Length"],
+      ["declaredColor", "Color"],
+      ["declaredTexture", "Pattern"],
+      ["declaredDensity", "Density"],
+      ["declaredCondition", "Condition"],
+    ];
+    const missingFields = requiredFields
+      .filter(([key]) => !String(appointmentReview[key] ?? "").trim())
+      .map(([, label]) => label);
+    if (missingFields.length) {
+      setNotice({
+        kind: "error",
+        text: `Complete the required hair details: ${missingFields.join(", ")}.`,
+      });
+      return false;
+    }
     if (
       ["Rejected", "Rejected Cut"].includes(decision) &&
       !appointmentRejectionReason.trim()
@@ -1048,7 +1078,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
         kind: "error",
         text: "Enter a reason before rejecting the hair.",
       });
-      return;
+      return false;
     }
     const length = String(appointmentReview.declaredLength ?? "").trim();
     if (
@@ -1061,12 +1091,46 @@ export default function SalonSchedulePage({ isActivePage = true }) {
         kind: "error",
         text: "Hair length must be greater than 0 and no more than 999.99 inches.",
       });
-      return;
+      return false;
     }
+    return true;
+  };
+
+  const requestAppointmentReview = (decision) => {
+    if (
+      !selectedAppointment ||
+      selectedAppointmentReviewLocked ||
+      !validateAppointmentReview(decision)
+    )
+      return;
+    setAppointmentConfirmation({
+      decision,
+      appointmentId: selectedAppointment.Appointment_ID,
+      donorName: appointmentName(selectedAppointment),
+      waybill:
+        selectedAppointment.submission?.Waybill_Code ||
+        `Appointment #${selectedAppointment.Appointment_ID}`,
+      reason: appointmentRejectionReason.trim(),
+    });
+  };
+
+  const reviewAppointmentHair = async () => {
+    const decision = appointmentConfirmation?.decision;
+    if (
+      !decision ||
+      !selectedAppointment ||
+      selectedAppointment.Appointment_ID !==
+        appointmentConfirmation.appointmentId ||
+      !supabase ||
+      selectedAppointmentReviewLocked ||
+      !validateAppointmentReview(decision)
+    )
+      return;
+    const length = String(appointmentReview.declaredLength ?? "").trim();
     setSaving(true);
     try {
       const { error } = await supabase.rpc(
-        "staff_review_salon_appointment_hair",
+        "staff_review_salon_appointment_hair_required",
         {
           p_appointment_id: selectedAppointment.Appointment_ID,
           p_decision: decision,
@@ -1078,11 +1142,12 @@ export default function SalonSchedulePage({ isActivePage = true }) {
         },
       );
       if (error) throw error;
+      setAppointmentConfirmation(null);
       setNotice({
         kind: "success",
         text:
           decision === "Approved"
-            ? "Appointment hair approved and added to cut-hair inventory."
+            ? "Appointment hair approved with status Cut and added to cut-hair inventory."
             : `Appointment hair marked ${decision}.`,
       });
       await loadPage();
@@ -1356,13 +1421,15 @@ export default function SalonSchedulePage({ isActivePage = true }) {
             Confirm or correct the donor's values before making a decision.
           </p>
           <fieldset
-            disabled={saving || selectedAppointmentFinal}
+            disabled={saving || selectedAppointmentReviewLocked}
             className="mt-4 grid gap-3 md:grid-cols-2"
           >
             <label className="text-xs font-semibold text-slate-600">
-              Length (in)
+              Length (in) <span className="text-red-600">*</span>
               <input
                 type="number"
+                required
+                aria-required="true"
                 min="0.01"
                 max="999.99"
                 step="0.01"
@@ -1377,8 +1444,10 @@ export default function SalonSchedulePage({ isActivePage = true }) {
               />
             </label>
             <label className="text-xs font-semibold text-slate-600">
-              Color
+              Color <span className="text-red-600">*</span>
               <select
+                required
+                aria-required="true"
                 value={appointmentReview.declaredColor}
                 onChange={(event) =>
                   setAppointmentReview((old) => ({
@@ -1389,18 +1458,16 @@ export default function SalonSchedulePage({ isActivePage = true }) {
                 className={`${inputClass} mt-1`}
               >
                 <option value="">Select color</option>
-                {appointmentReview.declaredColor &&
-                !HAIR_COLORS.includes(appointmentReview.declaredColor) ? (
-                  <option>{appointmentReview.declaredColor}</option>
-                ) : null}
                 {HAIR_COLORS.map((item) => (
                   <option key={item}>{item}</option>
                 ))}
               </select>
             </label>
             <label className="text-xs font-semibold text-slate-600">
-              Pattern
+              Pattern <span className="text-red-600">*</span>
               <select
+                required
+                aria-required="true"
                 value={appointmentReview.declaredTexture}
                 onChange={(event) =>
                   setAppointmentReview((old) => ({
@@ -1421,8 +1488,10 @@ export default function SalonSchedulePage({ isActivePage = true }) {
               </select>
             </label>
             <label className="text-xs font-semibold text-slate-600">
-              Density
+              Density <span className="text-red-600">*</span>
               <select
+                required
+                aria-required="true"
                 value={appointmentReview.declaredDensity}
                 onChange={(event) =>
                   setAppointmentReview((old) => ({
@@ -1433,18 +1502,16 @@ export default function SalonSchedulePage({ isActivePage = true }) {
                 className={`${inputClass} mt-1`}
               >
                 <option value="">Select density</option>
-                {appointmentReview.declaredDensity &&
-                !HAIR_DENSITIES.includes(appointmentReview.declaredDensity) ? (
-                  <option>{appointmentReview.declaredDensity}</option>
-                ) : null}
                 {HAIR_DENSITIES.map((item) => (
                   <option key={item}>{item}</option>
                 ))}
               </select>
             </label>
             <label className="text-xs font-semibold text-slate-600 md:col-span-2">
-              Condition
+              Condition <span className="text-red-600">*</span>
               <select
+                required
+                aria-required="true"
                 value={appointmentReview.declaredCondition}
                 onChange={(event) =>
                   setAppointmentReview((old) => ({
@@ -1495,7 +1562,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
               </div>
             </div>
             <label className="text-xs font-semibold text-slate-600 md:col-span-2">
-              Notes
+              Notes <span className="font-normal text-slate-400">(optional)</span>
               <textarea
                 rows={2}
                 value={appointmentReview.detailNotes}
@@ -1508,7 +1575,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
                 className={`${inputClass} mt-1`}
               />
             </label>
-            {!selectedAppointmentFinal ? (
+            {!selectedAppointmentReviewLocked ? (
               <label className="text-xs font-semibold text-slate-600 md:col-span-2">
                 Rejection reason{" "}
                 <span className="font-normal text-slate-400">
@@ -1525,11 +1592,11 @@ export default function SalonSchedulePage({ isActivePage = true }) {
               </label>
             ) : null}
           </fieldset>
-          {!selectedAppointmentFinal ? (
+          {!selectedAppointmentReviewLocked ? (
             <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-4">
               <button
                 disabled={saving}
-                onClick={() => void reviewAppointmentHair("Rejected")}
+                onClick={() => requestAppointmentReview("Rejected")}
                 className="rounded-lg border px-4 py-2 text-sm font-semibold disabled:opacity-50"
                 style={statusTone("Rejected")}
               >
@@ -1537,7 +1604,7 @@ export default function SalonSchedulePage({ isActivePage = true }) {
               </button>
               <button
                 disabled={saving}
-                onClick={() => void reviewAppointmentHair("Rejected Cut")}
+                onClick={() => requestAppointmentReview("Rejected Cut")}
                 className="rounded-lg border px-4 py-2 text-sm font-semibold disabled:opacity-50"
                 style={statusTone("Checked In")}
               >
@@ -1545,17 +1612,19 @@ export default function SalonSchedulePage({ isActivePage = true }) {
               </button>
               <button
                 disabled={saving}
-                onClick={() => void reviewAppointmentHair("Approved")}
-                className="rounded-lg px-5 py-2 text-sm font-semibold text-white disabled:opacity-50"
-                style={{ backgroundColor: tertiaryColor }}
+                onClick={() => requestAppointmentReview("Approved")}
+                className="rounded-lg bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
               >
                 Approve & add to inventory
               </button>
             </div>
           ) : (
             <p className="mt-4 rounded-lg bg-slate-50 px-4 py-3 text-sm text-slate-600">
-              This review is final. Approved hair is already in cut-hair
-              inventory.
+              {selectedAppointmentClosed
+                ? `This appointment is ${selectedAppointment.Status} and can no longer be reviewed.`
+                : selectedAppointment?.detail?.Status === "Approved"
+                  ? "This review is final. The approved hair has status Cut and is already in cut-hair inventory."
+                  : "This review is final. Rejected hair was not added to cut-hair inventory."}
             </p>
           )}
         </div>
@@ -2533,6 +2602,104 @@ export default function SalonSchedulePage({ isActivePage = true }) {
           </section>
         </div>
       )}
+
+      {appointmentConfirmation && typeof document !== "undefined"
+        ? createPortal(
+            <div className="fixed inset-0 z-[2147483002] flex items-center justify-center p-4">
+              <button
+                type="button"
+                aria-label="Close appointment decision confirmation"
+                disabled={saving}
+                onClick={() => setAppointmentConfirmation(null)}
+                className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm"
+              />
+              <section
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="appointment-decision-title"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && !saving)
+                    setAppointmentConfirmation(null);
+                }}
+                className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl"
+              >
+                <div className="flex items-start gap-3">
+                  <span
+                    className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
+                      appointmentConfirmation.decision === "Approved"
+                        ? "bg-emerald-50 text-emerald-700"
+                        : "bg-rose-50 text-rose-700"
+                    }`}
+                  >
+                    {appointmentConfirmation.decision === "Approved" ? (
+                      <CheckCircle2 size={20} />
+                    ) : (
+                      <XCircle size={20} />
+                    )}
+                  </span>
+                  <div className="min-w-0">
+                    <h2
+                      id="appointment-decision-title"
+                      className="text-lg font-semibold text-slate-900"
+                    >
+                      Confirm {appointmentConfirmation.decision}?
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {appointmentConfirmation.donorName} ·{" "}
+                      <span className="font-mono font-semibold text-slate-800">
+                        {appointmentConfirmation.waybill}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-4 text-sm leading-6 text-slate-600">
+                  {appointmentConfirmation.decision === "Approved"
+                    ? "The submission status will become Cut and the hair will be added to Cut Hair Inventory immediately."
+                    : appointmentConfirmation.decision === "Rejected Cut"
+                      ? "The hair will be recorded as Rejected Cut and will not be added to Cut Hair Inventory."
+                      : "The hair will be rejected and will not be added to Cut Hair Inventory."}
+                </p>
+                {appointmentConfirmation.reason ? (
+                  <div className="mt-4 rounded-lg border border-rose-100 bg-rose-50 px-3 py-2.5">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-rose-500">
+                      Rejection reason
+                    </p>
+                    <p className="mt-1 text-sm text-rose-800">
+                      {appointmentConfirmation.reason}
+                    </p>
+                  </div>
+                ) : null}
+                <p className="mt-4 text-xs text-slate-500">
+                  This decision is final and cannot be changed after confirmation.
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => setAppointmentConfirmation(null)}
+                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50"
+                  >
+                    Go back
+                  </button>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void reviewAppointmentHair()}
+                    className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 ${
+                      appointmentConfirmation.decision === "Approved"
+                        ? "bg-emerald-600 hover:bg-emerald-700"
+                        : "bg-rose-700 hover:bg-rose-800"
+                    }`}
+                  >
+                    {saving ? <Loader2 size={14} className="animate-spin" /> : null}
+                    Confirm {appointmentConfirmation.decision}
+                  </button>
+                </div>
+              </section>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {receivingConfirmation && typeof document !== "undefined"
         ? createPortal(
