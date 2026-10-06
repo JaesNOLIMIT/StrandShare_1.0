@@ -20,6 +20,7 @@ import { HexColorPicker } from "react-colorful";
 import { isSupabaseConfigured, supabase } from "../../../lib/supabaseClient";
 import { logAuditAction } from "../../../lib/auditLogger";
 import StaffAvailabilityPanel from "../../../components/staff/StaffAvailabilityPanel";
+import ProgramDataMaintenancePanel from "../../../components/ProgramDataMaintenancePanel";
 import {
   FONT_SIZE_OPTIONS,
   normalizeFontSizePreference,
@@ -40,6 +41,7 @@ const TAB_ITEMS = [
   { id: "security", label: "Security" },
   { id: "availability", label: "My Availability" },
   { id: "branding", label: "Branding" },
+  { id: "data-maintenance", label: "Data Maintenance" },
 ];
 
 const BRANDING_EDITOR_TABS = [
@@ -697,7 +699,7 @@ export default function SettingsPage({ isActivePage = true }) {
   const presetHighlightColor = theme.primaryColor || "#0275d8";
   const visibleTabs = useMemo(
     () => TAB_ITEMS.filter((tab) => {
-      if (tab.id === "branding") return canManageBranding;
+      if (tab.id === "branding" || tab.id === "data-maintenance") return canManageBranding;
       if (tab.id === "availability") return lowerCaseRoleKey(profile.role) === "staff";
       return true;
     }),
@@ -787,7 +789,7 @@ export default function SettingsPage({ isActivePage = true }) {
   }, [themePresetCards, selectedThemeId]);
 
   useEffect(() => {
-    if (activeTab === "branding" && !canManageBranding) {
+    if (["branding", "data-maintenance"].includes(activeTab) && !canManageBranding) {
       setActiveTab("profile");
     }
   }, [activeTab, canManageBranding]);
@@ -3320,6 +3322,10 @@ export default function SettingsPage({ isActivePage = true }) {
               </div>
             </section>
           </div>
+        )}
+
+        {activeTab === "data-maintenance" && canManageBranding && (
+          <ProgramDataMaintenancePanel />
         )}
 
         {activeTab === "branding" && (

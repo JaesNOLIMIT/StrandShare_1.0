@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
-import { Search, LogOut, ChevronDown, Settings } from 'lucide-react';
+import { LogOut, ChevronDown, Settings } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from '../lib/supabaseClient';
 import { toRoleLabel } from '../lib/roleUtils';
 
@@ -119,19 +119,7 @@ export default function Header({
   };
 
   return (
-    <div className="h-20 flex-none bg-white border-b border-gray-200 px-8 flex items-center justify-between">
-      {/* Left - Search Bar */}
-      <div className="flex-1 max-w-md">
-        <div className="relative">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-          <input
-            type="text"
-            placeholder="Search systems..."
-            className="w-full pl-12 pr-4 py-2.5 border border-gray-300 rounded-full bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-offset-2"
-            style={{ '--tw-ring-color': theme.primaryColor }}
-          />
-        </div>
-      </div>
+    <div className="h-20 flex-none bg-white border-b border-gray-200 px-8 flex items-center justify-end">
 
       {/* Right - Icons & Profile */}
       <div className="flex items-center">
